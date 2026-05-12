@@ -1,0 +1,191 @@
+//! E-matching skeleton.
+//!
+//! v0.1 provides the [`TermUniverse`] and a one-shot pattern matcher
+//! that, given a [`Trigger`], returns instantiations grounding the
+//! flex variables against terms drawn from the universe. Full
+//! E-matching with congruence closure and incremental indexing
+//! arrives in v0.3.
+
+use std::sync::Arc;
+
+use adsmt_core::{Term, Var};
+use indexmap::IndexMap;
+
+use crate::trigger::{Trigger, TriggerKind};
+
+#[derive(Default, Clone, Debug)]
+pub struct TermUniverse {
+    terms: Vec<Term>,
+}
+
+impl TermUniverse {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn insert(&mut self, t: Term) {
+        if !self.terms.iter().any(|x| x.alpha_eq(&t)) {
+            self.terms.push(t);
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Term> { self.terms.iter() }
+    pub fn len(&self) -> usize { self.terms.len() }
+    pub fn is_empty(&self) -> bool { self.terms.is_empty() }
+}
+
+#[derive(Clone, Debug)]
+pub struct Instantiation {
+    pub subst: Vec<(Arc<Var>, Term)>,
+}
+
+pub struct EMatcher<'a> {
+    universe: &'a TermUniverse,
+}
+
+impl<'a> EMatcher<'a> {
+    pub fn new(universe: &'a TermUniverse) -> Self { Self { universe } }
+
+    /// Find instantiations of the trigger's bound variables against
+    /// terms in the universe. Single-pattern triggers match against
+    /// each universe term independently; multi-pattern triggers
+    /// require *all* sub-patterns to match consistently.
+    pub fn match_trigger(&self, trigger: &Trigger) -> Vec<Instantiation> {
+        match &trigger.kind {
+            TriggerKind::Single(p) => self
+                .universe
+                .iter()
+                .filter_map(|t| match_one(p, t, &trigger.bound))
+                .map(|subst| Instantiation { subst })
+                .collect(),
+            TriggerKind::Multi(ps) => self.match_multi(ps, &trigger.bound),
+        }
+    }
+
+    fn match_multi(
+        &self,
+        patterns: &[Term],
+        bound: &[Arc<Var>],
+    ) -> Vec<Instantiation> {
+        if patterns.is_empty() {
+            return Vec::new();
+        }
+        // Start with all matches of the first pattern; refine via the rest.
+        let first: Vec<IndexMap<Arc<Var>, Term>> = self
+            .universe
+            .iter()
+            .filter_map(|t| match_one(&patterns[0], t, bound))
+            .map(|v| v.into_iter().collect())
+            .collect();
+        let mut current = first;
+        for p in &patterns[1..] {
+            let mut next = Vec::new();
+            for candidate in &current {
+                for t in self.universe.iter() {
+                    let mut merged = candidate.clone();
+                    if extend_match(p, t, bound, &mut merged) {
+                        next.push(merged);
+                    }
+                }
+            }
+            current = next;
+            if current.is_empty() {
+                break;
+            }
+        }
+        current
+            .into_iter()
+            .map(|subst| Instantiation { subst: subst.into_iter().collect() })
+            .collect()
+    }
+}
+
+/// Match a single pattern against a single target. Returns `Some(σ)`
+/// where σ maps the flex (`bound`) variables to terms.
+fn match_one(pattern: &Term, target: &Term, bound: &[Arc<Var>]) -> Option<Vec<(Arc<Var>, Term)>> {
+    let mut sigma: IndexMap<Arc<Var>, Term> = IndexMap::new();
+    if extend_match(pattern, target, bound, &mut sigma) {
+        Some(sigma.into_iter().collect())
+    } else {
+        None
+    }
+}
+
+fn extend_match(
+    pattern: &Term,
+    target: &Term,
+    bound: &[Arc<Var>],
+    sigma: &mut IndexMap<Arc<Var>, Term>,
+) -> bool {
+    match (pattern, target) {
+        (Term::Var(v), t) if bound.iter().any(|b| **b == **v) => {
+            if v.ty != t.type_of() {
+                return false;
+            }
+            if let Some(prev) = sigma.get(v) {
+                return prev.alpha_eq(t);
+            }
+            sigma.insert(v.clone(), t.clone());
+            true
+        }
+        (Term::Var(v1), Term::Var(v2)) => **v1 == **v2,
+        (Term::Const(c1), Term::Const(c2)) => **c1 == **c2,
+        (Term::App(f1, a1), Term::App(f2, a2)) => {
+            extend_match(f1, f2, bound, sigma) && extend_match(a1, a2, bound, sigma)
+        }
+        (Term::Lam(v1, b1), Term::Lam(v2, b2)) => {
+            v1.ty == v2.ty && extend_match(b1, b2, bound, sigma)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adsmt_core::{Kind, Type};
+
+    fn int_() -> Type { Type::const_("Int", Kind::Type) }
+
+    #[test]
+    fn matches_pattern_against_universe() {
+        // pattern: P x (x flex), universe: { P a, P b, Q c }
+        let p_const = Term::const_("P", Type::fun(int_(), Type::bool_()).unwrap());
+        let q_const = Term::const_("Q", Type::fun(int_(), Type::bool_()).unwrap());
+        let a = Term::const_("a", int_());
+        let b = Term::const_("b", int_());
+        let c = Term::const_("c", int_());
+        let mut u = TermUniverse::new();
+        u.insert(Term::app(p_const.clone(), a.clone()).unwrap());
+        u.insert(Term::app(p_const.clone(), b.clone()).unwrap());
+        u.insert(Term::app(q_const, c).unwrap());
+
+        let x = Arc::new(Var { name: "x".into(), ty: int_() });
+        let pattern = Term::app(p_const, Term::Var(x.clone())).unwrap();
+        let trig = Trigger::single(pattern, vec![x.clone()]);
+
+        let m = EMatcher::new(&u);
+        let insts = m.match_trigger(&trig);
+        assert_eq!(insts.len(), 2);
+        let bound_values: Vec<Term> = insts
+            .iter()
+            .filter_map(|i| i.subst.iter().find(|(v, _)| **v == *x).map(|(_, t)| t.clone()))
+            .collect();
+        assert!(bound_values.iter().any(|t| t.alpha_eq(&a)));
+        assert!(bound_values.iter().any(|t| t.alpha_eq(&b)));
+    }
+
+    #[test]
+    fn no_match_returns_empty() {
+        let p_const = Term::const_("P", Type::fun(int_(), Type::bool_()).unwrap());
+        let q_const = Term::const_("Q", Type::fun(int_(), Type::bool_()).unwrap());
+        let a = Term::const_("a", int_());
+        let mut u = TermUniverse::new();
+        u.insert(Term::app(q_const, a).unwrap());
+
+        let x = Arc::new(Var { name: "x".into(), ty: int_() });
+        let pattern = Term::app(p_const, Term::Var(x.clone())).unwrap();
+        let trig = Trigger::single(pattern, vec![x]);
+
+        let insts = EMatcher::new(&u).match_trigger(&trig);
+        assert!(insts.is_empty());
+    }
+}

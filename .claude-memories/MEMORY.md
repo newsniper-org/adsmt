@@ -1,0 +1,3 @@
+- [Project layout](project_layout.md) — adsmt SMT solver workspace + logicutils submodule
+- [Logicutils version rule](logicutils_version_rule.md) — v0.x-smt branch minor = adsmt minor + 2
+- [Design conversation pointer](design_conversation.md) — full design decisions live in .claude-conversations/

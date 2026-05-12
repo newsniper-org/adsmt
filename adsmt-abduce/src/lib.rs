@@ -2,11 +2,17 @@
 //!
 //! SLD resolution with abducible insertion is glued to per-theory
 //! `abduce` interfaces. Candidates are filtered for consistency,
-//! minimized (subsumption then cardinality then depth), and returned as
+//! minimized (subsumption → cardinality → depth), and returned as
 //! ranked hypotheses with `explain` annotations threaded through.
 
 pub mod abducible;
-pub mod sld;
 pub mod minimize;
 pub mod rank;
+pub mod sld;
 pub mod workflow;
+
+pub use abducible::{Abducible, AbducibleSet};
+pub use minimize::{minimize, MinimizePolicy};
+pub use rank::{rank_candidates, RankedCandidate};
+pub use sld::{Candidate, SldEngine};
+pub use workflow::{AbductionState, AcceptedHypothesis};

@@ -8,5 +8,6 @@ description = "Type-class layer (T_class): relations, instances, dictionary pass
 [dependencies]
 adsmt-core.workspace = true
 adsmt-cert.workspace = true
+adsmt-theory.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true

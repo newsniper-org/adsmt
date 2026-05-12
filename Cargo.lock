@@ -29,6 +29,7 @@ version = "0.1.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
+ "adsmt-theory",
  "indexmap",
  "thiserror",
 ]
