@@ -1,0 +1,22 @@
+name = "adsmt"
+version = "0.1.0"
+defaultTargets = ["Adsmt", "adsmt-smoke"]
+keywords = ["smt", "abductive", "logic"]
+
+# Resolve the Rust FFI library built by `cargo build --release -p adsmt-ffi`.
+# `../target/release/` lives one directory above the `lean/` package root.
+moreLinkArgs = [
+  "-L", "../target/release",
+  "-ladsmt_ffi",
+  # Resolve libadsmt_ffi.so at runtime relative to the executable's
+  # location: .lake/build/bin/adsmt-smoke → ../../../../target/release.
+  "-Wl,-rpath,$ORIGIN/../../../../target/release",
+]
+
+[[lean_lib]]
+name = "Adsmt"
+
+[[lean_exe]]
+name = "adsmt-smoke"
+root = "Smoke"
+supportInterpreter = true

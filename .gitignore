@@ -1,6 +1,10 @@
 /target/
 **/*.rs.bk
 
+# Lake (Lean 4) build cache — all artifacts live under .lake/.
+# `lake-manifest.json` and `lakefile.toml` stay tracked.
+**/.lake/
+
 .idea/
 .vscode/
 *.swp
