@@ -1,0 +1,4 @@
+[submodule "external/logicutils"]
+	path = external/logicutils
+	url = https://github.com/newsniper-org/logicutils.git
+	branch = v0.x-smt
