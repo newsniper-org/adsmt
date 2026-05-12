@@ -10,6 +10,7 @@ name = "lu-smt"
 path = "src/main.rs"
 
 [dependencies]
+adsmt-core.workspace = true
 adsmt-engine.workspace = true
 adsmt-parser.workspace = true
 clap.workspace = true

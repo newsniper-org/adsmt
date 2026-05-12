@@ -1,6 +1,6 @@
 name = "adsmt"
 version = "0.1.0"
-defaultTargets = ["Adsmt", "adsmt-smoke"]
+defaultTargets = ["Adsmt", "adsmt-smoke", "adsmt-smoke-tactic"]
 keywords = ["smt", "abductive", "logic"]
 
 # Resolve the Rust FFI library built by `cargo build --release -p adsmt-ffi`.
@@ -19,4 +19,9 @@ name = "Adsmt"
 [[lean_exe]]
 name = "adsmt-smoke"
 root = "Smoke"
+supportInterpreter = true
+
+[[lean_exe]]
+name = "adsmt-smoke-tactic"
+root = "SmokeTactic"
 supportInterpreter = true

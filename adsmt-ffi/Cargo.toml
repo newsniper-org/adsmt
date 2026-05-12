@@ -9,5 +9,6 @@ description = "C ABI exports for Lean4 / Python / WASM bindings"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
+adsmt-core.workspace = true
 adsmt-engine.workspace = true
 adsmt-parser.workspace = true

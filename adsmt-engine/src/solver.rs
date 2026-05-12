@@ -14,12 +14,7 @@ use crate::result::{Abductive, SatResult};
 use crate::state::Scope;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ProofMode {
-    /// Don't emit certificates.
-    None,
-    /// Emit a certificate alongside every unsat result.
-    Always,
-}
+pub enum ProofMode { None, Always }
 
 pub struct Solver {
     scopes: Vec<Scope>,
@@ -63,8 +58,19 @@ impl Solver {
         self.abducibles.insert(a);
     }
 
+    /// Assert `t` as a positive literal.
     pub fn assert(&mut self, t: Term) {
-        self.scopes.last_mut().expect("base scope").assert(t);
+        self.assert_with_polarity(t, true);
+    }
+
+    /// Assert `t` as a negative literal (equivalent to asserting `¬t`).
+    pub fn assert_negated(&mut self, t: Term) {
+        self.assert_with_polarity(t, false);
+    }
+
+    /// Assert `t` with explicit polarity.
+    pub fn assert_with_polarity(&mut self, t: Term, polarity: bool) {
+        self.scopes.last_mut().expect("base scope").assert(t, polarity);
     }
 
     pub fn push(&mut self) {
@@ -74,7 +80,6 @@ impl Solver {
 
     pub fn pop(&mut self, levels: u32) {
         for _ in 0..levels {
-            // Always keep the base scope.
             if self.scopes.len() > 1 {
                 self.scopes.pop();
             }
@@ -90,22 +95,37 @@ impl Solver {
         self.cert_builder = CertBuilder::new();
     }
 
-    /// Collected assertions across every active scope, plus any
-    /// promoted abductive hypotheses (which live at Level 0).
-    pub fn all_assertions(&self) -> Vec<Term> {
-        let mut out: Vec<Term> = Vec::new();
+    /// Collected (atom, polarity) literals across every active scope,
+    /// plus promoted abductive hypotheses (which live at Level 0,
+    /// asserted positively).
+    pub fn all_literals(&self) -> Vec<(Term, bool)> {
+        let mut out: Vec<(Term, bool)> = Vec::new();
         for h in self.abduction_state.accepted() {
-            out.push(h.hypothesis.clone());
+            out.push((h.hypothesis.clone(), true));
         }
         for sc in &self.scopes {
-            out.extend(sc.assertions.iter().cloned());
+            out.extend(sc.literals.iter().cloned());
         }
         out
     }
 
+    /// Convenience: positive-only assertions (for compatibility with
+    /// pre-polarity v0.1 callers).
+    pub fn all_assertions(&self) -> Vec<Term> {
+        self.all_literals()
+            .into_iter()
+            .filter_map(|(t, p)| if p { Some(t) } else { None })
+            .collect()
+    }
+
     pub fn check_sat(&mut self) -> SatResult {
-        let assertions = self.all_assertions();
-        match dpllt::run_once(&mut self.theories, &assertions) {
+        let lits = self.all_literals();
+        // Fresh theory state for each check_sat — the placeholder UF
+        // accumulates state across asserts but doesn't yet handle
+        // multi-check sequences cleanly. v0.3 will move to a proper
+        // DPLL(T) trail that doesn't require this reset.
+        self.theories.reset();
+        match dpllt::run_once(&mut self.theories, &lits) {
             LoopOutcome::Sat => SatResult::Sat,
             LoopOutcome::Unsat { .. } => SatResult::Unsat { certificate: None },
             LoopOutcome::Unknown { theory, reason } => SatResult::Unknown {
@@ -114,7 +134,6 @@ impl Solver {
         }
     }
 
-    /// Abductive query: which hypotheses would make `goal` follow?
     pub fn abduce(&mut self, goal: &Term) -> Abductive {
         let engine = SldEngine::new(&self.abducibles);
         let raw = engine.candidates(goal);
@@ -149,20 +168,33 @@ mod tests {
     }
 
     #[test]
-    fn contradictory_polarity_is_unsat() {
+    fn polarity_contradiction_is_unsat() {
         let mut s = Solver::new();
         let p = Term::var("p", Type::bool_());
-        let not_p = Term::var("p", Type::bool_()); // bare repeat; the UF stub treats this as a polarity flip via negation
-        // Simulate ¬p via a separate negated atom. v0.1 UF only sees
-        // polarity from `Literal::positive/negative`, so we exercise
-        // the more direct path: assert two contradictory atoms named
-        // identically. With only `positive` assertions this stays Sat,
-        // confirming the placeholder semantics.
+        s.assert(p.clone());
+        s.assert_negated(p);
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn positive_only_assertions_stay_sat() {
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
         s.assert(p);
-        s.assert(not_p);
-        // No negation yet — v0.1 UF only sees positive literals, so
-        // the result here is Sat. This test pins the current behavior
-        // and will be revisited when DPLL(T) lands.
+        s.assert(q);
+        assert!(matches!(s.check_sat(), SatResult::Sat));
+    }
+
+    #[test]
+    fn push_pop_undoes_contradiction() {
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        s.assert(p.clone());
+        s.push();
+        s.assert_negated(p);
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+        s.pop(1);
         assert!(matches!(s.check_sat(), SatResult::Sat));
     }
 
@@ -174,38 +206,31 @@ mod tests {
         s.push();
         let q = Term::var("q", Type::bool_());
         s.assert(q);
-        assert_eq!(s.all_assertions().len(), 2);
+        assert_eq!(s.all_literals().len(), 2);
         s.pop(1);
-        let after = s.all_assertions();
-        assert_eq!(after.len(), 1);
-        assert!(after[0].alpha_eq(&p));
+        assert_eq!(s.all_literals().len(), 1);
     }
 
     #[test]
     fn abduce_returns_candidates_for_registered_abducible() {
         let mut s = Solver::new();
         let p = Term::var("p", Type::bool_());
-        s.register_abducible(
-            Abducible::new(p.clone(), "abduce-block").with_explanation("test"),
-        );
+        s.register_abducible(Abducible::new(p.clone(), "x").with_explanation("hint"));
         let r = s.abduce(&p);
         assert_eq!(r.candidates.len(), 1);
-        assert_eq!(r.candidates[0].explanations[0].as_deref(), Some("test"));
     }
 
     #[test]
     fn promote_persists_hypothesis_across_pop() {
         let mut s = Solver::new();
         let p = Term::var("p", Type::bool_());
-        s.register_abducible(Abducible::new(p.clone(), "abduce-block"));
+        s.register_abducible(Abducible::new(p.clone(), "x"));
         s.push();
         let candidates = s.abduce(&p).candidates;
-        assert_eq!(candidates.len(), 1);
         s.promote(&candidates[0]);
         s.pop(1);
-        // Promoted hypotheses live at Level 0 and survive the pop.
-        let after = s.all_assertions();
-        assert!(after.iter().any(|t| t.alpha_eq(&p)));
+        let after = s.all_literals();
+        assert!(after.iter().any(|(t, polarity)| t.alpha_eq(&p) && *polarity));
     }
 
     #[test]

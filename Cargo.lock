@@ -38,6 +38,7 @@ dependencies = [
 name = "adsmt-cli"
 version = "0.1.0"
 dependencies = [
+ "adsmt-core",
  "adsmt-engine",
  "adsmt-parser",
  "clap",
@@ -71,6 +72,7 @@ dependencies = [
 name = "adsmt-ffi"
 version = "0.1.0"
 dependencies = [
+ "adsmt-core",
  "adsmt-engine",
  "adsmt-parser",
 ]

@@ -56,6 +56,9 @@ private opaque resetImpl : SolverPtr → Int32
 @[extern "adsmt_solver_check_sat"]
 private opaque checkSatImpl : SolverPtr → Int32
 
+@[extern "adsmt_solver_assert_atom"]
+private opaque assertAtomImpl : SolverPtr → UInt64 → Int32 → Int32
+
 -- IO-wrapped surface
 
 def newSolver : IO SolverPtr := return newSolverImpl ()
@@ -66,6 +69,12 @@ def push (s : SolverPtr) : IO Int32 := return pushImpl s
 def popN (s : SolverPtr) (n : UInt32) : IO Int32 := return popImpl s n
 def reset (s : SolverPtr) : IO Int32 := return resetImpl s
 def checkSatRaw (s : SolverPtr) : IO Int32 := return checkSatImpl s
+
+/-- Assert a Boolean atom by numeric id with explicit polarity. -/
+def assertAtom (s : SolverPtr) (atomId : UInt64) (polarity : Bool) : IO Unit := do
+  let p : Int32 := if polarity then 1 else 0
+  let _ := assertAtomImpl s atomId p
+  return ()
 
 /-- v0.1 placeholder for the version FFI; once `adsmt_version` is
     wired up through a string-marshalling helper this will read the

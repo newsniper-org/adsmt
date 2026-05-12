@@ -45,4 +45,9 @@ def Solver.checkSat (s : Solver) : IO SatCode := do
   let code ← checkSatRaw s.ptr
   return SatCode.ofInt code.toInt
 
+/-- Assert atom `id` with explicit polarity. v0.1 minimal API for the
+    `smt` tactic and CLI to surface Boolean contradictions. -/
+def Solver.assertAtom (s : Solver) (id : UInt64) (polarity : Bool) : IO Unit :=
+  Adsmt.Ffi.assertAtom s.ptr id polarity
+
 end Adsmt

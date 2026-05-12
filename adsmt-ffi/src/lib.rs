@@ -14,6 +14,7 @@
 use std::ffi::{c_char, CStr, CString};
 use std::ptr;
 
+use adsmt_core::{Term, Type};
 use adsmt_engine::{SatResult, Solver};
 
 /// Opaque handle. Allocated by [`adsmt_solver_new`], freed by [`adsmt_solver_free`].
@@ -93,6 +94,34 @@ pub unsafe extern "C" fn adsmt_solver_reset(h: SolverHandle) -> i32 {
         Some(s) => { s.0.reset(); 0 }
         None => ADSMT_ERR_NULL,
     }
+}
+
+/// Assert a Boolean atom by numeric id with explicit polarity.
+///
+/// `atom_id` identifies the atom (caller-managed); the FFI synthesizes
+/// a Boolean term `Var("atom_<id>", Bool)` internally. `polarity` is
+/// `1` for positive, `0` for negative. Returns `0` on success.
+///
+/// This is the minimal v0.1 surface for Lean tactics and CLI parsers
+/// that don't yet build full Lean→adsmt term translation; v0.3 will
+/// supersede this with structured term construction.
+///
+/// # Safety
+/// `h` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn adsmt_solver_assert_atom(
+    h: SolverHandle,
+    atom_id: u64,
+    polarity: i32,
+) -> i32 {
+    let s = match handle_to(h) {
+        Some(s) => s,
+        None => return ADSMT_ERR_NULL,
+    };
+    let name = format!("atom_{atom_id}");
+    let t = Term::var(&name, Type::bool_());
+    s.0.assert_with_polarity(t, polarity != 0);
+    0
 }
 
 /// Check satisfiability of currently asserted constraints.
@@ -198,5 +227,26 @@ mod tests {
     fn null_handle_returns_err() {
         let r = unsafe { adsmt_solver_check_sat(0) };
         assert_eq!(r, ADSMT_ERR_NULL);
+    }
+
+    #[test]
+    fn assert_atom_polarity_contradiction_is_unsat() {
+        let h = adsmt_solver_new();
+        // assert atom 0 positively, then negatively → conflict.
+        assert_eq!(unsafe { adsmt_solver_assert_atom(h, 0, 1) }, 0);
+        assert_eq!(unsafe { adsmt_solver_assert_atom(h, 0, 0) }, 0);
+        let r = unsafe { adsmt_solver_check_sat(h) };
+        assert_eq!(r, ADSMT_UNSAT);
+        unsafe { adsmt_solver_free(h) };
+    }
+
+    #[test]
+    fn assert_atom_distinct_ids_stay_sat() {
+        let h = adsmt_solver_new();
+        unsafe { adsmt_solver_assert_atom(h, 0, 1) };
+        unsafe { adsmt_solver_assert_atom(h, 1, 0) };
+        let r = unsafe { adsmt_solver_check_sat(h) };
+        assert_eq!(r, ADSMT_SAT);
+        unsafe { adsmt_solver_free(h) };
     }
 }
