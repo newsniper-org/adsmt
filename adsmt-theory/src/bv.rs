@@ -28,6 +28,27 @@ pub struct Bv {
 
 impl Bv {
     pub fn new() -> Self { Self::default() }
+
+    /// If `t` is a BV binop applied to two literals, evaluate it and
+    /// return the resulting literal. Otherwise return `t` unchanged.
+    fn reduce_binop(t: &Term) -> Term {
+        if let Some((op, w, lhs, rhs)) = t.dest_bv_binop() {
+            if let (Some((va, _)), Some((vb, _))) = (lhs.dest_bv_lit(), rhs.dest_bv_lit()) {
+                let mask: u128 = if w >= 128 { u128::MAX } else { (1u128 << w) - 1 };
+                let result = match op.as_str() {
+                    "bvand" => (va & vb) & mask,
+                    "bvor"  => (va | vb) & mask,
+                    "bvxor" => (va ^ vb) & mask,
+                    "bvadd" => va.wrapping_add(vb) & mask,
+                    "bvsub" => va.wrapping_sub(vb) & mask,
+                    "bvmul" => va.wrapping_mul(vb) & mask,
+                    _ => return t.clone(),
+                };
+                return Term::bv_lit(result, w);
+            }
+        }
+        t.clone()
+    }
 }
 
 impl Theory for Bv {
@@ -38,10 +59,15 @@ impl Theory for Bv {
     }
 
     fn assert(&mut self, lit: Literal) -> AssertResult {
-        // Only equality literals matter for v0.5 alpha.
+        // Only equality literals matter at v0.5/v0.7 alpha.
         let Some((a, b)) = lit.term.dest_eq() else {
             return AssertResult::Ignored;
         };
+        // v0.7: if one side is a BV binop applied to two literals,
+        // evaluate it and rewrite to a literal equality. Both sides
+        // can independently reduce.
+        let a = Self::reduce_binop(&a);
+        let b = Self::reduce_binop(&b);
         let lit_a = a.dest_bv_lit();
         let lit_b = b.dest_bv_lit();
         match (lit_a, lit_b, lit.polarity) {
@@ -164,6 +190,32 @@ mod tests {
         assert_eq!(w.upper_bound, Some(256));
         let w16 = bv.cardinality_witness(&Term::bv_sort(16));
         assert_eq!(w16.upper_bound, Some(65536));
+    }
+
+    #[test]
+    fn bvand_literal_reduces_correctly() {
+        // bvand(0b1100, 0b1010) = 0b1000 (width 4)
+        let mut bv = Bv::new();
+        let lhs = Term::mk_bvand(Term::bv_lit(0b1100, 4), Term::bv_lit(0b1010, 4), 4).unwrap();
+        let eq = Term::mk_eq(lhs, Term::bv_lit(0b1000, 4)).unwrap();
+        assert!(matches!(bv.assert(Literal::positive(eq).unwrap()), AssertResult::Accepted));
+    }
+
+    #[test]
+    fn bvand_literal_wrong_result_is_unsat() {
+        let mut bv = Bv::new();
+        let lhs = Term::mk_bvand(Term::bv_lit(0b1100, 4), Term::bv_lit(0b1010, 4), 4).unwrap();
+        let eq = Term::mk_eq(lhs, Term::bv_lit(0b1111, 4)).unwrap();
+        assert!(matches!(bv.assert(Literal::positive(eq).unwrap()), AssertResult::Conflict { .. }));
+    }
+
+    #[test]
+    fn bvadd_with_overflow_wraps_at_width() {
+        let mut bv = Bv::new();
+        // 0xFF + 0x02 in width 8 = 0x01 (wraps)
+        let lhs = Term::mk_bvadd(Term::bv_lit(0xFF, 8), Term::bv_lit(0x02, 8), 8).unwrap();
+        let eq = Term::mk_eq(lhs, Term::bv_lit(0x01, 8)).unwrap();
+        assert!(matches!(bv.assert(Literal::positive(eq).unwrap()), AssertResult::Accepted));
     }
 
     #[test]

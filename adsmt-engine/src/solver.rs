@@ -39,6 +39,8 @@ impl Default for Solver {
         theories.register(Box::new(Datatypes::new()));
         theories.register(Box::new(Arrays::new()));
         theories.register(Box::new(Bv::new()));
+        theories.register(Box::new(adsmt_theory::arith::LinArith::lia()));
+        theories.register(Box::new(adsmt_theory::arith::LinArith::lra()));
         Self {
             scopes: vec![Scope::new()],
             theories,
@@ -173,7 +175,17 @@ impl Solver {
                     let universe = crate::quant::collect_universe(&rest);
                     let prev = instantiations.len();
                     for (var, body) in &quants {
+                        // Tier 1: Miller-pattern E-matching + bounded
+                        // enumeration fallback.
                         for inst in crate::quant::instantiate_one(var, body, &universe) {
+                            if !instantiations.iter().any(|t| t.alpha_eq(&inst)) {
+                                instantiations.push(inst);
+                            }
+                        }
+                        // Tier 2: conflict-based — pick instantiations
+                        // that directly contradict an existing negative
+                        // ground assertion.
+                        for inst in crate::quant_conflict::conflict_instantiate(var, body, &rest) {
                             if !instantiations.iter().any(|t| t.alpha_eq(&inst)) {
                                 instantiations.push(inst);
                             }

@@ -13,6 +13,7 @@ pub mod cadical_backend;
 pub mod cnf;
 pub mod dpllt;
 pub mod quant;
+pub mod quant_conflict;
 pub mod result;
 pub mod solver;
 pub mod state;

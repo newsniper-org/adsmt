@@ -456,6 +456,46 @@ impl Term {
         None
     }
 
+    /// Build a BV binary-op constant (`bvand`/`bvor`/`bvxor`/`bvadd`/
+    /// `bvsub`/`bvmul`/`bvshl`/`bvshr`) at `width`.
+    fn bv_binop_const(name: &str, width: u32) -> Term {
+        let bv = Self::bv_sort(width);
+        let ty = Type::fun(bv.clone(), Type::fun(bv.clone(), bv).unwrap()).unwrap();
+        Term::const_(&format!("{name}_{width}"), ty)
+    }
+
+    pub fn mk_bvand(lhs: Term, rhs: Term, width: u32) -> KernelResult<Term> {
+        Term::app(Term::app(Self::bv_binop_const("bvand", width), lhs)?, rhs)
+    }
+    pub fn mk_bvor(lhs: Term, rhs: Term, width: u32) -> KernelResult<Term> {
+        Term::app(Term::app(Self::bv_binop_const("bvor", width), lhs)?, rhs)
+    }
+    pub fn mk_bvxor(lhs: Term, rhs: Term, width: u32) -> KernelResult<Term> {
+        Term::app(Term::app(Self::bv_binop_const("bvxor", width), lhs)?, rhs)
+    }
+    pub fn mk_bvadd(lhs: Term, rhs: Term, width: u32) -> KernelResult<Term> {
+        Term::app(Term::app(Self::bv_binop_const("bvadd", width), lhs)?, rhs)
+    }
+
+    /// Destructure a BV binop `(<op>_w lhs rhs)` returning `(op, width, lhs, rhs)`.
+    pub fn dest_bv_binop(&self) -> Option<(String, u32, Term, Term)> {
+        if let Term::App(outer, rhs) = self {
+            if let Term::App(head, lhs) = &**outer {
+                if let Term::Const(c) = &**head {
+                    let nm = &c.name;
+                    for op in ["bvand", "bvor", "bvxor", "bvadd", "bvsub", "bvmul"] {
+                        if let Some(rest) = nm.strip_prefix(&format!("{op}_")) {
+                            if let Ok(w) = rest.parse::<u32>() {
+                                return Some((op.into(), w, (**lhs).clone(), (**rhs).clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Extract the bit-vector width from a `BV<n>` sort, if applicable.
     pub fn bv_sort_width(ty: &Type) -> Option<u32> {
         if let Type::Const(c) = ty {

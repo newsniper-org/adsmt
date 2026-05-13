@@ -38,6 +38,25 @@ struct UfSnapshot {
     neg_len: usize,
 }
 
+/// Pick the canonical representative of a class.
+///
+/// Preference order:
+/// 1. `Const` terms (peer theories like Datatypes care about ctors)
+/// 2. `Var` terms
+/// 3. `App` and `Lam` terms (any of them, in source order)
+///
+/// Returns the index into `members`.
+fn pick_representative(members: &[adsmt_core::Term]) -> usize {
+    use adsmt_core::Term;
+    for (i, t) in members.iter().enumerate() {
+        if matches!(t, Term::Const(_)) { return i; }
+    }
+    for (i, t) in members.iter().enumerate() {
+        if matches!(t, Term::Var(_)) { return i; }
+    }
+    0
+}
+
 impl Default for Uf {
     fn default() -> Self {
         Self {
@@ -248,22 +267,26 @@ impl Theory for Uf {
             classes.entry(find_root(t)).or_default().push(t.clone());
         }
 
-        // Emit *every pair* within each class. Quadratic in class
-        // size but lets peer theories (Datatypes, BV) see directly
-        // related constructor pairs without depending on which
-        // representative the union-find happened to pick.
+        // v0.7: representative-based propagation. Within each
+        // class, pick a *canonical* representative (preferring
+        // Const-headed terms — usually constructors or named
+        // literals — so peer theories like Datatypes/BV see them
+        // directly) and emit equalities only from representative
+        // to every other member. Linear in class size instead of
+        // quadratic; matches Nelson-Oppen's standard transmission
+        // form.
         for members in classes.values() {
             if members.len() < 2 { continue; }
-            for i in 0..members.len() {
-                for j in (i + 1)..members.len() {
-                    let (a, b) = (&members[i], &members[j]);
-                    let dup = out.iter().any(|(x, y)| {
-                        (x.alpha_eq(a) && y.alpha_eq(b))
-                            || (x.alpha_eq(b) && y.alpha_eq(a))
-                    });
-                    if !dup {
-                        out.push((a.clone(), b.clone()));
-                    }
+            let rep_idx = pick_representative(members);
+            let rep = members[rep_idx].clone();
+            for (i, m) in members.iter().enumerate() {
+                if i == rep_idx { continue; }
+                let dup = out.iter().any(|(x, y)| {
+                    (x.alpha_eq(&rep) && y.alpha_eq(m))
+                        || (x.alpha_eq(m) && y.alpha_eq(&rep))
+                });
+                if !dup {
+                    out.push((rep.clone(), m.clone()));
                 }
             }
         }

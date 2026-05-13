@@ -6,6 +6,7 @@
 //! invoking them also appends a step to a [`CertBuilder`].
 
 pub mod canonical;
+pub mod drat;
 pub mod emit;
 pub mod recorder;
 pub mod witness;

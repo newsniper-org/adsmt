@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adsmt-abduce"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-class",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cert"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "adsmt-core",
  "indexmap",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-class"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cli"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "adsmt-core",
  "adsmt-engine",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-core"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "indexmap",
  "smallvec",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-engine"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "adsmt-abduce",
  "adsmt-cert",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-ffi"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "adsmt-core",
  "adsmt-engine",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-parser"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "adsmt-core",
  "indexmap",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-quant"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-theory"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
