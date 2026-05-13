@@ -11,7 +11,7 @@
 //! propagation arrive in v0.3.
 
 use adsmt_cert::witness::PoliteWitness;
-use adsmt_core::Type;
+use adsmt_core::{Term, Type};
 
 use crate::trait_::{CheckResult, Literal, Theory};
 
@@ -57,26 +57,63 @@ impl Combination {
         out
     }
 
-    /// Run `check` on each theory and return the first conflict, if any.
+    /// Run `check` on each theory with Nelson-Oppen equality
+    /// propagation in between rounds.
+    ///
+    /// Order per round:
+    /// 1. `check()` every theory (so each gets to run its own
+    ///    closures / propagation internals).
+    /// 2. Gather `derive_equalities` from every theory.
+    /// 3. Re-broadcast new ones via `assert`; if no new equalities,
+    ///    we're at fixpoint and return Sat.
     pub fn check(&mut self) -> CombinedCheck {
-        for t in &mut self.theories {
-            match t.check() {
-                CheckResult::Sat => continue,
-                CheckResult::Unsat { witness } => {
-                    return CombinedCheck::Unsat {
-                        theory: t.name().to_string(),
-                        witness,
-                    };
+        const PROP_BUDGET: usize = 8;
+        let mut seen: Vec<(Term, Term)> = Vec::new();
+
+        for _round in 0..PROP_BUDGET {
+            // (1) Individual theory checks first.
+            for i in 0..self.theories.len() {
+                let name = self.theories[i].name().to_string();
+                match self.theories[i].check() {
+                    CheckResult::Sat => continue,
+                    CheckResult::Unsat { witness } => {
+                        return CombinedCheck::Unsat { theory: name, witness };
+                    }
+                    CheckResult::Unknown { reason } => {
+                        return CombinedCheck::Unknown { theory: name, reason };
+                    }
                 }
-                CheckResult::Unknown { reason } => {
-                    return CombinedCheck::Unknown {
-                        theory: t.name().to_string(),
-                        reason,
-                    };
+            }
+
+            // (2) Gather derived equalities, excluding ones already seen.
+            let mut gathered: Vec<(Term, Term)> = Vec::new();
+            for t in &self.theories {
+                for eq in t.derive_equalities() {
+                    if !seen.iter().any(|(a, b)| {
+                        (a.alpha_eq(&eq.0) && b.alpha_eq(&eq.1))
+                            || (a.alpha_eq(&eq.1) && b.alpha_eq(&eq.0))
+                    }) {
+                        gathered.push(eq.clone());
+                    }
+                }
+            }
+            if gathered.is_empty() { return CombinedCheck::Sat; }
+
+            // (3) Re-broadcast.
+            for (a, b) in &gathered {
+                seen.push((a.clone(), b.clone()));
+                if let Ok(eq_term) = Term::mk_eq(a.clone(), b.clone()) {
+                    if let Ok(lit) = crate::trait_::Literal::positive(eq_term) {
+                        let _ = self.assert(lit);
+                    }
                 }
             }
         }
-        CombinedCheck::Sat
+
+        CombinedCheck::Unknown {
+            theory: "polite".into(),
+            reason: "Nelson-Oppen propagation budget exhausted".into(),
+        }
     }
 
     /// Reconcile cardinality witnesses for a sort across all theories.

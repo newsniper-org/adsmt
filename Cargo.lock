@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adsmt-abduce"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-class",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cert"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adsmt-core",
  "indexmap",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-class"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cli"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adsmt-core",
  "adsmt-engine",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-core"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "indexmap",
  "smallvec",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-engine"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adsmt-abduce",
  "adsmt-cert",
@@ -65,13 +65,14 @@ dependencies = [
  "adsmt-core",
  "adsmt-quant",
  "adsmt-theory",
+ "cadical",
  "indexmap",
  "thiserror",
 ]
 
 [[package]]
 name = "adsmt-ffi"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adsmt-core",
  "adsmt-engine",
@@ -80,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-parser"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adsmt-core",
  "indexmap",
@@ -89,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-quant"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -100,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-theory"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -160,6 +161,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadical"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a54f8130f9e6a40dd1ec66180c4e8be624257705740b7ce1502146c807c7778e"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "cc"
+version = "1.2.62"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1dce859f0832a7d088c4f1119888ab94ef4b5d6795d1ce05afb7fe159d79f98"
+dependencies = [
+ "find-msvc-tools",
+ "jobserver",
+ "libc",
+ "shlex",
+]
+
+[[package]]
+name = "cfg-if"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
 name = "clap"
 version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -212,6 +240,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "find-msvc-tools"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "getrandom"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "r-efi",
+ "wasip2",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -240,6 +286,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "jobserver"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
+dependencies = [
+ "getrandom",
+ "libc",
+]
+
+[[package]]
+name = "libc"
+version = "0.2.186"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
 name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -262,6 +324,18 @@ checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "r-efi"
+version = "5.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "shlex"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "smallvec"
@@ -319,6 +393,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
+name = "wasip2"
+version = "1.0.3+wasi-0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
 name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -332,3 +415,9 @@ checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
 ]
+
+[[package]]
+name = "wit-bindgen"
+version = "0.57.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"

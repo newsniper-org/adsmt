@@ -426,6 +426,48 @@ impl Term {
         Term::app(Term::forall_const(arg_ty)?, lam)
     }
 
+    // === Bit-vector built-ins (v0.5) ===
+    //
+    // BV sorts are encoded as `BV<width>` type constants. Literal
+    // values are encoded as Const terms named `bv:value:width`,
+    // which is parseable both ways. v0.5 keeps this representation
+    // string-based; v0.7 may switch to a structured payload.
+
+    /// `(_ BitVec width)` sort name → `Type::const_("BV<width>", Type)`.
+    pub fn bv_sort(width: u32) -> Type {
+        Type::const_(&format!("BV<{width}>"), crate::kind::Kind::Type)
+    }
+
+    /// Build the literal Const term `bv:value:width` at sort `BV<width>`.
+    pub fn bv_lit(value: u128, width: u32) -> Term {
+        Term::const_(&format!("bv:{value}:{width}"), Self::bv_sort(width))
+    }
+
+    /// If `t` is a BV literal, return `(value, width)`.
+    pub fn dest_bv_lit(&self) -> Option<(u128, u32)> {
+        if let Term::Const(c) = self {
+            if let Some(rest) = c.name.strip_prefix("bv:") {
+                let mut parts = rest.splitn(2, ':');
+                let v = parts.next()?.parse::<u128>().ok()?;
+                let w = parts.next()?.parse::<u32>().ok()?;
+                return Some((v, w));
+            }
+        }
+        None
+    }
+
+    /// Extract the bit-vector width from a `BV<n>` sort, if applicable.
+    pub fn bv_sort_width(ty: &Type) -> Option<u32> {
+        if let Type::Const(c) = ty {
+            if let Some(rest) = c.name.strip_prefix("BV<") {
+                if let Some(num) = rest.strip_suffix('>') {
+                    return num.parse::<u32>().ok();
+                }
+            }
+        }
+        None
+    }
+
     /// Destructure `∀v. body`, returning the binder and body.
     pub fn dest_forall(&self) -> Option<(Var, Term)> {
         if let Term::App(f, lam) = self {

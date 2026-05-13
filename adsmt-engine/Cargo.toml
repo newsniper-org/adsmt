@@ -14,3 +14,10 @@ adsmt-quant.workspace = true
 adsmt-abduce.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
+cadical = { version = "0.1", optional = true }
+
+[features]
+default = []
+# Use the CaDiCaL SAT backend instead of the built-in DPLL.
+# Build with: `cargo build -p adsmt-engine --features cadical`
+cadical = ["dep:cadical"]

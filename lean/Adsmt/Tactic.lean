@@ -81,25 +81,33 @@ syntax (name := smt) "smt" : tactic
 @[tactic smt]
 def evalSmt : Tactic := fun _ => do
   let hyps ← collectHyps
-  -- v0.3: render the context as an SMT-LIB-style script for
-  -- diagnostics. The infrastructure runs every invocation; when
-  -- elaboration-time FFI lands in v0.5 we'll send this to the engine.
+
+  -- v0.5: render the context to SMT-LIB and consult the adsmt
+  -- engine via FFI. `precompileModules` makes `@[extern]`
+  -- declarations reachable at elaboration time.
   let mut state : Adsmt.Translate.State := default
-  let mut script : Array String := #[]
+  let mut atomIds : Std.HashMap String UInt64 := {}
+  let solver ← Adsmt.Solver.new
   for h in hyps do
-    let body := h.body
-    let (s, state') := StateT.run (Adsmt.Translate.translate body) state |>.run
-    state := state'
-    let line := if h.polarity then s!"(assert {s})" else s!"(assert (not {s}))"
-    script := script.push line
-  let goalType ← (← getMainGoal).getType
-  if (← isProp goalType) then
-    let (g, _) := StateT.run (Adsmt.Translate.translate goalType) state |>.run
-    script := script.push s!"(goal {g})"
-  let _ := script  -- bound for v0.5 FFI use; suppressed for now
+    let (key, _state') := StateT.run (Adsmt.Translate.translate h.body) state |>.run
+    state := _state'
+    let id : UInt64 ←
+      if let some i := atomIds.get? key then
+        pure i
+      else
+        let i : UInt64 := atomIds.size.toUInt64
+        atomIds := atomIds.insert key i
+        pure i
+    solver.assertAtom id h.polarity
+  let engineVerdict ← solver.checkSat
+  solver.close
 
   match (← findContradiction hyps) with
   | some (posF, negF) =>
+      -- Engine confirms or stays silent; in either case we have a
+      -- Lean-level proof via `absurd`. v0.7 will rely on the engine
+      -- verdict alone once the term-translation pipeline lands.
+      let _ := engineVerdict
       let goal ← getMainGoal
       let posExpr := mkFVar posF
       let negExpr := mkFVar negF
@@ -112,7 +120,8 @@ def evalSmt : Tactic := fun _ => do
         goal.assign proof
       replaceMainGoal []
   | none =>
-      throwError "adsmt smt (v0.3): no direct (h₁ : P, h₂ : ¬P) pair found in context"
+      throwError "adsmt smt (v0.5): engine verdict {repr engineVerdict}, no direct \
+        (h₁ : P, h₂ : ¬P) pair found in Lean context"
 
 /--
 `smt_abduce` — abductive variant of `smt`.

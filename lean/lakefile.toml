@@ -1,5 +1,5 @@
 name = "adsmt"
-version = "0.3.0"
+version = "0.5.0"
 defaultTargets = ["Adsmt", "adsmt-smoke", "adsmt-smoke-tactic"]
 keywords = ["smt", "abductive", "logic"]
 
@@ -15,6 +15,12 @@ moreLinkArgs = [
 
 [[lean_lib]]
 name = "Adsmt"
+# v0.5: precompile modules so `@[extern]` declarations from
+# `Adsmt.Ffi` are reachable at elaboration time (e.g. from inside
+# the `smt` tactic). The compiled `.o` files are loaded by the Lean
+# interpreter; otherwise tactic-time FFI calls fail with a missing
+# native implementation error.
+precompileModules = true
 
 [[lean_exe]]
 name = "adsmt-smoke"

@@ -10,4 +10,5 @@ pub mod polite;
 pub mod uf;
 pub mod arith;
 pub mod arrays;
+pub mod bv;
 pub mod datatypes;

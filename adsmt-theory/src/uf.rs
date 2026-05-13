@@ -224,13 +224,50 @@ impl Theory for Uf {
 
     fn explain(&self) -> Option<TheoryWitness> { self.conflict.clone() }
 
-    /// Equalities that hold in the current congruence closure, beyond
-    /// what was asserted. Theories like Arrays consume these to share
-    /// reasoning at sort boundaries (sec 26).
+    /// Equalities that hold in the current congruence closure. v0.5
+    /// surfaces both asserted equalities and class-level equalities
+    /// induced by closure so peer theories (Datatypes, Arrays, BV)
+    /// can absorb them via Nelson-Oppen propagation.
     fn derive_equalities(&self) -> Vec<(Term, Term)> {
-        // v0.3 alpha: surface the *asserted* equalities only. Derived
-        // congruences (from closure) plug in once Nelson-Oppen is on.
-        self.asserted_eqs.clone()
+        let mut out = self.asserted_eqs.clone();
+
+        // Group every known term by its union-find root (without
+        // mutating the parent map — we just walk the chain).
+        let find_root = |t: &Term| -> Term {
+            let mut cur = t.clone();
+            loop {
+                match self.parent.get(&cur) {
+                    Some(p) if !p.alpha_eq(&cur) => cur = p.clone(),
+                    _ => return cur,
+                }
+            }
+        };
+
+        let mut classes: HashMap<Term, Vec<Term>> = HashMap::new();
+        for t in &self.known {
+            classes.entry(find_root(t)).or_default().push(t.clone());
+        }
+
+        // Emit *every pair* within each class. Quadratic in class
+        // size but lets peer theories (Datatypes, BV) see directly
+        // related constructor pairs without depending on which
+        // representative the union-find happened to pick.
+        for members in classes.values() {
+            if members.len() < 2 { continue; }
+            for i in 0..members.len() {
+                for j in (i + 1)..members.len() {
+                    let (a, b) = (&members[i], &members[j]);
+                    let dup = out.iter().any(|(x, y)| {
+                        (x.alpha_eq(a) && y.alpha_eq(b))
+                            || (x.alpha_eq(b) && y.alpha_eq(a))
+                    });
+                    if !dup {
+                        out.push((a.clone(), b.clone()));
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn derive_disequalities(&self) -> Vec<(Term, Term)> {

@@ -7,6 +7,7 @@ use adsmt_abduce::{minimize, rank_candidates, MinimizePolicy};
 use adsmt_cert::CertBuilder;
 use adsmt_core::Term;
 use adsmt_theory::arrays::Arrays;
+use adsmt_theory::bv::Bv;
 use adsmt_theory::datatypes::Datatypes;
 use adsmt_theory::polite::Combination;
 use adsmt_theory::uf::Uf;
@@ -37,6 +38,7 @@ impl Default for Solver {
         theories.register(Box::new(Uf::new()));
         theories.register(Box::new(Datatypes::new()));
         theories.register(Box::new(Arrays::new()));
+        theories.register(Box::new(Bv::new()));
         Self {
             scopes: vec![Scope::new()],
             theories,
@@ -230,10 +232,15 @@ impl Solver {
             }
         }
 
-        // (2) Run DPLL (unit propagation + bounded decision splitting)
-        //     over the clause set. Decision depth budget 16 covers
-        //     typical SMT inputs while keeping worst-case bounded.
-        match dpll(&clauses, 16) {
+        // (2) Run the configured SAT backend. With the `cadical`
+        //     feature on, route to CaDiCaL; otherwise use the
+        //     built-in DPLL (unit propagation + bounded decision
+        //     splitting, depth budget 16).
+        #[cfg(feature = "cadical")]
+        let sat_result = crate::cadical_backend::solve(&clauses);
+        #[cfg(not(feature = "cadical"))]
+        let sat_result = dpll(&clauses, 16);
+        match sat_result {
             BoolResult::Sat => {
                 // Propagation found a satisfying assignment; theories
                 // may still reject. Route to theories as a second
@@ -569,6 +576,32 @@ mod tests {
         s.assert(forall);
         s.assert(Term::app(p, a).unwrap());
         assert!(matches!(s.check_sat(), SatResult::Sat));
+    }
+
+    #[test]
+    fn nelson_oppen_uf_to_datatypes() {
+        // f a = Red, a = b, f b = Green
+        //   ⟹  UF congruence: Red = Green
+        //   ⟹  Nelson-Oppen propagation routes the equality to
+        //       Datatypes which rejects distinct-constructor.
+        use adsmt_core::Kind;
+        use adsmt_theory::datatypes::DatatypeDecl;
+        let mut s = Solver::new();
+        s.declare_datatype(DatatypeDecl::finite_enum(
+            "Color",
+            vec!["Red".into(), "Green".into(), "Blue".into()],
+        ));
+        let color = Type::const_("Color", Kind::Type);
+        let int_ = Type::const_("Int", Kind::Type);
+        let f = Term::const_("f", Type::fun(int_.clone(), color.clone()).unwrap());
+        let a = Term::var("a", int_.clone());
+        let b = Term::var("b", int_);
+        let red = Term::const_("Red", color.clone());
+        let green = Term::const_("Green", color);
+        s.assert(Term::mk_eq(Term::app(f.clone(), a.clone()).unwrap(), red).unwrap());
+        s.assert(Term::mk_eq(a, b.clone()).unwrap());
+        s.assert(Term::mk_eq(Term::app(f, b).unwrap(), green).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
     }
 
     #[test]
