@@ -116,6 +116,11 @@ pub trait Theory: Send {
 
     /// Drop all asserted state.
     fn reset(&mut self);
+
+    /// Downcast hook — lets the engine reach the concrete theory
+    /// type for theory-specific configuration (e.g. registering
+    /// datatypes). Default returns `None`; concrete impls override.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { None }
 }
 
 #[cfg(test)]

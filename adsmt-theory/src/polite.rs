@@ -35,10 +35,21 @@ impl Combination {
     pub fn theories_mut(&mut self) -> &mut [Box<dyn Theory>] { &mut self.theories }
 
     /// Broadcast an assertion to every theory that handles its sort.
+    ///
+    /// For equality literals `(= a b)` the *operand* sort is the
+    /// routing key — that's the sort the equality is about, even
+    /// though the formula itself is Bool. This makes the Datatypes
+    /// and Arrays theories see equalities about their elements
+    /// without having to special-case Bool.
     pub fn assert(&mut self, lit: Literal) -> Vec<(String, crate::trait_::AssertResult)> {
+        let routing_sort = if let Some((a, _)) = lit.term.dest_eq() {
+            a.type_of()
+        } else {
+            lit.term.type_of()
+        };
         let mut out = Vec::new();
         for t in &mut self.theories {
-            if t.handles_sort(&lit.term.type_of()) {
+            if t.handles_sort(&routing_sort) {
                 let r = t.assert(lit.clone());
                 out.push((t.name().to_string(), r));
             }

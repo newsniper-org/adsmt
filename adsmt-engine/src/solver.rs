@@ -6,6 +6,8 @@ use adsmt_abduce::workflow::AbductionState;
 use adsmt_abduce::{minimize, rank_candidates, MinimizePolicy};
 use adsmt_cert::CertBuilder;
 use adsmt_core::Term;
+use adsmt_theory::arrays::Arrays;
+use adsmt_theory::datatypes::Datatypes;
 use adsmt_theory::polite::Combination;
 use adsmt_theory::uf::Uf;
 
@@ -30,7 +32,11 @@ pub struct Solver {
 impl Default for Solver {
     fn default() -> Self {
         let mut theories = Combination::new();
+        // v0.3 activates UF/Arrays/Datatypes by default. LinArith
+        // remains a placeholder until v0.5 brings Simplex.
         theories.register(Box::new(Uf::new()));
+        theories.register(Box::new(Datatypes::new()));
+        theories.register(Box::new(Arrays::new()));
         Self {
             scopes: vec![Scope::new()],
             theories,
@@ -54,6 +60,25 @@ impl Solver {
 
     pub fn register_theory(&mut self, t: Box<dyn adsmt_theory::trait_::Theory>) {
         self.theories.register(t);
+    }
+
+    /// Declare a datatype to the solver's `Datatypes` theory.
+    /// Returns `true` if the declaration was accepted, `false` if no
+    /// `Datatypes` theory was registered.
+    pub fn declare_datatype(
+        &mut self,
+        decl: adsmt_theory::datatypes::DatatypeDecl,
+    ) -> bool {
+        for t in self.theories.theories_mut() {
+            if t.name() != "Datatypes" { continue; }
+            if let Some(any) = t.as_any_mut() {
+                if let Some(dt) = any.downcast_mut::<adsmt_theory::datatypes::Datatypes>() {
+                    dt.declare(decl);
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn register_abducible(&mut self, a: adsmt_abduce::Abducible) {
@@ -410,6 +435,53 @@ mod tests {
         s.assert(Term::mk_not(conj).unwrap());
         s.assert(p);
         s.assert(q);
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    // === v0.3 theory tests (UF congruence) ===
+
+    #[test]
+    fn uf_transitive_equality_over_int_sort() {
+        use adsmt_core::Kind;
+        let int_ = Type::const_("Int", Kind::Type);
+        let mut s = Solver::new();
+        let a = Term::var("a", int_.clone());
+        let b = Term::var("b", int_.clone());
+        let c = Term::var("c", int_);
+        s.assert(Term::mk_eq(a.clone(), b.clone()).unwrap());
+        s.assert(Term::mk_eq(b, c.clone()).unwrap());
+        s.assert(Term::mk_not(Term::mk_eq(a, c).unwrap()).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn uf_congruence_under_function_application() {
+        use adsmt_core::Kind;
+        let int_ = Type::const_("Int", Kind::Type);
+        let f = Term::const_("f", Type::fun(int_.clone(), int_.clone()).unwrap());
+        let mut s = Solver::new();
+        let a = Term::var("a", int_.clone());
+        let b = Term::var("b", int_);
+        let fa = Term::app(f.clone(), a.clone()).unwrap();
+        let fb = Term::app(f, b.clone()).unwrap();
+        s.assert(Term::mk_eq(a, b).unwrap());
+        s.assert(Term::mk_not(Term::mk_eq(fa, fb).unwrap()).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn datatypes_distinct_constructors_is_unsat() {
+        use adsmt_core::Kind;
+        use adsmt_theory::datatypes::DatatypeDecl;
+        let mut s = Solver::new();
+        s.declare_datatype(DatatypeDecl::finite_enum(
+            "Color",
+            vec!["Red".into(), "Green".into(), "Blue".into()],
+        ));
+        let color = Type::const_("Color", Kind::Type);
+        let red = Term::const_("Red", color.clone());
+        let green = Term::const_("Green", color);
+        s.assert(Term::mk_eq(red, green).unwrap());
         assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
     }
 }
