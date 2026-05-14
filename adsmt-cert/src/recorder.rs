@@ -134,6 +134,40 @@ pub mod recorder {
         Ok(ProofHandle { thm: new_thm, step })
     }
 
+    /// Record a theory-step with witness. v0.13 cert wiring uses
+    /// this for SAT-level conflicts (`name = "SAT"`) and per-theory
+    /// unsat (`name = "UF"` / `"LIA"` / etc.). No kernel rule is
+    /// invoked — the witness is the trust anchor that a re-checker
+    /// must verify against the parent steps.
+    pub fn theory(
+        b: &mut CertBuilder,
+        name: impl Into<String>,
+        witness: crate::witness::TheoryWitness,
+        parents: Vec<StepId>,
+        hyps: Vec<Term>,
+        concl: Term,
+    ) -> StepId {
+        b.add(
+            StepBody::Theory { name: name.into(), witness, parents },
+            Sequent { hyps, concl },
+        )
+    }
+
+    /// Record a type-class instance resolution step.
+    pub fn instance(
+        b: &mut CertBuilder,
+        relation: impl Into<String>,
+        types: Vec<adsmt_core::Type>,
+        witness: crate::witness::InstanceWitness,
+        hyps: Vec<Term>,
+        concl: Term,
+    ) -> StepId {
+        b.add(
+            StepBody::Instance { relation: relation.into(), types, witness },
+            Sequent { hyps, concl },
+        )
+    }
+
     /// Record an abductive assumption.
     ///
     /// No kernel rule is invoked — the `Assumed` step is a marker that

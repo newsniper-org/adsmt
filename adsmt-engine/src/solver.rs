@@ -4,7 +4,9 @@ use adsmt_abduce::abducible::AbducibleSet;
 use adsmt_abduce::sld::SldEngine;
 use adsmt_abduce::workflow::AbductionState;
 use adsmt_abduce::{minimize, rank_candidates, MinimizePolicy};
-use adsmt_cert::CertBuilder;
+use adsmt_cert::canonical::Sequent;
+use adsmt_cert::witness::TheoryWitness;
+use adsmt_cert::{CertBuilder, StepBody, StepId};
 use adsmt_core::Term;
 use adsmt_theory::arrays::Arrays;
 use adsmt_theory::bv::Bv;
@@ -12,6 +14,7 @@ use adsmt_theory::datatypes::Datatypes;
 use adsmt_theory::polite::Combination;
 use adsmt_theory::uf::Uf;
 
+#[allow(unused_imports)]
 use crate::bool_solver::{dpll, BoolResult};
 use crate::cnf::{flatten_to_clauses, Clause, Lit};
 use crate::dpllt::{self, LoopOutcome};
@@ -47,7 +50,11 @@ impl Default for Solver {
             abducibles: AbducibleSet::new(),
             abduction_state: AbductionState::new(),
             cert_builder: CertBuilder::new(),
-            proof_mode: ProofMode::None,
+            // v0.15: default to recording certificates. Callers
+            // that don't need them can opt out with
+            // `.with_proof_mode(ProofMode::None)` to skip the
+            // bookkeeping cost.
+            proof_mode: ProofMode::Always,
         }
     }
 }
@@ -75,12 +82,11 @@ impl Solver {
     ) -> bool {
         for t in self.theories.theories_mut() {
             if t.name() != "Datatypes" { continue; }
-            if let Some(any) = t.as_any_mut() {
-                if let Some(dt) = any.downcast_mut::<adsmt_theory::datatypes::Datatypes>() {
+            if let Some(any) = t.as_any_mut()
+                && let Some(dt) = any.downcast_mut::<adsmt_theory::datatypes::Datatypes>() {
                     dt.declare(decl);
                     return true;
                 }
-            }
         }
         false
     }
@@ -283,16 +289,91 @@ impl Solver {
                 // opinion.
                 self.check_via_theories(&lits)
             }
-            BoolResult::Unsat => SatResult::Unsat { certificate: None },
+            BoolResult::Unsat => {
+                let (encoded, drat) = crate::proof_bridge::extract_drat(&clauses);
+                // Re-emit the same SAT-level unsat verdict in four
+                // byte formats via oxiz crates (P3, v0.15):
+                //   - DIMACS DRAT through oxiz-sat (feature `oxiz`)
+                //   - Alethe, LFSC, and Coq through oxiz-proof
+                //     (feature `oxiz-proof`)
+                // When the relevant feature is off the helper
+                // returns an empty `Vec` and the cert simply omits
+                // that payload.
+                let dimacs_bytes = crate::oxiz_drat::emit_via_oxiz_writer(&drat);
+                let alethe_bytes = crate::oxiz_proof_emit::emit_alethe_via_oxiz(&encoded);
+                let lfsc_bytes = crate::oxiz_proof_emit::emit_lfsc_via_oxiz(&encoded);
+                let coq_bytes = crate::oxiz_proof_emit::emit_coq_via_oxiz(&encoded, &drat);
+                let witness = TheoryWitness::Drat {
+                    clauses: encoded,
+                    proof: drat,
+                    dimacs_bytes,
+                    alethe_bytes,
+                    lfsc_bytes,
+                    coq_bytes,
+                };
+                let cert = self.build_unsat_cert_opt(&lits, "SAT", witness);
+                SatResult::Unsat { certificate: cert }
+            }
             BoolResult::Unknown => {
-                // Propagation stuck; theories might disagree but
-                // can't surface OR-decisions. v0.5 wires in proper
-                // decision splitting.
                 SatResult::Unknown {
                     reason: "Boolean propagation reached fixpoint with open clauses (decision splitting pending v0.5)".into(),
                 }
             }
         }
+    }
+
+    /// Build a [`Certificate`](adsmt_cert::Certificate) for an unsat
+    /// verdict. Records every literal in `lits` as an `Assume` step,
+    /// then a `Theory` step with the supplied name and witness whose
+    /// parents are the assumption ids. Returns the snapshot
+    /// certificate; the builder keeps its steps so subsequent calls
+    /// can emit incremental deltas (see Q49).
+    ///
+    /// Returns `None` when [`ProofMode::None`] is set — the engine
+    /// then surfaces `SatResult::Unsat { certificate: None }`,
+    /// skipping the bookkeeping cost.
+    fn build_unsat_cert_opt(
+        &mut self,
+        lits: &[(Term, bool)],
+        theory_name: &str,
+        witness: TheoryWitness,
+    ) -> Option<adsmt_cert::Certificate> {
+        if matches!(self.proof_mode, ProofMode::None) {
+            return None;
+        }
+        Some(self.build_unsat_cert(lits, theory_name, witness))
+    }
+
+    fn build_unsat_cert(
+        &mut self,
+        lits: &[(Term, bool)],
+        theory_name: &str,
+        witness: TheoryWitness,
+    ) -> adsmt_cert::Certificate {
+        let mut assume_ids: Vec<StepId> = Vec::new();
+        let mut hyps: Vec<Term> = Vec::new();
+        for (t, p) in lits {
+            let phi = if *p {
+                t.clone()
+            } else {
+                Term::mk_not(t.clone()).unwrap_or_else(|_| t.clone())
+            };
+            let id = self.cert_builder.add(
+                StepBody::Assume(phi.clone()),
+                Sequent { hyps: vec![phi.clone()], concl: phi.clone() },
+            );
+            assume_ids.push(id);
+            hyps.push(phi);
+        }
+        let conclusion = self.cert_builder.add(
+            StepBody::Theory {
+                name: theory_name.into(),
+                witness,
+                parents: assume_ids,
+            },
+            Sequent { hyps, concl: Term::false_const() },
+        );
+        self.cert_builder.snapshot(conclusion)
     }
 
     /// Legacy path: route raw literals straight to the theory layer.
@@ -316,7 +397,10 @@ impl Solver {
         }
         match dpllt::run_once(&mut self.theories, &routable) {
             LoopOutcome::Sat => SatResult::Sat,
-            LoopOutcome::Unsat { .. } => SatResult::Unsat { certificate: None },
+            LoopOutcome::Unsat { theory, witness } => {
+                let cert = self.build_unsat_cert_opt(lits, &theory, witness);
+                SatResult::Unsat { certificate: cert }
+            }
             LoopOutcome::Unknown { theory, reason } => SatResult::Unknown {
                 reason: format!("{theory}: {reason}"),
             },
@@ -577,6 +661,178 @@ mod tests {
         s.assert(Term::mk_eq(a, b).unwrap());
         s.assert(Term::mk_not(Term::mk_eq(fa, fb).unwrap()).unwrap());
         assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    // === v0.13 cert wiring tests ===
+
+    #[test]
+    fn unsat_verdict_carries_certificate() {
+        // p ∧ ¬p → unsat with a non-empty Certificate
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        s.assert(p.clone());
+        s.assert(Term::mk_not(p).unwrap());
+        match s.check_sat() {
+            SatResult::Unsat { certificate: Some(c) } => {
+                // Should have at least the two Assume steps + the
+                // Theory closing step.
+                assert!(
+                    c.steps.len() >= 3,
+                    "expected ≥3 cert steps, got {}",
+                    c.steps.len(),
+                );
+                // Final step must be a Theory step.
+                let final_step = &c.steps[c.conclusion.0 as usize];
+                assert!(matches!(final_step.body, adsmt_cert::StepBody::Theory { .. }));
+            }
+            other => panic!("expected Unsat with certificate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proof_mode_none_skips_certificate() {
+        let mut s = Solver::new().with_proof_mode(ProofMode::None);
+        let p = Term::var("p", Type::bool_());
+        s.assert(p.clone());
+        s.assert(Term::mk_not(p).unwrap());
+        match s.check_sat() {
+            SatResult::Unsat { certificate: None } => {} // expected
+            other => panic!("expected Unsat with None cert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proof_mode_always_is_default_after_with_call() {
+        let mut s = Solver::new().with_proof_mode(ProofMode::Always);
+        let p = Term::var("p", Type::bool_());
+        s.assert(p.clone());
+        s.assert(Term::mk_not(p).unwrap());
+        match s.check_sat() {
+            SatResult::Unsat { certificate: Some(_) } => {} // expected
+            other => panic!("expected Unsat with Some cert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sat_level_unsat_carries_drat_witness() {
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        s.assert(p.clone());
+        s.assert(Term::mk_not(p).unwrap());
+        match s.check_sat() {
+            SatResult::Unsat { certificate: Some(cert) } => {
+                let final_step = &cert.steps[cert.conclusion.0 as usize];
+                match &final_step.body {
+                    adsmt_cert::StepBody::Theory { name, witness, .. } => {
+                        assert_eq!(name, "SAT");
+                        match witness {
+                            adsmt_cert::witness::TheoryWitness::Drat {
+                                clauses,
+                                proof,
+                                dimacs_bytes,
+                                alethe_bytes,
+                                lfsc_bytes,
+                                coq_bytes,
+                            } => {
+                                assert!(!clauses.is_empty(), "DRAT clauses must include input");
+                                assert!(!proof.steps.is_empty(), "DRAT proof must have ≥1 step");
+                                // Verify the DRAT proof itself checks out.
+                                assert!(
+                                    proof.verify(clauses),
+                                    "DRAT witness must self-verify"
+                                );
+                                // Under the `oxiz` feature, the
+                                // witness also carries the same
+                                // proof as DIMACS DRAT bytes
+                                // emitted via oxiz-sat's writer.
+                                #[cfg(feature = "oxiz")]
+                                {
+                                    assert_eq!(
+                                        dimacs_bytes, b"0\n",
+                                        "oxiz-emitted bytes for the empty-clause proof",
+                                    );
+                                }
+                                #[cfg(not(feature = "oxiz"))]
+                                {
+                                    assert!(dimacs_bytes.is_empty());
+                                }
+                                // Under the `oxiz-proof` feature,
+                                // Alethe + LFSC byte streams are
+                                // produced via oxiz-proof's writers.
+                                #[cfg(feature = "oxiz-proof")]
+                                {
+                                    let alethe = std::str::from_utf8(alethe_bytes).unwrap();
+                                    assert!(alethe.contains(":rule resolution"));
+                                    let lfsc = std::str::from_utf8(lfsc_bytes).unwrap();
+                                    assert!(lfsc.contains("(check"));
+                                    let coq = std::str::from_utf8(coq_bytes).unwrap();
+                                    assert!(coq.contains("Theorem main_result"));
+                                }
+                                #[cfg(not(feature = "oxiz-proof"))]
+                                {
+                                    assert!(alethe_bytes.is_empty());
+                                    assert!(lfsc_bytes.is_empty());
+                                    assert!(coq_bytes.is_empty());
+                                }
+                            }
+                            other => panic!("expected Drat witness, got {other:?}"),
+                        }
+                    }
+                    _ => panic!("expected Theory step"),
+                }
+            }
+            other => panic!("expected Unsat with cert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsat_certificate_emits_to_sexpr() {
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        s.assert(p.clone());
+        s.assert(Term::mk_not(p).unwrap());
+        match s.check_sat() {
+            SatResult::Unsat { certificate: Some(cert) } => {
+                let out = adsmt_cert::emit_certificate(&cert);
+                assert!(out.starts_with("(proof"));
+                assert!(out.contains("(assume "));
+                assert!(out.contains("(theory :name"));
+                assert!(out.contains("(conclude "));
+            }
+            other => panic!("expected Unsat with cert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cert_records_theory_name_for_theory_unsat() {
+        // (= a b), (= b c), (not (= a c)) — UF congruence closure
+        use adsmt_core::Kind;
+        let int_ = Type::const_("Int", Kind::Type);
+        let mut s = Solver::new();
+        let a = Term::var("a", int_.clone());
+        let b = Term::var("b", int_.clone());
+        let c = Term::var("c", int_);
+        s.assert(Term::mk_eq(a.clone(), b.clone()).unwrap());
+        s.assert(Term::mk_eq(b, c.clone()).unwrap());
+        s.assert(Term::mk_not(Term::mk_eq(a, c).unwrap()).unwrap());
+        match s.check_sat() {
+            SatResult::Unsat { certificate: Some(cert) } => {
+                // Find the final Theory step and check its name.
+                let last = &cert.steps[cert.conclusion.0 as usize];
+                match &last.body {
+                    adsmt_cert::StepBody::Theory { name, .. } => {
+                        // Could be "UF" or "polite" depending on which
+                        // theory surfaced the conflict first.
+                        assert!(
+                            name == "UF" || name == "polite",
+                            "unexpected theory name in cert: {name}"
+                        );
+                    }
+                    other => panic!("expected Theory step, got {other:?}"),
+                }
+            }
+            other => panic!("expected Unsat with cert, got {other:?}"),
+        }
     }
 
     #[test]

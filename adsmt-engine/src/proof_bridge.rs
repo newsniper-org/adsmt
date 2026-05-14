@@ -17,7 +17,9 @@ use std::collections::HashMap;
 
 use adsmt_cert::drat::DratProof;
 
-use crate::cnf::{Clause, Lit};
+use crate::cnf::Clause;
+#[cfg(test)]
+use crate::cnf::Lit;
 
 /// Encode our [`Clause`]s as `Vec<Vec<i32>>` and produce a [`DratProof`]
 /// asserting the empty clause. Returns `None` if the assignment to

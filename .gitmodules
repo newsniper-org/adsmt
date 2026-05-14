@@ -2,3 +2,7 @@
 	path = external/logicutils
 	url = https://github.com/newsniper-org/logicutils.git
 	branch = v0.x-smt
+[submodule "external/oxiz"]
+	path = external/oxiz
+	url = https://github.com/Honey-Be/oxiz.git
+	branch = 0.2.2

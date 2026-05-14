@@ -106,9 +106,9 @@ fn convert_list(items: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertErr
                 found: e.to_string(),
             })
         }
-        "and" => fold_right("and", args, table, |a, b| Term::mk_and(a, b)),
-        "or" => fold_right("or", args, table, |a, b| Term::mk_or(a, b)),
-        "=>" => fold_right("=>", args, table, |a, b| Term::mk_imp(a, b)),
+        "and" => fold_right("and", args, table, Term::mk_and),
+        "or" => fold_right("or", args, table, Term::mk_or),
+        "=>" => fold_right("=>", args, table, Term::mk_imp),
         "=" => {
             if args.len() < 2 {
                 return Err(ConvertError::Arity { op: "=".into(), expected: 2, got: args.len() });

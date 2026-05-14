@@ -27,9 +27,9 @@ impl Quantified {
 /// Standard convention: `forall : (α -> Bool) -> Bool` is a constant
 /// applied to a λ-abstraction. Same for `exists`.
 fn destructure_outer(t: &Term) -> Option<(Quantifier, Arc<Var>, Term)> {
-    if let Term::App(f, body) = t {
-        if let Term::Const(c) = &**f {
-            if let Term::Lam(v, b) = &**body {
+    if let Term::App(f, body) = t
+        && let Term::Const(c) = &**f
+            && let Term::Lam(v, b) = &**body {
                 let q = match c.name.as_str() {
                     "forall" | "∀" => Some(Quantifier::Forall),
                     "exists" | "∃" => Some(Quantifier::Exists),
@@ -39,8 +39,6 @@ fn destructure_outer(t: &Term) -> Option<(Quantifier, Arc<Var>, Term)> {
                     return Some((q, v.clone(), (**b).clone()));
                 }
             }
-        }
-    }
     None
 }
 

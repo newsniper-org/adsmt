@@ -82,15 +82,12 @@ impl Type {
 
     /// Decompose `dom -> cod`, if applicable.
     pub fn dest_fun(&self) -> Option<(Type, Type)> {
-        if let Type::App(outer, cod) = self {
-            if let Type::App(arrow, dom) = &**outer {
-                if let Type::Const(c) = &**arrow {
-                    if c.name == "->" {
+        if let Type::App(outer, cod) = self
+            && let Type::App(arrow, dom) = &**outer
+                && let Type::Const(c) = &**arrow
+                    && c.name == "->" {
                         return Some(((**dom).clone(), (**cod).clone()));
                     }
-                }
-            }
-        }
         None
     }
 

@@ -75,11 +75,10 @@ impl Datatypes {
     /// Recognize whether `t` is one of the registered constructor
     /// constants. Used to short-circuit disjointness checks.
     fn constructor_id(&self, t: &Term) -> Option<(String, String)> {
-        if let Term::Const(c) = t {
-            if let Some(d) = self.is_constructor_of(&c.name) {
+        if let Term::Const(c) = t
+            && let Some(d) = self.is_constructor_of(&c.name) {
                 return Some((d.sort_name.clone(), c.name.clone()));
             }
-        }
         None
     }
 }
@@ -100,8 +99,8 @@ impl Theory for Datatypes {
             // satisfied.
             let ctor_a = self.constructor_id(&a);
             let ctor_b = self.constructor_id(&b);
-            if let (Some((s1, n1)), Some((s2, n2))) = (ctor_a, ctor_b) {
-                if s1 == s2 && n1 != n2 {
+            if let (Some((s1, n1)), Some((s2, n2))) = (ctor_a, ctor_b)
+                && s1 == s2 && n1 != n2 {
                     if lit.polarity {
                         let w = TheoryWitness::Opaque {
                             kind: "Datatypes".into(),
@@ -115,7 +114,6 @@ impl Theory for Datatypes {
                     // Otherwise: known-true disequality. Drop.
                     return AssertResult::Accepted;
                 }
-            }
             self.asserted_eqs.push((a, b));
             AssertResult::Accepted
         } else {

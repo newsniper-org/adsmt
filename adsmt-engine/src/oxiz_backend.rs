@@ -9,13 +9,13 @@
 //! DRAT proof extraction via `oxiz-proof` lands in v0.15 (P3 in the
 //! phased plan).
 
-use std::collections::HashMap;
-
 use crate::bool_solver::BoolResult;
+#[allow(unused_imports)]
 use crate::cnf::{Clause, Lit};
 
 #[cfg(feature = "oxiz")]
 pub fn solve(clauses: &[Clause]) -> BoolResult {
+    use std::collections::HashMap;
     use oxiz_sat::{Lit as OxLit, Solver as OxSolver, SolverResult};
 
     let mut sat = OxSolver::new();

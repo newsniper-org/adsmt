@@ -19,15 +19,13 @@ use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 
 /// Per-variable bounds, stored as `(lower_inclusive, upper_inclusive)`.
 #[derive(Clone, Debug)]
+#[derive(Default)]
 struct Bounds {
     /// `(value, strict)`: when `strict`, the variable must be strictly above the value.
     lower: Option<(i128, bool)>,
     upper: Option<(i128, bool)>,
 }
 
-impl Default for Bounds {
-    fn default() -> Self { Self { lower: None, upper: None } }
-}
 
 /// A two-variable linear inequality `x + y op k` recorded for v0.9
 /// Fourier-Motzkin elimination.
@@ -72,17 +70,13 @@ impl LinArith {
         };
         let k = Self::int_lit(rhs)?;
         // sum must be `(+ x y)` with x, y both variables.
-        if let Term::App(plus_outer, y) = &**sum {
-            if let Term::App(plus_head, x) = &**plus_outer {
-                if let Term::Const(pc) = &**plus_head {
-                    if pc.name == "+" {
-                        if let (Term::Var(vx), Term::Var(vy)) = (&**x, &**y) {
+        if let Term::App(plus_outer, y) = &**sum
+            && let Term::App(plus_head, x) = &**plus_outer
+                && let Term::Const(pc) = &**plus_head
+                    && pc.name == "+"
+                        && let (Term::Var(vx), Term::Var(vy)) = (&**x, &**y) {
                             return Some((vx.name.clone(), vy.name.clone(), op, k));
                         }
-                    }
-                }
-            }
-        }
         None
     }
 
@@ -103,52 +97,45 @@ impl LinArith {
                             return Some(w);
                         }
                     }
-                    if let Some(x_low) = x_lo {
-                        if let Some(w) = self.record_bound(tv.y.clone(), "<=", tv.k - x_low) {
+                    if let Some(x_low) = x_lo
+                        && let Some(w) = self.record_bound(tv.y.clone(), "<=", tv.k - x_low) {
                             return Some(w);
                         }
-                    }
                 }
                 "<" => {
-                    if let Some(y_low) = y_lo {
-                        if let Some(w) = self.record_bound(tv.x.clone(), "<", tv.k - y_low) {
+                    if let Some(y_low) = y_lo
+                        && let Some(w) = self.record_bound(tv.x.clone(), "<", tv.k - y_low) {
                             return Some(w);
                         }
-                    }
-                    if let Some(x_low) = x_lo {
-                        if let Some(w) = self.record_bound(tv.y.clone(), "<", tv.k - x_low) {
+                    if let Some(x_low) = x_lo
+                        && let Some(w) = self.record_bound(tv.y.clone(), "<", tv.k - x_low) {
                             return Some(w);
                         }
-                    }
                 }
                 ">=" => {
                     // x + y >= k means x >= k - y_max
                     let y_up = self.bounds.get(&tv.y).and_then(|b| b.upper).map(|(v, _)| v);
                     let x_up = self.bounds.get(&tv.x).and_then(|b| b.upper).map(|(v, _)| v);
-                    if let Some(y_max) = y_up {
-                        if let Some(w) = self.record_bound(tv.x.clone(), ">=", tv.k - y_max) {
+                    if let Some(y_max) = y_up
+                        && let Some(w) = self.record_bound(tv.x.clone(), ">=", tv.k - y_max) {
                             return Some(w);
                         }
-                    }
-                    if let Some(x_max) = x_up {
-                        if let Some(w) = self.record_bound(tv.y.clone(), ">=", tv.k - x_max) {
+                    if let Some(x_max) = x_up
+                        && let Some(w) = self.record_bound(tv.y.clone(), ">=", tv.k - x_max) {
                             return Some(w);
                         }
-                    }
                 }
                 ">" => {
                     let y_up = self.bounds.get(&tv.y).and_then(|b| b.upper).map(|(v, _)| v);
                     let x_up = self.bounds.get(&tv.x).and_then(|b| b.upper).map(|(v, _)| v);
-                    if let Some(y_max) = y_up {
-                        if let Some(w) = self.record_bound(tv.x.clone(), ">", tv.k - y_max) {
+                    if let Some(y_max) = y_up
+                        && let Some(w) = self.record_bound(tv.x.clone(), ">", tv.k - y_max) {
                             return Some(w);
                         }
-                    }
-                    if let Some(x_max) = x_up {
-                        if let Some(w) = self.record_bound(tv.y.clone(), ">", tv.k - x_max) {
+                    if let Some(x_max) = x_up
+                        && let Some(w) = self.record_bound(tv.y.clone(), ">", tv.k - x_max) {
                             return Some(w);
                         }
-                    }
                 }
                 _ => {}
             }
@@ -159,9 +146,9 @@ impl LinArith {
     /// Recognise `(<= x k)` / `(< x k)` / `(>= x k)` / `(> x k)`
     /// where `x` is a variable and `k` an integer literal.
     fn parse_comparison(t: &Term) -> Option<(String, &'static str, i128)> {
-        if let Term::App(outer, rhs) = t {
-            if let Term::App(head, lhs) = &**outer {
-                if let Term::Const(c) = &**head {
+        if let Term::App(outer, rhs) = t
+            && let Term::App(head, lhs) = &**outer
+                && let Term::Const(c) = &**head {
                     let op = match c.name.as_str() {
                         "<=" | "le" => "<=",
                         "<"  | "lt" => "<",
@@ -169,14 +156,11 @@ impl LinArith {
                         ">"  | "gt" => ">",
                         _ => return None,
                     };
-                    if let Term::Var(v) = &**lhs {
-                        if let Some(k) = Self::int_lit(rhs) {
+                    if let Term::Var(v) = &**lhs
+                        && let Some(k) = Self::int_lit(rhs) {
                             return Some((v.name.clone(), op, k));
                         }
-                    }
                 }
-            }
-        }
         None
     }
 
@@ -197,13 +181,18 @@ impl LinArith {
     /// infeasible.
     fn record_bound(&mut self, var: String, op: &str, k: i128) -> Option<TheoryWitness> {
         let b = self.bounds.entry(var.clone()).or_default();
+        // LIA-specific tightening: integer semantics convert strict
+        // inequalities to non-strict on the next integer. `x > k`
+        // ⇔ `x >= k+1`; `x < k` ⇔ `x <= k-1`. Discovered by the
+        // compat audit against oxiz-math's Simplex (v0.13).
+        let is_lia = self.name_ == "LIA";
         match op {
             "<=" => {
                 let new = (k, false);
                 b.upper = Some(b.upper.map_or(new, |old| tighter_upper(old, new)));
             }
             "<" => {
-                let new = (k, true);
+                let new = if is_lia { (k - 1, false) } else { (k, true) };
                 b.upper = Some(b.upper.map_or(new, |old| tighter_upper(old, new)));
             }
             ">=" => {
@@ -211,7 +200,7 @@ impl LinArith {
                 b.lower = Some(b.lower.map_or(new, |old| tighter_lower(old, new)));
             }
             ">" => {
-                let new = (k, true);
+                let new = if is_lia { (k + 1, false) } else { (k, true) };
                 b.lower = Some(b.lower.map_or(new, |old| tighter_lower(old, new)));
             }
             _ => {}

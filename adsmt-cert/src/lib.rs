@@ -8,10 +8,13 @@
 pub mod canonical;
 pub mod drat;
 pub mod emit;
+pub mod lean_emit;
+pub mod oxiz_drat_bridge;
 pub mod recorder;
 pub mod witness;
 
 pub use canonical::{CertBuilder, Certificate, CertificateDelta, Checkpoint, Sequent, Step, StepBody, StepId};
 pub use emit::{emit_certificate, emit_certificate_delta};
+pub use lean_emit::emit_lean;
 pub use recorder::{ProofHandle, recorder as r};
 pub use witness::{InstanceWitness, TheoryWitness};

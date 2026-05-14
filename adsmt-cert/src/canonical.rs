@@ -130,6 +130,17 @@ impl CertBuilder {
         Certificate { steps: self.steps, conclusion }
     }
 
+    /// Non-consuming snapshot — produces a [`Certificate`] from the
+    /// current step list without moving the builder. v0.13 engine
+    /// wiring uses this to attach a cert to every `Unsat` verdict
+    /// while keeping the builder alive across incremental calls.
+    pub fn snapshot(&self, conclusion: StepId) -> Certificate {
+        Certificate {
+            steps: self.steps.clone(),
+            conclusion,
+        }
+    }
+
     /// Mark the current step count as a delta checkpoint. Subsequent
     /// calls to [`steps_since`] return only steps added after this
     /// checkpoint.
