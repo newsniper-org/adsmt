@@ -11,6 +11,18 @@
 //! The two `DratProof` types are intentionally kept distinct: ours
 //! has a tiny TCB (our RUP checker is ~50 LoC), theirs has the
 //! richer toolchain. Bridge keeps both options open.
+//!
+//! **Status (post-v0.15):** the minimal `to_oxiz` / `from_oxiz`
+//! conversions below are not yet wired into any production call
+//! path. Option C from the v0.15 audit — extend to a richer
+//! bidirectional conversion preserving metadata (clause ids for
+//! LRAT, source line numbers, deletion order, …) — is **deferred
+//! to P4 (v0.17 cycle)**, where it lands naturally alongside the
+//! upstream coordination work (Lean4 binding, abduction trait
+//! issues on cool-japan/oxiz). The intent is to grow this module
+//! into the proper cross-tool verification anchor at that point.
+//! Until then the round-trip tests guard the conversions and
+//! prevent silent rot.
 
 #[cfg(feature = "oxiz-proof")]
 pub mod bridge {
