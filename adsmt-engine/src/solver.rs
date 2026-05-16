@@ -402,20 +402,17 @@ impl Solver {
     /// Returns `None` when [`ProofMode::None`] is set — the engine
     /// then surfaces `SatResult::Unsat { certificate: None }`,
     /// skipping the bookkeeping cost.
-    fn build_unsat_cert_opt(
-        &mut self,
-        lits: &[(Term, bool)],
-        theory_name: &str,
-        witness: TheoryWitness,
-    ) -> Option<adsmt_cert::Certificate> {
-        let with_locs: Vec<(Term, bool, Option<adsmt_cert::SourceLoc>)> =
-            lits.iter().map(|(t, p)| (t.clone(), *p, None)).collect();
-        self.build_unsat_cert_opt_with_locs(&with_locs, theory_name, witness)
-    }
-
-    /// Variant of [`build_unsat_cert_opt`] that accepts a per-literal
-    /// [`SourceLoc`]. The CLI/parser path supplies positions; the
-    /// theory-fallback paths use the `None`-erased variant above.
+    /// Build the unsat certificate with per-literal source locs
+    /// attached. Both the SAT-level unsat path
+    /// (`build_unsat_cert_opt_with_locs` called from
+    /// [`check_ground`]) and the theory-unsat path (called from
+    /// [`check_via_theories`]) feed positions through
+    /// [`attach_locs`], so every `Assume` step that traces back to
+    /// a parser-supplied `assert_at` carries a `:loc` annotation.
+    ///
+    /// Returns `None` when [`ProofMode::None`] is set — the engine
+    /// then surfaces `SatResult::Unsat { certificate: None }`,
+    /// skipping the bookkeeping cost.
     fn build_unsat_cert_opt_with_locs(
         &mut self,
         lits: &[(Term, bool, Option<adsmt_cert::SourceLoc>)],
@@ -483,7 +480,18 @@ impl Solver {
         match dpllt::run_once(&mut self.theories, &routable) {
             LoopOutcome::Sat => SatResult::Sat,
             LoopOutcome::Unsat { theory, witness } => {
-                let cert = self.build_unsat_cert_opt(lits, &theory, witness);
+                // Cross-reference each `lits` entry against the
+                // solver-state literal table to recover the
+                // source position recorded by `assert_at` at the
+                // CLI boundary. Theory unsat now threads `:loc`
+                // through the cert exactly like the SAT-level
+                // unsat path.
+                let lits_with_locs = self.attach_locs(lits);
+                let cert = self.build_unsat_cert_opt_with_locs(
+                    &lits_with_locs,
+                    &theory,
+                    witness,
+                );
                 SatResult::Unsat { certificate: cert }
             }
             LoopOutcome::Unknown { theory, reason } => SatResult::Unknown {
@@ -969,6 +977,51 @@ mod tests {
             }
             other => panic!("expected Unsat with cert, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn theory_unsat_path_threads_source_loc_into_assume_steps() {
+        // UF congruence — falls through to `check_via_theories`
+        // because the CNF flattener sees only flat equalities.
+        // Each `assert_at` position must arrive at the
+        // corresponding `Assume` cert step's `source_loc`.
+        use adsmt_cert::{SourceLoc, StepBody};
+        use adsmt_core::Kind;
+        let int_ = Type::const_("Int", Kind::Type);
+        let mut s = Solver::new();
+        let a = Term::var("a", int_.clone());
+        let b = Term::var("b", int_.clone());
+        let c = Term::var("c", int_);
+        s.assert_at(
+            Term::mk_eq(a.clone(), b.clone()).unwrap(),
+            SourceLoc::new(10, 1),
+        );
+        s.assert_at(
+            Term::mk_eq(b, c.clone()).unwrap(),
+            SourceLoc::new(11, 1),
+        );
+        s.assert_negated_at(
+            Term::mk_eq(a, c).unwrap(),
+            SourceLoc::new(12, 1),
+        );
+        let SatResult::Unsat {
+            certificate: Some(cert),
+        } = s.check_sat()
+        else {
+            panic!("expected Unsat with cert");
+        };
+        let mut found: std::collections::HashSet<(u32, u32)> =
+            std::collections::HashSet::new();
+        for step in &cert.steps {
+            if matches!(step.body, StepBody::Assume(_)) {
+                if let Some(loc) = step.source_loc {
+                    found.insert((loc.line, loc.column));
+                }
+            }
+        }
+        assert!(found.contains(&(10, 1)), "assume @ (10,1) missing in {found:?}");
+        assert!(found.contains(&(11, 1)), "assume @ (11,1) missing in {found:?}");
+        assert!(found.contains(&(12, 1)), "assume @ (12,1) missing in {found:?}");
     }
 
     #[test]
