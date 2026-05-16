@@ -1,9 +1,13 @@
 //! Theory and instance witnesses carried by certificate steps.
 //!
 //! These types pin down the *shape* of each theory's witness so a
-//! checker can re-verify the theory step. v0.1 includes structural
-//! skeletons for the theories planned through v0.5; theories not yet
-//! shipped use the `Opaque` placeholder.
+//! checker can re-verify the theory step. Concrete variants exist
+//! for the theories currently active in the default `Solver`
+//! roster — EUF, LinArith (LIA/LRA), Arrays, Datatypes, Polite
+//! combination, plus the SAT-level DRAT witness used for Boolean
+//! unsat. Theories without a pinned witness format (BV / FP /
+//! Strings work in progress) fall through to the `Opaque`
+//! placeholder until their shape stabilises.
 
 use adsmt_core::Term;
 

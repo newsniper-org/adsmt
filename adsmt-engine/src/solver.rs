@@ -36,8 +36,9 @@ pub struct Solver {
 impl Default for Solver {
     fn default() -> Self {
         let mut theories = Combination::new();
-        // v0.3 activates UF/Arrays/Datatypes by default. LinArith
-        // remains a placeholder until v0.5 brings Simplex.
+        // Default theory roster: UF, Datatypes, Arrays, BV, and
+        // LinArith (LIA + LRA). LinArith uses the v0.13 Simplex
+        // tableau (`adsmt-theory/src/arith_simplex.rs`).
         theories.register(Box::new(Uf::new()));
         theories.register(Box::new(Datatypes::new()));
         theories.register(Box::new(Arrays::new()));
@@ -386,7 +387,7 @@ impl Solver {
             }
             BoolResult::Unknown => {
                 SatResult::Unknown {
-                    reason: "Boolean propagation reached fixpoint with open clauses (decision splitting pending v0.5)".into(),
+                    reason: "SAT backend returned Unknown (oxiz-sat / CaDiCaL gave up; rare path)".into(),
                 }
             }
         }

@@ -10,8 +10,9 @@ use adsmt_core::Term;
 
 #[derive(Clone, Debug)]
 pub struct Abducible {
-    /// Atom pattern. v0.1 uses a literal term; v0.3 will support
-    /// pattern variables bound to fresh skolem terms during SLD.
+    /// Atom pattern. Currently a literal term; pattern variables
+    /// bound to fresh skolem terms during SLD become available
+    /// once the logicutils-driven rule base integration lands.
     pub pattern: Term,
     /// Human-readable explanation from lu-kb `explain` directive.
     pub explanation: Option<String>,

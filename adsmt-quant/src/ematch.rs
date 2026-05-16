@@ -1,10 +1,13 @@
 //! E-matching skeleton.
 //!
-//! v0.1 provides the [`TermUniverse`] and a one-shot pattern matcher
-//! that, given a [`Trigger`], returns instantiations grounding the
-//! flex variables against terms drawn from the universe. Full
-//! E-matching with congruence closure and incremental indexing
-//! arrives in v0.3.
+//! Provides [`TermUniverse`] and a one-shot pattern matcher that,
+//! given a [`Trigger`], returns instantiations grounding the flex
+//! variables against terms drawn from the universe. The current
+//! implementation is intentionally simple: it scans the universe
+//! per-trigger without congruence closure or incremental indexing.
+//! That heavier machinery is a deliberate v0.17+ candidate — for
+//! the goals adsmt drives today (quantifier tier-1 / tier-2), the
+//! linear scan is sufficient.
 
 use std::sync::Arc;
 

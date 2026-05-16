@@ -3,13 +3,14 @@
 //! Surface mirrors the design in sec 34:
 //! - Opaque pointer to `Solver`.
 //! - String-based input (SMT-LIB compatible) routed through
-//!   `adsmt-parser` once the engine wires up command dispatch.
+//!   `adsmt-parser`.
 //! - Return codes 0/1/2/3 follow the CLI exit-code contract
 //!   (sat/unsat/unknown/abductive).
 //!
-//! v0.1 exposes lifecycle + push/pop + check + abduction state
-//! mutation. Term-builder API and JSON-RPC daemon plug in once the
-//! engine grows beyond v0.1's placeholder solver.
+//! Current surface covers solver lifecycle, push/pop, check, and
+//! abduction-state mutation. A finer-grained term-builder API and
+//! the JSON-RPC daemon variant are tracked as separate
+//! pre-v1.0 milestones.
 
 use std::ffi::{c_char, CStr, CString};
 use std::ptr;
