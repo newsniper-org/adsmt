@@ -90,10 +90,12 @@ pub fn emit_lfsc_via_oxiz(clauses: &[Vec<i32>]) -> Vec<u8> {
         proof.declare_const(format!("v{v}"), LfscSort::Bool);
     }
 
-    // Encode the unsat claim as a `check` of `false` — placeholder for
-    // a fully reconstructed LFSC proof term. The byte stream is a
-    // parseable LFSC document; the proof body is intentionally
-    // minimal in this first pass.
+    // Encode the unsat claim as a `check` of `false`. The byte
+    // stream is a parseable LFSC document; the proof body is a
+    // minimal stub. Reconstructing a fully checkable LFSC proof
+    // term from our DRAT-style steps is tracked alongside the
+    // Lean reflection deepening (see lean_emit's compound-rule
+    // notes) — both target the v0.17 cycle.
     proof.check(LfscTerm::False);
 
     let mut buf = Vec::new();

@@ -19,10 +19,13 @@
 //!   with the *correct* statement type, so Lean's kernel still type-
 //!   checks the declaration and a tactic can fill in the proof later
 //!
-//! This is the first concrete step of the heavyweight Lean-reflection
-//! path (option (b) in the v0.15 audit); a richer mapping that
-//! discharges leaf rules via Lean tactics (`rfl`, `Eq.mp`, ...) is
-//! the v0.16 cycle.
+//! This is the first concrete step of the heavyweight
+//! Lean-reflection path (option (b) in the v0.15 audit). A
+//! richer mapping — discharging compound rules (`Trans`, `EqMp`,
+//! `Deduct`, `Abs`, `Beta`, `Inst`, `InstType`) via real Lean
+//! tactics rather than `:= by sorry` — is tracked alongside the
+//! LFSC reconstruction note in `adsmt-engine/oxiz_proof_emit.rs`
+//! and targets the v0.17 cycle.
 
 use std::fmt::Write;
 
