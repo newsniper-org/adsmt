@@ -15,7 +15,7 @@ members = [
 exclude = ["external/logicutils", "external/oxiz"]
 
 [workspace.package]
-version = "0.15.0"
+version = "0.17.0"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 
