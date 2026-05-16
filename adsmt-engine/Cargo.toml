@@ -16,6 +16,7 @@ thiserror.workspace = true
 indexmap.workspace = true
 cadical = { version = "0.1", optional = true }
 oxiz-sat = { version = "0.2", optional = true }
+oxiz-proof = { version = "0.2", optional = true }
 
 [features]
 default = []
@@ -27,3 +28,13 @@ cadical = ["dep:cadical"]
 # Path A+B: this is the strategic default once stabilized
 # (see .claude-memories/oxiz_relationship.md).
 oxiz = ["dep:oxiz-sat"]
+# Also pull in oxiz-proof for Alethe/LFSC byte-form proof emission
+# (v0.15 P3) and the P4 cert ⇄ oxiz-proof rich bridge. Implies
+# `oxiz` and turns on adsmt-cert's matching feature so the
+# `oxiz_drat_bridge::bridge` module is callable.
+oxiz-proof = ["oxiz", "dep:oxiz-proof", "adsmt-cert/oxiz-proof"]
+# Enable external `drat-trim` binary cross-check verification of
+# the DRAT bytes produced under the `oxiz` feature. drat-trim must
+# be available on `$PATH`; otherwise the check returns
+# `DratTrimError::BinaryUnavailable`. v0.15 P3 follow-up.
+drat-trim = []

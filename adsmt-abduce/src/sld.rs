@@ -1,10 +1,11 @@
-//! SLD-style abductive resolution skeleton.
+//! SLD-style abductive resolution.
 //!
-//! v0.1 implements the *gating* logic: given a goal and an abducible
-//! set, produce candidate hypothesis sets. The full integration with
+//! Implements the *gating* logic: given a goal and an abducible
+//! set, produce candidate hypothesis sets. Full integration with
 //! `adsmt-theory` (per-theory `abduce`) and the Horn-clause / rule
-//! base from lu-kb arrives in v0.3; the SldEngine here lets the
-//! engine wire up the surface while leaving room for that extension.
+//! base from lu-kb is pending the logicutils parser integration
+//! (tracked separately). The `SldEngine` here lets the engine wire
+//! up the surface so that extension drops in without API churn.
 
 use adsmt_core::Term;
 

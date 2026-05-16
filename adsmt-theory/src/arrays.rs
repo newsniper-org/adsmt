@@ -32,35 +32,28 @@ impl Arrays {
 
     /// Destructure `(select arr idx)`.
     fn dest_select(t: &Term) -> Option<(Term, Term)> {
-        if let Term::App(outer, idx) = t {
-            if let Term::App(head, arr) = &**outer {
-                if let Term::Const(c) = &**head {
-                    if c.name == "select" {
+        if let Term::App(outer, idx) = t
+            && let Term::App(head, arr) = &**outer
+                && let Term::Const(c) = &**head
+                    && c.name == "select" {
                         return Some(((**arr).clone(), (**idx).clone()));
                     }
-                }
-            }
-        }
         None
     }
 
     /// Destructure `(store arr idx val)`.
     fn dest_store(t: &Term) -> Option<(Term, Term, Term)> {
-        if let Term::App(outer3, val) = t {
-            if let Term::App(outer2, idx) = &**outer3 {
-                if let Term::App(head, arr) = &**outer2 {
-                    if let Term::Const(c) = &**head {
-                        if c.name == "store" {
+        if let Term::App(outer3, val) = t
+            && let Term::App(outer2, idx) = &**outer3
+                && let Term::App(head, arr) = &**outer2
+                    && let Term::Const(c) = &**head
+                        && c.name == "store" {
                             return Some((
                                 (**arr).clone(),
                                 (**idx).clone(),
                                 (**val).clone(),
                             ));
                         }
-                    }
-                }
-            }
-        }
         None
     }
 

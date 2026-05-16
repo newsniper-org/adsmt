@@ -14,12 +14,15 @@ import Adsmt.Translate
 The full FFI pipeline (`adsmt-smoke` executable) verifies the
 engine end-to-end at *runtime*. The tactic itself runs at Lean's
 *elaboration* time, where the FFI shared library is not yet loaded
-into the interpreter; v0.3 will route through native-compiled
-modules so the engine becomes the load-bearing reasoner.
+into the interpreter; routing through native-compiled modules so
+the engine becomes the load-bearing reasoner is tracked as a
+separate milestone alongside the Lean reflection deepening
+described in `adsmt-cert/src/lean_emit.rs`.
 
-`smt_abduce` is the abductive variant; full scaffolding lands in
-v0.5 once the abductive engine plugs into Lean's `sorry`-based hole
-mechanism.
+`smt_abduce` is the abductive variant. The current skeleton emits
+one `have ... := sorry` per abducible hypothesis; the abductive
+engine's full plug-in to Lean's `sorry`-based hole mechanism
+arrives in the v0.17 cycle (P4 follow-up).
 -/
 
 open Lean Lean.Meta Lean.Elab.Tactic

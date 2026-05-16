@@ -11,3 +11,12 @@ adsmt-cert.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
 smallvec.workspace = true
+oxiz-math = { version = "0.2", optional = true }
+rustc-hash = { version = "2.0", optional = true }
+
+[features]
+default = []
+# Route LIA / LRA through oxiz-math's Simplex tableau. When off, the
+# hand-rolled bound + Fourier-Motzkin path stays in service.
+# Path A+B, P2 — see .claude-memories/oxiz_relationship.md.
+oxiz-math = ["dep:oxiz-math", "dep:rustc-hash"]

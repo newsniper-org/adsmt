@@ -71,12 +71,11 @@ fn rup_derivable(clauses: &[Vec<i32>], target: &[i32]) -> bool {
         let var = lit.unsigned_abs();
         let polarity = lit < 0; // negating: if lit=+x we want x=false, so we record false
         let polarity = !polarity ^ false;
-        let value = !(lit > 0);
-        if let Some(&existing) = assign.get(&var) {
-            if existing != value {
+        let value = lit <= 0;
+        if let Some(&existing) = assign.get(&var)
+            && existing != value {
                 return true; // immediate conflict
             }
-        }
         assign.insert(var, value);
         let _ = polarity;
     }

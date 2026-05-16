@@ -233,13 +233,12 @@ impl Term {
 
     /// β-reduce a redex `(λx. body) arg` to `body[x ↦ arg]`.
     pub fn beta_reduce(&self) -> KernelResult<Term> {
-        if let Term::App(f, arg) = self {
-            if let Term::Lam(v, body) = &**f {
+        if let Term::App(f, arg) = self
+            && let Term::Lam(v, body) = &**f {
                 let mut sigma = IndexMap::new();
                 sigma.insert(v.clone(), (**arg).clone());
                 return body.subst(&sigma);
             }
-        }
         Err(KernelError::NotBetaRedex(self.to_string()))
     }
 
@@ -266,15 +265,12 @@ impl Term {
 
     /// Destruct an equation `lhs = rhs`.
     pub fn dest_eq(&self) -> Option<(Term, Term)> {
-        if let Term::App(outer, rhs) = self {
-            if let Term::App(eq, lhs) = &**outer {
-                if let Term::Const(c) = &**eq {
-                    if c.name == "=" {
+        if let Term::App(outer, rhs) = self
+            && let Term::App(eq, lhs) = &**outer
+                && let Term::Const(c) = &**eq
+                    && c.name == "=" {
                         return Some(((**lhs).clone(), (**rhs).clone()));
                     }
-                }
-            }
-        }
         None
     }
 
@@ -374,26 +370,21 @@ impl Term {
 
     /// Decompose `not P` returning `P`.
     pub fn dest_not(&self) -> Option<Term> {
-        if let Term::App(f, p) = self {
-            if let Term::Const(c) = &**f {
-                if c.name == "not" {
+        if let Term::App(f, p) = self
+            && let Term::Const(c) = &**f
+                && c.name == "not" {
                     return Some((**p).clone());
                 }
-            }
-        }
         None
     }
 
     fn dest_bool_binop(name: &str, t: &Term) -> Option<(Term, Term)> {
-        if let Term::App(outer, q) = t {
-            if let Term::App(head, p) = &**outer {
-                if let Term::Const(c) = &**head {
-                    if c.name == name {
+        if let Term::App(outer, q) = t
+            && let Term::App(head, p) = &**outer
+                && let Term::Const(c) = &**head
+                    && c.name == name {
                         return Some(((**p).clone(), (**q).clone()));
                     }
-                }
-            }
-        }
         None
     }
 
@@ -445,14 +436,13 @@ impl Term {
 
     /// If `t` is a BV literal, return `(value, width)`.
     pub fn dest_bv_lit(&self) -> Option<(u128, u32)> {
-        if let Term::Const(c) = self {
-            if let Some(rest) = c.name.strip_prefix("bv:") {
+        if let Term::Const(c) = self
+            && let Some(rest) = c.name.strip_prefix("bv:") {
                 let mut parts = rest.splitn(2, ':');
                 let v = parts.next()?.parse::<u128>().ok()?;
                 let w = parts.next()?.parse::<u32>().ok()?;
                 return Some((v, w));
             }
-        }
         None
     }
 
@@ -479,46 +469,38 @@ impl Term {
 
     /// Destructure a BV binop `(<op>_w lhs rhs)` returning `(op, width, lhs, rhs)`.
     pub fn dest_bv_binop(&self) -> Option<(String, u32, Term, Term)> {
-        if let Term::App(outer, rhs) = self {
-            if let Term::App(head, lhs) = &**outer {
-                if let Term::Const(c) = &**head {
+        if let Term::App(outer, rhs) = self
+            && let Term::App(head, lhs) = &**outer
+                && let Term::Const(c) = &**head {
                     let nm = &c.name;
                     for op in ["bvand", "bvor", "bvxor", "bvadd", "bvsub", "bvmul"] {
-                        if let Some(rest) = nm.strip_prefix(&format!("{op}_")) {
-                            if let Ok(w) = rest.parse::<u32>() {
+                        if let Some(rest) = nm.strip_prefix(&format!("{op}_"))
+                            && let Ok(w) = rest.parse::<u32>() {
                                 return Some((op.into(), w, (**lhs).clone(), (**rhs).clone()));
                             }
-                        }
                     }
                 }
-            }
-        }
         None
     }
 
     /// Extract the bit-vector width from a `BV<n>` sort, if applicable.
     pub fn bv_sort_width(ty: &Type) -> Option<u32> {
-        if let Type::Const(c) = ty {
-            if let Some(rest) = c.name.strip_prefix("BV<") {
-                if let Some(num) = rest.strip_suffix('>') {
+        if let Type::Const(c) = ty
+            && let Some(rest) = c.name.strip_prefix("BV<")
+                && let Some(num) = rest.strip_suffix('>') {
                     return num.parse::<u32>().ok();
                 }
-            }
-        }
         None
     }
 
     /// Destructure `∀v. body`, returning the binder and body.
     pub fn dest_forall(&self) -> Option<(Var, Term)> {
-        if let Term::App(f, lam) = self {
-            if let Term::Const(c) = &**f {
-                if c.name == "forall" {
-                    if let Term::Lam(v, body) = &**lam {
+        if let Term::App(f, lam) = self
+            && let Term::Const(c) = &**f
+                && c.name == "forall"
+                    && let Term::Lam(v, body) = &**lam {
                         return Some(((**v).clone(), (**body).clone()));
                     }
-                }
-            }
-        }
         None
     }
 }

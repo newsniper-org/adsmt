@@ -16,6 +16,7 @@ use adsmt_core::{Term, Type};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 
+#[derive(Default)]
 pub struct Uf {
     asserted_eqs: Vec<(Term, Term)>,
     asserted_diseqs: Vec<(Term, Term)>,
@@ -57,20 +58,6 @@ fn pick_representative(members: &[adsmt_core::Term]) -> usize {
     0
 }
 
-impl Default for Uf {
-    fn default() -> Self {
-        Self {
-            asserted_eqs: Vec::new(),
-            asserted_diseqs: Vec::new(),
-            pos_atoms: Vec::new(),
-            neg_atoms: Vec::new(),
-            parent: HashMap::new(),
-            known: Vec::new(),
-            conflict: None,
-            scope_stack: Vec::new(),
-        }
-    }
-}
 
 impl Uf {
     pub fn new() -> Self { Self::default() }

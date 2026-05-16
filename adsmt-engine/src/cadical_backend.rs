@@ -6,13 +6,12 @@
 //! plugs in here once the witness pipeline matures; v0.5 alpha just
 //! consumes the boolean verdict.
 
-use std::collections::HashMap;
-
 use crate::bool_solver::BoolResult;
 use crate::cnf::{Clause, Lit};
 
 #[cfg(feature = "cadical")]
 pub fn solve(clauses: &[Clause]) -> BoolResult {
+    use std::collections::HashMap;
     use cadical::Solver as Cadical;
 
     let mut sat: Cadical = Cadical::default();

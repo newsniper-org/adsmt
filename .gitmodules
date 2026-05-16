@@ -2,3 +2,13 @@
 	path = external/logicutils
 	url = https://github.com/newsniper-org/logicutils.git
 	branch = v0.x-smt
+[submodule "external/oxiz"]
+	path = external/oxiz
+	url = https://github.com/Honey-Be/oxiz.git
+	branch = 0.2.2
+[submodule "contributions/oxiz/abduction"]
+	path = contributions/oxiz/abduction
+	url = https://github.com/newsniper-org/oxiz-contrib-abduction
+[submodule "contributions/oxiz/bindings"]
+	path = contributions/oxiz/bindings
+	url = https://github.com/newsniper-org/oxiz-contrib-bindings

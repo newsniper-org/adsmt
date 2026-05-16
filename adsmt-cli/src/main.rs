@@ -24,9 +24,8 @@ use clap::Parser as ClapParser;
 
 use adsmt_core::{Term, Type};
 use adsmt_engine::{SatResult, Solver};
-use adsmt_theory;
-use adsmt_parser::{convert_expr, parse_smtlib, ConvertError, SymbolTable};
-use adsmt_parser::sexpr::SExpr;
+use adsmt_parser::{convert_expr, parse_smtlib_positioned, ConvertError, SymbolTable};
+use adsmt_parser::sexpr::{Position, SExpr};
 use adsmt_parser::smtlib::Command;
 
 #[derive(ClapParser)]
@@ -46,7 +45,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let commands = match parse_smtlib(&source) {
+    let commands = match parse_smtlib_positioned(&source) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("lu-smt: parse error: {e}");
@@ -56,8 +55,8 @@ fn main() -> ExitCode {
 
     let mut driver = Driver::new();
     let mut last = LastStatus::Sat;
-    for cmd in commands {
-        match driver.dispatch(cmd) {
+    for (cmd, pos) in commands {
+        match driver.dispatch(cmd, pos) {
             DispatchResult::Continue => {}
             DispatchResult::CheckSat(status) => {
                 last = status.clone();
@@ -116,14 +115,21 @@ enum DispatchResult {
 struct Driver {
     solver: Solver,
     symbols: SymbolTable,
+    /// Cached certificate from the most recent `(check-sat)` whose
+    /// verdict was `unsat`. Consumed by `(get-proof)`.
+    last_cert: Option<adsmt_cert::Certificate>,
 }
 
 impl Driver {
     fn new() -> Self {
-        Self { solver: Solver::new(), symbols: SymbolTable::new() }
+        Self {
+            solver: Solver::new(),
+            symbols: SymbolTable::new(),
+            last_cert: None,
+        }
     }
 
-    fn dispatch(&mut self, cmd: Command) -> DispatchResult {
+    fn dispatch(&mut self, cmd: Command, pos: Position) -> DispatchResult {
         match cmd {
             Command::SetLogic(logic) => {
                 if !is_logic_supported(&logic) {
@@ -160,18 +166,32 @@ impl Driver {
                 self.solver.declare_datatype(DatatypeDecl::finite_enum(name, constructors));
                 DispatchResult::Continue
             }
-            Command::Assert(expr) => match self.assert_expr(&expr) {
+            Command::Assert(expr) => match self.assert_expr(&expr, pos) {
                 Ok(()) => DispatchResult::Continue,
                 Err(msg) => DispatchResult::Error(11, msg),
             },
-            Command::CheckSat => match self.solver.check_sat() {
-                SatResult::Sat => DispatchResult::CheckSat(LastStatus::Sat),
-                SatResult::Unsat { .. } => DispatchResult::CheckSat(LastStatus::Unsat),
-                SatResult::Unknown { .. } => DispatchResult::CheckSat(LastStatus::Unknown),
-                SatResult::Abductive { .. } => DispatchResult::CheckSat(LastStatus::Abductive),
-            },
+            Command::CheckSat => {
+                let r = self.solver.check_sat();
+                let status = match &r {
+                    SatResult::Sat => LastStatus::Sat,
+                    SatResult::Unsat { certificate } => {
+                        self.last_cert = certificate.clone();
+                        LastStatus::Unsat
+                    }
+                    SatResult::Unknown { .. } => LastStatus::Unknown,
+                    SatResult::Abductive { .. } => LastStatus::Abductive,
+                };
+                DispatchResult::CheckSat(status)
+            }
             Command::CheckSatAssuming(_) => DispatchResult::CheckSat(LastStatus::Unknown),
-            Command::GetModel | Command::GetUnsatCore | Command::GetProof => {
+            Command::GetProof => {
+                match &self.last_cert {
+                    Some(cert) => print!("{}", adsmt_cert::emit_certificate(cert)),
+                    None => println!("()"),
+                }
+                DispatchResult::Continue
+            }
+            Command::GetModel | Command::GetUnsatCore => {
                 println!("()");
                 DispatchResult::Continue
             }
@@ -199,7 +219,7 @@ impl Driver {
         }
     }
 
-    fn assert_expr(&mut self, e: &SExpr) -> Result<(), String> {
+    fn assert_expr(&mut self, e: &SExpr, pos: Position) -> Result<(), String> {
         // Auto-declare bare Bool symbols on first use so simple
         // scripts don't require explicit `declare-const`.
         autodeclare_bools(e, &mut self.symbols);
@@ -208,7 +228,11 @@ impl Driver {
         if term.type_of() != Type::bool_() {
             return Err(format!("asserted expression is not Bool (got {})", term.type_of()));
         }
-        self.solver.assert(term);
+        // Convert parser-native Position into the cert layer's
+        // SourceLoc shape (identical fields, separate types to keep
+        // the layer boundary clean).
+        let loc = adsmt_cert::SourceLoc::new(pos.line, pos.column);
+        self.solver.assert_at(term, loc);
         Ok(())
     }
 }
@@ -218,14 +242,13 @@ impl Driver {
 /// operators untouched.
 fn autodeclare_bools(e: &SExpr, table: &mut SymbolTable) {
     match e {
-        SExpr::Symbol(s) => {
+        SExpr::Symbol(s)
             // Skip Boolean literals and operator-shaped names; only
             // register identifier-style symbols that don't look like
             // built-ins.
-            if !is_operator(s) && table.lookup(s).is_none() {
+            if !is_operator(s) && table.lookup(s).is_none() => {
                 table.declare(s, Type::bool_());
             }
-        }
         SExpr::List(items) => {
             // Skip the operator position; recurse into arguments.
             for sub in items.iter().skip(1) {

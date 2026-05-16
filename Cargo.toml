@@ -12,12 +12,12 @@ members = [
     "adsmt-cli",
     "adsmt-ffi",
 ]
-exclude = ["external/logicutils"]
+exclude = ["external/logicutils", "external/oxiz"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.15.0"
 edition = "2024"
-license = "BSD-2-Clause"
+license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 
 [workspace.dependencies]
 adsmt-core = { path = "adsmt-core" }
@@ -38,3 +38,12 @@ indexmap = "2.6"
 
 [profile.release]
 lto = "thin"
+
+# Path A+B Phase 3: route oxiz-sat / oxiz-proof / oxiz-math through
+# our fork's `feat/enable-writer` branch until the upstream PR lands.
+# The fork is a strict superset (see
+# `.claude-memories/oxiz_relationship.md`).
+[patch.crates-io]
+oxiz-sat = { path = "external/oxiz/oxiz-sat" }
+oxiz-proof = { path = "external/oxiz/oxiz-proof" }
+oxiz-math = { path = "external/oxiz/oxiz-math" }

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adsmt-abduce"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-class",
@@ -16,16 +16,17 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cert"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
  "adsmt-core",
  "indexmap",
+ "oxiz-proof",
  "thiserror",
 ]
 
 [[package]]
 name = "adsmt-class"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -36,8 +37,9 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cli"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
+ "adsmt-cert",
  "adsmt-core",
  "adsmt-engine",
  "adsmt-parser",
@@ -48,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-core"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
  "indexmap",
  "smallvec",
@@ -57,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-engine"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
  "adsmt-abduce",
  "adsmt-cert",
@@ -67,13 +69,14 @@ dependencies = [
  "adsmt-theory",
  "cadical",
  "indexmap",
+ "oxiz-proof",
  "oxiz-sat",
  "thiserror",
 ]
 
 [[package]]
 name = "adsmt-ffi"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
  "adsmt-core",
  "adsmt-engine",
@@ -82,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-parser"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
  "adsmt-core",
  "indexmap",
@@ -91,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-quant"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -102,11 +105,13 @@ dependencies = [
 
 [[package]]
 name = "adsmt-theory"
-version = "0.7.0"
+version = "0.15.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
  "indexmap",
+ "oxiz-math",
+ "rustc-hash",
  "smallvec",
  "thiserror",
 ]
@@ -123,6 +128,15 @@ dependencies = [
  "once_cell",
  "version_check",
  "zerocopy",
+]
+
+[[package]]
+name = "aho-corasick"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -669,8 +683,6 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "oxiz-core"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1eb16314f114ec644efb6194016f327aa6d626942d5ffe0d43808d231be443e2"
 dependencies = [
  "bumpalo",
  "hashbrown 0.17.1",
@@ -697,8 +709,6 @@ dependencies = [
 [[package]]
 name = "oxiz-math"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03b8858fecb3470ac2e49d4386bc1a2a6353b8756096aa20bd827d691d14b326"
 dependencies = [
  "hashbrown 0.17.1",
  "num-bigint",
@@ -712,10 +722,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiz-proof"
+version = "0.2.1"
+dependencies = [
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "oxiz-core",
+ "regex",
+ "rustc-hash",
+ "smallvec",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "oxiz-sat"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6bae5efe614760161d2fbe8b949d825260776a7478193603cdc329bdcbb87d3"
 dependencies = [
  "hashbrown 0.17.1",
  "libm",
@@ -859,6 +882,35 @@ checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags",
 ]
+
+[[package]]
+name = "regex"
+version = "1.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rhai"
@@ -1243,9 +1295,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0"
+checksum = "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1"
 dependencies = [
  "memchr",
 ]

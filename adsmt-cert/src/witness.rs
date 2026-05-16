@@ -1,9 +1,13 @@
 //! Theory and instance witnesses carried by certificate steps.
 //!
 //! These types pin down the *shape* of each theory's witness so a
-//! checker can re-verify the theory step. v0.1 includes structural
-//! skeletons for the theories planned through v0.5; theories not yet
-//! shipped use the `Opaque` placeholder.
+//! checker can re-verify the theory step. Concrete variants exist
+//! for the theories currently active in the default `Solver`
+//! roster — EUF, LinArith (LIA/LRA), Arrays, Datatypes, Polite
+//! combination, plus the SAT-level DRAT witness used for Boolean
+//! unsat. Theories without a pinned witness format (BV / FP /
+//! Strings work in progress) fall through to the `Opaque`
+//! placeholder until their shape stabilises.
 
 use adsmt_core::Term;
 
@@ -22,6 +26,30 @@ pub enum TheoryWitness {
     Datatypes(DatatypeWitness),
     /// Cardinality reconciliation under polite combination.
     Polite(PoliteWitness),
+    /// SAT-level DRAT proof: the clauses are the input encoded as
+    /// i32 DIMACS literals, and `proof` is a sequence of
+    /// RUP-derivable steps ending in the empty clause. v0.15
+    /// upgrade over `Opaque` for Boolean-prop SAT verdicts.
+    ///
+    /// `dimacs_bytes` carries the same proof serialized to the
+    /// canonical DIMACS-style DRAT byte format (populated by
+    /// `adsmt-engine::oxiz_drat::emit_via_oxiz_writer` when the
+    /// `oxiz` feature is enabled). Empty when the feature is off.
+    ///
+    /// `alethe_bytes` / `lfsc_bytes` / `coq_bytes` carry the same
+    /// SAT-level unsat verdict serialized via `oxiz-proof`'s
+    /// `AletheProof::write` / `LfscProof::write` / `CoqExporter`
+    /// (populated by `adsmt-engine::oxiz_proof_emit` when the
+    /// `oxiz-proof` feature is enabled). Empty when the feature is
+    /// off.
+    Drat {
+        clauses: Vec<Vec<i32>>,
+        proof: crate::drat::DratProof,
+        dimacs_bytes: Vec<u8>,
+        alethe_bytes: Vec<u8>,
+        lfsc_bytes: Vec<u8>,
+        coq_bytes: Vec<u8>,
+    },
     /// Placeholder for theories whose witness format is not yet pinned
     /// down (e.g. BV/FP/Strings in pre-v0.5 development).
     Opaque { kind: String, notes: String },

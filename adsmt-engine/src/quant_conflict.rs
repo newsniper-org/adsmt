@@ -40,11 +40,10 @@ pub fn conflict_instantiate(
         let mut sigma: IndexMap<Arc<Var>, Term> = IndexMap::new();
         if extend_match(body, atom, &v_arc, &mut sigma) {
             // Build the instantiated body using the discovered binding.
-            if let Ok(instantiated) = body.subst(&sigma) {
-                if !out.iter().any(|t: &Term| t.alpha_eq(&instantiated)) {
+            if let Ok(instantiated) = body.subst(&sigma)
+                && !out.iter().any(|t: &Term| t.alpha_eq(&instantiated)) {
                     out.push(instantiated);
                 }
-            }
         }
     }
     out

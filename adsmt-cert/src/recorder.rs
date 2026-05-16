@@ -14,7 +14,7 @@ use adsmt_core::error::KernelResult;
 use adsmt_core::rule as kr;
 use adsmt_core::{Term, Theorem, TyVar, Type, Var};
 
-use crate::canonical::{CertBuilder, Sequent, StepBody, StepId};
+use crate::canonical::{CertBuilder, Sequent, SourceLoc, StepBody, StepId};
 
 /// Bundles a kernel-proven [`Theorem`] with the certificate step that
 /// recorded its derivation.
@@ -34,14 +34,33 @@ pub mod recorder {
     use super::*;
 
     pub fn assume(b: &mut CertBuilder, phi: Term) -> KernelResult<ProofHandle> {
+        assume_at(b, phi, None)
+    }
+
+    /// Like [`assume`] but attaches `loc` to the resulting cert step.
+    /// Pass `None` to skip the source-position annotation.
+    pub fn assume_at(
+        b: &mut CertBuilder,
+        phi: Term,
+        loc: Option<SourceLoc>,
+    ) -> KernelResult<ProofHandle> {
         let thm = kr::assume(phi.clone())?;
-        let step = b.add(StepBody::Assume(phi), Sequent::from(&thm));
+        let step = b.add_with_loc(StepBody::Assume(phi), Sequent::from(&thm), loc);
         Ok(ProofHandle { thm, step })
     }
 
     pub fn refl(b: &mut CertBuilder, t: &Term) -> KernelResult<ProofHandle> {
+        refl_at(b, t, None)
+    }
+
+    /// Like [`refl`] but attaches `loc` to the resulting cert step.
+    pub fn refl_at(
+        b: &mut CertBuilder,
+        t: &Term,
+        loc: Option<SourceLoc>,
+    ) -> KernelResult<ProofHandle> {
         let thm = kr::refl(t)?;
-        let step = b.add(StepBody::Refl(t.clone()), Sequent::from(&thm));
+        let step = b.add_with_loc(StepBody::Refl(t.clone()), Sequent::from(&thm), loc);
         Ok(ProofHandle { thm, step })
     }
 
@@ -134,6 +153,40 @@ pub mod recorder {
         Ok(ProofHandle { thm: new_thm, step })
     }
 
+    /// Record a theory-step with witness. v0.13 cert wiring uses
+    /// this for SAT-level conflicts (`name = "SAT"`) and per-theory
+    /// unsat (`name = "UF"` / `"LIA"` / etc.). No kernel rule is
+    /// invoked — the witness is the trust anchor that a re-checker
+    /// must verify against the parent steps.
+    pub fn theory(
+        b: &mut CertBuilder,
+        name: impl Into<String>,
+        witness: crate::witness::TheoryWitness,
+        parents: Vec<StepId>,
+        hyps: Vec<Term>,
+        concl: Term,
+    ) -> StepId {
+        b.add(
+            StepBody::Theory { name: name.into(), witness, parents },
+            Sequent { hyps, concl },
+        )
+    }
+
+    /// Record a type-class instance resolution step.
+    pub fn instance(
+        b: &mut CertBuilder,
+        relation: impl Into<String>,
+        types: Vec<adsmt_core::Type>,
+        witness: crate::witness::InstanceWitness,
+        hyps: Vec<Term>,
+        concl: Term,
+    ) -> StepId {
+        b.add(
+            StepBody::Instance { relation: relation.into(), types, witness },
+            Sequent { hyps, concl },
+        )
+    }
+
     /// Record an abductive assumption.
     ///
     /// No kernel rule is invoked — the `Assumed` step is a marker that
@@ -146,13 +199,26 @@ pub mod recorder {
         formula: Term,
         explain: Option<String>,
     ) -> KernelResult<ProofHandle> {
+        assumed_at(b, formula, explain, None)
+    }
+
+    /// Like [`assumed`] but attaches `loc` to the resulting cert step.
+    /// Use this when the abductive directive (`abduce ... explain ...`)
+    /// has a known source position in the lu-kb input.
+    pub fn assumed_at(
+        b: &mut CertBuilder,
+        formula: Term,
+        explain: Option<String>,
+        loc: Option<SourceLoc>,
+    ) -> KernelResult<ProofHandle> {
         // Reuse the ASSUME kernel rule for the placeholder theorem
         // (its hypothesis IS the formula, so any caller that consumes
         // this proof inherits the dependency on `formula`).
         let thm = kr::assume(formula.clone())?;
-        let step = b.add(
+        let step = b.add_with_loc(
             StepBody::Assumed { formula, explain },
             Sequent::from(&thm),
+            loc,
         );
         Ok(ProofHandle { thm, step })
     }
@@ -207,5 +273,42 @@ mod tests {
             }
             _ => panic!("expected Assumed"),
         }
+    }
+
+    #[test]
+    fn assume_at_attaches_source_loc() {
+        let mut b = CertBuilder::new();
+        let p = Term::var("p", Type::bool_());
+        let loc = SourceLoc::new(7, 3);
+        let h = r::assume_at(&mut b, p.clone(), Some(loc)).unwrap();
+        assert_eq!(b.steps()[h.step.0 as usize].source_loc, Some(loc));
+    }
+
+    #[test]
+    fn refl_at_attaches_source_loc() {
+        let mut b = CertBuilder::new();
+        let x = Term::var("x", int_());
+        let loc = SourceLoc::new(12, 0);
+        let h = r::refl_at(&mut b, &x, Some(loc)).unwrap();
+        assert_eq!(b.steps()[h.step.0 as usize].source_loc, Some(loc));
+    }
+
+    #[test]
+    fn assumed_at_attaches_source_loc() {
+        let mut b = CertBuilder::new();
+        let p = Term::var("p", Type::bool_());
+        let loc = SourceLoc::new(99, 4);
+        let h = r::assumed_at(&mut b, p.clone(), Some("abduce".into()), Some(loc)).unwrap();
+        let cert = b.finalize(h.step);
+        assert_eq!(cert.steps[0].source_loc, Some(loc));
+    }
+
+    #[test]
+    fn default_recorder_path_leaves_source_loc_none() {
+        // The non-`*_at` variants must not silently invent a position.
+        let mut b = CertBuilder::new();
+        let p = Term::var("p", Type::bool_());
+        let h = r::assume(&mut b, p).unwrap();
+        assert!(b.steps()[h.step.0 as usize].source_loc.is_none());
     }
 }

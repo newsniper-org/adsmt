@@ -46,8 +46,8 @@ impl Trigger {
 
 fn miller_check(term: &Term, flex: &HashSet<Arc<Var>>) -> bool {
     let (head, args) = uncurry(term);
-    if let Term::Var(v) = &head {
-        if flex.contains(v) {
+    if let Term::Var(v) = &head
+        && flex.contains(v) {
             // Flex head: arguments must be distinct rigid bound variables,
             // i.e. not other flex variables.
             let mut seen: Vec<Arc<Var>> = Vec::new();
@@ -64,13 +64,11 @@ fn miller_check(term: &Term, flex: &HashSet<Arc<Var>>) -> bool {
             }
             return true;
         }
-    }
     // Rigid head: recurse into arguments and into the head itself.
-    if let Term::Lam(_, body) = &head {
-        if !miller_check(body, flex) {
+    if let Term::Lam(_, body) = &head
+        && !miller_check(body, flex) {
             return false;
         }
-    }
     args.iter().all(|a| miller_check(a, flex))
 }
 

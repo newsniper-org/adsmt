@@ -8,7 +8,7 @@
 
 use thiserror::Error;
 
-use crate::sexpr::{self, ParseError, SExpr};
+use crate::sexpr::{self, byte_offset_to_position, ParseError, Position, SExpr};
 
 #[derive(Debug, Error)]
 pub enum SmtLibError {
@@ -57,6 +57,19 @@ pub enum Command {
 pub fn parse_smtlib(input: &str) -> Result<Vec<Command>, SmtLibError> {
     let sexprs = sexpr::parse_sexprs(input)?;
     sexprs.into_iter().map(parse_command).collect()
+}
+
+/// Like [`parse_smtlib`] but each command is paired with the
+/// [`Position`] of its leading paren. Use this from the CLI to
+/// thread source positions into the engine's `assert_at` path.
+pub fn parse_smtlib_positioned(
+    input: &str,
+) -> Result<Vec<(Command, Position)>, SmtLibError> {
+    let positioned = sexpr::parse_sexprs_positioned(input)?;
+    positioned
+        .into_iter()
+        .map(|(s, off)| Ok((parse_command(s)?, byte_offset_to_position(input, off))))
+        .collect()
 }
 
 fn parse_command(s: SExpr) -> Result<Command, SmtLibError> {
@@ -291,5 +304,22 @@ mod tests {
             Command::Assert(body) => assert_eq!(body.head_symbol(), Some("and")),
             _ => panic!("expected Assert"),
         }
+    }
+
+    #[test]
+    fn positioned_assigns_per_command_line_numbers() {
+        let input = "(assert p)\n(assert q)\n(check-sat)";
+        let positioned = parse_smtlib_positioned(input).unwrap();
+        assert_eq!(positioned.len(), 3);
+        assert_eq!(positioned[0].1, Position::new(1, 1));
+        assert_eq!(positioned[1].1, Position::new(2, 1));
+        assert_eq!(positioned[2].1, Position::new(3, 1));
+    }
+
+    #[test]
+    fn positioned_tracks_leading_whitespace() {
+        let input = "\n   (check-sat)";
+        let positioned = parse_smtlib_positioned(input).unwrap();
+        assert_eq!(positioned[0].1, Position::new(2, 4));
     }
 }

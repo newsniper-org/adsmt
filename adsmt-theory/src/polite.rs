@@ -16,13 +16,11 @@ use adsmt_core::{Term, Type};
 use crate::trait_::{CheckResult, Literal, Theory};
 
 /// A registry of theories participating in combination.
+#[derive(Default)]
 pub struct Combination {
     theories: Vec<Box<dyn Theory>>,
 }
 
-impl Default for Combination {
-    fn default() -> Self { Self { theories: Vec::new() } }
-}
 
 impl Combination {
     pub fn new() -> Self { Self::default() }
@@ -113,11 +111,10 @@ impl Combination {
             // (3) Re-broadcast.
             for (a, b) in &gathered {
                 seen.push((a.clone(), b.clone()));
-                if let Ok(eq_term) = Term::mk_eq(a.clone(), b.clone()) {
-                    if let Ok(lit) = crate::trait_::Literal::positive(eq_term) {
+                if let Ok(eq_term) = Term::mk_eq(a.clone(), b.clone())
+                    && let Ok(lit) = crate::trait_::Literal::positive(eq_term) {
                         let _ = self.assert(lit);
                     }
-                }
             }
         }
 

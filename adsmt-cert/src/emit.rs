@@ -46,6 +46,9 @@ fn emit_step(step: &Step, out: &mut String) {
     emit_body(&step.body, out);
     out.push(' ');
     emit_sequent(&step.result, out);
+    if let Some(loc) = step.source_loc {
+        write!(out, " :loc {}:{}", loc.line, loc.column).unwrap();
+    }
     out.push(')');
 }
 
@@ -248,10 +251,79 @@ fn emit_witness(w: &TheoryWitness, out: &mut String) {
         TheoryWitness::Arrays(a) => emit_arrays(a, out),
         TheoryWitness::Datatypes(d) => emit_datatypes(d, out),
         TheoryWitness::Polite(p) => emit_polite(p, out),
+        TheoryWitness::Drat { clauses, proof, dimacs_bytes, alethe_bytes, lfsc_bytes, coq_bytes } => {
+            emit_drat(clauses, proof, dimacs_bytes, alethe_bytes, lfsc_bytes, coq_bytes, out)
+        }
         TheoryWitness::Opaque { kind, notes } => {
             write!(out, "(opaque {} {})", quote_ident(kind), quote_string(notes)).unwrap();
         }
     }
+}
+
+fn emit_drat(
+    clauses: &[Vec<i32>],
+    proof: &crate::drat::DratProof,
+    dimacs_bytes: &[u8],
+    alethe_bytes: &[u8],
+    lfsc_bytes: &[u8],
+    coq_bytes: &[u8],
+    out: &mut String,
+) {
+    out.push_str("(drat :clauses (");
+    for (i, c) in clauses.iter().enumerate() {
+        if i > 0 { out.push(' '); }
+        out.push('(');
+        for (j, l) in c.iter().enumerate() {
+            if j > 0 { out.push(' '); }
+            write!(out, "{l}").unwrap();
+        }
+        out.push(')');
+    }
+    out.push_str(") :proof (");
+    for (i, step) in proof.steps.iter().enumerate() {
+        if i > 0 { out.push(' '); }
+        match step {
+            crate::drat::DratStep::Add(c) => {
+                out.push_str("(add");
+                for l in c { write!(out, " {l}").unwrap(); }
+                out.push(')');
+            }
+            crate::drat::DratStep::Delete(c) => {
+                out.push_str("(del");
+                for l in c { write!(out, " {l}").unwrap(); }
+                out.push(')');
+            }
+        }
+    }
+    out.push(')');
+    if !dimacs_bytes.is_empty() {
+        // DIMACS DRAT is ASCII, so quoting the byte stream is safe.
+        // We include it as a `:dimacs` keyword for downstream
+        // verifiers that prefer the byte format (drat-trim, etc.).
+        out.push_str(" :dimacs ");
+        out.push_str(&quote_string(
+            std::str::from_utf8(dimacs_bytes).unwrap_or(""),
+        ));
+    }
+    if !alethe_bytes.is_empty() {
+        out.push_str(" :alethe ");
+        out.push_str(&quote_string(
+            std::str::from_utf8(alethe_bytes).unwrap_or(""),
+        ));
+    }
+    if !lfsc_bytes.is_empty() {
+        out.push_str(" :lfsc ");
+        out.push_str(&quote_string(
+            std::str::from_utf8(lfsc_bytes).unwrap_or(""),
+        ));
+    }
+    if !coq_bytes.is_empty() {
+        out.push_str(" :coq ");
+        out.push_str(&quote_string(
+            std::str::from_utf8(coq_bytes).unwrap_or(""),
+        ));
+    }
+    out.push(')');
 }
 
 fn emit_euf_step(s: &EufStep, out: &mut String) {
@@ -499,5 +571,26 @@ mod tests {
         assert!(out.starts_with("(proof-delta :since s1"));
         assert!(out.contains("(s1 (refl"));
         assert!(!out.contains("(s0 (refl"));
+    }
+
+    #[test]
+    fn emit_renders_source_loc_when_present() {
+        use crate::canonical::SourceLoc;
+        let mut b = CertBuilder::new();
+        let p = Term::var("p", Type::bool_());
+        let h = r::assume_at(&mut b, p, Some(SourceLoc::new(42, 7))).unwrap();
+        let cert = b.finalize(h.step);
+        let out = emit_certificate(&cert);
+        assert!(out.contains(":loc 42:7"));
+    }
+
+    #[test]
+    fn emit_omits_loc_keyword_when_absent() {
+        let mut b = CertBuilder::new();
+        let p = Term::var("p", Type::bool_());
+        let h = r::assume(&mut b, p).unwrap();
+        let cert = b.finalize(h.step);
+        let out = emit_certificate(&cert);
+        assert!(!out.contains(":loc"));
     }
 }

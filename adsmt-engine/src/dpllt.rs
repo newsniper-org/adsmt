@@ -1,11 +1,14 @@
-//! DPLL(T) main loop (placeholder for v0.1).
+//! DPLL(T) theory-routing layer.
 //!
-//! v0.1 routes every asserted (atom, polarity) pair to each
+//! Routes each asserted (atom, polarity) literal to every
 //! registered theory and reports the first conflict surfaced by
-//! [`Combination::check`]. There is no SAT-level decision procedure
-//! yet, no theory equality propagation, no arrangement guessing.
-//! Boolean structure beyond a single negation is not yet recognized
-//! — that lands in v0.3 with proper SAT integration.
+//! [`Combination::check`]. The Boolean decision procedure proper
+//! lives in the SAT backend (oxiz-sat by default, CaDiCaL behind
+//! its feature flag, built-in DPLL as fallback) — this module is
+//! the *theory side* of DPLL(T), responsible for combining theory
+//! verdicts and surfacing the conflict witness. SAT-level
+//! decisions, restarts, and clause learning all happen in the
+//! backend.
 
 use adsmt_cert::witness::TheoryWitness;
 use adsmt_core::Term;

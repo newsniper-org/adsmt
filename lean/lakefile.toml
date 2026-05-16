@@ -1,5 +1,5 @@
 name = "adsmt"
-version = "0.7.0"
+version = "0.15.0"
 defaultTargets = ["Adsmt", "adsmt-smoke", "adsmt-smoke-tactic"]
 keywords = ["smt", "abductive", "logic"]
 

@@ -9,3 +9,10 @@ description = "S-expression proof certificate format with Lean4/Alethe/JSON emit
 adsmt-core.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
+oxiz-proof = { version = "0.2", optional = true }
+
+[features]
+default = []
+# Bridge to oxiz-proof for DRAT / Alethe / Coq / Lean export.
+# Path A+B, P3 — see .claude-memories/oxiz_relationship.md.
+oxiz-proof = ["dep:oxiz-proof"]

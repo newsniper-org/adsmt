@@ -76,10 +76,10 @@ def assertAtom (s : SolverPtr) (atomId : UInt64) (polarity : Bool) : IO Unit := 
   let _ := assertAtomImpl s atomId p
   return ()
 
-/-- v0.1 placeholder for the version FFI; once `adsmt_version` is
-    wired up through a string-marshalling helper this will read the
-    actual C string. -/
+/-- Reports the adsmt version. Until the Rust side exposes
+    `adsmt_version` through a string-marshalling helper, this
+    returns a constant matching the Cargo workspace version. -/
 def version : IO String :=
-  return "adsmt v0.1 (FFI placeholder)"
+  return "adsmt v0.15 (FFI string-marshalling not yet wired)"
 
 end Adsmt.Ffi
