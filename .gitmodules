@@ -6,3 +6,6 @@
 	path = external/oxiz
 	url = https://github.com/Honey-Be/oxiz.git
 	branch = 0.2.2
+[submodule "contributions/oxiz/abduction"]
+	path = contributions/oxiz/abduction
+	url = https://github.com/newsniper-org/oxiz-contrib-abduction
