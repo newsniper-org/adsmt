@@ -110,6 +110,32 @@ impl Solver {
         self.scopes.last_mut().expect("base scope").assert(t, polarity);
     }
 
+    /// Assert `t` as a positive literal with a source position
+    /// (line/column) attached. The position rides through to the
+    /// `Assume` cert step's `source_loc` field in the unsat
+    /// certificate. Callers without a position should use [`assert`].
+    pub fn assert_at(&mut self, t: Term, loc: adsmt_cert::SourceLoc) {
+        self.assert_with_polarity_at(t, true, Some(loc));
+    }
+
+    /// Like [`assert_negated`] but with a source position.
+    pub fn assert_negated_at(&mut self, t: Term, loc: adsmt_cert::SourceLoc) {
+        self.assert_with_polarity_at(t, false, Some(loc));
+    }
+
+    /// Full-control variant: pick polarity and optionally attach a loc.
+    pub fn assert_with_polarity_at(
+        &mut self,
+        t: Term,
+        polarity: bool,
+        loc: Option<adsmt_cert::SourceLoc>,
+    ) {
+        self.scopes
+            .last_mut()
+            .expect("base scope")
+            .assert_at(t, polarity, loc);
+    }
+
     pub fn push(&mut self) {
         self.scopes.push(Scope::new());
         self.theories.push();
@@ -142,6 +168,49 @@ impl Solver {
         }
         for sc in &self.scopes {
             out.extend(sc.literals.iter().cloned());
+        }
+        out
+    }
+
+    /// Attach the known [`SourceLoc`] (from the solver state) to each
+    /// `(term, polarity)` in `lits`, returning a parallel
+    /// `(term, polarity, loc)` Vec. Locations are looked up by
+    /// `(Term, bool)` equality; literals not found in the state map
+    /// to `None`, which covers quantifier instantiations and other
+    /// solver-internal derivations.
+    fn attach_locs(
+        &self,
+        lits: &[(Term, bool)],
+    ) -> Vec<(Term, bool, Option<adsmt_cert::SourceLoc>)> {
+        let table = self.all_literals_with_locs();
+        lits.iter()
+            .map(|(t, p)| {
+                let loc = table.iter().find_map(|(tt, pp, l)| {
+                    if pp == p && tt == t {
+                        *l
+                    } else {
+                        None
+                    }
+                });
+                (t.clone(), *p, loc)
+            })
+            .collect()
+    }
+
+    /// Like [`all_literals`] but also carries each literal's
+    /// optional [`SourceLoc`]. Abductively-accepted hypotheses have
+    /// `None` (no parser source position). Used by the unsat-cert
+    /// path so each `Assume` step's `:loc` is set when known.
+    pub fn all_literals_with_locs(&self) -> Vec<(Term, bool, Option<adsmt_cert::SourceLoc>)> {
+        let mut out: Vec<(Term, bool, Option<adsmt_cert::SourceLoc>)> = Vec::new();
+        for h in self.abduction_state.accepted() {
+            out.push((h.hypothesis.clone(), true, None));
+        }
+        for sc in &self.scopes {
+            for (i, (t, p)) in sc.literals.iter().enumerate() {
+                let loc = sc.source_locs.get(i).copied().flatten();
+                out.push((t.clone(), *p, loc));
+            }
         }
         out
     }
@@ -311,7 +380,8 @@ impl Solver {
                     lfsc_bytes,
                     coq_bytes,
                 };
-                let cert = self.build_unsat_cert_opt(&lits, "SAT", witness);
+                let lits_with_locs = self.attach_locs(&lits);
+                let cert = self.build_unsat_cert_opt_with_locs(&lits_with_locs, "SAT", witness);
                 SatResult::Unsat { certificate: cert }
             }
             BoolResult::Unknown => {
@@ -338,29 +408,44 @@ impl Solver {
         theory_name: &str,
         witness: TheoryWitness,
     ) -> Option<adsmt_cert::Certificate> {
+        let with_locs: Vec<(Term, bool, Option<adsmt_cert::SourceLoc>)> =
+            lits.iter().map(|(t, p)| (t.clone(), *p, None)).collect();
+        self.build_unsat_cert_opt_with_locs(&with_locs, theory_name, witness)
+    }
+
+    /// Variant of [`build_unsat_cert_opt`] that accepts a per-literal
+    /// [`SourceLoc`]. The CLI/parser path supplies positions; the
+    /// theory-fallback paths use the `None`-erased variant above.
+    fn build_unsat_cert_opt_with_locs(
+        &mut self,
+        lits: &[(Term, bool, Option<adsmt_cert::SourceLoc>)],
+        theory_name: &str,
+        witness: TheoryWitness,
+    ) -> Option<adsmt_cert::Certificate> {
         if matches!(self.proof_mode, ProofMode::None) {
             return None;
         }
-        Some(self.build_unsat_cert(lits, theory_name, witness))
+        Some(self.build_unsat_cert_with_locs(lits, theory_name, witness))
     }
 
-    fn build_unsat_cert(
+    fn build_unsat_cert_with_locs(
         &mut self,
-        lits: &[(Term, bool)],
+        lits: &[(Term, bool, Option<adsmt_cert::SourceLoc>)],
         theory_name: &str,
         witness: TheoryWitness,
     ) -> adsmt_cert::Certificate {
         let mut assume_ids: Vec<StepId> = Vec::new();
         let mut hyps: Vec<Term> = Vec::new();
-        for (t, p) in lits {
+        for (t, p, loc) in lits {
             let phi = if *p {
                 t.clone()
             } else {
                 Term::mk_not(t.clone()).unwrap_or_else(|_| t.clone())
             };
-            let id = self.cert_builder.add(
+            let id = self.cert_builder.add_with_loc(
                 StepBody::Assume(phi.clone()),
                 Sequent { hyps: vec![phi.clone()], concl: phi.clone() },
+                *loc,
             );
             assume_ids.push(id);
             hyps.push(phi);
@@ -800,6 +885,57 @@ mod tests {
                 assert!(out.contains("(conclude "));
             }
             other => panic!("expected Unsat with cert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assert_at_threads_source_loc_into_cert_assume_step() {
+        use adsmt_cert::{SourceLoc, StepBody};
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        s.assert_at(p.clone(), SourceLoc::new(3, 8));
+        s.assert_negated_at(p, SourceLoc::new(4, 12));
+        let SatResult::Unsat {
+            certificate: Some(cert),
+        } = s.check_sat()
+        else {
+            panic!("expected Unsat with cert");
+        };
+        // Find the two Assume steps and check their locs match what
+        // we passed in via assert_at / assert_negated_at.
+        let mut found = std::collections::HashSet::new();
+        for step in &cert.steps {
+            if matches!(step.body, StepBody::Assume(_)) {
+                if let Some(loc) = step.source_loc {
+                    found.insert((loc.line, loc.column));
+                }
+            }
+        }
+        assert!(found.contains(&(3, 8)), "assume @ (3,8) missing in {found:?}");
+        assert!(found.contains(&(4, 12)), "assume @ (4,12) missing in {found:?}");
+        // Emit must surface :loc attribute in S-expr form.
+        let out = adsmt_cert::emit_certificate(&cert);
+        assert!(out.contains(":loc 3:8"));
+        assert!(out.contains(":loc 4:12"));
+    }
+
+    #[test]
+    fn plain_assert_keeps_source_loc_none() {
+        use adsmt_cert::StepBody;
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        s.assert(p.clone());
+        s.assert(Term::mk_not(p).unwrap());
+        let SatResult::Unsat {
+            certificate: Some(cert),
+        } = s.check_sat()
+        else {
+            panic!("expected Unsat with cert");
+        };
+        for step in &cert.steps {
+            if matches!(step.body, StepBody::Assume(_)) {
+                assert!(step.source_loc.is_none());
+            }
         }
     }
 

@@ -24,8 +24,8 @@ use clap::Parser as ClapParser;
 
 use adsmt_core::{Term, Type};
 use adsmt_engine::{SatResult, Solver};
-use adsmt_parser::{convert_expr, parse_smtlib, ConvertError, SymbolTable};
-use adsmt_parser::sexpr::SExpr;
+use adsmt_parser::{convert_expr, parse_smtlib_positioned, ConvertError, SymbolTable};
+use adsmt_parser::sexpr::{Position, SExpr};
 use adsmt_parser::smtlib::Command;
 
 #[derive(ClapParser)]
@@ -45,7 +45,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let commands = match parse_smtlib(&source) {
+    let commands = match parse_smtlib_positioned(&source) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("lu-smt: parse error: {e}");
@@ -55,8 +55,8 @@ fn main() -> ExitCode {
 
     let mut driver = Driver::new();
     let mut last = LastStatus::Sat;
-    for cmd in commands {
-        match driver.dispatch(cmd) {
+    for (cmd, pos) in commands {
+        match driver.dispatch(cmd, pos) {
             DispatchResult::Continue => {}
             DispatchResult::CheckSat(status) => {
                 last = status.clone();
@@ -129,7 +129,7 @@ impl Driver {
         }
     }
 
-    fn dispatch(&mut self, cmd: Command) -> DispatchResult {
+    fn dispatch(&mut self, cmd: Command, pos: Position) -> DispatchResult {
         match cmd {
             Command::SetLogic(logic) => {
                 if !is_logic_supported(&logic) {
@@ -166,7 +166,7 @@ impl Driver {
                 self.solver.declare_datatype(DatatypeDecl::finite_enum(name, constructors));
                 DispatchResult::Continue
             }
-            Command::Assert(expr) => match self.assert_expr(&expr) {
+            Command::Assert(expr) => match self.assert_expr(&expr, pos) {
                 Ok(()) => DispatchResult::Continue,
                 Err(msg) => DispatchResult::Error(11, msg),
             },
@@ -219,7 +219,7 @@ impl Driver {
         }
     }
 
-    fn assert_expr(&mut self, e: &SExpr) -> Result<(), String> {
+    fn assert_expr(&mut self, e: &SExpr, pos: Position) -> Result<(), String> {
         // Auto-declare bare Bool symbols on first use so simple
         // scripts don't require explicit `declare-const`.
         autodeclare_bools(e, &mut self.symbols);
@@ -228,7 +228,11 @@ impl Driver {
         if term.type_of() != Type::bool_() {
             return Err(format!("asserted expression is not Bool (got {})", term.type_of()));
         }
-        self.solver.assert(term);
+        // Convert parser-native Position into the cert layer's
+        // SourceLoc shape (identical fields, separate types to keep
+        // the layer boundary clean).
+        let loc = adsmt_cert::SourceLoc::new(pos.line, pos.column);
+        self.solver.assert_at(term, loc);
         Ok(())
     }
 }

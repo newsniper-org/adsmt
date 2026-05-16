@@ -11,5 +11,8 @@ pub mod smtlib;
 pub mod kb;
 
 pub use convert::{convert_expr, ConvertError, SymbolTable};
-pub use sexpr::{lex_sexpr, parse_sexpr, parse_sexprs, ParseError, SExpr, Token};
-pub use smtlib::{parse_smtlib, Command, SmtLibError};
+pub use sexpr::{
+    byte_offset_to_position, lex_sexpr, lex_sexpr_positioned, parse_sexpr, parse_sexprs,
+    parse_sexprs_positioned, ParseError, Position, SExpr, Token,
+};
+pub use smtlib::{parse_smtlib, parse_smtlib_positioned, Command, SmtLibError};
