@@ -9,3 +9,6 @@
 [submodule "contributions/oxiz/abduction"]
 	path = contributions/oxiz/abduction
 	url = https://github.com/newsniper-org/oxiz-contrib-abduction
+[submodule "contributions/oxiz/bindings"]
+	path = contributions/oxiz/bindings
+	url = https://github.com/newsniper-org/oxiz-contrib-bindings
