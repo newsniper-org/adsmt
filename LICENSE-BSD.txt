@@ -1,4 +1,4 @@
-Copyright (c) 2026 the adsmt project contributors.
+Copyright (c) 2026 윤병익 <yeun0908@gmail.com, newsniper@protonmail.com> (Honey-Be).
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
