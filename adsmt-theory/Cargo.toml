@@ -3,7 +3,7 @@ name = "adsmt-theory"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Theory trait, polite combination framework, and theory implementations (UF/LIA/LRA/Arrays/Datatypes)"
+description = "Theory trait, polite combination framework, and theory implementations (UF / LIA / LRA / BV / Arrays / Datatypes)"
 
 [dependencies]
 adsmt-core.workspace = true

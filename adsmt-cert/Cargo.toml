@@ -3,7 +3,7 @@ name = "adsmt-cert"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "S-expression proof certificate format with Lean4/Alethe/JSON emit backends"
+description = "S-expression proof certificate format + Lean4 source reflection. ITP emits to other targets (Rocq, Isabelle, …) live in out-of-tree projects"
 
 [dependencies]
 adsmt-core.workspace = true

@@ -173,6 +173,7 @@ mod tests {
     fn color_sort() -> Type { Type::const_("Color", Kind::Type) }
     fn red() -> Term { Term::const_("Red", color_sort()) }
     fn green() -> Term { Term::const_("Green", color_sort()) }
+    #[allow(unused)]
     fn blue() -> Term { Term::const_("Blue", color_sort()) }
 
     fn registered() -> Datatypes {

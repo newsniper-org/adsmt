@@ -1,13 +1,13 @@
-//! CaDiCaL SAT backend adapter (v0.5).
+//! CaDiCaL SAT backend adapter.
 //!
 //! Behind the `cadical` feature flag. Encodes our [`Clause`] /
 //! [`Lit`] data into CaDiCaL's i32 literal convention and reports
-//! Sat/Unsat as a [`BoolResult`]. DRAT proof verification (Q41)
-//! plugs in here once the witness pipeline matures; v0.5 alpha just
-//! consumes the boolean verdict.
+//! Sat/Unsat as a [`BoolResult`]. The default strategic backend is
+//! `oxiz` (Path A+B); this adapter stays available as a comparison
+//! / fallback path for callers who explicitly opt into CaDiCaL.
 
 use crate::bool_solver::BoolResult;
-use crate::cnf::{Clause, Lit};
+use crate::cnf::Clause;
 
 #[cfg(feature = "cadical")]
 pub fn solve(clauses: &[Clause]) -> BoolResult {
@@ -44,15 +44,15 @@ pub fn solve(clauses: &[Clause]) -> BoolResult {
 
 #[cfg(not(feature = "cadical"))]
 pub fn solve(_clauses: &[Clause]) -> BoolResult {
-    // Stub when feature is disabled — the solver falls back to the
-    // built-in DPLL automatically.
-    let _ = Lit::pos;
+    // Stub when feature is disabled — the solver falls back to
+    // the built-in DPLL automatically.
     BoolResult::Unknown
 }
 
 #[cfg(all(test, feature = "cadical"))]
 mod tests {
     use super::*;
+    use crate::cnf::Lit;
     use adsmt_core::{Term, Type};
 
     fn p() -> Term { Term::var("p", Type::bool_()) }
