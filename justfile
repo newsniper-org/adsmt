@@ -100,6 +100,26 @@ install-status-hook:
     @chmod +x .git/hooks/post-commit
     @echo "✓ Installed .git/hooks/post-commit — snapshot will refresh after every commit"
 
+# (Optional, manual) π peer for the 8-layer breaking-version
+# safeguard — wire the pre-commit script that refuses commits
+# that delete a semver line from any breaking-version peer
+# source. OFF by default; opt-in with this recipe. Bypass with
+# the standard `git commit --no-verify` flag.
+install-breaking-hook:
+    @mkdir -p .git/hooks
+    @printf '#!/usr/bin/env bash\nset -uo pipefail\nexec "$(git rev-parse --show-toplevel)/scripts/breaking-versions-pre-commit.sh"\n' \
+        > .git/hooks/pre-commit
+    @chmod +x .git/hooks/pre-commit
+    @echo "✓ Installed .git/hooks/pre-commit — breaking-version semver lines now protected from removal"
+
+uninstall-breaking-hook:
+    @if [ -f .git/hooks/pre-commit ]; then \
+        rm -f .git/hooks/pre-commit ; \
+        echo "✓ Removed .git/hooks/pre-commit" ; \
+    else \
+        echo "⚠ No .git/hooks/pre-commit installed" ; \
+    fi
+
 uninstall-status-hook:
     @if [ -f .git/hooks/post-commit ]; then \
         rm -f .git/hooks/post-commit ; \
