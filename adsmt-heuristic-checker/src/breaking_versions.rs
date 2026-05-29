@@ -212,7 +212,7 @@ pub fn read_cargo_metadata(cargo_toml_body: &str) -> Result<PeerContribution, Pe
     Ok(PeerContribution { label, versions })
 }
 
-fn parse_line_list(body: &str) -> Vec<String> {
+pub fn parse_line_list(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in body.lines() {
         let trimmed = line.trim();

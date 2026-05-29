@@ -47,6 +47,7 @@
 // appended below this comment.
 
 pub mod breaking_versions;
+pub mod sigma_check;
 
 use thiserror::Error;
 
