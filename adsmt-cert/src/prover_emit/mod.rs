@@ -50,6 +50,7 @@
 //! § "Classical axiom imports (on-demand)".
 
 pub mod common;
+pub mod drat_payload;
 
 pub use common::{
     aggregate_allow, aggregate_required, aggregate_should,
