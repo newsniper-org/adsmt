@@ -3,32 +3,14 @@ name = "adsmt-lints"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Offline-first lint plugins for adsmt and lu-kb usage. v0.17 ships the scaffold; cargo-dylint integration lands in v0.18 once the rustc plugin surface is finalised."
+description = "Runtime audit library for adsmt certificate hygiene checks. Dead pattern detection, IDE-friendly JSON diagnostics, future lu-kb-side audits."
 
 [lib]
-# v0.18 adds the `cdylib` crate type alongside `rlib` so the
-# crate can be loaded as a `cargo-dylint` plugin via the
-# `dylint_library!` C ABI. The lint pass registration itself
-# is gated behind the `dylint-plugin` feature because the rustc
-# `LateLintPass` API is nightly-only; without the feature the
-# cdylib is a buildable no-op on stable.
-crate-type = ["rlib", "cdylib"]
-
-[features]
-default = []
-# Enable the rustc lint-pass registration. Requires a nightly
-# toolchain (rustc_lint / rustc_session internals are unstable).
-# When off, the `register_lints` C ABI export is a no-op.
-dylint-plugin = ["dep:dylint_linting"]
+crate-type = ["rlib"]
 
 [dependencies]
-# checker is the entry point for the dead-pattern analysis the
-# `adsmt_dead_heuristic_pattern` lint will eventually run.
-adsmt-heuristic-checker = { path = "../adsmt-heuristic-checker" }
+adsmt-cert = { workspace = true }
+adsmt-core = { workspace = true }
 thiserror.workspace = true
-# Optional — only pulled in when the `dylint-plugin` feature is
-# active. dylint_linting provides the cargo-dylint plugin
-# scaffolding (dylint_library! macro, register_lints entry
-# point). Requires a nightly toolchain to actually compile a
-# rustc lint pass.
-dylint_linting = { version = "6.0", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

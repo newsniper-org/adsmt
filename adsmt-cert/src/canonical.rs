@@ -394,10 +394,22 @@ impl StepPattern {
 /// matching `pattern`. Per D1.A-1.pat.interact = α the pattern
 /// marker contributes additively alongside block markers (no
 /// override semantics).
+///
+/// `name` and `source_loc` are optional metadata used by
+/// dead-pattern audit diagnostics (IDE / VS Code consumption).
+/// Cert producers that want their dead-pattern warnings to land
+/// in editor squiggles should populate `source_loc` from their
+/// parser-supplied position.
 #[derive(Clone, Debug)]
 pub struct PatternMarker {
     pub pattern: StepPattern,
     pub local_markers: ClassicalMarkerSet,
+    /// Optional human-readable name for diagnostics. Defaults to
+    /// `None`.
+    pub name: Option<String>,
+    /// Optional source location for IDE diagnostics. Defaults to
+    /// `None`.
+    pub source_loc: Option<SourceLoc>,
 }
 
 /// A `should ∪ allow` marker bundle, used by both mid-blocks
@@ -910,6 +922,8 @@ mod tests {
                 ]),
                 allow: vec![],
             },
+            name: None,
+            source_loc: None,
         };
         b.add_pattern_marker(marker);
         let cert = b.finalize(s0);
