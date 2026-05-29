@@ -73,18 +73,30 @@ use thiserror::Error;
 /// trusts this IR as the immutable floor.
 #[derive(Debug, Clone)]
 pub struct MinimumIr {
-    /// Stable on-disk representation. v0.17.0 ships an empty IR
-    /// (the minimum table is being authored separately). The
-    /// rendering format is byte-stable across rebuilds so the
-    /// frozen-hash safeguard catches drift.
-    pub serialized: Vec<u8>,
+    /// Stable on-disk representation — the canonical lu-kb
+    /// source bytes from `minimum-table/minimum.kb`, captured at
+    /// compile time via `include_str!`. The rendering is
+    /// byte-stable across rebuilds so the frozen-hash safeguard
+    /// catches drift.
+    pub serialized: &'static str,
 }
 
 impl MinimumIr {
-    /// Empty IR placeholder used until the minimum heuristic
-    /// table source lands.
+    /// Empty IR placeholder for tests that don't need the real
+    /// table. Use [`MinimumIr::shipped`] for the actual minimum.
     pub const fn empty() -> Self {
-        Self { serialized: Vec::new() }
+        Self { serialized: "" }
+    }
+
+    /// The minimum heuristic table shipped with this version of
+    /// adsmt-heuristic-checker. The bytes are the canonical
+    /// lu-kb source from `minimum-table/minimum.kb`; the
+    /// validated form is the SAT-verified IR cached at
+    /// adsmt-side build time.
+    pub const fn shipped() -> Self {
+        Self {
+            serialized: include_str!("../minimum-table/minimum.kb"),
+        }
     }
 }
 
@@ -180,6 +192,32 @@ mod tests {
         let outcome = checker.check(&module).expect("empty check");
         assert_eq!(outcome.validated_rules, 0);
         assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn shipped_minimum_table_parses() {
+        let ir = MinimumIr::shipped();
+        assert!(!ir.serialized.is_empty(), "shipped table must be non-empty");
+        let module = lu_common::kb::parse(ir.serialized)
+            .expect("shipped minimum table must parse");
+        // EnumDef ClassicalModule + EnumDef StepKind +
+        // EnumDef TheoryWitnessKind + FactBlock
+        // propositional_required = 4 items at least.
+        assert!(
+            module.items.len() >= 4,
+            "shipped table should have ≥4 items, found {}",
+            module.items.len(),
+        );
+    }
+
+    #[test]
+    fn shipped_minimum_table_drat_row_present() {
+        let ir = MinimumIr::shipped();
+        assert!(
+            ir.serialized.contains("theory_drat <- propositional"),
+            "shipped table must encode the DRAT → Propositional row \
+             (D5 = α in the design discussion)",
+        );
     }
 
     #[test]

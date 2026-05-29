@@ -1,0 +1,71 @@
+# adsmt-minimum heuristic table (v0.18).
+#
+# This file is the canonical source of the per-StepBody /
+# TheoryWitness classical-axiom requirement table. It is the
+# "minimum heuristic table" referenced throughout
+# `prover_emit_policy.md` § "Heuristic table (reference-set
+# source)" — the immutable floor that user-defined extension
+# heuristics build on.
+#
+# At adsmt-side development time this file is validated for
+# non-contradiction by the `logicutils-translator-to-oxiz-sat`
+# subcrate calling `external/oxiz/oxiz-sat` directly. The
+# validated form ships as the `MinimumIr` embedded in
+# `adsmt-heuristic-checker`. User-side validation reuses the IR
+# without re-running the SAT pass.
+#
+# Encoding convention:
+#
+#   * `enum ClassicalModule:` lists the four family-level
+#     classical modules per D4 = δ.
+#   * `enum StepKind:` lists the StepBody discriminator names.
+#   * `enum TheoryWitnessKind:` lists the TheoryWitness variant
+#     names.
+#   * `fact <family>_required:` per family-level required module,
+#     each entry is `<step_descriptor> <- <family_member>`
+#     reading "step_descriptor requires family_member". Absence
+#     from any fact block means empty required-set.
+#
+# Per the policy doc the *only* non-empty row at v0.18 is the
+# DRAT-witness row (D5 = α). Everything else is intuitionistic.
+
+enum ClassicalModule:
+  propositional
+  predicate
+  choice
+  funext
+
+enum StepKind:
+  assume
+  refl
+  trans
+  eqmp
+  beta
+  abs
+  deduct
+  inst
+  inst_type
+  theory
+  instance_decl
+  assumed
+
+enum TheoryWitnessKind:
+  euf
+  lin_arith
+  arrays
+  datatypes
+  polite
+  drat
+  opaque
+
+# === The classical-requirement table ===
+#
+# Per D5 = α: `Theory { witness: Drat{..} }` ⇒ {Propositional}.
+# Per D6 = β: the "bool" theory row from ypeg's request folds
+# into the DRAT row (adsmt routes boolean reasoning through
+# TheoryWitness::Drat).
+# All other step kinds and theory-witness kinds produce empty
+# required-sets — they're omitted from the fact blocks below.
+
+fact propositional_required:
+  theory_drat <- propositional
