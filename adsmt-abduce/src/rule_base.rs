@@ -47,10 +47,113 @@ impl HornRule {
 
     /// Does this rule's head propositionally match `goal`?
     ///
-    /// v0.17 uses α-equivalence; first-order unification is gated
-    /// for the typed-arg integration cycle.
+    /// v0.17 used α-equivalence; v0.19 keeps that as the default
+    /// — variables in the head are treated as **atomic** unless
+    /// the rule was constructed via [`Self::with_schematic`].
+    /// This preserves backward compatibility: propositional
+    /// rules like `fact p ⟸ q` match goal `p` only when the
+    /// rule head is α-equivalent.
     pub fn head_matches(&self, goal: &Term) -> bool {
         self.head.alpha_eq(goal)
+    }
+}
+
+/// v0.19 D.3 — Horn rule with explicit schematic (universally
+/// quantified) variables in the head + body.
+///
+/// Distinct from [`HornRule`] in two ways:
+/// 1. The `schematic_vars` set lists every head/body variable
+///    that should be treated as a substitution candidate.
+/// 2. [`Self::head_matches`] does first-order unification rather
+///    than α-equivalence: `fact pred(x) ⟸ ...` matches goal
+///    `pred(a)` with substitution `[x ↦ a]`.
+///
+/// The two rule shapes coexist so adsmt-abduce v0.17's
+/// propositional pipeline keeps working unchanged while the
+/// v0.19+ typed-argument pipeline opts in to the richer
+/// unification by constructing this type directly.
+#[derive(Clone, Debug)]
+pub struct SchematicHornRule {
+    pub head: Term,
+    pub body: Vec<Term>,
+    pub source: String,
+    /// Every variable name in `head` / `body` that should be
+    /// treated as schematic. Variables not in this list match
+    /// only by α-equivalence.
+    pub schematic_vars: Vec<String>,
+}
+
+impl SchematicHornRule {
+    pub fn new(
+        head: Term,
+        body: Vec<Term>,
+        schematic_vars: Vec<String>,
+        source: impl Into<String>,
+    ) -> Self {
+        Self {
+            head,
+            body,
+            schematic_vars,
+            source: source.into(),
+        }
+    }
+
+    /// First-order match: head unifies with goal, only the
+    /// schematic vars participate as substitution candidates.
+    pub fn head_matches(&self, goal: &Term) -> bool {
+        self.head_unify(goal).is_some()
+    }
+
+    /// Return the unifying substitution from `head` to `goal`,
+    /// or `None` when no such substitution exists. Only the
+    /// listed schematic vars are unification candidates; all
+    /// other vars must match by α-equivalence.
+    pub fn head_unify(&self, goal: &Term) -> Option<Vec<(String, Term)>> {
+        let mut subst: Vec<(String, Term)> = Vec::new();
+        if Self::unify_inner(&self.head, goal, &self.schematic_vars, &mut subst) {
+            Some(subst)
+        } else {
+            None
+        }
+    }
+
+    fn unify_inner(
+        pattern: &Term,
+        goal: &Term,
+        schematic: &[String],
+        subst: &mut Vec<(String, Term)>,
+    ) -> bool {
+        match pattern {
+            Term::Var(v) => {
+                if schematic.iter().any(|s| s == &v.name) {
+                    if let Some((_, existing)) =
+                        subst.iter().find(|(name, _)| name == &v.name)
+                    {
+                        return existing.alpha_eq(goal);
+                    }
+                    if v.ty != goal.type_of() {
+                        return false;
+                    }
+                    subst.push((v.name.clone(), goal.clone()));
+                    true
+                } else {
+                    // Non-schematic var — α-equivalence only.
+                    pattern.alpha_eq(goal)
+                }
+            }
+            Term::Const(c) => match goal {
+                Term::Const(c2) => c.name == c2.name && c.ty == c2.ty,
+                _ => false,
+            },
+            Term::App(f1, x1) => match goal {
+                Term::App(f2, x2) => {
+                    Self::unify_inner(f1, f2, schematic, subst)
+                        && Self::unify_inner(x1, x2, schematic, subst)
+                }
+                _ => false,
+            },
+            Term::Lam(_, _) => pattern.alpha_eq(goal),
+        }
     }
 }
 
@@ -114,5 +217,111 @@ mod tests {
         let matches: Vec<&HornRule> = base.rules_matching(&p).collect();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].source, "src1");
+    }
+
+    // === v0.19 D.3 typed-arg unification (SchematicHornRule) ===
+
+    #[test]
+    fn schematic_head_unifies_via_variable_binding() {
+        // Rule head: `pred(x)` with x a schematic variable.
+        // Goal: `pred(a)`.
+        let int_ty = Type::const_("Int", adsmt_core::Kind::Type);
+        let pred_ty =
+            Type::fun(int_ty.clone(), Type::bool_()).unwrap();
+        let pred = Term::const_("pred", pred_ty);
+        let x = Term::var("x", int_ty.clone());
+        let head = Term::app(pred.clone(), x).unwrap();
+        let a = Term::const_("a", int_ty);
+        let goal = Term::app(pred, a.clone()).unwrap();
+
+        let rule = SchematicHornRule::new(
+            head,
+            vec![],
+            vec!["x".into()],
+            "test",
+        );
+        assert!(rule.head_matches(&goal));
+        let subst = rule.head_unify(&goal).expect("unification succeeds");
+        assert_eq!(subst.len(), 1);
+        assert_eq!(subst[0].0, "x");
+        assert!(subst[0].1.alpha_eq(&a));
+    }
+
+    #[test]
+    fn schematic_head_unify_type_clash_fails() {
+        let int_ty = Type::const_("Int", adsmt_core::Kind::Type);
+        let bool_ty = Type::bool_();
+        let x = Term::var("x", int_ty);
+        let q = Term::var("q", bool_ty);
+        let rule = SchematicHornRule::new(
+            x,
+            vec![],
+            vec!["x".into()],
+            "test",
+        );
+        assert!(rule.head_unify(&q).is_none());
+    }
+
+    #[test]
+    fn schematic_head_unify_consistent_repeated_var() {
+        // Pattern f(x, x) vs f(a, a) — single binding x ↦ a.
+        let int_ty = Type::const_("Int", adsmt_core::Kind::Type);
+        let f_ty = Type::fun(
+            int_ty.clone(),
+            Type::fun(int_ty.clone(), Type::bool_()).unwrap(),
+        )
+        .unwrap();
+        let f = Term::const_("f", f_ty);
+        let x = Term::var("x", int_ty.clone());
+        let head =
+            Term::app(Term::app(f.clone(), x.clone()).unwrap(), x).unwrap();
+        let a = Term::const_("a", int_ty);
+        let goal =
+            Term::app(Term::app(f, a.clone()).unwrap(), a).unwrap();
+        let rule = SchematicHornRule::new(
+            head,
+            vec![],
+            vec!["x".into()],
+            "test",
+        );
+        assert!(rule.head_matches(&goal));
+        let subst = rule.head_unify(&goal).expect("consistent unify");
+        assert_eq!(subst.len(), 1);
+    }
+
+    #[test]
+    fn schematic_head_unify_inconsistent_repeated_var_fails() {
+        let int_ty = Type::const_("Int", adsmt_core::Kind::Type);
+        let f_ty = Type::fun(
+            int_ty.clone(),
+            Type::fun(int_ty.clone(), Type::bool_()).unwrap(),
+        )
+        .unwrap();
+        let f = Term::const_("f", f_ty);
+        let x = Term::var("x", int_ty.clone());
+        let head =
+            Term::app(Term::app(f.clone(), x.clone()).unwrap(), x).unwrap();
+        let a = Term::const_("a", int_ty.clone());
+        let b = Term::const_("b", int_ty);
+        let goal = Term::app(Term::app(f, a).unwrap(), b).unwrap();
+        let rule = SchematicHornRule::new(
+            head,
+            vec![],
+            vec!["x".into()],
+            "test",
+        );
+        assert!(!rule.head_matches(&goal));
+        assert!(rule.head_unify(&goal).is_none());
+    }
+
+    #[test]
+    fn schematic_non_listed_var_falls_back_to_alpha() {
+        // Var `y` is NOT listed as schematic — α-equivalence
+        // applies. `y` and `z` (distinct names) must NOT unify.
+        let bool_ty = Type::bool_();
+        let y = Term::var("y", bool_ty.clone());
+        let z = Term::var("z", bool_ty);
+        let rule = SchematicHornRule::new(y, vec![], vec![], "test");
+        assert!(!rule.head_matches(&z));
     }
 }
