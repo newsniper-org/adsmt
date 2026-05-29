@@ -18,27 +18,28 @@ members = [
 exclude = ["external/logicutils", "external/oxiz"]
 
 [workspace.package]
-# Minor bump 0.18 → 0.19 opens the v0.19 cycle. Per the user
-# policy adopted 2026-05-29, the v0.x-smt branch ⇔ adsmt
-# synchronisation rule **returns to the original +2 offset**
-# (logicutils minor = adsmt minor + 2), so logicutils bumps
-# 0.18.0 → 0.21.0 in lockstep. The intervening logicutils
-# minors (0.19, 0.20) are intentionally skipped — they belong
-# to the post-restoration accounting.
+# Minor bump 0.19 → 0.21 opens the v0.21 cycle (odd-minor
+# cycle naming per project convention). Per the restored +2
+# offset rule, logicutils bumps 0.21.0 → 0.23.0 in lockstep.
 #
-# v0.19 scope (per project_cycle_versioning.md):
-#   * v0.18 carry-over deepening (compound-rule reconstruction
-#     full, LFSC full, EUF-tracked E-graph, scan=true real
-#     two-pass wiring, proc-macro OUT_DIR auto-use).
-#   * DPLL(T) engine maturation.
-#   * Theory layer deepening (BV bit-blasting, LIA/LRA Simplex
-#     refinements, Arrays combinators, Datatypes recursive).
-#   * Quantifier + abductive tier 4 / typed unification.
-#   * P5 — v1.0 architectural decision (adsmt ⇔ OxiZ
-#     relationship + logicutils + adsmt v1.0 unification).
-#   * Tooling (VS Code extension, adsmt-cli audit subcommand),
-#     CI, benchmarks.
-version = "0.19.0"
+# v0.21 scope (per project_cycle_versioning.md):
+#   * **P5 v1.0 architectural decision** carried forward from
+#     v0.19 — adsmt ⇔ OxiZ relationship (E.1), logicutils +
+#     adsmt v1.0 unification plan (E.2), first
+#     `#![breaking_changes_semver("1.0.0")]` attribute (E.4),
+#     v1.0 transition notes in policy docs (H.2). All blocked
+#     on user decision; v0.21 is the cycle where these land.
+#   * v0.19 substantial carry-over:
+#       — A.2 L-full LFSC parser + per-ITP consumer.
+#       — A.3 full EUF-tracked incremental E-graph + per-trigger
+#         learning loop (the `learn_triggers` helper landed in
+#         v0.19 as the lightweight half).
+#       — B.3 full 1-UIP CDCL clause learning + non-chronological
+#         backjumping (the Luby restart half landed in v0.19).
+#   * F.3 LSP exploration (carry-over, scope TBD with user).
+#   * v0.21 cycle audit + status snapshot conventions
+#     refresh.
+version = "0.21.0"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 
