@@ -47,6 +47,7 @@
 // appended below this comment.
 
 pub mod breaking_versions;
+pub mod fragment;
 pub mod sigma_check;
 
 /// Captured at compile time by the `adsmt_heuristics!` family of
@@ -142,41 +143,84 @@ impl<'ir> Checker<'ir> {
 
     /// Validate a user-extension heuristic module.
     ///
-    /// v0.17.0 ships a scaffolding implementation that always
-    /// returns `Ok(empty outcome)` for any successfully-parsed
-    /// module. The real fragment check (theory-capability
-    /// driven, with HKT/lambda restrictions) lands in the next
-    /// commit alongside the minimum-table source itself.
+    /// v0.18 wires the actual fragment validation
+    /// ([`fragment::validate_fragment`]) so out-of-fragment
+    /// constructs and the HKT/lambda restrictions land as
+    /// [`CheckError::Unsupported`] or
+    /// [`CheckError::Contradicts`] respectively. The
+    /// non-contradiction pass against the embedded minimum IR is
+    /// still scaffolded (the F.4+ work wires the actual SAT
+    /// hand-off); for now the check returns success when the
+    /// fragment scan passes.
     pub fn check(
         &self,
         module: &lu_common::kb::Module,
     ) -> Result<CheckOutcome, CheckError> {
-        // Walk the module so the API shape is exercised. Each
-        // item kind will dispatch to a dedicated handler once the
-        // theory-capability table is wired in.
+        // (1) Fragment scan — HKT/lambda restrictions + theory-
+        //     capability driven construct allow/deny.
+        if let Err(e) = fragment::validate_fragment(module) {
+            return Err(map_fragment_error(e));
+        }
+        // (2) Walk + count items so the API shape is exercised.
         let mut rules = 0usize;
         for item in &module.items {
             match item {
-                lu_common::kb::Item::Fact(_) | lu_common::kb::Item::EnumDef(_) => {
+                lu_common::kb::Item::Fact(_)
+                | lu_common::kb::Item::EnumDef(_)
+                | lu_common::kb::Item::Rule(_)
+                | lu_common::kb::Item::Constraint(_)
+                | lu_common::kb::Item::DataDef(_)
+                | lu_common::kb::Item::TypeAlias(_)
+                | lu_common::kb::Item::Relation(_)
+                | lu_common::kb::Item::Fn(_) => {
                     rules += 1;
                 }
-                lu_common::kb::Item::Import(_) | lu_common::kb::Item::Export(_) => {
+                lu_common::kb::Item::Import(_)
+                | lu_common::kb::Item::Export(_) => {
                     // Namespace mechanics — counted as zero rules.
                 }
-                _ => {
-                    // Out-of-fragment constructs surface as
-                    // Unsupported once the capability table is in.
-                    // v0.17.0 scaffolding accepts silently with a
-                    // warning, traded for hard rejection in the
-                    // next commit.
+                lu_common::kb::Item::Abduce(_)
+                | lu_common::kb::Item::Instance(_) => {
+                    // Should have been caught by the fragment
+                    // scan above; reaching here would be a bug
+                    // in the validator.
+                    return Err(CheckError::Unsupported(
+                        "internal: out-of-fragment item leaked past validate_fragment",
+                    ));
                 }
             }
         }
-        // Acknowledge minimum-table presence (silence the
-        // `unused field` warning until the next commit wires real
-        // consumption).
+        // Acknowledge minimum-table presence — the IR doesn't
+        // drive the v0.18 user-side check yet but the field is
+        // load-bearing for future work (F.6+).
         let _ = self.minimum.serialized.len();
         Ok(CheckOutcome { validated_rules: rules, warnings: Vec::new() })
+    }
+}
+
+fn map_fragment_error(e: fragment::FragmentError) -> CheckError {
+    match e {
+        fragment::FragmentError::HktForbidden(k) => CheckError::Unsupported(
+            // Map all HKT failures to a single "HKT" label —
+            // the underlying construct name is preserved in the
+            // FragmentError display.
+            match k {
+                "Arrow" => "HKT (KindExpr::Arrow)",
+                "Slot" => "HKT (KindExpr::Slot)",
+                _ => "HKT",
+            },
+        ),
+        fragment::FragmentError::LambdaCaptureForbidden(_) => {
+            CheckError::Unsupported("Lambda with non-empty external capture")
+        }
+        fragment::FragmentError::OutsideFragment(name) => match name {
+            "Instance" => CheckError::Unsupported("Instance"),
+            "Abduce" => CheckError::Unsupported("Abduce"),
+            _ => CheckError::Unsupported("out-of-fragment construct"),
+        },
+        fragment::FragmentError::UnsupportedTypeExpr(_) => {
+            CheckError::Unsupported("type expression outside fragment")
+        }
     }
 }
 
