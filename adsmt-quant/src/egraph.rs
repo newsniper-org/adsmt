@@ -69,7 +69,7 @@ struct ENode {
     term: Term,
 }
 
-/// Hash-consed + union-find E-graph (stage 1 skeleton).
+/// Hash-consed + union-find E-graph.
 #[derive(Default, Debug)]
 pub struct EGraph {
     nodes: Vec<ENode>,
@@ -83,6 +83,23 @@ pub struct EGraph {
     class_parents: HashMap<ENodeId, Vec<ENodeId>>,
     /// Hash-cons: lookup-by-shape. Maps from key to the first
     /// E-node that materialised it.
+    hash_cons: HashMap<ENodeKey, ENodeId>,
+    /// v0.21 A.2 stage 4 — scope stack for incremental
+    /// push/pop. Each entry is a full snapshot of the four
+    /// hash/vec fields above; pop restores them in O(snapshot
+    /// size). The naive clone-based snapshot is intentionally
+    /// chosen over a delta-based scheme because adsmt's typical
+    /// nesting depth (≤ 4) and graph size in solver tests make
+    /// the clone cost negligible. A delta-based scheme can land
+    /// later if profiling reveals it matters.
+    scope_stack: Vec<EGraphSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+struct EGraphSnapshot {
+    nodes: Vec<ENode>,
+    parent: Vec<ENodeId>,
+    class_parents: HashMap<ENodeId, Vec<ENodeId>>,
     hash_cons: HashMap<ENodeKey, ENodeId>,
 }
 
@@ -247,6 +264,38 @@ impl EGraph {
             u.insert(n.term.clone());
         }
         u
+    }
+
+    /// v0.21 A.2 stage 4 — push a snapshot of the graph onto
+    /// the scope stack. Subsequent inserts and merges are
+    /// rolled back by a matching [`Self::pop`] call.
+    pub fn push(&mut self) {
+        self.scope_stack.push(EGraphSnapshot {
+            nodes: self.nodes.clone(),
+            parent: self.parent.clone(),
+            class_parents: self.class_parents.clone(),
+            hash_cons: self.hash_cons.clone(),
+        });
+    }
+
+    /// Pop the top `levels` snapshots, restoring the graph
+    /// state captured by each [`Self::push`]. Calls with no
+    /// matching push are silently ignored — same semantics
+    /// as [`adsmt-theory`]'s `Theory::pop`.
+    pub fn pop(&mut self, levels: u32) {
+        for _ in 0..levels {
+            if let Some(snap) = self.scope_stack.pop() {
+                self.nodes = snap.nodes;
+                self.parent = snap.parent;
+                self.class_parents = snap.class_parents;
+                self.hash_cons = snap.hash_cons;
+            }
+        }
+    }
+
+    /// Current scope depth — the number of pending pushes.
+    pub fn scope_depth(&self) -> u32 {
+        self.scope_stack.len() as u32
     }
 
     /// Lower a Term into (head_symbol, child_ids), recursing
@@ -443,6 +492,60 @@ mod tests {
         let matcher = EMatcher::new(&universe);
         let insts = matcher.match_trigger(&trig);
         assert_eq!(insts.len(), 2, "P a and P b both match");
+    }
+
+    // === Stage 4 — push/pop scope ===
+
+    #[test]
+    fn push_pop_round_trips_an_inserted_node() {
+        let mut g = EGraph::new();
+        let a_id = g.add(&Term::var("a", int_()));
+        g.push();
+        let b_id = g.add(&Term::var("b", int_()));
+        g.merge(a_id, b_id);
+        assert!(g.equivalent(a_id, b_id));
+        g.pop(1);
+        // After pop, the b insertion + merge are undone.
+        // a's class membership: just `a` again.
+        let members = g.terms_in_class(a_id);
+        assert_eq!(members.len(), 1);
+        assert_eq!(g.scope_depth(), 0);
+    }
+
+    #[test]
+    fn nested_push_pop_restores_each_level() {
+        // Snapshot semantics: `push` captures the *current*
+        // state, `pop` rolls back to that snapshot. Set the
+        // intended state, then push, then mutate.
+        let mut g = EGraph::new();
+        let a = g.add(&Term::var("a", int_()));
+        // Snapshot 1 — { a alone }
+        g.push();
+        let b = g.add(&Term::var("b", int_()));
+        g.merge(a, b);
+        // Snapshot 2 — { a, b merged }
+        g.push();
+        let c = g.add(&Term::var("c", int_()));
+        g.merge(a, c);
+        // Now a+b+c.
+        assert_eq!(g.terms_in_class(a).len(), 3);
+        g.pop(1);
+        // Restored to snapshot 2: a+b merged, no c.
+        assert_eq!(g.terms_in_class(a).len(), 2);
+        g.pop(1);
+        // Restored to snapshot 1: only a.
+        assert_eq!(g.terms_in_class(a).len(), 1);
+        assert_eq!(g.scope_depth(), 0);
+    }
+
+    #[test]
+    fn pop_more_than_pushed_is_silent_no_op() {
+        let mut g = EGraph::new();
+        let _ = g.add(&Term::var("a", int_()));
+        // No push has been issued.
+        g.pop(5);
+        // Graph still holds the original insert.
+        assert_eq!(g.len(), 1);
     }
 
     #[test]
