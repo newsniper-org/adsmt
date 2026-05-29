@@ -466,6 +466,18 @@ impl Term {
     pub fn mk_bvadd(lhs: Term, rhs: Term, width: u32) -> KernelResult<Term> {
         Term::app(Term::app(Self::bv_binop_const("bvadd", width), lhs)?, rhs)
     }
+    /// v0.21 C.1 — symmetric to `mk_bvadd`. `Bv::reduce_binop`
+    /// already evaluates the all-literal case, and the
+    /// `bv_blast` ripple-carry-subtractor handles the mixed case.
+    pub fn mk_bvsub(lhs: Term, rhs: Term, width: u32) -> KernelResult<Term> {
+        Term::app(Term::app(Self::bv_binop_const("bvsub", width), lhs)?, rhs)
+    }
+    /// v0.21 C.1 — currently no bit-blaster (shift-and-add waits
+    /// for v0.23); `Bv::reduce_binop` handles the all-literal
+    /// case eagerly.
+    pub fn mk_bvmul(lhs: Term, rhs: Term, width: u32) -> KernelResult<Term> {
+        Term::app(Term::app(Self::bv_binop_const("bvmul", width), lhs)?, rhs)
+    }
 
     /// Destructure a BV binop `(<op>_w lhs rhs)` returning `(op, width, lhs, rhs)`.
     pub fn dest_bv_binop(&self) -> Option<(String, u32, Term, Term)> {

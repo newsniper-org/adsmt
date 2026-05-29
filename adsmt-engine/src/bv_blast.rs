@@ -195,19 +195,79 @@ pub fn blast_term(t: &Term, w: u32, env: &mut BlastEnv) -> Option<Vec<Bit>> {
         if op_w != w { return None; }
         let lhs_bits = blast_term(&lhs, w, env)?;
         let rhs_bits = blast_term(&rhs, w, env)?;
-        let mut out = Vec::with_capacity(w as usize);
-        for (a, b) in lhs_bits.into_iter().zip(rhs_bits) {
-            let bit = match op.as_str() {
-                "bvand" => env.and_bits(a, b),
-                "bvor"  => env.or_bits(a, b),
-                "bvxor" => env.xor_bits(a, b),
-                _ => return None,
-            };
-            out.push(bit);
-        }
-        return Some(out);
+        return match op.as_str() {
+            "bvand" | "bvor" | "bvxor" => {
+                let mut out = Vec::with_capacity(w as usize);
+                for (a, b) in lhs_bits.into_iter().zip(rhs_bits) {
+                    let bit = match op.as_str() {
+                        "bvand" => env.and_bits(a, b),
+                        "bvor"  => env.or_bits(a, b),
+                        "bvxor" => env.xor_bits(a, b),
+                        _ => unreachable!(),
+                    };
+                    out.push(bit);
+                }
+                Some(out)
+            }
+            // v0.21 C.1 — ripple-carry adder.
+            //
+            // s_i        = a_i ⊕ b_i ⊕ c_i
+            // c_{i+1}    = maj(a_i, b_i, c_i)
+            //            = (a_i ∧ b_i) ∨ (c_i ∧ (a_i ⊕ b_i))
+            //
+            // c_0 = false (no incoming carry); the final carry
+            // c_w drops on the floor — width-modulo wraparound
+            // matches the existing `Bv::reduce_binop` semantics
+            // for all-literal `bvadd`.
+            "bvadd" => Some(ripple_carry_add(lhs_bits, rhs_bits, env)),
+            // v0.21 C.1 — subtraction via two's complement:
+            //   a - b = a + (¬b) + 1
+            //
+            // Implemented inline: feed `¬b` into the adder and
+            // set the initial carry `c_0 = true` so the `+1`
+            // happens for free.
+            "bvsub" => Some(ripple_carry_sub(lhs_bits, rhs_bits, env)),
+            _ => None,
+        };
     }
     None
+}
+
+/// v0.21 C.1 — ripple-carry adder.
+fn ripple_carry_add(a_bits: Vec<Bit>, b_bits: Vec<Bit>, env: &mut BlastEnv) -> Vec<Bit> {
+    let mut out = Vec::with_capacity(a_bits.len());
+    let mut carry: Bit = Bit::Const(false);
+    for (a, b) in a_bits.into_iter().zip(b_bits) {
+        // s = a ⊕ b ⊕ c
+        let a_xor_b = env.xor_bits(a.clone(), b.clone());
+        let sum = env.xor_bits(a_xor_b.clone(), carry.clone());
+        // c' = (a ∧ b) ∨ (c ∧ (a ⊕ b))
+        let ab = env.and_bits(a, b);
+        let c_axb = env.and_bits(carry, a_xor_b);
+        let new_carry = env.or_bits(ab, c_axb);
+        out.push(sum);
+        carry = new_carry;
+    }
+    // Final carry dropped — width-modulo semantics.
+    out
+}
+
+/// v0.21 C.1 — subtraction via `a + (¬b) + 1`.
+fn ripple_carry_sub(a_bits: Vec<Bit>, b_bits: Vec<Bit>, env: &mut BlastEnv) -> Vec<Bit> {
+    let mut out = Vec::with_capacity(a_bits.len());
+    let mut carry: Bit = Bit::Const(true); // initial +1
+    for (a, b) in a_bits.into_iter().zip(b_bits) {
+        // Bitwise-not on `b` becomes the second operand.
+        let nb = b.negate();
+        let a_xor_b = env.xor_bits(a.clone(), nb.clone());
+        let diff = env.xor_bits(a_xor_b.clone(), carry.clone());
+        let ab = env.and_bits(a, nb);
+        let c_axb = env.and_bits(carry, a_xor_b);
+        let new_carry = env.or_bits(ab, c_axb);
+        out.push(diff);
+        carry = new_carry;
+    }
+    out
 }
 
 fn lit_bits(value: u128, w: u32) -> Vec<Bit> {
@@ -387,13 +447,93 @@ mod tests {
         assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
     }
 
+    // === v0.21 C.1 — ripple-carry arithmetic ===
+
     #[test]
-    fn bvadd_remains_unsupported() {
-        // bvadd is intentionally out-of-scope for the C.1 landing.
+    fn bvadd_concrete_operands_satisfiable_to_correct_sum() {
+        // (3 + 5) = 8 over width 4 — all constants, no variables.
+        // The blaster reduces every bit to Const, eq with the
+        // expected literal emits no constraints (or trivially
+        // satisfied), Sat.
+        let mut env = BlastEnv::new();
+        let three = Term::bv_lit(3, 4);
+        let five = Term::bv_lit(5, 4);
+        let add = Term::mk_bvadd(three, five, 4).unwrap();
+        let lit = Term::bv_lit(8, 4);
+        let cs = blast_eq_clauses(&add, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvadd_concrete_operands_wrong_sum_is_unsat() {
+        let mut env = BlastEnv::new();
+        let three = Term::bv_lit(3, 4);
+        let five = Term::bv_lit(5, 4);
+        let add = Term::mk_bvadd(three, five, 4).unwrap();
+        let lit = Term::bv_lit(7, 4); // wrong
+        let cs = blast_eq_clauses(&add, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Unsat);
+    }
+
+    #[test]
+    fn bvadd_overflow_wraps_at_width_4() {
+        // 0b1111 + 0b0010 = 0b0001 (mod 16) — high carry dropped.
+        let mut env = BlastEnv::new();
+        let a = Term::bv_lit(0b1111, 4);
+        let b = Term::bv_lit(0b0010, 4);
+        let add = Term::mk_bvadd(a, b, 4).unwrap();
+        let lit = Term::bv_lit(0b0001, 4);
+        let cs = blast_eq_clauses(&add, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvadd_with_variable_admits_solution() {
+        // (x + 1) = 5 over width 4 — single satisfying x = 4.
         let mut env = BlastEnv::new();
         let x = Term::var("x", Term::bv_sort(4));
         let add = Term::mk_bvadd(x, Term::bv_lit(1, 4), 4).unwrap();
+        let lit = Term::bv_lit(5, 4);
+        let cs = blast_eq_clauses(&add, &lit, 4, &mut env).unwrap();
+        // bounded depth must be high enough to walk every bit
+        // through the Tseitin chain.
+        assert_eq!(crate::bool_solver::dpll(&cs, 64), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvsub_concrete_operands_satisfiable_to_correct_diff() {
+        // (8 - 3) = 5 over width 4.
+        let mut env = BlastEnv::new();
+        let a = Term::bv_lit(8, 4);
+        let b = Term::bv_lit(3, 4);
+        let sub = Term::mk_bvsub(a, b, 4).unwrap();
+        let lit = Term::bv_lit(5, 4);
+        let cs = blast_eq_clauses(&sub, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvsub_with_underflow_wraps() {
+        // (3 - 8) = (3 + ¬8 + 1) = (3 + 0b0111 + 1) = 0b1011
+        // over width 4. That's 11.
+        let mut env = BlastEnv::new();
+        let a = Term::bv_lit(3, 4);
+        let b = Term::bv_lit(8, 4);
+        let sub = Term::mk_bvsub(a, b, 4).unwrap();
+        let lit = Term::bv_lit(11, 4);
+        let cs = blast_eq_clauses(&sub, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvmul_remains_unsupported() {
+        // bvmul (shift-and-add) is intentionally NOT in C.1 —
+        // ripple-carry addition is the foundation, multiplier
+        // reuse waits for the structural simplifier in v0.23.
+        let mut env = BlastEnv::new();
+        let x = Term::var("x", Term::bv_sort(4));
+        let mul = Term::mk_bvmul(x, Term::bv_lit(2, 4), 4).unwrap();
         let lit = Term::bv_lit(0b0010, 4);
-        assert!(blast_eq_clauses(&add, &lit, 4, &mut env).is_none());
+        assert!(blast_eq_clauses(&mul, &lit, 4, &mut env).is_none());
     }
 }
