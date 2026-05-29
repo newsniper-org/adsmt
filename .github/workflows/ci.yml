@@ -1,0 +1,111 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: cargo test (workspace)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --workspace
+        run: cargo build --workspace
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+      - name: cargo test --workspace --features oxiz-math
+        run: cargo test -p adsmt-theory --features oxiz-math
+
+  test-logicutils:
+    name: cargo test (external/logicutils)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --workspace (logicutils)
+        working-directory: external/logicutils
+        run: cargo test --workspace
+
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install stable Rust + rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+        continue-on-error: true  # adsmt fmt is currently not enforced; advisory
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install stable Rust + clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy --workspace
+        run: cargo clippy --workspace -- -D warnings
+        continue-on-error: true  # advisory until v0.19 H.1 audit closes the clippy gap
+
+  status-snapshot:
+    name: refresh adsmt-status snapshot (informational)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Render snapshot.md + task-list.txt
+        run: |
+          export ADSMT_STATUS_DIR="$RUNNER_TEMP/adsmt-status"
+          export ADSMT_PROJECT_DIR="$GITHUB_WORKSPACE"
+          mkdir -p "$ADSMT_STATUS_DIR"
+          bash scripts/snapshot-status.sh
+          echo "=== snapshot.md ==="
+          cat "$ADSMT_STATUS_DIR/snapshot.md"
+          echo "=== task-list.txt ==="
+          cat "$ADSMT_STATUS_DIR/task-list.txt"
