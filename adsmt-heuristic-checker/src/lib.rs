@@ -47,6 +47,7 @@
 // appended below this comment.
 
 pub mod breaking_versions;
+pub mod cache;
 pub mod fragment;
 pub mod sigma_check;
 
