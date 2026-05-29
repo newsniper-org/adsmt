@@ -95,6 +95,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-lints"
+version = "0.17.0"
+dependencies = [
+ "adsmt-heuristic-checker",
+ "thiserror",
+]
+
+[[package]]
 name = "adsmt-parser"
 version = "0.17.0"
 dependencies = [

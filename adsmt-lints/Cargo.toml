@@ -1,0 +1,20 @@
+[package]
+name = "adsmt-lints"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Offline-first lint plugins for adsmt and lu-kb usage. v0.17 ships the scaffold; cargo-dylint integration lands in v0.18 once the rustc plugin surface is finalised."
+
+[lib]
+# v0.17 keeps the crate as a plain rlib so the workspace builds
+# on stable Rust. The cargo-dylint cdylib + rustc plugin shim
+# moves to its own crate kind in v0.18 once the surface stabilises.
+crate-type = ["rlib"]
+
+[dependencies]
+# checker is the entry point for the dead-pattern analysis the
+# `adsmt_dead_heuristic_pattern` lint will eventually run. v0.17
+# keeps the dep minimal because the lint body itself is still a
+# placeholder.
+adsmt-heuristic-checker = { path = "../adsmt-heuristic-checker" }
+thiserror.workspace = true
