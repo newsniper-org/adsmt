@@ -188,6 +188,39 @@ mod tests {
     }
 }
 
+// === cargo-dylint plugin export (feature-gated, nightly-only) ===
+//
+// v0.18 exposes the cdylib + register_lints C ABI surface that
+// `cargo dylint` loads. The actual rustc lint pass
+// (`LateLintPass` impl wrapping `analyse_dead_patterns`)
+// requires nightly Rust because `LateLintPass` and friends
+// live in unstable rustc internals. We gate the actual
+// registration behind the `dylint-plugin` feature so the
+// default build stays on stable; turning the feature on
+// without nightly will fail at compile time with a clear
+// `dylint_linting`-driven error.
+
+#[cfg(feature = "dylint-plugin")]
+dylint_linting::dylint_library!();
+
+#[cfg(feature = "dylint-plugin")]
+extern crate rustc_lint;
+#[cfg(feature = "dylint-plugin")]
+extern crate rustc_session;
+
+#[cfg(feature = "dylint-plugin")]
+#[no_mangle]
+pub fn register_lints(
+    _sess: &rustc_session::Session,
+    _lint_store: &mut rustc_lint::LintStore,
+) {
+    // v0.18 registers the lint slot but doesn't yet attach a
+    // `LateLintPass` — the analysis is reachable via
+    // `analyse_dead_patterns` from the library surface and
+    // exercised in tests. v0.19 wires the rustc lint pass once
+    // we have a concrete cert-reflection point to plug into.
+}
+
 // === Future lu-kb-side lints ===
 //
 // Reserved space for lints targeting lu-kb usage patterns
