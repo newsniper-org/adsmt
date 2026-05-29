@@ -12,6 +12,7 @@
 pub mod bool_solver;
 pub mod bv_blast;
 pub mod cadical_backend;
+pub mod cdcl;
 pub mod cnf;
 pub mod dpllt;
 pub mod drat_trim;
