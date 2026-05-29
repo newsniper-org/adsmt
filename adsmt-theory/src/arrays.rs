@@ -110,6 +110,76 @@ impl Arrays {
         None
     }
 
+    /// v0.19 C.3 — store-store normalisation.
+    ///
+    /// Two rewriting rules over nested stores:
+    ///
+    /// 1. **Same-index dominance** (no side condition):
+    ///    `(store (store a i v1) i v2)` ⇒ `(store a i v2)`.
+    ///    The outer write dominates; the inner is dead.
+    ///
+    /// 2. **Disequal-index commutativity** (requires `i ≠ j` in
+    ///    `disequalities`):
+    ///    `(store (store a i v1) j v2)` ⇒
+    ///    `(store (store a j v2) i v1)`. Reordering writes that
+    ///    target distinct cells produces an equivalent array
+    ///    expression — useful as a canonicalisation step for
+    ///    downstream EUF / equality propagation, even though
+    ///    both sides are equal as arrays.
+    ///
+    /// Returns `Some((normalised, side_condition))` when a rule
+    /// fires; `None` otherwise. The side condition is the
+    /// equality (rule 1) or disequality (rule 2) the caller
+    /// must have already established.
+    pub(crate) fn store_store_normalize(
+        t: &Term,
+        disequalities: &[(Term, Term)],
+    ) -> Option<(Term, Term)> {
+        let (outer_a, j, v2) = Self::dest_store(t)?;
+        let (inner_a, i, v1) = Self::dest_store(&outer_a)?;
+        if i.alpha_eq(&j) {
+            // Same-index dominance.
+            let rewritten =
+                Self::mk_store_term_like(t, &inner_a, &i, &v2)?;
+            return Some((rewritten, Term::mk_eq(i, j).ok()?));
+        }
+        if Self::pair_known_disequal(&i, &j, disequalities) {
+            // Disequal-index commutativity — swap order.
+            let inner_swapped =
+                Self::mk_store_term_like(t, &inner_a, &j, &v2)?;
+            let rewritten =
+                Self::mk_store_term_like(t, &inner_swapped, &i, &v1)?;
+            // The witness is the disequality.
+            let diseq = Term::mk_eq(i, j).ok()?;
+            return Some((rewritten, diseq));
+        }
+        None
+    }
+
+    /// Build `(store arr idx val)` reusing the store-op constant
+    /// of an existing nested-store term. Type-safe because the
+    /// existing term already type-checks.
+    ///
+    /// Caller supplies `template` — any (store ...) term sharing
+    /// the same array sort. We extract its head constant
+    /// (`store`) and re-apply with the new args.
+    fn mk_store_term_like(
+        template: &Term,
+        arr: &Term,
+        idx: &Term,
+        val: &Term,
+    ) -> Option<Term> {
+        // template = App(App(App(store_const, _), _), _).
+        let outer = template;
+        let Term::App(level2, _) = outer else { return None; };
+        let Term::App(level1, _) = &**level2 else { return None; };
+        let Term::App(store_op, _) = &**level1 else { return None; };
+        let head: Term = (**store_op).clone();
+        let with_arr = Term::app(head, arr.clone()).ok()?;
+        let with_idx = Term::app(with_arr, idx.clone()).ok()?;
+        Term::app(with_idx, val.clone()).ok()
+    }
+
     /// Predicate: `(a, b)` (in any order) appears in `pairs` modulo
     /// α-equivalence.
     fn pair_known_disequal(a: &Term, b: &Term, pairs: &[(Term, Term)]) -> bool {
@@ -449,5 +519,58 @@ mod tests {
         assert_eq!(arr.derive_equalities().len(), 1);
         arr.pop(1);
         assert!(arr.derive_equalities().is_empty());
+    }
+
+    // === v0.19 C.3 store-store normalisation ===
+
+    #[test]
+    fn store_store_same_index_dominance() {
+        let a = Term::var("a", arr_int_int());
+        let i = Term::var("i", int_());
+        let v1 = Term::var("v1", int_());
+        let v2 = Term::var("v2", int_());
+        let inner = mk_store(a.clone(), i.clone(), v1);
+        let outer = mk_store(inner, i.clone(), v2.clone());
+        // Same-index dominance — no disequalities needed.
+        let result = Arrays::store_store_normalize(&outer, &[]);
+        assert!(result.is_some(), "same-index dominance should fire");
+        let (rewritten, _side) = result.unwrap();
+        // Rewritten should be `(store a i v2)`.
+        let expected = mk_store(a, i, v2);
+        assert!(rewritten.alpha_eq(&expected));
+    }
+
+    #[test]
+    fn store_store_disequal_index_commutativity() {
+        let a = Term::var("a", arr_int_int());
+        let i = Term::var("i", int_());
+        let j = Term::var("j", int_());
+        let v1 = Term::var("v1", int_());
+        let v2 = Term::var("v2", int_());
+        let inner = mk_store(a.clone(), i.clone(), v1.clone());
+        let outer = mk_store(inner, j.clone(), v2.clone());
+        // Without the disequality, no rewrite.
+        assert!(Arrays::store_store_normalize(&outer, &[]).is_none());
+        // With i ≠ j, the swap fires.
+        let result = Arrays::store_store_normalize(
+            &outer,
+            &[(i.clone(), j.clone())],
+        );
+        assert!(result.is_some(), "diseq-index swap should fire");
+        let (rewritten, _side) = result.unwrap();
+        // Expected: (store (store a j v2) i v1).
+        let expected_inner = mk_store(a, j, v2);
+        let expected = mk_store(expected_inner, i, v1);
+        assert!(rewritten.alpha_eq(&expected));
+    }
+
+    #[test]
+    fn store_store_normalize_returns_none_for_non_store_store() {
+        let a = Term::var("a", arr_int_int());
+        let i = Term::var("i", int_());
+        let v = Term::var("v", int_());
+        // Single store — not a nested store.
+        let single = mk_store(a, i, v);
+        assert!(Arrays::store_store_normalize(&single, &[]).is_none());
     }
 }
