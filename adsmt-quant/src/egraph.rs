@@ -61,6 +61,12 @@ struct ENode {
     /// to congruent child classes.
     #[allow(dead_code)]
     key: ENodeKey,
+    /// v0.21 A.2 stage 3 — the original [`Term`] that
+    /// materialised this node. Retained so the EGraph can
+    /// expose itself as a [`TermUniverse`] for the existing
+    /// [`crate::ematch::EMatcher`] without rebuilding terms
+    /// from the hash-cons key.
+    term: Term,
 }
 
 /// Hash-consed + union-find E-graph (stage 1 skeleton).
@@ -96,7 +102,10 @@ impl EGraph {
             return self.find(id);
         }
         let id = ENodeId(self.nodes.len() as u32);
-        self.nodes.push(ENode { key: key.clone() });
+        self.nodes.push(ENode {
+            key: key.clone(),
+            term: t.clone(),
+        });
         self.parent.push(id);
         self.hash_cons.insert(key, id);
         for child in &children {
@@ -208,6 +217,36 @@ impl EGraph {
             .get(&self.find(id))
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// v0.21 A.2 stage 3 — return every term that lives in
+    /// the class of `id`. The returned slice is in insertion
+    /// order so deterministic iteration is preserved.
+    pub fn terms_in_class(&self, id: ENodeId) -> Vec<Term> {
+        let root = self.find(id);
+        let mut out: Vec<Term> = Vec::new();
+        for (i, n) in self.nodes.iter().enumerate() {
+            if self.find(ENodeId(i as u32)) == root {
+                out.push(n.term.clone());
+            }
+        }
+        out
+    }
+
+    /// v0.21 A.2 stage 3 — project every E-node's term into a
+    /// [`TermUniverse`] so the existing
+    /// [`crate::ematch::EMatcher`] can run against the E-graph
+    /// without re-implementation. The projection is union-find
+    /// blind — every term ever added survives, congruence
+    /// equalities are *not* materialised as duplicates (the
+    /// matcher already handles α-equivalence on individual
+    /// universe entries).
+    pub fn as_universe(&self) -> crate::ematch::TermUniverse {
+        let mut u = crate::ematch::TermUniverse::new();
+        for n in &self.nodes {
+            u.insert(n.term.clone());
+        }
+        u
     }
 
     /// Lower a Term into (head_symbol, child_ids), recursing
@@ -362,6 +401,48 @@ mod tests {
         assert!(!g.equivalent(fga, fgb));
         g.merge(a_id, b_id);
         assert!(g.equivalent(fga, fgb), "two-hop cascade");
+    }
+
+    // === Stage 3 — TermUniverse / EMatcher integration ===
+
+    #[test]
+    fn terms_in_class_returns_every_member_after_merges() {
+        let mut g = EGraph::new();
+        let a = g.add(&Term::var("a", int_()));
+        let b = g.add(&Term::var("b", int_()));
+        let c = g.add(&Term::var("c", int_()));
+        g.merge(a, b);
+        g.merge(b, c);
+        let members = g.terms_in_class(a);
+        assert_eq!(members.len(), 3);
+    }
+
+    #[test]
+    fn as_universe_seeds_a_matcher_run() {
+        // Add `P a`, `P b` to the graph; obtain the universe;
+        // run the existing EMatcher on it.
+        use crate::ematch::EMatcher;
+        use crate::trigger::Trigger;
+        let mut g = EGraph::new();
+        let int_ty = int_();
+        let p_const =
+            Term::const_("P", Type::fun(int_ty.clone(), Type::bool_()).unwrap());
+        let a = Term::const_("a", int_ty.clone());
+        let b = Term::const_("b", int_ty.clone());
+        g.add(&Term::app(p_const.clone(), a).unwrap());
+        g.add(&Term::app(p_const.clone(), b).unwrap());
+
+        let universe = g.as_universe();
+        // Pattern: P x with x flex.
+        let x = std::sync::Arc::new(adsmt_core::Var {
+            name: "x".into(),
+            ty: int_ty,
+        });
+        let pattern = Term::app(p_const, Term::Var(x.clone())).unwrap();
+        let trig = Trigger::single(pattern, vec![x]);
+        let matcher = EMatcher::new(&universe);
+        let insts = matcher.match_trigger(&trig);
+        assert_eq!(insts.len(), 2, "P a and P b both match");
     }
 
     #[test]
