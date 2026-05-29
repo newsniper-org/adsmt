@@ -51,6 +51,7 @@
 
 pub mod common;
 pub mod drat_payload;
+pub mod lfsc_parse;
 
 pub use common::{
     aggregate_allow, aggregate_required, aggregate_should,
