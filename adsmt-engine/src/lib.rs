@@ -10,6 +10,7 @@
 //! Coq byte formats via the oxiz-sat + oxiz-proof bindings.
 
 pub mod bool_solver;
+pub mod bv_blast;
 pub mod cadical_backend;
 pub mod cnf;
 pub mod dpllt;
