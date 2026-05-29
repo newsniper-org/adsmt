@@ -36,12 +36,22 @@
 //!
 //! `import_adsmt_heuristics!("foo.kb")` and
 //! `#[derive_heuristics("foo.kb")]` resolve `"foo.kb"` against
-//! the directory of the invoking source file (D1.E-1.A-4 = β).
-//! Rust's proc-macro infra exposes the invocation site via
-//! `proc_macro::Span::call_site` (stable on recent compilers
-//! via `Span::file`/`source_file`); when that interface is
-//! unavailable we fall back to `CARGO_MANIFEST_DIR` and emit a
-//! compile error if the file can't be located.
+//! the directory of the invoking source file (D1.E-1.A-4 = β),
+//! using the stable [`proc_macro::Span::file`] API. The lookup
+//! order is:
+//!
+//! 1. Absolute path — used verbatim.
+//! 2. Relative path resolved against the invocation site's
+//!    source-file directory ([`Span::file`] returns the file
+//!    path; we join the dirname with the user-supplied
+//!    relative path).
+//! 3. Fallback to `CARGO_MANIFEST_DIR`-relative (preserved as a
+//!    safety net for environments where `Span::file` is empty
+//!    — e.g. macros invoked from `--emit asm` or other
+//!    irregular compilation modes).
+//!
+//! On Rust 1.88+ `Span::file` is stable and replaces the older
+//! unstable `Span::source_file`. v0.18 requires that toolchain.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -69,9 +79,10 @@ pub fn adsmt_heuristics(input: TokenStream) -> TokenStream {
 /// [`adsmt_heuristics`].
 #[proc_macro]
 pub fn import_adsmt_heuristics(input: TokenStream) -> TokenStream {
+    let call_site_file = proc_macro::Span::call_site().file();
     let path_lit = parse_macro_input!(input as LitStr);
     let path = path_lit.value();
-    match read_relative(&path) {
+    match read_relative(&path, &call_site_file) {
         Ok(source) => expand_from_source(&source, &path),
         Err(msg) => compile_error_stream(&msg).into(),
     }
@@ -89,10 +100,11 @@ pub fn import_adsmt_heuristics(input: TokenStream) -> TokenStream {
 /// reflection.
 #[proc_macro_attribute]
 pub fn derive_heuristics(args: TokenStream, item: TokenStream) -> TokenStream {
+    let call_site_file = proc_macro::Span::call_site().file();
     let path_lit = parse_macro_input!(args as LitStr);
     let item = parse_macro_input!(item as DeriveInput);
     let path = path_lit.value();
-    let source = match read_relative(&path) {
+    let source = match read_relative(&path, &call_site_file) {
         Ok(s) => s,
         Err(msg) => return compile_error_stream(&msg).into(),
     };
@@ -159,31 +171,73 @@ fn canonical_encoding(source: &str) -> String {
     out
 }
 
-fn read_relative(path: &str) -> Result<String, String> {
+/// Resolve a heuristic source path per D1.E-1.A-4 = β.
+///
+/// Lookup order:
+/// 1. Absolute path — used verbatim.
+/// 2. Relative to the invocation site's source-file directory
+///    (`proc_macro::Span::file`, stable on Rust 1.88+).
+///    `Span::file` returns the source file path; we strip the
+///    filename and join the dirname with the user-supplied
+///    relative path.
+/// 3. Relative to `CARGO_MANIFEST_DIR` — safety-net fallback for
+///    environments where `Span::file` returns an empty string
+///    (some irregular compilation modes).
+/// 4. CWD-relative — last-ditch.
+///
+/// Returns the file contents on first successful read.
+fn read_relative(path: &str, call_site_file: &str) -> Result<String, String> {
     use std::path::PathBuf;
     let candidate = PathBuf::from(path);
-    // Source-file relative resolution via proc_macro::Span is
-    // unstable on older Rust; fall back to CARGO_MANIFEST_DIR
-    // which is always available.
     if candidate.is_absolute() {
         return std::fs::read_to_string(&candidate).map_err(|e| {
             format!("adsmt-heuristic-checker: read `{path}`: {e}")
         });
     }
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| {
-        "adsmt-heuristic-checker: CARGO_MANIFEST_DIR unset; cannot resolve relative path".to_string()
-    })?;
-    let manifest_path = PathBuf::from(manifest_dir).join(&candidate);
-    if let Ok(s) = std::fs::read_to_string(&manifest_path) {
+
+    // (2) Source-file-relative — the primary D1.E-1.A-4 = β path.
+    let mut attempts: Vec<(String, PathBuf)> = Vec::new();
+    if !call_site_file.is_empty() {
+        let call_site_path = PathBuf::from(call_site_file);
+        // `Span::file` can return either an absolute path or a
+        // workspace-root-relative one depending on the rustc
+        // build mode. Either way the parent directory is what
+        // we want for source-file-relative resolution.
+        let parent =
+            call_site_path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let resolved = parent.join(&candidate);
+        if let Ok(s) = std::fs::read_to_string(&resolved) {
+            return Ok(s);
+        }
+        attempts.push((
+            format!("source-file-relative (from `{}`)", call_site_file),
+            resolved,
+        ));
+    }
+
+    // (3) Cargo manifest dir — safety-net fallback.
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let manifest_path = PathBuf::from(manifest_dir).join(&candidate);
+        if let Ok(s) = std::fs::read_to_string(&manifest_path) {
+            return Ok(s);
+        }
+        attempts.push(("CARGO_MANIFEST_DIR-relative".into(), manifest_path));
+    }
+
+    // (4) CWD-relative — last-ditch.
+    if let Ok(s) = std::fs::read_to_string(&candidate) {
         return Ok(s);
     }
-    // Last-ditch: try CWD-relative.
-    std::fs::read_to_string(&candidate).map_err(|e| {
-        format!(
-            "adsmt-heuristic-checker: read `{path}` (tried {} then cwd): {e}",
-            manifest_path.display(),
-        )
-    })
+    attempts.push(("cwd-relative".into(), candidate));
+
+    let tried = attempts
+        .into_iter()
+        .map(|(label, p)| format!("    - {label}: {}", p.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "adsmt-heuristic-checker: could not read heuristic source `{path}`. Tried:\n{tried}"
+    ))
 }
 
 fn compile_error_stream(message: &str) -> TokenStream2 {
