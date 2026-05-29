@@ -291,10 +291,14 @@ impl Solver {
                 other => return other,
             }
         }
-        // Tier 4: budget exhausted → abductive escalation. Emit a
-        // synthetic candidate per remaining quantifier saying
-        // "instantiation needed". The user's `smt_abduce` flow can
-        // surface this as a `sorry` hole.
+        // Tier 4 (v0.19 D.1): budget exhausted → abductive escalation,
+        // now run through `minimize` + `rank_candidates` before
+        // returning. The minimisation step drops candidates that are
+        // strictly subsumed by another remaining quantifier (so
+        // duplicated `∀x. P x` assertions don't emit two `sorry`
+        // suggestions) and the ranking step orders the survivors by
+        // hypothesis-count then by depth so the UI can surface the
+        // most actionable candidate first.
         let lits = self.all_literals();
         let (quants, _) = crate::quant::partition_quantifiers(&lits);
         if !quants.is_empty() {
@@ -312,7 +316,11 @@ impl Solver {
                     sources: vec!["quant-tier4".into()],
                 });
             }
-            return SatResult::Abductive { candidates };
+            let minimized = minimize(candidates, MinimizePolicy::Standard);
+            let ranked = rank_candidates(minimized);
+            let ordered: Vec<adsmt_abduce::sld::Candidate> =
+                ranked.into_iter().map(|r| r.candidate).collect();
+            return SatResult::Abductive { candidates: ordered };
         }
         SatResult::Unknown {
             reason: format!("quantifier instantiation budget ({QUANTIFIER_ROUNDS} rounds) exhausted"),
@@ -1116,5 +1124,38 @@ mod tests {
         s.assert(forall);
         s.assert(Term::mk_not(Term::app(p, a).unwrap()).unwrap());
         assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    // === v0.19 D.1 — Tier 4 escalation goes through minimize + rank ===
+
+    #[test]
+    fn tier4_minimize_rank_pipeline_subsumes_strictly_smaller_candidate() {
+        // Pin the post-minimize-rank shape that D.1 wires into Tier
+        // 4: a strictly-smaller candidate subsumes a strictly-larger
+        // one, and rank preserves the survivor. The solver-side path
+        // emitting these candidates fires when the quant
+        // instantiation loop exhausts its budget — covered by the
+        // forall integration tests above.
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let small = adsmt_abduce::sld::Candidate {
+            hypotheses: vec![p.clone()],
+            explanations: vec![Some("tier4 escalation: needs p".into())],
+            sources: vec!["quant-tier4".into()],
+        };
+        let big = adsmt_abduce::sld::Candidate {
+            hypotheses: vec![p, q],
+            explanations: vec![
+                Some("tier4 escalation: needs p".into()),
+                Some("tier4 escalation: needs q".into()),
+            ],
+            sources: vec!["quant-tier4".into(), "quant-tier4".into()],
+        };
+        let minimized = minimize(vec![big, small], MinimizePolicy::Standard);
+        assert_eq!(minimized.len(), 1, "smaller candidate subsumes bigger");
+        assert_eq!(minimized[0].hypotheses.len(), 1);
+        let ranked = rank_candidates(minimized);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].candidate.sources[0], "quant-tier4");
     }
 }
