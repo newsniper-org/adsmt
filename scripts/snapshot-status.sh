@@ -143,6 +143,17 @@ atom_write "$status_dir/last-commit.txt" "${last_subject}
 ${last_body}"
 atom_write "$status_dir/updated-at.txt" "$now"$'\n'
 
+# Append a one-line history entry (v0.19 G.3 timeseries).
+# Bounded: keep only the last 200 entries so the file stays
+# small. Each line is `<UTC timestamp>\t<short SHA>\t<branch>\t<subject>`.
+history_path="$status_dir/history.tsv"
+history_line=$(printf '%s\t%s\t%s\t%s\n' "$now" "$head_short" "$branch" "$last_subject")
+{
+    [ -f "$history_path" ] && tail -n 199 "$history_path"
+    printf '%s' "$history_line"
+} > "$history_path.new" 2>/dev/null || true
+[ -s "$history_path.new" ] && mv -f "$history_path.new" "$history_path" || rm -f "$history_path.new"
+
 # tests.txt — best-effort cached test count from the most recent
 # successful build artifact. We do NOT run `cargo test` from this
 # script because it would block commits. The post-commit hook just
