@@ -191,6 +191,177 @@ fn propagate(clauses: &[Clause], state: &mut CdclState) -> PropOutcome {
 
 fn atom_key(lit: &Lit) -> String { lit.atom.to_string() }
 
+/// v0.21 B.1 (stage 2) — 1-UIP conflict analysis.
+///
+/// Given a falsified clause `clauses[conflict_idx]` and the
+/// current [`CdclState`], walk the trail backwards resolving
+/// each assigned literal at the current decision level with its
+/// antecedent clause until exactly one such literal remains.
+/// That literal is the **1-UIP** (first unique implication
+/// point); the returned learnt clause is its negation plus the
+/// lower-level literals that survived resolution.
+///
+/// Returns:
+///   - the learnt clause as a `Vec<Lit>` (length ≥ 1)
+///   - the **backjump level** — the highest decision level
+///     among the non-UIP literals (or 0 when the learnt is a
+///     unit clause); stage 3 will pass this to
+///     [`CdclState::backtrack_to`]
+///
+/// The learnt clause is *valid* by resolution from the input
+/// clauses: every literal in it was either in the conflict
+/// clause or in one of the antecedents along the resolution
+/// path, with the resolved literal canceled at each step.
+pub fn analyze_conflict_1uip(
+    clauses: &[Clause],
+    state: &CdclState,
+    conflict_idx: usize,
+) -> (Vec<Lit>, u32) {
+    use std::collections::HashSet;
+    let current_level = state.decision_level;
+    let mut seen: HashSet<String> = HashSet::new();
+    // Learnt accumulates literals NOT at the current level.
+    let mut learnt: Vec<Lit> = Vec::new();
+    let mut count_current_level: usize = 0;
+
+    // Process a literal from a clause we are resolving against.
+    // The literal IS in the clause (so its polarity is the
+    // clause's), but on the trail the *opposite* polarity is
+    // assigned (which is what makes the clause falsified /
+    // unit-propagates on the remaining literal).
+    let mut process_lit = |lit: &Lit, seen: &mut HashSet<String>,
+                           learnt: &mut Vec<Lit>,
+                           count_current_level: &mut usize| {
+        let key = atom_key(lit);
+        if seen.contains(&key) { return; }
+        seen.insert(key.clone());
+        let level = state
+            .trail
+            .iter()
+            .find(|e| e.atom_key == key)
+            .map(|e| e.decision_level)
+            .unwrap_or(0);
+        if level == current_level {
+            *count_current_level += 1;
+        } else if level > 0 {
+            // Lower-but-nonzero decision level → goes into the
+            // learnt clause directly.
+            learnt.push(lit.clone());
+        }
+        // level == 0 entries (root-level facts) are dropped:
+        // their negation is unsatisfiable, so adding them to
+        // the learnt clause would just be redundant.
+    };
+
+    // Seed from the falsified clause.
+    for lit in &clauses[conflict_idx] {
+        process_lit(lit, &mut seen, &mut learnt, &mut count_current_level);
+    }
+
+    // Walk the trail backwards. Stop when only one
+    // current-level seen literal remains.
+    let mut trail_idx = state.trail.len();
+    let mut uip_lit: Option<Lit> = None;
+    while count_current_level > 1 {
+        if trail_idx == 0 { break; }
+        trail_idx -= 1;
+        let entry = &state.trail[trail_idx];
+        if !seen.contains(&entry.atom_key) { continue; }
+        if entry.decision_level != current_level { continue; }
+        // Resolve this literal.
+        count_current_level -= 1;
+        match entry.reason {
+            Reason::Decision => {
+                // The decision itself becomes the UIP if it's
+                // the last one standing — handled by the while
+                // condition. Reaching a Decision before reducing
+                // to 1 means there is no further resolution at
+                // this level; the decision IS the UIP.
+                uip_lit = Some(Lit::new(
+                    entry_to_atom_term(clauses, entry).unwrap_or_else(
+                        || Lit::pos(any_atom_of_clause(&clauses[conflict_idx])).atom,
+                    ),
+                    !entry.polarity,
+                ));
+                break;
+            }
+            Reason::Propagated { clause_idx } => {
+                let antecedent = &clauses[clause_idx];
+                for lit in antecedent {
+                    if atom_key(lit) == entry.atom_key { continue; }
+                    process_lit(
+                        lit,
+                        &mut seen,
+                        &mut learnt,
+                        &mut count_current_level,
+                    );
+                }
+            }
+        }
+    }
+
+    // The remaining seen literal at the current level is the UIP.
+    if uip_lit.is_none() {
+        for entry in state.trail.iter().rev() {
+            if entry.decision_level != current_level { continue; }
+            if !seen.contains(&entry.atom_key) { continue; }
+            uip_lit = Some(Lit::new(
+                term_for_atom_key(clauses, &entry.atom_key)
+                    .expect("atom key must originate in some clause literal"),
+                !entry.polarity,
+            ));
+            break;
+        }
+    }
+
+    if let Some(uip) = uip_lit {
+        learnt.push(uip);
+    }
+
+    let backjump_level = learnt
+        .iter()
+        .filter_map(|l| {
+            state
+                .trail
+                .iter()
+                .find(|e| e.atom_key == atom_key(l))
+                .map(|e| e.decision_level)
+        })
+        .filter(|&lvl| lvl < current_level)
+        .max()
+        .unwrap_or(0);
+
+    (learnt, backjump_level)
+}
+
+/// Find any clause literal whose atom-key matches `key`, returning
+/// its underlying [`adsmt_core::Term`] so we can rebuild a new
+/// `Lit` with the opposite polarity for the learnt clause.
+fn term_for_atom_key(
+    clauses: &[Clause],
+    key: &str,
+) -> Option<adsmt_core::Term> {
+    for c in clauses {
+        for lit in c {
+            if atom_key(lit) == key {
+                return Some(lit.atom.clone());
+            }
+        }
+    }
+    None
+}
+
+fn entry_to_atom_term(
+    clauses: &[Clause],
+    entry: &TrailEntry,
+) -> Option<adsmt_core::Term> {
+    term_for_atom_key(clauses, &entry.atom_key)
+}
+
+fn any_atom_of_clause(clause: &Clause) -> adsmt_core::Term {
+    clause[0].atom.clone()
+}
+
 enum ClauseEval {
     Satisfied,
     Falsified,
@@ -289,6 +460,93 @@ mod tests {
         assert_eq!(state.decision_level, 0);
         assert!(state.trail.is_empty());
         assert!(state.assign.is_empty());
+    }
+
+    // === Stage 2 — 1-UIP conflict analysis ===
+
+    #[test]
+    fn one_uip_at_decision_when_unit_propagation_conflicts() {
+        // Clauses:
+        //   c0: (p ∨ q)
+        //   c1: (¬p)
+        // Decide p=true at level 1. Propagation tries to satisfy
+        // c0 (already sat via p) but c1 is falsified — conflict.
+        // The conflict clause is c1. Its single literal `¬p` has
+        // atom_key `p` at decision_level=1 (the decision). UIP =
+        // `p` decision → learnt clause = [¬p].
+        let cs = vec![
+            vec![Lit::pos(p()), Lit::pos(q())],
+            vec![Lit::neg(p())],
+        ];
+        let mut state = CdclState::new();
+        // Manually drive: decide p=true at level 1.
+        state.push("p".into(), true, Reason::Decision);
+        // After decision, propagation finds c1 falsified.
+        let (learnt, bj_level) = analyze_conflict_1uip(&cs, &state, 1);
+        assert_eq!(learnt.len(), 1, "learnt clause is unit");
+        assert!(!learnt[0].polarity, "learnt is ¬p");
+        assert_eq!(atom_key(&learnt[0]), "p");
+        assert_eq!(bj_level, 0, "unit learnt ⇒ backjump to root");
+    }
+
+    #[test]
+    fn one_uip_at_propagated_literal_when_conflict_is_unit_at_current_level() {
+        // Clauses:
+        //   c0: (¬p ∨ q)
+        //   c1: (¬q ∨ r)
+        //   c2: (¬r)
+        // Decide p=true at level 1. Propagation: q=true via c0,
+        // r=true via c1, c2 falsified.
+        // 1-UIP is the *first* unique-implication-point on the
+        // current-level cut. Since the conflict clause c2=[¬r]
+        // already has exactly one literal at the current level
+        // (r), no resolution is needed — r is the 1-UIP. Learnt
+        // clause = [¬r], backjump to level 0.
+        //
+        // This is the canonical 1-UIP behaviour: resolve back
+        // only as far as needed to make the cut unique, NOT all
+        // the way to the decision.
+        let r = Term::var("r", Type::bool_());
+        let cs = vec![
+            vec![Lit::neg(p()), Lit::pos(q())],
+            vec![Lit::neg(q()), Lit::pos(r.clone())],
+            vec![Lit::neg(r)],
+        ];
+        let mut state = CdclState::new();
+        state.push("p".into(), true, Reason::Decision);
+        state.push("q".into(), true, Reason::Propagated { clause_idx: 0 });
+        state.push("r".into(), true, Reason::Propagated { clause_idx: 1 });
+        let (learnt, bj_level) = analyze_conflict_1uip(&cs, &state, 2);
+        assert_eq!(learnt.len(), 1, "first UIP at r, no chain resolution needed");
+        assert_eq!(atom_key(&learnt[0]), "r");
+        assert!(!learnt[0].polarity);
+        assert_eq!(bj_level, 0);
+    }
+
+    #[test]
+    fn one_uip_resolves_when_conflict_clause_has_multiple_current_level_lits() {
+        // Clauses:
+        //   c0: (¬p ∨ ¬q ∨ r)         — forces r when p, q both true
+        //   c1: (¬p ∨ ¬r)             — falsified when p and r both true
+        // Decide p=true at level 1; decide q=true at level 2.
+        // Propagation derives r=true from c0 (at level 2). c1
+        // becomes the conflict clause: literals ¬p (level 1),
+        // ¬r (level 2). Two seen literals total, only one at
+        // current level → already 1-UIP. Learnt = [¬p, ¬r].
+        let r = Term::var("r", Type::bool_());
+        let cs = vec![
+            vec![Lit::neg(p()), Lit::neg(q()), Lit::pos(r.clone())],
+            vec![Lit::neg(p()), Lit::neg(r)],
+        ];
+        let mut state = CdclState::new();
+        state.push("p".into(), true, Reason::Decision);
+        state.push("q".into(), true, Reason::Decision);
+        state.push("r".into(), true, Reason::Propagated { clause_idx: 0 });
+        let (learnt, bj_level) = analyze_conflict_1uip(&cs, &state, 1);
+        let keys: Vec<String> = learnt.iter().map(atom_key).collect();
+        assert!(keys.contains(&"r".to_string()));
+        assert!(keys.contains(&"p".to_string()));
+        assert_eq!(bj_level, 1, "backjump to the level of ¬p");
     }
 
     #[test]
