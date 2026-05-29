@@ -85,12 +85,33 @@ pub struct MissingImports(
 /// from the error rather than panic.
 pub fn try_emit_lean(cert: &Certificate) -> Result<String, MissingImports> {
     use crate::prover_emit::common::{
-        aggregate_required, lean_import_line, missing_imports, resolve_imports,
+        aggregate_required, lean_axiom_keywords, lean_import_line,
+        missing_imports, resolve_imports_with_scan,
     };
     use crate::canonical::ClassicalSet;
 
-    // Resolve imports and check coverage.
-    let resolved = resolve_imports(cert, &ClassicalSet::empty(), &[]);
+    // v0.19 A.5: two-pass scan=true wiring.
+    //
+    // Pass 1 — preliminary render. We render the cert body with
+    // ZERO classical-axiom imports so any `Classical.em` /
+    // `funext` / etc. occurrences come solely from emitted step
+    // content (not from prelude bias).
+    //
+    // Pass 2 — resolve imports via `resolve_imports_with_scan`
+    // which honours the D1.B `lazy=true, scan=true` arm by
+    // matching `lean_axiom_keywords` against the preliminary
+    // text.
+    //
+    // Pass 3 — final render with the resolved imports as
+    // prelude.
+    let preliminary = render_body(cert);
+    let resolved = resolve_imports_with_scan(
+        cert,
+        &ClassicalSet::empty(),
+        &[],
+        &preliminary,
+        lean_axiom_keywords,
+    );
     let required = aggregate_required(cert);
     if !required.is_empty() {
         let missing = missing_imports(cert, &resolved);
@@ -138,6 +159,35 @@ pub fn try_emit_lean(cert: &Certificate) -> Result<String, MissingImports> {
     }
     out.push_str("\nend AdsmtCert\n");
     Ok(out)
+}
+
+/// Render the cert body **without** any classical-axiom prelude.
+/// Used by [`try_emit_lean`]'s pass-1 preliminary render for the
+/// D1.B `lazy=true, scan=true` text-scan arm.
+///
+/// Output shape: same as the final render minus the import
+/// block. Includes the namespace wrapper, free-variable axioms,
+/// every step, and the `theorem result` close.
+fn render_body(cert: &Certificate) -> String {
+    let mut out = String::new();
+    out.push_str("namespace AdsmtCert\n\n");
+    let vars = collect_free_vars(cert);
+    if !vars.is_empty() {
+        for (name, ty_lean) in &vars {
+            writeln!(out, "axiom {name} : {ty_lean}").unwrap();
+        }
+        out.push('\n');
+    }
+    for step in &cert.steps {
+        emit_step(step, &mut out);
+    }
+    if let Some(seq) = cert.final_sequent() {
+        let concl_lean = render_term(&seq.concl);
+        let final_id = format!("s{}", cert.conclusion.0);
+        writeln!(out, "\ntheorem result : {concl_lean} := {final_id}").unwrap();
+    }
+    out.push_str("\nend AdsmtCert\n");
+    out
 }
 
 fn emit_step(step: &Step, out: &mut String) {
