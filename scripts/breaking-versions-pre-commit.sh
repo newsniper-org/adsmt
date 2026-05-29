@@ -41,9 +41,13 @@ for path in "${peer_paths[@]}"; do
     diff_output=$(git diff --cached --unified=0 -- "$rel" 2>/dev/null || true)
     [ -n "$diff_output" ] || continue
     while IFS= read -r line; do
-        # Lines like `-X` (but not `---`) are deletions.
+        # Lines like `-X` (but not `---` diff headers) are
+        # deletions. Bash 5.3 rejects `---*|--- *)` unquoted in
+        # case patterns due to a leading-dash interaction; the
+        # quoted form is equivalent and parses cleanly across
+        # bash versions.
         case "$line" in
-            ---*|--- *) continue ;;
+            '---'*|'--- '*) continue ;;
             -*)
                 stripped="${line#-}"
                 stripped="${stripped## }"
