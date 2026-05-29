@@ -99,7 +99,37 @@ impl MinimumIr {
             serialized: include_str!("../minimum-table/minimum.kb"),
         }
     }
+
+    /// Return a reference to the pre-parsed shipped minimum
+    /// table. Computed once per process via [`std::sync::LazyLock`]
+    /// and reused thereafter, so callers can cheaply consult the
+    /// minimum's structure (item kinds, fact entries, enum
+    /// constructors) without re-parsing on every call.
+    ///
+    /// Panics if the shipped minimum table fails to parse —
+    /// that would be an internal invariant violation since the
+    /// proc-macro's σ anchor check (in
+    /// `adsmt-heuristic-checker-macros`) verifies parseability
+    /// at every macro invocation.
+    pub fn shipped_module() -> &'static lu_common::kb::Module {
+        SHIPPED_MODULE.as_ref().expect(
+            "shipped minimum table must parse — proc-macro σ anchor would have caught any drift",
+        )
+    }
+
+    /// Try variant — returns `None` if the shipped minimum
+    /// table can't be parsed. Useful for diagnostic tools that
+    /// want to surface the parse error without panicking.
+    pub fn try_shipped_module() -> Option<&'static lu_common::kb::Module> {
+        SHIPPED_MODULE.as_ref().ok()
+    }
 }
+
+static SHIPPED_MODULE: std::sync::LazyLock<
+    Result<lu_common::kb::Module, lu_common::kb::ParseError>,
+> = std::sync::LazyLock::new(|| {
+    lu_common::kb::parse(include_str!("../minimum-table/minimum.kb"))
+});
 
 /// Result of a user-extension check.
 #[derive(Debug)]
@@ -252,6 +282,20 @@ mod tests {
             "shipped table should have ≥4 items, found {}",
             module.items.len(),
         );
+    }
+
+    #[test]
+    fn shipped_module_lazylock_returns_same_reference_each_call() {
+        let m1 = MinimumIr::shipped_module();
+        let m2 = MinimumIr::shipped_module();
+        // Same `&'static` reference returned each time.
+        assert!(std::ptr::eq(m1, m2));
+        assert!(m1.items.len() >= 4);
+    }
+
+    #[test]
+    fn try_shipped_module_succeeds_on_well_formed_minimum() {
+        assert!(MinimumIr::try_shipped_module().is_some());
     }
 
     #[test]
