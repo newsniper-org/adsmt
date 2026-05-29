@@ -77,6 +77,61 @@ impl LinArith {
                conflict: None, scope_stack: Vec::new() }
     }
 
+    // === v0.19 C.2 — public introspection API ===
+
+    /// Return the currently-tightest `(lower, upper)` bound pair
+    /// for `var`. `None` for either side means no bound is
+    /// currently in scope.
+    ///
+    /// The tuple represents `(lower_inclusive_or_none,
+    /// upper_inclusive_or_none)`. Strict bounds are recorded
+    /// internally with a `strict` flag; this introspection method
+    /// flattens them via LIA semantics (`x > k` ⇒ `x ≥ k+1`).
+    /// For LRA the strict flag is folded in by returning the
+    /// inclusive value of the strict literal — callers that need
+    /// to distinguish strict vs non-strict should use
+    /// [`Self::tight_bounds_strict`] instead.
+    pub fn tight_bounds(&self, var: &str) -> (Option<i128>, Option<i128>) {
+        match self.bounds.get(var) {
+            None => (None, None),
+            Some(b) => {
+                let lo = b.lower.map(|(v, _)| v);
+                let up = b.upper.map(|(v, _)| v);
+                (lo, up)
+            }
+        }
+    }
+
+    /// Strict-aware variant of [`Self::tight_bounds`].
+    ///
+    /// Each side of the returned tuple is `Option<(value,
+    /// strict)>` where `strict = true` means the bound is
+    /// exclusive (matches `x > k` / `x < k`).
+    pub fn tight_bounds_strict(
+        &self,
+        var: &str,
+    ) -> (Option<(i128, bool)>, Option<(i128, bool)>) {
+        match self.bounds.get(var) {
+            None => (None, None),
+            Some(b) => (b.lower, b.upper),
+        }
+    }
+
+    /// Number of recorded two-variable constraints (FM input
+    /// candidates + cross-pair-derived). Useful for
+    /// benchmarking the FM closure's reach.
+    pub fn two_var_count(&self) -> usize {
+        self.two_vars.len()
+    }
+
+    /// Return every variable that currently has at least one
+    /// bound recorded (lower, upper, or both). The set is the
+    /// FM closure's "footprint" — the variables LinArith
+    /// reasoning has touched. Order is unspecified.
+    pub fn bound_variables(&self) -> impl Iterator<Item = &str> {
+        self.bounds.keys().map(|s| s.as_str())
+    }
+
     /// Recognise two-variable inequality forms. Returns
     /// `(x_name, y_coeff_sign, y_name, op, k)` where `y_coeff_sign`
     /// is `+1` for `(+ x y)` style and `-1` for `(- x y)` style.
@@ -758,5 +813,61 @@ mod tests {
         t.assert(Literal::positive(ge_term("x", 0)).unwrap());
         t.assert(Literal::positive(le_term("z", 10)).unwrap());
         assert!(matches!(t.check(), CheckResult::Sat));
+    }
+
+    // === v0.19 C.2 introspection API ===
+
+    #[test]
+    fn tight_bounds_reports_recorded_pair() {
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(ge_term("x", 5)).unwrap());
+        t.assert(Literal::positive(le_term("x", 10)).unwrap());
+        let (lo, up) = t.tight_bounds("x");
+        assert_eq!(lo, Some(5));
+        assert_eq!(up, Some(10));
+    }
+
+    #[test]
+    fn tight_bounds_returns_none_for_unbounded_var() {
+        let t = LinArith::lia();
+        assert_eq!(t.tight_bounds("nothing_here"), (None, None));
+    }
+
+    #[test]
+    fn tight_bounds_strict_preserves_lia_strictness() {
+        let mut t = LinArith::lia();
+        // x > 5 in LIA tightens to x ≥ 6 (strict=false because
+        // integer semantics promote it).
+        let op_ty =
+            Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap())
+                .unwrap();
+        let gt = Term::const_(">", op_ty);
+        let x = Term::var("x", int_ty());
+        let five = Term::const_("int:5", int_ty());
+        let gt_x_5 = Term::app(Term::app(gt, x).unwrap(), five).unwrap();
+        t.assert(Literal::positive(gt_x_5).unwrap());
+        let (lo, _up) = t.tight_bounds_strict("x");
+        assert_eq!(lo, Some((6, false)));
+    }
+
+    #[test]
+    fn two_var_count_grows_with_diff_assertions() {
+        let mut t = LinArith::lia();
+        assert_eq!(t.two_var_count(), 0);
+        t.assert(Literal::positive(diff_le_term("x", "y", 0)).unwrap());
+        assert!(t.two_var_count() >= 1);
+    }
+
+    #[test]
+    fn bound_variables_lists_each_touched_var() {
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(ge_term("x", 0)).unwrap());
+        t.assert(Literal::positive(le_term("y", 100)).unwrap());
+        let vars: std::collections::BTreeSet<String> = t
+            .bound_variables()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(vars.contains("x"));
+        assert!(vars.contains("y"));
     }
 }
