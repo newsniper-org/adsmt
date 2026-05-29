@@ -316,11 +316,66 @@ pub fn populate_classical_requirements(cert: &mut Certificate) {
 // to this aggregation by the caller; this helper takes the
 // cert and returns the union of per-step contributions.
 
-use crate::canonical::{AllowMarker, ClassicalModuleFamily, ClassicalSet};
+use crate::canonical::{
+    AllowMarker, ClassicalMarkerSet, ClassicalModuleFamily, ClassicalSet,
+    MidBlock, MidBlockItem,
+};
 
-/// Aggregate the per-step `should_import_classical` contributions
-/// over a [`Certificate`]. Returns the union — per D1.A-2 = δ+ε
-/// the file's `should` set is the union of every layer.
+/// Walk every [`MidBlock`] in `cert.mid_blocks` (depth-first,
+/// recursively) and apply a visitor to every block's
+/// `local_markers` and `exported_markers`. Per D1.A-2 = δ+ε
+/// both halves contribute additively to the file-level
+/// resolved set; the lexical local/exported distinction is
+/// metadata for cert producers, not a contribution policy.
+fn walk_mid_blocks<F>(blocks: &[MidBlock], visit: &mut F)
+where
+    F: FnMut(&ClassicalMarkerSet),
+{
+    for block in blocks {
+        visit(&block.local_markers);
+        visit(&block.exported_markers);
+        for item in &block.contents {
+            if let MidBlockItem::NestedBlock(nested) = item {
+                walk_mid_blocks(std::slice::from_ref(nested.as_ref()), visit);
+            }
+        }
+    }
+}
+
+/// Apply every pattern marker against every step in `cert`;
+/// invoke `visit` with the marker's `local_markers` for each
+/// `(marker, step)` pair where the pattern matches. Steps that
+/// don't match contribute nothing.
+///
+/// A marker that matches multiple steps contributes its marker
+/// set multiple times — but since the underlying aggregation is
+/// a set union (idempotent), the net effect is a single
+/// contribution per matching marker. Counts only matter for the
+/// dead-pattern audit which lives in `adsmt-lints`.
+fn walk_pattern_markers<F>(cert: &Certificate, visit: &mut F)
+where
+    F: FnMut(&ClassicalMarkerSet),
+{
+    for marker in &cert.pattern_markers {
+        let matches_any =
+            cert.steps.iter().any(|step| marker.pattern.matches(step));
+        if matches_any {
+            visit(&marker.local_markers);
+        }
+    }
+}
+
+/// Aggregate the `should_import_classical` contributions over a
+/// [`Certificate`] across all four layers per D1.A-2 = δ+ε:
+///
+/// 1. Each step's `should_import_classical` (the per-step layer).
+/// 2. Each mid-block's local + exported markers (the per-mid-block
+///    layer; depth-first recursion).
+/// 3. Each pattern marker whose pattern matches at least one step
+///    (the cross-cutting pattern layer).
+///
+/// The fourth layer (per-emit-call) is the caller's responsibility
+/// — see the `extra_should` argument of [`resolve_imports`].
 pub fn aggregate_should(cert: &Certificate) -> ClassicalSet {
     let mut out = ClassicalSet::empty();
     for step in &cert.steps {
@@ -328,13 +383,29 @@ pub fn aggregate_should(cert: &Certificate) -> ClassicalSet {
             out.insert(fam);
         }
     }
+    walk_mid_blocks(&cert.mid_blocks, &mut |markers| {
+        for fam in markers.should.iter() {
+            out.insert(fam);
+        }
+    });
+    walk_pattern_markers(cert, &mut |markers| {
+        for fam in markers.should.iter() {
+            out.insert(fam);
+        }
+    });
     out
 }
 
-/// Aggregate the per-step `allow_to_import_classical` markers
-/// over a [`Certificate`]. Returns the raw list; each marker
-/// retains its own `(lazy, scan)` option setting so the emitter
-/// can evaluate them independently per the D1.B truth table.
+/// Aggregate the `allow_to_import_classical` markers over a
+/// [`Certificate`] across all four layers. Returns the raw list;
+/// each marker retains its own `(lazy, scan)` option setting so
+/// the emitter can evaluate them independently per the D1.B truth
+/// table.
+///
+/// Layers walked:
+/// 1. Each step's `allow_to_import_classical`.
+/// 2. Each mid-block's local + exported allow markers (recursive).
+/// 3. Each matching pattern marker's allow markers.
 pub fn aggregate_allow(cert: &Certificate) -> Vec<AllowMarker> {
     let mut out = Vec::new();
     for step in &cert.steps {
@@ -342,6 +413,16 @@ pub fn aggregate_allow(cert: &Certificate) -> Vec<AllowMarker> {
             out.push(marker.clone());
         }
     }
+    walk_mid_blocks(&cert.mid_blocks, &mut |markers| {
+        for marker in &markers.allow {
+            out.push(marker.clone());
+        }
+    });
+    walk_pattern_markers(cert, &mut |markers| {
+        for marker in &markers.allow {
+            out.push(marker.clone());
+        }
+    });
     out
 }
 
@@ -350,6 +431,11 @@ pub fn aggregate_allow(cert: &Certificate) -> Vec<AllowMarker> {
 /// `direct_required_classical ∪ transitive_required_classical`.
 /// This is the set the emit-time check compares against the
 /// resolved `should ∪ allow-evaluated` set.
+///
+/// Mid-blocks and pattern markers don't contribute to the
+/// **required** set — they only carry *hints* (should / allow).
+/// What's *required* is intrinsic to each step's body, regardless
+/// of layered metadata.
 pub fn aggregate_required(cert: &Certificate) -> ClassicalSet {
     let mut out = ClassicalSet::empty();
     for step in &cert.steps {
@@ -672,6 +758,136 @@ mod tests {
         let snapshot = cert.steps[0].direct_required_classical.clone();
         populate_direct_required(&mut cert);
         assert_eq!(cert.steps[0].direct_required_classical, snapshot);
+    }
+
+    #[test]
+    fn mid_block_local_markers_contribute_to_should() {
+        use crate::canonical::{
+            ClassicalMarkerSet, MidBlock, MidBlockItem, StepId,
+        };
+        let mut b = CertBuilder::default();
+        let h = r::assume(&mut b, p()).unwrap();
+        let step_id = h.step();
+        let block = MidBlock {
+            name: Some("blockA".into()),
+            contents: vec![MidBlockItem::Step(step_id)],
+            local_markers: ClassicalMarkerSet {
+                should: ClassicalSet::from_iter([
+                    ClassicalModuleFamily::Propositional,
+                ]),
+                allow: vec![],
+            },
+            exported_markers: ClassicalMarkerSet::empty(),
+        };
+        b.add_mid_block(block);
+        let cert = b.snapshot(step_id);
+        let should = aggregate_should(&cert);
+        assert!(should.contains(ClassicalModuleFamily::Propositional));
+    }
+
+    #[test]
+    fn nested_mid_block_contributes_recursively() {
+        use crate::canonical::{ClassicalMarkerSet, MidBlock, MidBlockItem};
+        let mut b = CertBuilder::default();
+        let h = r::assume(&mut b, p()).unwrap();
+        let step_id = h.step();
+        let inner = MidBlock {
+            name: Some("inner".into()),
+            contents: vec![MidBlockItem::Step(step_id)],
+            local_markers: ClassicalMarkerSet {
+                should: ClassicalSet::from_iter([
+                    ClassicalModuleFamily::FunExt,
+                ]),
+                allow: vec![],
+            },
+            exported_markers: ClassicalMarkerSet::empty(),
+        };
+        let outer = MidBlock {
+            name: Some("outer".into()),
+            contents: vec![MidBlockItem::NestedBlock(Box::new(inner))],
+            local_markers: ClassicalMarkerSet::empty(),
+            exported_markers: ClassicalMarkerSet::empty(),
+        };
+        b.add_mid_block(outer);
+        let cert = b.snapshot(step_id);
+        let should = aggregate_should(&cert);
+        assert!(should.contains(ClassicalModuleFamily::FunExt));
+    }
+
+    #[test]
+    fn pattern_marker_contributes_when_pattern_matches() {
+        use crate::canonical::{
+            ClassicalMarkerSet, PatternMarker, StepKindTag, StepPattern,
+        };
+        let mut b = CertBuilder::default();
+        let h = r::assume(&mut b, p()).unwrap();
+        let step_id = h.step();
+        // Assume step matches Kind(Assume) — should contribute.
+        b.add_pattern_marker(PatternMarker {
+            pattern: StepPattern::Kind(StepKindTag::Assume),
+            local_markers: ClassicalMarkerSet {
+                should: ClassicalSet::from_iter([
+                    ClassicalModuleFamily::Predicate,
+                ]),
+                allow: vec![],
+            },
+            name: Some("assume_marker".into()),
+            source_loc: None,
+        });
+        let cert = b.snapshot(step_id);
+        let should = aggregate_should(&cert);
+        assert!(should.contains(ClassicalModuleFamily::Predicate));
+    }
+
+    #[test]
+    fn pattern_marker_does_not_contribute_when_pattern_misses() {
+        use crate::canonical::{
+            ClassicalMarkerSet, PatternMarker, StepKindTag, StepPattern,
+        };
+        let mut b = CertBuilder::default();
+        let h = r::assume(&mut b, p()).unwrap();
+        let step_id = h.step();
+        // Theory marker — cert has only Assume, so pattern doesn't match.
+        b.add_pattern_marker(PatternMarker {
+            pattern: StepPattern::Kind(StepKindTag::Theory),
+            local_markers: ClassicalMarkerSet {
+                should: ClassicalSet::from_iter([
+                    ClassicalModuleFamily::Choice,
+                ]),
+                allow: vec![],
+            },
+            name: Some("theory_only".into()),
+            source_loc: None,
+        });
+        let cert = b.snapshot(step_id);
+        let should = aggregate_should(&cert);
+        // The unmatched pattern marker contributes nothing.
+        assert!(!should.contains(ClassicalModuleFamily::Choice));
+    }
+
+    #[test]
+    fn mid_block_allow_marker_lands_in_aggregate_allow() {
+        use crate::canonical::{AllowMarker, ClassicalMarkerSet, MidBlock};
+        let mut b = CertBuilder::default();
+        let h = r::assume(&mut b, p()).unwrap();
+        let step_id = h.step();
+        let block = MidBlock {
+            name: None,
+            contents: vec![],
+            local_markers: ClassicalMarkerSet {
+                should: ClassicalSet::empty(),
+                allow: vec![AllowMarker::gatekeeper(
+                    ClassicalSet::from_iter([
+                        ClassicalModuleFamily::Predicate,
+                    ]),
+                )],
+            },
+            exported_markers: ClassicalMarkerSet::empty(),
+        };
+        b.add_mid_block(block);
+        let cert = b.snapshot(step_id);
+        let allow = aggregate_allow(&cert);
+        assert_eq!(allow.len(), 1);
     }
 
     #[test]
