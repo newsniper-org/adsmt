@@ -6,6 +6,7 @@
 //! a preprocessing pass with explicit certificate steps.
 
 pub mod ematch;
+pub mod egraph;
 pub mod enumerate;
 pub mod prenex;
 pub mod trigger;
