@@ -239,6 +239,74 @@ pub fn populate_direct_required(cert: &mut Certificate) {
     }
 }
 
+/// Return the list of parent [`StepId`]s a step references.
+///
+/// Eight `StepBody` variants carry parent references:
+/// `Trans / EqMp / Deduct / Abs / Inst / InstType / Theory /
+/// Instance` (per the policy doc § "Parent classical-ness
+/// inheritance"). Other variants return an empty Vec.
+pub fn parent_step_ids(body: &StepBody) -> Vec<crate::canonical::StepId> {
+    match body {
+        StepBody::Trans { lhs, rhs } => vec![*lhs, *rhs],
+        StepBody::EqMp { iff, p } => vec![*iff, *p],
+        StepBody::Deduct { a, b } => vec![*a, *b],
+        StepBody::Abs { eq, .. } => vec![*eq],
+        StepBody::Inst { thm, .. } => vec![*thm],
+        StepBody::InstType { thm, .. } => vec![*thm],
+        StepBody::Theory { parents, .. } => parents.clone(),
+        StepBody::Instance { .. } => Vec::new(),
+        StepBody::Assume(_)
+        | StepBody::Refl(_)
+        | StepBody::Beta { .. }
+        | StepBody::Assumed { .. } => Vec::new(),
+    }
+}
+
+/// Propagate `direct_required_classical` into
+/// `transitive_required_classical` per the pair-to-pair
+/// inheritance rule (D7 = δ').
+///
+/// For each step `S` with parents `[P_1, ..., P_n]`:
+///
+/// ```text
+/// S.transitive = S.direct ∪ ⋃_i (P_i.direct ∪ P_i.transitive)
+/// ```
+///
+/// Steps are processed in step-id order; since `StepId(i)` only
+/// references `StepId(j)` for `j < i` (the cert is acyclic and
+/// monotonically grown), one forward pass suffices. Idempotent.
+///
+/// Run after [`populate_direct_required`] so the `direct` slot
+/// reflects the heuristic.
+pub fn propagate_transitive(cert: &mut Certificate) {
+    let count = cert.steps.len();
+    for i in 0..count {
+        // Compute the new transitive from a snapshot of parents.
+        let parents = parent_step_ids(&cert.steps[i].body);
+        let mut accumulated = cert.steps[i].direct_required_classical.clone();
+        for pid in &parents {
+            let idx = pid.0 as usize;
+            if idx < count {
+                for fam in cert.steps[idx].direct_required_classical.iter() {
+                    accumulated.insert(fam);
+                }
+                for fam in cert.steps[idx].transitive_required_classical.iter() {
+                    accumulated.insert(fam);
+                }
+            }
+        }
+        cert.steps[i].transitive_required_classical = accumulated;
+    }
+}
+
+/// Run both [`populate_direct_required`] and
+/// [`propagate_transitive`] in order. Convenience for callers
+/// that want the full pair populated from scratch.
+pub fn populate_classical_requirements(cert: &mut Certificate) {
+    populate_direct_required(cert);
+    propagate_transitive(cert);
+}
+
 // === Classical-axiom-import aggregation (v0.17) ===
 //
 // The classical-axiom-marker pipeline computes a cert-level
@@ -489,6 +557,110 @@ mod tests {
             parents: vec![],
         };
         assert!(direct_required_for_body(&body).is_empty());
+    }
+
+    #[test]
+    fn parent_step_ids_for_trans_returns_both_sides() {
+        use crate::canonical::StepId;
+        let body = StepBody::Trans { lhs: StepId(3), rhs: StepId(7) };
+        let parents = parent_step_ids(&body);
+        assert_eq!(parents, vec![StepId(3), StepId(7)]);
+    }
+
+    #[test]
+    fn parent_step_ids_for_assume_is_empty() {
+        let body = StepBody::Assume(p());
+        assert!(parent_step_ids(&body).is_empty());
+    }
+
+    #[test]
+    fn transitive_propagation_pulls_parent_direct_set() {
+        use crate::canonical::{Sequent, StepBody};
+        use crate::drat::DratProof;
+        let mut b = CertBuilder::default();
+        // Step 0: DRAT theory step ⇒ direct = {Propositional}.
+        let drat_body = StepBody::Theory {
+            name: "DRAT".into(),
+            witness: TheoryWitness::Drat {
+                clauses: vec![],
+                proof: DratProof { steps: vec![] },
+                dimacs_bytes: vec![],
+                alethe_bytes: vec![],
+                lfsc_bytes: vec![],
+                coq_bytes: vec![],
+            },
+            parents: vec![],
+        };
+        let drat_id = b.add(drat_body, Sequent { hyps: vec![], concl: p() });
+        // Step 1: EqMp referencing the DRAT step. Its direct is
+        // empty, but its transitive should accumulate
+        // Propositional from the parent.
+        let eqmp_body = StepBody::EqMp { iff: drat_id, p: drat_id };
+        let eqmp_id = b.add(eqmp_body, Sequent { hyps: vec![], concl: p() });
+        let mut cert = b.snapshot(eqmp_id);
+        populate_classical_requirements(&mut cert);
+        // DRAT step.
+        assert!(cert.steps[0]
+            .direct_required_classical
+            .contains(ClassicalModuleFamily::Propositional));
+        // EqMp's own direct is empty.
+        assert!(cert.steps[1].direct_required_classical.is_empty());
+        // But its transitive pulled in Propositional via the DRAT
+        // parent.
+        assert!(cert.steps[1]
+            .transitive_required_classical
+            .contains(ClassicalModuleFamily::Propositional));
+    }
+
+    #[test]
+    fn propagate_transitive_is_idempotent() {
+        use crate::canonical::{Sequent, StepBody};
+        use crate::drat::DratProof;
+        let mut b = CertBuilder::default();
+        let drat_id = b.add(
+            StepBody::Theory {
+                name: "DRAT".into(),
+                witness: TheoryWitness::Drat {
+                    clauses: vec![],
+                    proof: DratProof { steps: vec![] },
+                    dimacs_bytes: vec![],
+                    alethe_bytes: vec![],
+                    lfsc_bytes: vec![],
+                    coq_bytes: vec![],
+                },
+                parents: vec![],
+            },
+            Sequent { hyps: vec![], concl: p() },
+        );
+        let eqmp_id = b.add(
+            StepBody::EqMp { iff: drat_id, p: drat_id },
+            Sequent { hyps: vec![], concl: p() },
+        );
+        let mut cert = b.snapshot(eqmp_id);
+        populate_classical_requirements(&mut cert);
+        let snapshot: Vec<_> = cert
+            .steps
+            .iter()
+            .map(|s| {
+                (
+                    s.direct_required_classical.clone(),
+                    s.transitive_required_classical.clone(),
+                )
+            })
+            .collect();
+        // Run again — must produce the same result.
+        populate_classical_requirements(&mut cert);
+        let after: Vec<_> = cert
+            .steps
+            .iter()
+            .map(|s| {
+                (
+                    s.direct_required_classical.clone(),
+                    s.transitive_required_classical.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(snapshot, after);
     }
 
     #[test]

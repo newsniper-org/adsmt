@@ -55,7 +55,8 @@ pub use common::{
     aggregate_allow, aggregate_required, aggregate_should,
     classify_type, collect_free_vars, direct_required_for_body,
     escape_for_comment, isabelle_import_line, lean_import_line,
-    missing_imports, populate_direct_required, resolve_imports,
+    missing_imports, parent_step_ids, populate_classical_requirements,
+    populate_direct_required, propagate_transitive, resolve_imports,
     rocq_import_line, strip_app_head, witness_summary,
     ClassifiedType,
 };
