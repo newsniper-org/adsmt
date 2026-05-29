@@ -15,5 +15,7 @@ adsmt-cert.workspace = true
 adsmt-engine.workspace = true
 adsmt-parser.workspace = true
 adsmt-theory.workspace = true
+# v0.19 F.2: dead-pattern audit JSON for --audit-json.
+adsmt-lints = { path = "../adsmt-lints" }
 clap.workspace = true
 thiserror.workspace = true

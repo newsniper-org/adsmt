@@ -33,6 +33,13 @@ use adsmt_parser::smtlib::Command;
 struct Cli {
     /// SMT-LIB script path. Reads stdin when omitted.
     input: Option<String>,
+    /// After every `check-sat`, also write the post-solve
+    /// dead-pattern audit (`adsmt_lints::audit_to_json`) for the
+    /// resulting cert to stderr. Useful for IDE consumers that
+    /// pipe `lu-smt --audit-json` through their own JSON
+    /// post-processor. v0.19 F.2.
+    #[arg(long)]
+    audit_json: bool,
 }
 
 fn main() -> ExitCode {
@@ -61,6 +68,25 @@ fn main() -> ExitCode {
             DispatchResult::CheckSat(status) => {
                 last = status.clone();
                 println!("{}", status.label());
+                // v0.19 F.2: emit the dead-pattern audit JSON
+                // for the most-recent cert (Unsat-side only;
+                // Sat/Unknown produce no cert in v0.18 engine).
+                if cli.audit_json {
+                    if let Some(cert) = driver.last_cert.as_ref() {
+                        match adsmt_lints::audit_to_json(cert) {
+                            Ok(json) => eprintln!("{}", json),
+                            Err(e) => {
+                                eprintln!(
+                                    "lu-smt: dead-pattern audit serialisation error: {e}"
+                                );
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "lu-smt: --audit-json requested but no cert available (Sat/Unknown verdicts produce no cert in v0.18)"
+                        );
+                    }
+                }
             }
             DispatchResult::Exit => break,
             DispatchResult::Error(code, msg) => {
