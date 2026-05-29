@@ -9,6 +9,7 @@ members = [
     "adsmt-abduce",
     "adsmt-engine",
     "adsmt-parser",
+    "adsmt-heuristic-checker",
     "adsmt-cli",
     "adsmt-ffi",
 ]

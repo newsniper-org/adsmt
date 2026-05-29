@@ -1,0 +1,21 @@
+[package]
+name = "adsmt-heuristic-checker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Per-user-crate validator for adsmt classical-axiom heuristic extensions. Consumes a frozen minimum-table IR and checks user-defined lu-kb heuristics against it via adsmt's theory layer."
+
+[dependencies]
+adsmt-core.workspace = true
+adsmt-cert.workspace = true
+adsmt-theory.workspace = true
+# lu-common provides K12-256 for the frozen-hash safeguard and the
+# kb AST that user-extension heuristics are written in.
+lu-common = { path = "../external/logicutils/lu-common", default-features = false, features = ["k12"] }
+thiserror.workspace = true
+
+# `breaking_changes_semver` attributes are tracked by the
+# `#![breaking_changes_semver("x.y.z")]` inner attribute on
+# `src/lib.rs`. The newest attribute auto-sets the lower bound for
+# compatibility checks (see prover_emit_policy.md § "Per-user IR
+# cache"). At v0.17.0 the list is empty — no breakings yet.
