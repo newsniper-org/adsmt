@@ -1,0 +1,56 @@
+{
+  "name": "adsmt-lints-vscode",
+  "displayName": "adsmt Lints",
+  "description": "Consumes adsmt-lints JSON audits and renders dead-pattern diagnostics in the editor.",
+  "version": "0.19.0",
+  "publisher": "adsmt",
+  "license": "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./out/extension.js",
+  "categories": ["Linters"],
+  "activationEvents": [
+    "onCommand:adsmt-lints.loadAudit",
+    "onLanguage:smt-lib"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "adsmt-lints.loadAudit",
+        "title": "adsmt: Load audit JSON",
+        "category": "adsmt"
+      },
+      {
+        "command": "adsmt-lints.clearDiagnostics",
+        "title": "adsmt: Clear lints diagnostics",
+        "category": "adsmt"
+      }
+    ],
+    "configuration": {
+      "title": "adsmt Lints",
+      "properties": {
+        "adsmt-lints.auditPath": {
+          "type": "string",
+          "default": "",
+          "description": "Default path to the adsmt-lints audit JSON document. Used by adsmt: Load audit JSON when no path is provided interactively."
+        },
+        "adsmt-lints.autoReload": {
+          "type": "boolean",
+          "default": true,
+          "description": "When set, the extension watches the configured auditPath and re-renders diagnostics on every file-system change."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
