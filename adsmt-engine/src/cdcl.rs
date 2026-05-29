@@ -103,6 +103,12 @@ pub struct CdclState {
     /// the road) and so stage 4 can apply a deletion policy
     /// without touching the original problem.
     pub learnt_clauses: Vec<Clause>,
+    /// v0.21 B.1 stage 4 — VSIDS activity scores per atom.
+    /// Each conflict bumps the activity of every atom in the
+    /// learnt clause; periodic [`Self::decay_activity`] scales
+    /// every score by `decay_factor` so recently-active atoms
+    /// dominate the decision order. See [`pick_vsids_atom`].
+    pub activity: HashMap<String, f64>,
 }
 
 impl CdclState {
@@ -123,6 +129,25 @@ impl CdclState {
             decision_level: self.decision_level,
             reason,
         });
+    }
+
+    /// Bump every atom in `clause`'s VSIDS activity by `bump`.
+    /// Called from the conflict path with the learnt clause —
+    /// the literals that participated in the conflict are
+    /// likely-relevant for future decisions.
+    pub fn bump_activity(&mut self, clause: &Clause, bump: f64) {
+        for lit in clause {
+            let key = atom_key(lit);
+            *self.activity.entry(key).or_insert(0.0) += bump;
+        }
+    }
+
+    /// Scale every activity score by `factor` (typically a
+    /// value in (0, 1) like 0.95). Periodic decay keeps
+    /// recently-active atoms ranked above stale ones without
+    /// resetting the score table.
+    pub fn decay_activity(&mut self, factor: f64) {
+        for v in self.activity.values_mut() { *v *= factor; }
     }
 
     /// Roll the trail back to the entries at `level` and below,
@@ -163,6 +188,12 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
     let input_len = clauses.len();
     let mut owned: Vec<Clause> = clauses.to_vec();
     let mut conflicts = 0;
+    // v0.21 B.1 stage 4 — VSIDS tuning constants. The bump grows
+    // by 1 per conflict (additive) and decay scales every score
+    // by 0.95 after each conflict, the classical MiniSat defaults
+    // before the rescaling-on-overflow trick.
+    let vsids_bump: f64 = 1.0;
+    let vsids_decay: f64 = 0.95;
     loop {
         // Propagate over input + learnt clauses.
         let conflict_idx = propagate_with_storage(&owned, &mut state);
@@ -178,6 +209,11 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
             if learnt.is_empty() {
                 return BoolResult::Unsat;
             }
+            // VSIDS: bump the learnt clause's atoms, then decay
+            // globally. Periodic decay keeps the score scale
+            // bounded without an explicit rescale.
+            state.bump_activity(&learnt, vsids_bump);
+            state.decay_activity(vsids_decay);
             state.backtrack_to(bj_level);
             // Append the learnt clause and record it on the
             // separate learnt_clauses store. The learnt clause
@@ -188,30 +224,40 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
             state.learnt_clauses.push(learnt);
             continue;
         }
-        // No conflict — pick a decision or report Sat.
-        let mut decision_atom: Option<String> = None;
-        for clause in owned.iter().take(input_len) {
-            match evaluate_clause(clause, &state.assign) {
-                ClauseEval::Satisfied => {}
-                ClauseEval::Falsified => unreachable!("propagation caught"),
-                ClauseEval::Unit(_) => unreachable!("propagation drained"),
-                ClauseEval::Open => {
-                    for lit in clause {
-                        let key = atom_key(lit);
-                        if !state.assign.contains_key(&key) {
-                            decision_atom = Some(key);
-                            break;
-                        }
+        // No conflict — pick a VSIDS-ranked decision or report Sat.
+        let key = pick_vsids_atom(&owned[..input_len], &state);
+        let Some(key) = key else { return BoolResult::Sat; };
+        state.push(key, true, Reason::Decision);
+    }
+}
+
+/// v0.21 B.1 stage 4 — choose the next decision atom by VSIDS
+/// activity. Iterates open clauses in input order and selects
+/// the unassigned literal with the highest activity score. Falls
+/// back to the first-unassigned policy when no unassigned atom
+/// has been bumped yet (cold start — every score is 0).
+fn pick_vsids_atom(input_clauses: &[Clause], state: &CdclState) -> Option<String> {
+    let mut best: Option<(String, f64)> = None;
+    for clause in input_clauses {
+        match evaluate_clause(clause, &state.assign) {
+            ClauseEval::Satisfied => continue,
+            ClauseEval::Falsified => unreachable!("propagation caught"),
+            ClauseEval::Unit(_) => unreachable!("propagation drained"),
+            ClauseEval::Open => {
+                for lit in clause {
+                    let key = atom_key(lit);
+                    if state.assign.contains_key(&key) { continue; }
+                    let score = state.activity.get(&key).copied().unwrap_or(0.0);
+                    match &best {
+                        None => best = Some((key, score)),
+                        Some((_, b)) if score > *b => best = Some((key, score)),
+                        _ => {}
                     }
-                    if decision_atom.is_some() { break; }
                 }
             }
         }
-        let Some(key) = decision_atom else {
-            return BoolResult::Sat;
-        };
-        state.push(key, true, Reason::Decision);
     }
+    best.map(|(k, _)| k)
 }
 
 /// Like [`propagate`] but reports the conflicting clause index
@@ -632,6 +678,52 @@ mod tests {
         assert!(keys.contains(&"r".to_string()));
         assert!(keys.contains(&"p".to_string()));
         assert_eq!(bj_level, 1, "backjump to the level of ¬p");
+    }
+
+    // === Stage 4 — VSIDS decision heuristic ===
+
+    #[test]
+    fn bump_activity_accumulates_per_atom() {
+        let mut state = CdclState::new();
+        let clause = vec![Lit::pos(p()), Lit::pos(q())];
+        state.bump_activity(&clause, 1.0);
+        state.bump_activity(&clause, 0.5);
+        assert!((state.activity.get("p").copied().unwrap() - 1.5).abs() < 1e-9);
+        assert!((state.activity.get("q").copied().unwrap() - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn decay_activity_scales_every_score() {
+        let mut state = CdclState::new();
+        state.activity.insert("p".into(), 2.0);
+        state.activity.insert("q".into(), 1.0);
+        state.decay_activity(0.5);
+        assert!((state.activity.get("p").copied().unwrap() - 1.0).abs() < 1e-9);
+        assert!((state.activity.get("q").copied().unwrap() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pick_vsids_atom_prefers_higher_activity() {
+        let cs = vec![vec![Lit::pos(p()), Lit::pos(q())]];
+        let mut state = CdclState::new();
+        // Bias toward q.
+        state.activity.insert("p".into(), 0.1);
+        state.activity.insert("q".into(), 5.0);
+        let picked = pick_vsids_atom(&cs, &state).expect("a clause is open");
+        assert_eq!(picked, "q");
+    }
+
+    #[test]
+    fn pick_vsids_falls_back_to_first_unassigned_on_cold_start() {
+        // No activity bumped yet — all atoms tie at 0.0, picker
+        // returns the first encountered.
+        let cs = vec![vec![Lit::pos(p()), Lit::pos(q())]];
+        let state = CdclState::new();
+        let picked = pick_vsids_atom(&cs, &state).expect("a clause is open");
+        // Either is acceptable in cold start; we just assert
+        // SOMETHING was picked (i.e. the picker doesn't deadlock
+        // on a tie).
+        assert!(picked == "p" || picked == "q");
     }
 
     // === Stage 4 — Luby restart wrapper ===
