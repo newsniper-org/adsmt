@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Per-user-crate validator for adsmt classical-axiom heuristic extensions. Consumes a frozen minimum-table IR and checks user-defined lu-kb heuristics against it via adsmt's theory layer."
+build = "build.rs"
+
+[build-dependencies]
+# Build-time SAT verification of the shipped minimum table —
+# the translator hands the parsed module to oxiz-sat, the
+# verdict gates a successful build.
+lu-common = { path = "../external/logicutils/lu-common", default-features = false }
+logicutils-translator-to-oxiz-sat = { path = "../external/logicutils/logicutils-translator-to-oxiz-sat" }
+oxiz-sat = { path = "../external/oxiz/oxiz-sat" }
 
 [dependencies]
 adsmt-core.workspace = true
