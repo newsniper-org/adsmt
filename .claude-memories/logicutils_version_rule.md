@@ -9,29 +9,34 @@ The adsmt project and the `v0.x-smt` branch of logicutils (vendored at
 pre-1.0 cycle. All three were set by the user; do not deviate without
 asking.
 
-## 1. Version match-minor (revised 2026-05-29; superseded the
-##    original "+2 offset" set 2026-05-12)
+## 1. Version offset — restored to "+2 offset" (2026-05-29 by
+##    user policy at the v0.19 cycle boundary)
 
-  logicutils v0.x-smt minor = adsmt minor
+  logicutils v0.x-smt minor = adsmt minor + 2
 
-History: the original rule (set 2026-05-12, confirmed 2026-05-13)
-had logicutils running +2 minor versions ahead of adsmt. The
-v0.17 mid-cycle audit found both workspaces had naturally
-converged to the same minor (0.17), and the user adopted
-match-minor as the going-forward rule. Patch bumps remain
-independent — logicutils may patch ahead of adsmt for additive
-feature work (e.g., 0.17.1 added the K12 hash) and vice versa,
-without requiring a sync bump on the other side.
+History:
+- 2026-05-12 (original): adopted "+2 offset" rule.
+- 2026-05-29 (v0.17 mid-cycle audit): relaxed to match-minor
+  because both workspaces had converged.
+- 2026-05-29 (v0.19 cycle open): **restored** the original "+2
+  offset" per user policy. The 0.18.0 → 0.21.0 logicutils jump
+  re-establishes the gap.
+
+Patch bumps remain independent — logicutils may patch ahead of
+adsmt for additive feature work and vice versa.
 
 Current state:
-- adsmt v0.18.x ⇔ logicutils v0.18.x
+- adsmt v0.19.x ⇔ logicutils v0.21.x
+
+Intervening logicutils minors (0.19, 0.20) are intentionally
+skipped — they belong to the post-restoration accounting, not
+the live version line.
 
 **How to apply**: when bumping adsmt's workspace MINOR version,
-also bump `external/logicutils/Cargo.toml`'s
-`[workspace.package].version` to the matching minor in the same
-conceptual unit. Patch bumps don't require the other side to
-bump. The inline comment in each workspace's Cargo.toml documents
-the rule.
+bump `external/logicutils/Cargo.toml`'s
+`[workspace.package].version` to (adsmt minor + 2). The inline
+comment in each workspace's Cargo.toml documents the rule and
+records the restoration moment.
 
 ## 2. Immediate kb-syntax sync (set 2026-05-13)
 

@@ -1,10 +1,10 @@
 - [Project layout](project_layout.md) — adsmt SMT solver workspace + logicutils submodule
-- [adsmt ⇔ logicutils relationship](logicutils_version_rule.md) — match-minor version sync (revised from "+2 offset" at v0.17 audit), immediate kb-syntax sync, 3-way v1.x merge plan
+- [adsmt ⇔ logicutils relationship](logicutils_version_rule.md) — restored "+2 offset" rule at v0.19 cycle (logicutils minor = adsmt minor + 2; current adsmt 0.19 ⇔ logicutils 0.21), immediate kb-syntax sync, 3-way v1.x merge plan
 - [adsmt ⇔ OxiZ relationship](oxiz_relationship.md) — Path A+B integration plan (P1-P5), v1.0 unified vision
 - [Design conversation pointer](design_conversation.md) — full design decisions live in .claude-conversations/
 - [Ask before writing copyright notices](feedback_copyright_holder.md) — never invent / guess copyright holder names; ask first
 - [Split oxiz bindings by surface](feedback_oxiz_bindings_split.md) — language bindings split into core (oxiz proper) vs contrib-* (our contribution crates)
-- [adsmt cycle vs Cargo version](project_cycle_versioning.md) — code-comment "vX.Y" markers are Cargo minor versions; current is 0.18 (opened 2026-05-29 with classical-axiom on-demand pipeline)
+- [adsmt cycle vs Cargo version](project_cycle_versioning.md) — code-comment "vX.Y" markers are Cargo minor versions; current is 0.19 (opened 2026-05-29 for P5 v1.0 decision + carry-over deepening + DPLL(T) + theory deepening)
 - [OxiLean ↔ Lean4 syntax investigation](oxilean_syntax_investigation.md) — 2026-05-28T06:33:48Z snapshot; single `prover_emit::lean` covers both ITPs
 - [prover_emit output policy](prover_emit_policy.md) — Lean = reference; Rocq + Isabelle mirror exactly; Ltac1 fully excluded for Rocq (Ltac2 only); on-demand classical-axiom imports with offline-first hard check
 - [adsmt-contrib out-of-tree workspace](adsmt_contrib_repo.md) — ~/adsmt-contrib hosts adsmt-emit-rocq + adsmt-emit-isabelle; initial commit b8c80ef on 2026-05-29
