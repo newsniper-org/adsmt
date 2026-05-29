@@ -367,13 +367,13 @@ pub fn aggregate_required(cert: &Certificate) -> ClassicalSet {
 /// `should` (always included) with the `lazy/scan` evaluation of
 /// `allow` markers per D1.B's truth table.
 ///
-/// v0.17 implements the `lazy=false, scan=false` (gatekeeper) and
+/// v0.18 implements the `lazy=false, scan=false` (gatekeeper) and
 /// `lazy=true, scan=false` (sibling-should intersection) arms in
 /// full. The `lazy=true, scan=true` (post-hoc text scan) arm is
 /// reserved for emit-side wiring (the emit module that actually
 /// produces the rendered text invokes a second pass after a
-/// preliminary render); v0.17 treats it as if `scan=false` would,
-/// pending the rendering hookup in C.7.
+/// preliminary render); v0.18 treats it as if `scan=false` would,
+/// pending the rendering hookup planned for v0.19.
 pub fn resolve_imports(
     cert: &Certificate,
     extra_should: &ClassicalSet,
@@ -394,7 +394,7 @@ pub fn resolve_imports(
             // by the file-validity pass, not here.
             continue;
         }
-        // `lazy = true`. v0.17 treats `scan=true` the same as
+        // `lazy = true`. v0.18 treats `scan=true` the same as
         // `scan=false` (sibling-should intersection); the text
         // scan arm wires in once the emit module produces a
         // pre-render pass.

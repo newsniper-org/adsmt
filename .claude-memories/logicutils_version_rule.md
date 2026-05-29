@@ -9,19 +9,29 @@ The adsmt project and the `v0.x-smt` branch of logicutils (vendored at
 pre-1.0 cycle. All three were set by the user; do not deviate without
 asking.
 
-## 1. Version offset (set 2026-05-12, confirmed 2026-05-13)
+## 1. Version match-minor (revised 2026-05-29; superseded the
+##    original "+2 offset" set 2026-05-12)
 
-  logicutils v0.x-smt minor = adsmt minor + 2
+  logicutils v0.x-smt minor = adsmt minor
 
-Examples:
-- adsmt v0.1.x  ⇔  logicutils v0.3.x
-- adsmt v0.3.x  ⇔  logicutils v0.5.x   (current as of 2026-05-13)
-- adsmt v0.5.x  ⇔  logicutils v0.7.x
-- adsmt v0.9.x  ⇔  logicutils v0.11.x
+History: the original rule (set 2026-05-12, confirmed 2026-05-13)
+had logicutils running +2 minor versions ahead of adsmt. The
+v0.17 mid-cycle audit found both workspaces had naturally
+converged to the same minor (0.17), and the user adopted
+match-minor as the going-forward rule. Patch bumps remain
+independent — logicutils may patch ahead of adsmt for additive
+feature work (e.g., 0.17.1 added the K12 hash) and vice versa,
+without requiring a sync bump on the other side.
 
-**How to apply**: when bumping adsmt's workspace version, also bump
-`external/logicutils/Cargo.toml`'s `[workspace.package].version` so
-the offset holds. The inline comment in that file documents it.
+Current state:
+- adsmt v0.18.x ⇔ logicutils v0.18.x
+
+**How to apply**: when bumping adsmt's workspace MINOR version,
+also bump `external/logicutils/Cargo.toml`'s
+`[workspace.package].version` to the matching minor in the same
+conceptual unit. Patch bumps don't require the other side to
+bump. The inline comment in each workspace's Cargo.toml documents
+the rule.
 
 ## 2. Immediate kb-syntax sync (set 2026-05-13)
 

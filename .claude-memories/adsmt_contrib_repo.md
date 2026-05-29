@@ -14,8 +14,8 @@ submodule of adsmt). Initial commit `b8c80ef` landed
 
 | Crate | Path | Tests | Notes |
 |---|---|---|---|
-| `adsmt-emit-rocq` | `~/adsmt-contrib/adsmt-emit-rocq` | 7/7 | Ltac2 only — `Set Default Proof Mode "Ltac2"` at file head; Rocq 8.10+ floor. |
-| `adsmt-emit-isabelle` | `~/adsmt-contrib/adsmt-emit-isabelle` | 6/6 | Isar; `bool` for HOL proposition family. |
+| `adsmt-emit-rocq` | `~/adsmt-contrib/adsmt-emit-rocq` | 11/11 (v0.18) | Ltac2 only — `Set Default Proof Mode "Ltac2"` at file head; Rocq 8.10+ floor. Classical-axiom imports injected between fixed prelude and Module wrapper. |
+| `adsmt-emit-isabelle` | `~/adsmt-contrib/adsmt-emit-isabelle` | 10/10 (v0.18) | Isar; `bool` for HOL proposition family. Classical-axiom validation pass runs but no extra imports land (Main is classical). |
 
 ## Dependency wiring
 
@@ -24,8 +24,10 @@ Workspace `Cargo.toml` declares
 adsmt-core) — local path during development. The published-form
 git rev pin is commented next to it; uncomment to consume adsmt
 via `https://github.com/Honey-Be/adsmt-private.git` at a frozen
-rev (`91e614a` was the in-tree HEAD when the contrib repo was
-seeded).
+rev. adsmt v0.18 lands the classical-axiom marker layer; the
+contrib backends ship matching changes in their own commits
+(see `adsmt-emit-rocq/src/lib.rs` and `adsmt-emit-isabelle/src/
+lib.rs` for the per-ITP import rendering).
 
 ## License
 

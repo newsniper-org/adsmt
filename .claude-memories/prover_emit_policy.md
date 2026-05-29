@@ -159,6 +159,12 @@ counterpart that imports the in-tree module via the
 
 **Adopted 2026-05-29** in response to ypeg's request
 `.local-requests-from/ypeg/2026-05-29-classical-axiom-on-demand.md`.
+**Implementation landed in adsmt v0.18.0 (2026-05-29).** Full
+8-layer offline safeguard active; lean_emit / adsmt-emit-rocq /
+adsmt-emit-isabelle ship matching import injection. Mid-block +
+pattern-marker cert AST reified; adsmt-minimum heuristic table
+authored in lu-kb. cargo-dylint plugin lifted to cdylib +
+feature-gated nightly path.
 Default emit is **intuitionistic-safe** — classical-axiom imports
 only land in the header when a step in the cert demonstrably
 requires them. The whole machinery is offline-first: precompile-
