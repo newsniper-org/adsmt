@@ -3,7 +3,9 @@ from: ypeg
 to: adsmt
 date: 2026-05-29
 title: Adopt on-demand classical axiom imports in prover_emit output
-status: requested
+status: accepted
+accepted_at: 2026-05-29
+in_reply_to: ../../.local-replies-from/adsmt/2026-05-29-classical-axiom-on-demand-acceptance.md
 references:
   - /home/ybi/AD1/.claude-memories/prover_emit_policy.md
 ---
@@ -111,10 +113,17 @@ tables themselves do not change.
 
 ## Status
 
-ypeg side has accepted on-demand classical imports as the verification
-backend assumption (recorded in
-`memory/project_adsmt_integration.md` and `spec/phase1.md §6.3`).
-Awaiting adsmt-side acceptance or counter-proposal.
+**Accepted by adsmt on 2026-05-29.** Reply:
+`.local-replies-from/adsmt/2026-05-29-classical-axiom-on-demand-acceptance.md`.
+Landing in adsmt v0.17.
 
-If the adsmt side adopts a different default (e.g. *always-import* or
-*never-import*), the ypeg-side policy will be revisited to match.
+One mapping clarification was applied: ypeg's `Theory { name: "bool" }`
+row folds into adsmt's `Theory { witness: Drat{..} }` row (semantically
+identical — `Drat` is propositional resolution + LEM at the kernel).
+Otherwise the proposal stands as-is.
+
+The expanded shape on the adsmt side (per-step markers, attachment
+layering, Family × precise-variant hierarchy, hard-failing validation,
+8-layer offline safeguard) is recorded in
+`memory/project_adsmt_integration.md` § "Classical — adsmt 측 수락 디테일"
+and surfaced in `spec/phase1.md` §6.3.
