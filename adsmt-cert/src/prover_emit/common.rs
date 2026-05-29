@@ -453,13 +453,14 @@ pub fn aggregate_required(cert: &Certificate) -> ClassicalSet {
 /// `should` (always included) with the `lazy/scan` evaluation of
 /// `allow` markers per D1.B's truth table.
 ///
-/// v0.18 implements the `lazy=false, scan=false` (gatekeeper) and
-/// `lazy=true, scan=false` (sibling-should intersection) arms in
-/// full. The `lazy=true, scan=true` (post-hoc text scan) arm is
-/// reserved for emit-side wiring (the emit module that actually
-/// produces the rendered text invokes a second pass after a
-/// preliminary render); v0.18 treats it as if `scan=false` would,
-/// pending the rendering hookup planned for v0.19.
+/// v0.18 implements all four D1.B arms:
+///
+/// | `lazy` | `scan` | semantics |
+/// |---|---|---|
+/// | off | off | gatekeeper only — `should ⊆ ⋃ allow` invariant |
+/// | off | on  | `scan` ignored — same as off/off |
+/// | on  | off | include iff a sibling `should` requests the same module |
+/// | on  | on  | resolved via the second-pass [`resolve_imports_with_scan`] (text scan over a preliminary render). When the caller uses this base [`resolve_imports`] without the rendered-text argument the `scan=true` arm degrades to `scan=false` semantics — the gatekeeper-only behaviour. |
 pub fn resolve_imports(
     cert: &Certificate,
     extra_should: &ClassicalSet,
@@ -487,6 +488,121 @@ pub fn resolve_imports(
         for fam in marker.allowlist.iter() {
             if should.contains(fam) {
                 resolved.insert(fam);
+            }
+        }
+    }
+    resolved
+}
+
+/// Backend-tagged keyword table used by the `scan=true` arm of
+/// [`resolve_imports_with_scan`]. Maps each
+/// [`ClassicalModuleFamily`] to the surface keywords the emit
+/// pass would render when actually invoking that family's
+/// reasoning. A keyword's presence in the rendered text fires
+/// the lazy+scan inclusion.
+///
+/// Per-backend tables live in [`lean_axiom_keywords`],
+/// [`rocq_axiom_keywords`], [`isabelle_axiom_keywords`]; an emit
+/// pass picks the one matching its target and hands it to
+/// [`resolve_imports_with_scan`].
+pub fn lean_axiom_keywords(family: ClassicalModuleFamily) -> &'static [&'static str] {
+    match family {
+        ClassicalModuleFamily::Propositional => &[
+            "Classical.em",
+            "Classical.byContradiction",
+            "Classical.not_not",
+        ],
+        ClassicalModuleFamily::Predicate => &["Classical.choice"],
+        ClassicalModuleFamily::Choice => &[
+            "Classical.choice",
+            "Classical.indefiniteDescription",
+        ],
+        ClassicalModuleFamily::FunExt => &["funext"],
+    }
+}
+
+/// Rocq (Ltac2-mode) axiom-keyword table for the `scan=true`
+/// arm. Same shape as [`lean_axiom_keywords`].
+pub fn rocq_axiom_keywords(family: ClassicalModuleFamily) -> &'static [&'static str] {
+    match family {
+        ClassicalModuleFamily::Propositional => &[
+            "classic",
+            "NNPP",
+            "Peirce",
+            "excluded_middle",
+        ],
+        ClassicalModuleFamily::Predicate => &["classic_pred"],
+        ClassicalModuleFamily::Choice => &[
+            "epsilon",
+            "constructive_indefinite_description",
+        ],
+        ClassicalModuleFamily::FunExt => &["functional_extensionality"],
+    }
+}
+
+/// Isabelle/HOL axiom-keyword table — every entry is empty
+/// because Main is already classical. The `scan=true` arm is
+/// effectively a no-op on the Isabelle side; we ship the
+/// function for shape parity with Lean/Rocq.
+pub fn isabelle_axiom_keywords(_family: ClassicalModuleFamily) -> &'static [&'static str] {
+    &[]
+}
+
+/// Two-pass variant of [`resolve_imports`] that honours the
+/// D1.B `lazy=true, scan=true` arm by scanning a preliminary
+/// rendered text for backend-specific axiom keywords.
+///
+/// Caller's protocol:
+/// 1. Render the cert into a *preliminary* string with no
+///    classical imports.
+/// 2. Pass that string here along with the backend's keyword
+///    table (typically [`lean_axiom_keywords`] /
+///    [`rocq_axiom_keywords`] / [`isabelle_axiom_keywords`]).
+/// 3. Re-render with the returned set of families as the
+///    classical-import prelude.
+///
+/// `should` markers always land. `lazy=false` allow markers are
+/// gatekeepers (no contribution). `lazy=true, scan=false` allow
+/// markers behave like the base resolver (sibling-`should`
+/// intersection). `lazy=true, scan=true` allow markers contribute
+/// any of their allowlist families whose axiom keywords appear
+/// in `preliminary_rendered`.
+pub fn resolve_imports_with_scan(
+    cert: &Certificate,
+    extra_should: &ClassicalSet,
+    extra_allow: &[AllowMarker],
+    preliminary_rendered: &str,
+    keyword_table: fn(ClassicalModuleFamily) -> &'static [&'static str],
+) -> ClassicalSet {
+    let mut should = aggregate_should(cert);
+    for fam in extra_should.iter() {
+        should.insert(fam);
+    }
+    let mut allow_markers = aggregate_allow(cert);
+    allow_markers.extend_from_slice(extra_allow);
+
+    let mut resolved = should.clone();
+    for marker in &allow_markers {
+        if !marker.lazy {
+            continue;
+        }
+        if marker.scan {
+            // `lazy=true, scan=true` — text scan over the
+            // preliminary render.
+            for fam in marker.allowlist.iter() {
+                if !resolved.contains(fam) {
+                    let keywords = keyword_table(fam);
+                    if keywords.iter().any(|kw| preliminary_rendered.contains(kw)) {
+                        resolved.insert(fam);
+                    }
+                }
+            }
+        } else {
+            // `lazy=true, scan=false` — sibling-should intersection.
+            for fam in marker.allowlist.iter() {
+                if should.contains(fam) {
+                    resolved.insert(fam);
+                }
             }
         }
     }
@@ -977,6 +1093,112 @@ mod tests {
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].0, step_id);
         assert_eq!(missing[0].1, ClassicalModuleFamily::Propositional);
+    }
+
+    #[test]
+    fn scan_arm_includes_family_when_keyword_present_in_rendered_text() {
+        use crate::canonical::{AllowMarker, ClassicalSet};
+        let mut b = CertBuilder::default();
+        let h = r::assume(&mut b, p()).unwrap();
+        let step_id = h.step();
+        b.add_allow_marker(
+            step_id,
+            AllowMarker {
+                allowlist: ClassicalSet::from_iter([
+                    ClassicalModuleFamily::Propositional,
+                ]),
+                lazy: true,
+                scan: true,
+            },
+        );
+        let cert = b.snapshot(step_id);
+        // Preliminary text contains `Classical.em` — Lean's
+        // Propositional keyword. The scan arm should include
+        // Propositional.
+        let resolved = resolve_imports_with_scan(
+            &cert,
+            &ClassicalSet::empty(),
+            &[],
+            "theorem foo : True := Classical.em _",
+            lean_axiom_keywords,
+        );
+        assert!(resolved.contains(ClassicalModuleFamily::Propositional));
+    }
+
+    #[test]
+    fn scan_arm_does_not_include_family_when_keyword_absent() {
+        use crate::canonical::{AllowMarker, ClassicalSet};
+        let mut b = CertBuilder::default();
+        let h = r::assume(&mut b, p()).unwrap();
+        let step_id = h.step();
+        b.add_allow_marker(
+            step_id,
+            AllowMarker {
+                allowlist: ClassicalSet::from_iter([
+                    ClassicalModuleFamily::Propositional,
+                ]),
+                lazy: true,
+                scan: true,
+            },
+        );
+        let cert = b.snapshot(step_id);
+        // No classical keyword in the rendered text.
+        let resolved = resolve_imports_with_scan(
+            &cert,
+            &ClassicalSet::empty(),
+            &[],
+            "theorem foo : p := rfl",
+            lean_axiom_keywords,
+        );
+        assert!(!resolved.contains(ClassicalModuleFamily::Propositional));
+    }
+
+    #[test]
+    fn scan_arm_isabelle_keywords_always_empty() {
+        // Isabelle Main is classical — no axiom keyword table to
+        // scan against, so the scan arm produces no
+        // inclusions regardless of text.
+        for fam in [
+            ClassicalModuleFamily::Propositional,
+            ClassicalModuleFamily::Predicate,
+            ClassicalModuleFamily::Choice,
+            ClassicalModuleFamily::FunExt,
+        ] {
+            assert!(isabelle_axiom_keywords(fam).is_empty());
+        }
+    }
+
+    #[test]
+    fn scan_arm_falls_back_to_sibling_should_when_scan_off() {
+        // `lazy=true, scan=false` still gets sibling-should
+        // intersection treatment via the same code path.
+        use crate::canonical::{AllowMarker, ClassicalSet};
+        let mut b = CertBuilder::default();
+        let h = r::assume(&mut b, p()).unwrap();
+        let step_id = h.step();
+        b.add_should_import_classical(
+            step_id,
+            ClassicalModuleFamily::Propositional,
+        );
+        b.add_allow_marker(
+            step_id,
+            AllowMarker {
+                allowlist: ClassicalSet::from_iter([
+                    ClassicalModuleFamily::Propositional,
+                ]),
+                lazy: true,
+                scan: false,
+            },
+        );
+        let cert = b.snapshot(step_id);
+        let resolved = resolve_imports_with_scan(
+            &cert,
+            &ClassicalSet::empty(),
+            &[],
+            "no_classical_text_here",
+            lean_axiom_keywords,
+        );
+        assert!(resolved.contains(ClassicalModuleFamily::Propositional));
     }
 
     #[test]
