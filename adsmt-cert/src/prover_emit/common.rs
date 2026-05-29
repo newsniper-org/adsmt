@@ -170,6 +170,75 @@ pub enum ClassifiedType {
     Other(String),
 }
 
+// === Per-step required-set heuristic (v0.17) ===
+//
+// Computes the modules a single step intrinsically requires
+// based on its StepBody and (for Theory steps) the witness shape.
+// Matches the policy-doc table verbatim.
+
+use crate::canonical::StepBody;
+
+/// Compute the `direct_required_classical` set for a step from
+/// its body. Pure inspection — no parent traversal.
+///
+/// Per the policy table (D5 = α, D6 = β, D9 = β):
+/// - `Theory { witness: Drat{..} }` ⇒ `{Propositional}` (D5).
+/// - Everything else ⇒ `∅`.
+///
+/// The "bool" theory row in ypeg's original table folds into the
+/// DRAT row because adsmt's boolean reasoning is routed through
+/// `TheoryWitness::Drat` (D6 = β). Bool→Prop reflection itself
+/// triggers no import (D9 = β); only steps whose witness invokes
+/// LEM/NNPP do.
+pub fn direct_required_for_body(body: &StepBody) -> ClassicalSet {
+    match body {
+        StepBody::Theory { witness, .. } => required_for_witness(witness),
+        // HOL kernel rules — intuitionistic.
+        StepBody::Assume(_)
+        | StepBody::Refl(_)
+        | StepBody::Trans { .. }
+        | StepBody::EqMp { .. }
+        | StepBody::Beta { .. }
+        | StepBody::Abs { .. }
+        | StepBody::Deduct { .. }
+        | StepBody::Inst { .. }
+        | StepBody::InstType { .. } => ClassicalSet::empty(),
+        // Abductive marker — classical-irrelevant by design (it's
+        // a typed hole; the consumer chooses how to discharge).
+        StepBody::Assumed { .. } => ClassicalSet::empty(),
+        // Type-class instance — intuitionistic.
+        StepBody::Instance { .. } => ClassicalSet::empty(),
+    }
+}
+
+/// Classify a [`TheoryWitness`] by its required classical-axiom
+/// family set. Only `Drat` requires `Propositional` at present;
+/// future witnesses can join this table without touching the
+/// dispatch logic above.
+fn required_for_witness(witness: &TheoryWitness) -> ClassicalSet {
+    match witness {
+        TheoryWitness::Drat { .. } => ClassicalSet::from_iter(
+            [ClassicalModuleFamily::Propositional],
+        ),
+        TheoryWitness::Euf(_)
+        | TheoryWitness::LinArith(_)
+        | TheoryWitness::Arrays(_)
+        | TheoryWitness::Datatypes(_)
+        | TheoryWitness::Polite(_)
+        | TheoryWitness::Opaque { .. } => ClassicalSet::empty(),
+    }
+}
+
+/// Walk every step in `cert` and (re)populate its
+/// `direct_required_classical` field from
+/// [`direct_required_for_body`]. Idempotent — running it twice
+/// produces the same cert.
+pub fn populate_direct_required(cert: &mut Certificate) {
+    for step in &mut cert.steps {
+        step.direct_required_classical = direct_required_for_body(&step.body);
+    }
+}
+
 // === Classical-axiom-import aggregation (v0.17) ===
 //
 // The classical-axiom-marker pipeline computes a cert-level
@@ -374,6 +443,63 @@ mod tests {
 
     fn p() -> Term {
         Term::var("p", Type::bool_())
+    }
+
+    #[test]
+    fn direct_required_for_assume_is_empty() {
+        let body = StepBody::Assume(p());
+        assert!(direct_required_for_body(&body).is_empty());
+    }
+
+    #[test]
+    fn direct_required_for_refl_is_empty() {
+        let body = StepBody::Refl(p());
+        assert!(direct_required_for_body(&body).is_empty());
+    }
+
+    #[test]
+    fn direct_required_for_drat_is_propositional() {
+        use crate::drat::DratProof;
+        let body = StepBody::Theory {
+            name: "DRAT".into(),
+            witness: TheoryWitness::Drat {
+                clauses: vec![],
+                proof: DratProof { steps: vec![] },
+                dimacs_bytes: vec![],
+                alethe_bytes: vec![],
+                lfsc_bytes: vec![],
+                coq_bytes: vec![],
+            },
+            parents: vec![],
+        };
+        let set = direct_required_for_body(&body);
+        assert!(set.contains(ClassicalModuleFamily::Propositional));
+        // Only Propositional — nothing else.
+        assert_eq!(set.iter().count(), 1);
+    }
+
+    #[test]
+    fn direct_required_for_opaque_theory_is_empty() {
+        let body = StepBody::Theory {
+            name: "EUF".into(),
+            witness: TheoryWitness::Opaque {
+                kind: "smoke".into(),
+                notes: "test".into(),
+            },
+            parents: vec![],
+        };
+        assert!(direct_required_for_body(&body).is_empty());
+    }
+
+    #[test]
+    fn populate_direct_required_idempotent() {
+        let mut b = CertBuilder::default();
+        let h = r::assume(&mut b, p()).unwrap();
+        let mut cert = b.snapshot(h.step());
+        populate_direct_required(&mut cert);
+        let snapshot = cert.steps[0].direct_required_classical.clone();
+        populate_direct_required(&mut cert);
+        assert_eq!(cert.steps[0].direct_required_classical, snapshot);
     }
 
     #[test]
