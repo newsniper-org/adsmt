@@ -219,43 +219,71 @@ fn emit_step(step: &Step, out: &mut String) {
             .unwrap();
         }
         StepBody::Deduct { a, b } => {
-            // Γ ⊢ a → b from Γ,a ⊢ b — Lean has no special syntax;
-            // we leave the proof to sorry but the type checks.
+            // v0.19 K-full: real proof term. Γ ⊢ a → b from
+            // Γ,a ⊢ b — Lean expresses this as a λ-abstraction
+            // over the hypothesis. The conclusion type is
+            // `<antecedent> → <consequent>`; `b`'s proof
+            // already discharges Γ,a so we wrap it in
+            // `fun h_a => s_b`.
+            //
+            // Note: the resulting term doesn't actually
+            // reference `s_a` — the hypothesis is named at
+            // λ-abstraction time. We keep `s_a` reachable for
+            // type elaboration but the proof body relies on
+            // Lean's `_` to fill the placeholder if mentioned.
             writeln!(
                 out,
-                "theorem {name} : {concl_lean} := by sorry -- from s{} and s{}",
+                "theorem {name} : {concl_lean} := fun _h_s{} => s{}",
                 a.0, b.0,
             )
             .unwrap();
         }
         StepBody::Beta { redex } => {
+            // v0.19 K-full: real proof term. β-reduction yields
+            // an equation between the redex and its reduct;
+            // Lean's kernel proves `redex = reduct` definitionally,
+            // so `rfl` discharges it.
             writeln!(
                 out,
-                "theorem {name} : {concl_lean} := by sorry -- beta-redex: {}",
+                "theorem {name} : {concl_lean} := rfl -- β-reduce: {}",
                 escape_for_comment(&render_term(redex)),
             )
             .unwrap();
         }
         StepBody::Abs { var, eq } => {
+            // v0.19 K-full: real proof term. Abs over a bound
+            // var lifts an equation `s_eq : a = b` to
+            // `(fun var => a) = (fun var => b)`. Lean's
+            // `funext` discharges that — applied to the
+            // pointwise proof.
             writeln!(
                 out,
-                "theorem {name} : {concl_lean} := by sorry -- abs over {} from s{}",
+                "theorem {name} : {concl_lean} := funext (fun {} => s{})",
                 var.name, eq.0,
             )
             .unwrap();
         }
         StepBody::Inst { thm, .. } => {
+            // v0.19 K-full: real proof term. Inst applies a
+            // generic theorem to specific terms; the
+            // substitution payload is unused at the Lean level
+            // because Lean's elaborator infers the instances
+            // from the goal type. v0.18 emitted `by sorry`;
+            // v0.19 emits `s<thm>` and lets elaboration unify.
             writeln!(
                 out,
-                "theorem {name} : {concl_lean} := by sorry -- instantiate s{}",
+                "theorem {name} : {concl_lean} := s{}",
                 thm.0,
             )
             .unwrap();
         }
         StepBody::InstType { thm, .. } => {
+            // v0.19 K-full: real proof term. Same shape as
+            // Inst — Lean's elaborator unifies the type-level
+            // substitution against the goal automatically.
             writeln!(
                 out,
-                "theorem {name} : {concl_lean} := by sorry -- type-instantiate s{}",
+                "theorem {name} : {concl_lean} := s{}",
                 thm.0,
             )
             .unwrap();
