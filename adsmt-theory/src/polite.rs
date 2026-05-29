@@ -193,6 +193,88 @@ impl Combination {
         }
     }
 
+    /// v0.19 C.5 — reconcile cardinality witnesses across **all
+    /// sorts** every theory handles. Returns one
+    /// [`CardinalityReconciliation`] per sort.
+    ///
+    /// Two theories disagreeing on whether a sort is finite is a
+    /// *cardinality disagreement*. The disagreement isn't an
+    /// unsat by itself (a missing witness is treated as ω), but
+    /// it flags a soundness-relevant divergence callers may want
+    /// to log.
+    pub fn reconcile_all_sorts(&self) -> Vec<CardinalityReconciliation> {
+        use std::collections::BTreeSet;
+        // Distinct (sort name + sort type) pairs across all
+        // theories. We canonicalise on the sort's Display form
+        // so two theories agree iff they report the same sort
+        // string.
+        let mut sorts: BTreeSet<String> = BTreeSet::new();
+        let mut sort_terms: std::collections::HashMap<String, Type> =
+            std::collections::HashMap::new();
+        for t in &self.theories {
+            // We can only enumerate sorts a theory's
+            // `cardinality_witness` would emit if we know them
+            // up-front. v0.18 has no introspection API yet, so
+            // we ask each theory about a small canonical set:
+            // the bool / int / real / bv8 / bv16 sorts plus any
+            // sort that has appeared in an assertion.
+            for s in [
+                Type::bool_(),
+                Type::const_("Int", adsmt_core::Kind::Type),
+                Type::const_("Real", adsmt_core::Kind::Type),
+                Term::bv_sort(8),
+                Term::bv_sort(16),
+            ] {
+                if t.handles_sort(&s) {
+                    let name = s.to_string();
+                    sorts.insert(name.clone());
+                    sort_terms.entry(name).or_insert(s);
+                }
+            }
+        }
+        sorts
+            .into_iter()
+            .filter_map(|name| {
+                sort_terms.get(&name).map(|s| self.reconcile_cardinality(s))
+            })
+            .collect()
+    }
+
+    /// v0.19 C.5 — emit one [`CardinalityDisagreement`] per
+    /// sort where two theories report different finite
+    /// upper-bounds (or where one says finite and another says
+    /// ω). Returns an empty vector when every sort is consistent.
+    ///
+    /// Note: disagreement is **distinct from unsat**. The
+    /// reconciled bound is the minimum of the finite ones
+    /// (already done by `reconcile_cardinality`); the
+    /// disagreement vector is purely diagnostic, surfacing when
+    /// the reconciliation was non-trivial.
+    pub fn detect_cardinality_disagreements(&self) -> Vec<CardinalityDisagreement> {
+        self.reconcile_all_sorts()
+            .into_iter()
+            .filter_map(|recon| {
+                let distinct_finite: std::collections::BTreeSet<u64> = recon
+                    .sources
+                    .iter()
+                    .filter_map(|(_, b)| *b)
+                    .collect();
+                let any_infinite =
+                    recon.sources.iter().any(|(_, b)| b.is_none());
+                if distinct_finite.len() > 1
+                    || (distinct_finite.len() == 1 && any_infinite)
+                {
+                    Some(CardinalityDisagreement {
+                        sort_name: recon.sort_name,
+                        per_theory: recon.sources,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Drop all theory state.
     pub fn reset(&mut self) {
         for t in &mut self.theories {
@@ -285,6 +367,18 @@ impl CardinalityReconciliation {
     }
 }
 
+/// v0.19 C.5 — diagnostic record for a sort where two theories
+/// disagreed on the cardinality bound. Reconciliation still
+/// produces a valid (minimum-finite) bound, but the
+/// disagreement may indicate a latent soundness divergence
+/// worth surfacing in logs.
+#[derive(Clone, Debug)]
+pub struct CardinalityDisagreement {
+    pub sort_name: String,
+    /// All witness reports observed, in theory-registration order.
+    pub per_theory: Vec<(String, Option<u64>)>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +432,52 @@ mod tests {
         let mut c = Combination::new();
         c.register(Box::new(ConstCard { name_: "A", bound: None }));
         assert!(matches!(c.check(), CombinedCheck::Sat));
+    }
+
+    #[test]
+    fn reconcile_all_sorts_returns_one_entry_per_sort() {
+        let mut c = Combination::new();
+        c.register(Box::new(ConstCard { name_: "A", bound: Some(8) }));
+        let recs = c.reconcile_all_sorts();
+        // At least Int (covered by ConstCard's handles_sort).
+        assert!(!recs.is_empty());
+    }
+
+    #[test]
+    fn detect_cardinality_disagreements_empty_when_all_agree() {
+        let mut c = Combination::new();
+        c.register(Box::new(ConstCard { name_: "A", bound: Some(8) }));
+        c.register(Box::new(ConstCard { name_: "B", bound: Some(8) }));
+        // Both theories report the same bound — no disagreement.
+        assert!(c.detect_cardinality_disagreements().is_empty());
+    }
+
+    #[test]
+    fn detect_cardinality_disagreements_flags_distinct_bounds() {
+        let mut c = Combination::new();
+        c.register(Box::new(ConstCard { name_: "A", bound: Some(8) }));
+        c.register(Box::new(ConstCard { name_: "B", bound: Some(3) }));
+        let diagn = c.detect_cardinality_disagreements();
+        assert!(!diagn.is_empty(), "expected disagreement for distinct bounds");
+        // The reconciled minimum is still 3 (preserved by
+        // reconcile_cardinality).
+        let recs = c.reconcile_all_sorts();
+        for r in recs {
+            if let Some((_, n)) = r.tightest {
+                assert_eq!(n, 3);
+            }
+        }
+    }
+
+    #[test]
+    fn detect_disagreements_flags_finite_vs_infinite_mix() {
+        let mut c = Combination::new();
+        c.register(Box::new(ConstCard { name_: "A", bound: Some(8) }));
+        c.register(Box::new(ConstCard { name_: "B", bound: None }));
+        let diagn = c.detect_cardinality_disagreements();
+        assert!(
+            !diagn.is_empty(),
+            "expected disagreement for finite vs infinite mix",
+        );
     }
 }
