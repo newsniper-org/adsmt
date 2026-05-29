@@ -18,6 +18,13 @@ cadical = { version = "0.1", optional = true }
 oxiz-sat = { version = "0.2", optional = true }
 oxiz-proof = { version = "0.2", optional = true }
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "solver_smoke"
+harness = false
+
 [features]
 default = []
 # Use the CaDiCaL SAT backend (C++ FFI) instead of the built-in DPLL.
