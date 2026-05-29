@@ -152,9 +152,51 @@ if [ ! -f "$status_dir/tests.txt" ]; then
     atom_write "$status_dir/tests.txt" "unknown — run \`just status-tests\` to populate"$'\n'
 fi
 
-# task-list.txt — placeholder; the session can override.
-if [ ! -f "$status_dir/task-list.txt" ]; then
-    atom_write "$status_dir/task-list.txt" "task list not yet populated"$'\n'
+# task-list.txt — git-derived "what's going on right now" view
+# that other Claude Code agents pull on request. v0.18 P:
+# automated from git state instead of the static placeholder.
+#
+# Contents:
+#   * Branch + ahead/behind counter.
+#   * Working-tree modified / new files (capped at 20 lines for
+#     readability).
+#   * Last 8 commit subjects, one per line.
+#   * Total commits ahead of the merge-base with `main` — gives
+#     an at-a-glance "current session scope" indicator.
+#
+# Anything richer (in-conversation TaskCreate state, etc.) is
+# session-local and isn't reachable from a bash script; agents
+# that want that detail should ask via the session interface
+# rather than poll the snapshot.
+recent_log="$(git -C "$project_dir" log --oneline -8 2>/dev/null || echo '')"
+modified_listing="$(git -C "$project_dir" status --porcelain 2>/dev/null | head -20 || echo '')"
+modified_count_total="$(git -C "$project_dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ' || echo 0)"
+session_scope_count="$(git -C "$project_dir" rev-list --count main..HEAD 2>/dev/null || echo unknown)"
+
+task_list="# adsmt working state snapshot
+
+## Branch
+$branch (ahead/behind upstream: $ahead_behind)
+session scope (commits ahead of merge-base with main): $session_scope_count
+
+## Working tree ($modified_count_total file(s) total; first 20 shown)
+"
+if [ -n "$modified_listing" ]; then
+    task_list="${task_list}\`\`\`
+$modified_listing
+\`\`\`
+"
+else
+    task_list="${task_list}(clean working tree)
+"
 fi
+task_list="${task_list}
+## Recent commits
+
+\`\`\`
+$recent_log
+\`\`\`
+"
+atom_write "$status_dir/task-list.txt" "$task_list"
 
 exit 0
