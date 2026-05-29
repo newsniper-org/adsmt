@@ -31,8 +31,41 @@
 
 use std::collections::HashMap;
 
-use crate::bool_solver::BoolResult;
+use crate::bool_solver::{luby_sequence, BoolResult};
 use crate::cnf::{Clause, Lit};
+
+/// v0.21 B.1 stage 4 entry point — layer the canonical Luby
+/// restart schedule on top of [`cdcl_solve`]. Each epoch runs
+/// `cdcl_solve(clauses, base_conflicts * luby_i)` and returns
+/// immediately on a definite verdict. Unknown verdicts (budget
+/// exhausted at that epoch) trigger a restart with a fresh
+/// state and the next Luby-scaled budget.
+///
+/// Functionally equivalent to [`cdcl_solve`] on inputs the
+/// underlying CDCL closes within its first epoch's budget;
+/// for harder problems the Luby pattern revisits short-budget
+/// epochs (1, 1, 2, 1, 1, 2, 4, …) which is what the
+/// solver-races literature shows wins on average over a
+/// pure-geometric restart.
+///
+/// Stage 4's *other* half — VSIDS-style decision heuristics in
+/// the inner loop — remains pending.
+pub fn cdcl_with_restarts(
+    clauses: &[Clause],
+    base_conflicts: usize,
+    restarts: usize,
+) -> BoolResult {
+    let luby = luby_sequence(restarts);
+    for &mult in &luby {
+        let budget = base_conflicts.saturating_mul(mult);
+        match cdcl_solve(clauses, budget) {
+            BoolResult::Sat => return BoolResult::Sat,
+            BoolResult::Unsat => return BoolResult::Unsat,
+            BoolResult::Unknown => continue,
+        }
+    }
+    BoolResult::Unknown
+}
 
 /// Why a literal sits on the trail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -599,6 +632,31 @@ mod tests {
         assert!(keys.contains(&"r".to_string()));
         assert!(keys.contains(&"p".to_string()));
         assert_eq!(bj_level, 1, "backjump to the level of ¬p");
+    }
+
+    // === Stage 4 — Luby restart wrapper ===
+
+    #[test]
+    fn cdcl_with_restarts_returns_sat_on_satisfiable_input() {
+        let cs = vec![vec![Lit::pos(p()), Lit::pos(q())]];
+        assert_eq!(cdcl_with_restarts(&cs, 4, 8), BoolResult::Sat);
+    }
+
+    #[test]
+    fn cdcl_with_restarts_closes_two_var_pigeonhole_unsat() {
+        let cs = vec![
+            vec![Lit::pos(p()), Lit::pos(q())],
+            vec![Lit::neg(p()), Lit::pos(q())],
+            vec![Lit::pos(p()), Lit::neg(q())],
+            vec![Lit::neg(p()), Lit::neg(q())],
+        ];
+        assert_eq!(cdcl_with_restarts(&cs, 4, 8), BoolResult::Unsat);
+    }
+
+    #[test]
+    fn cdcl_with_restarts_zero_epochs_is_unknown() {
+        let cs = vec![vec![Lit::pos(p()), Lit::pos(q())]];
+        assert_eq!(cdcl_with_restarts(&cs, 4, 0), BoolResult::Unknown);
     }
 
     // === Stage 3 — learnt clauses + non-chronological backjump ===
