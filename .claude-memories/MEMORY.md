@@ -6,4 +6,6 @@
 - [Split oxiz bindings by surface](feedback_oxiz_bindings_split.md) — language bindings split into core (oxiz proper) vs contrib-* (our contribution crates)
 - [adsmt cycle vs Cargo version](project_cycle_versioning.md) — code-comment "vX.Y" markers are Cargo minor versions; current is 0.15
 - [OxiLean ↔ Lean4 syntax investigation](oxilean_syntax_investigation.md) — 2026-05-28T06:33:48Z snapshot; single `prover_emit::lean` covers both ITPs
-- [prover_emit output policy](prover_emit_policy.md) — Lean = reference; Rocq + Isabelle mirror exactly; Ltac1 fully excluded for Rocq (Ltac2 only)
+- [prover_emit output policy](prover_emit_policy.md) — Lean = reference; Rocq + Isabelle mirror exactly; Ltac1 fully excluded for Rocq (Ltac2 only); on-demand classical-axiom imports with offline-first hard check
+- [adsmt-contrib out-of-tree workspace](adsmt_contrib_repo.md) — ~/adsmt-contrib hosts adsmt-emit-rocq + adsmt-emit-isabelle; initial commit b8c80ef on 2026-05-29
+- [Cross-project local request inbox](local_requests_inbox.md) — poll `.local-requests-from/<sender>/` for asks from other local projects

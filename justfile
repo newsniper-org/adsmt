@@ -23,6 +23,24 @@ mirror-memory:
         echo "⚠ {{_memory_dir}} is empty or missing — nothing to mirror" ; \
     fi
 
+# Mirror a recipient's reply outbox to that recipient's expected
+# inbox path. Depends on `mirror-memory` so the auto-memory snapshot
+# travels alongside the reply for consistency. Example:
+#
+#   just mirror-local-replies-to ypeg ~/ypeg/.local-replies-from/adsmt/
+#
+# The recipe is a no-op (with a friendly message) when
+# `.local-replies-to/<recipient>/` is empty or missing.
+mirror-local-replies-to recipient target: mirror-memory
+    @src=".local-replies-to/{{recipient}}" ; \
+        if [ -d "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ]; then \
+            mkdir -p '{{target}}' ; \
+            rsync -a "$src/" '{{target}}' ; \
+            echo "✓ Mirrored $src/ → {{target}}" ; \
+        else \
+            echo "⚠ $src/ empty or missing — nothing to mirror to {{target}}" ; \
+        fi
+
 # Restore Claude Code memory from .claude-memories/ and print resume hint.
 # Use after a system update or fresh checkout to pick up where you left off.
 claude-resume:
