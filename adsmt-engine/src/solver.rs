@@ -251,8 +251,8 @@ impl Solver {
                     let universe = crate::quant::collect_universe(&rest);
                     let prev = instantiations.len();
                     for (var, body) in &quants {
-                        // Tier 1: Miller-pattern E-matching + bounded
-                        // enumeration fallback.
+                        let before_tier1 = instantiations.len();
+                        // Tier 1: Miller-pattern E-matching.
                         for inst in crate::quant::instantiate_one(var, body, &universe) {
                             if !instantiations.iter().any(|t| t.alpha_eq(&inst)) {
                                 instantiations.push(inst);
@@ -264,6 +264,22 @@ impl Solver {
                         for inst in crate::quant_conflict::conflict_instantiate(var, body, &rest) {
                             if !instantiations.iter().any(|t| t.alpha_eq(&inst)) {
                                 instantiations.push(inst);
+                            }
+                        }
+                        // Tier 3: bounded enumeration. Fires only when
+                        // Tier 1 and Tier 2 produced nothing new for
+                        // this quantifier — keeps universe-wide blowup
+                        // off the hot path.
+                        if instantiations.len() == before_tier1 {
+                            for inst in adsmt_quant::enumerate::enumerate(
+                                var,
+                                body,
+                                &universe,
+                                adsmt_quant::enumerate::DEFAULT_TIER3_BUDGET,
+                            ) {
+                                if !instantiations.iter().any(|t| t.alpha_eq(&inst)) {
+                                    instantiations.push(inst);
+                                }
                             }
                         }
                     }

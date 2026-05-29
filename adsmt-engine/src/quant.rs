@@ -1,4 +1,4 @@
-//! Quantifier instantiation glue (v0.3 tier 1).
+//! Quantifier instantiation glue — engine-side Tier 1 hook.
 //!
 //! When the Boolean engine reports Sat over the ground fragment, we
 //! run a Miller-pattern E-matching pass over every asserted
@@ -11,8 +11,10 @@
 //! 3. Run the [`EMatcher`] to find substitutions.
 //! 4. Emit instantiated bodies as new assertions.
 //!
-//! v0.3 alpha limits instantiation to a small fixed budget so the
-//! engine stays decisive even on bad triggers.
+//! Tier 2 (conflict-based) lives in [`crate::quant_conflict`]; Tier 3
+//! (bounded enumeration) lives in
+//! [`adsmt_quant::enumerate::enumerate`]. The solver loop in
+//! `solver.rs` walks 1 → 2 → 3 → 4 (abductive escalation) in order.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -98,8 +100,11 @@ pub fn instantiate_with_tier(
 }
 
 /// For a single `∀v. body`, generate instantiations of `body` by
-/// matching `body` (treated as a flex pattern over `v`) against terms
-/// in `universe`. Returns instantiated bodies (positive polarity).
+/// matching `body` (treated as a flex pattern over `v`) against
+/// terms in `universe` — **Tier 1 only**: Miller-pattern E-matching
+/// over the body's shape. When this returns an empty list the
+/// solver loop escalates to Tier 2 (conflict-based) and then Tier 3
+/// (bounded enumeration via [`adsmt_quant::enumerate::enumerate`]).
 pub fn instantiate_one(
     var: &Var,
     body: &Term,
@@ -124,25 +129,6 @@ pub fn instantiate_one(
             // Build σ = {var ↦ sub_t} and apply to body.
             let mut sigma: IndexMap<Arc<Var>, Term> = IndexMap::new();
             sigma.insert(v_arc.clone(), sub_t.clone());
-            if let Ok(instantiated) = body.subst(&sigma) {
-                out.push(instantiated);
-            }
-        }
-    }
-
-    // Fallback: even if E-matching against the body shape yielded
-    // nothing (common with rigid bodies), enumerate every universe
-    // term of the right sort and instantiate with it. This is the
-    // brute-force tier-3 fallback (sec 18 Q12) — bounded by universe
-    // size, which is bounded by input size.
-    if out.is_empty() {
-        for t in universe.iter() {
-            if t.type_of() != var.ty { continue; }
-            let key = t.to_string();
-            if seen.contains(&key) { continue; }
-            seen.insert(key);
-            let mut sigma: IndexMap<Arc<Var>, Term> = IndexMap::new();
-            sigma.insert(v_arc.clone(), t.clone());
             if let Ok(instantiated) = body.subst(&sigma) {
                 out.push(instantiated);
             }
