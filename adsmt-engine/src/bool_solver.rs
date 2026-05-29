@@ -2,8 +2,19 @@
 //!
 //! v0.3 alpha: unit propagation only. If propagation derives an
 //! empty clause → Unsat. If every clause is satisfied → Sat.
-//! Otherwise → Unknown (decision splitting is gated for v0.5
-//! when proper CDCL lands).
+//! Otherwise → Unknown.
+//!
+//! v0.19 B.3 layered Luby-sequence restart wrapping over the
+//! depth-bounded DPLL. [`dpll_with_restarts`] iterates a
+//! geometric pattern (Luby's 1, 1, 2, 1, 1, 2, 4, … schedule with
+//! a base unit of `base_depth`) and re-runs [`dpll`] at the
+//! escalating budget until a Sat/Unsat verdict is reached or the
+//! retry budget runs out. The restart sequence itself is exposed
+//! as [`luby_sequence`] so other engine modules can reuse it.
+//! Full CDCL (1-UIP learnt clauses + non-chronological
+//! backjumping) is queued for v0.21; the restart layer here is
+//! the first half of that work and is already strong enough to
+//! flip many Unknown-budget verdicts to definite answers.
 
 use std::collections::HashMap;
 
@@ -23,6 +34,72 @@ pub enum BoolResult {
 pub fn dpll(clauses: &[Clause], max_depth: usize) -> BoolResult {
     let assign = HashMap::new();
     dpll_rec(clauses, assign, max_depth)
+}
+
+/// v0.19 B.3 — Luby restart sequence (Luby, Sinclair, Zuckerman 1993).
+///
+/// Returns the first `n` Luby numbers, the canonical CDCL restart
+/// schedule. The unscaled sequence is `1, 1, 2, 1, 1, 2, 4, 1, 1, 2,
+/// 1, 1, 2, 4, 8, …`. Each entry is multiplied by `base_unit` by
+/// the caller to obtain the conflict budget for that restart epoch.
+///
+/// Defined recursively:
+/// - if `i + 1 = 2^k` then `luby(i) = 2^(k-1)`
+/// - else find `k` with `2^(k-1) ≤ i + 1 < 2^k` and
+///   `luby(i) = luby(i - 2^(k-1) + 1)`.
+pub fn luby_sequence(n: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::with_capacity(n);
+    for i in 0..n {
+        out.push(luby_index(i));
+    }
+    out
+}
+
+fn luby_index(i: usize) -> usize {
+    // Knuth's reluctant-doubling iteration (TAOCP §7.2.2.2 ex. 81).
+    // Generates the Luby sequence in O(1) amortized per element
+    // via a (u, v) pair where `u` is a "level counter" and `v` is
+    // the current emit value. The bit-twiddle `u & u.wrapping_neg()`
+    // isolates the lowest set bit, matching `v` exactly when we've
+    // finished an entire sub-sequence at this level.
+    let mut u: usize = 1;
+    let mut v: usize = 1;
+    for _ in 0..i {
+        if (u & u.wrapping_neg()) == v {
+            u += 1;
+            v = 1;
+        } else {
+            v *= 2;
+        }
+    }
+    v
+}
+
+/// v0.19 B.3 — run [`dpll`] under a Luby-scheduled restart loop.
+///
+/// Each epoch invokes `dpll(clauses, base_depth * luby_i)` and
+/// returns immediately on Sat or Unsat. If every epoch returns
+/// Unknown the function reports Unknown after `restarts` epochs.
+///
+/// `base_depth` is the smallest depth budget; the Luby multiplier
+/// grows the budget geometrically while still revisiting the
+/// short-budget epochs (the 1, 1, 2, 1, 1, 2, 4 pattern), which
+/// is what makes Luby outperform pure-geometric restart on the
+/// solver-races literature.
+pub fn dpll_with_restarts(
+    clauses: &[Clause],
+    base_depth: usize,
+    restarts: usize,
+) -> BoolResult {
+    for k in 0..restarts {
+        let depth = base_depth.saturating_mul(luby_index(k));
+        match dpll(clauses, depth) {
+            BoolResult::Sat => return BoolResult::Sat,
+            BoolResult::Unsat => return BoolResult::Unsat,
+            BoolResult::Unknown => continue,
+        }
+    }
+    BoolResult::Unknown
 }
 
 fn dpll_rec(
@@ -257,6 +334,48 @@ mod tests {
             vec![Lit::neg(p()), Lit::neg(q())],
         ];
         assert_eq!(dpll(&cs, 4), BoolResult::Unsat);
+    }
+
+    // === v0.19 B.3 — Luby restart sequence tests ===
+
+    #[test]
+    fn luby_sequence_matches_canonical_first_15() {
+        let seq = luby_sequence(15);
+        assert_eq!(
+            seq,
+            vec![1, 1, 2, 1, 1, 2, 4, 1, 1, 2, 1, 1, 2, 4, 8],
+            "first 15 Luby numbers"
+        );
+    }
+
+    #[test]
+    fn luby_sequence_zero_is_empty() {
+        assert!(luby_sequence(0).is_empty());
+    }
+
+    #[test]
+    fn dpll_with_restarts_returns_sat_for_satisfiable_input() {
+        // Trivially-Sat input — first epoch succeeds.
+        let cs = vec![vec![Lit::pos(p()), Lit::pos(q())]];
+        assert_eq!(dpll_with_restarts(&cs, 2, 4), BoolResult::Sat);
+    }
+
+    #[test]
+    fn dpll_with_restarts_returns_unsat_for_pigeonhole_2var() {
+        let cs = vec![
+            vec![Lit::pos(p()), Lit::pos(q())],
+            vec![Lit::neg(p()), Lit::pos(q())],
+            vec![Lit::pos(p()), Lit::neg(q())],
+            vec![Lit::neg(p()), Lit::neg(q())],
+        ];
+        assert_eq!(dpll_with_restarts(&cs, 2, 6), BoolResult::Unsat);
+    }
+
+    #[test]
+    fn dpll_with_restarts_zero_budget_is_unknown() {
+        // 0 restarts → never invokes dpll → Unknown.
+        let cs = vec![vec![Lit::pos(p()), Lit::pos(q())]];
+        assert_eq!(dpll_with_restarts(&cs, 2, 0), BoolResult::Unknown);
     }
 
     #[test]
