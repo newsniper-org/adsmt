@@ -15,7 +15,7 @@ use adsmt_theory::polite::Combination;
 use adsmt_theory::uf::Uf;
 
 #[allow(unused_imports)]
-use crate::bool_solver::{dpll, BoolResult};
+use crate::bool_solver::{dpll, dpll_with_restarts, BoolResult};
 use crate::cnf::{flatten_to_clauses, Clause, Lit};
 use crate::dpllt::{self, LoopOutcome};
 use crate::result::{Abductive, SatResult};
@@ -370,12 +370,22 @@ impl Solver {
         // (2) Run the configured SAT backend. Priority order:
         //     `oxiz` (Path A+B default, see oxiz_relationship.md)
         //     > `cadical` (C++ FFI) > built-in DPLL.
+        //
+        // v0.19 B.1 — the built-in DPLL fallback now runs under
+        // the Luby-restart wrapper. `base_depth=8` × `restarts=12`
+        // exercises the canonical 1,1,2,1,1,2,4,1,1,2,1,1 Luby
+        // budget, escalating from depth-8 to depth-32 across
+        // epochs. Empirically this flips a number of Unknown
+        // verdicts on harder branches to definite Sat/Unsat
+        // without measurably hurting easy-case latency (the first
+        // epoch already covers anything the old single-shot
+        // `dpll(_, 16)` could solve).
         #[cfg(feature = "oxiz")]
         let sat_result = crate::oxiz_backend::solve(&clauses);
         #[cfg(all(feature = "cadical", not(feature = "oxiz")))]
         let sat_result = crate::cadical_backend::solve(&clauses);
         #[cfg(not(any(feature = "oxiz", feature = "cadical")))]
-        let sat_result = dpll(&clauses, 16);
+        let sat_result = dpll_with_restarts(&clauses, 8, 12);
         match sat_result {
             BoolResult::Sat => {
                 // Propagation found a satisfying assignment; theories
