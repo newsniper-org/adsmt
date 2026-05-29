@@ -117,17 +117,21 @@ pub fn derive_heuristics(args: TokenStream, item: TokenStream) -> TokenStream {
             .into();
         }
     };
-    if let Err(msg) = validate_fragment_inline(&module) {
-        return compile_error_stream(&format!(
-            "adsmt-heuristic-checker: fragment violation in `{path}`: {msg}"
-        ))
-        .into();
-    }
-    if let Err(msg) = verify_minimum_anchor() {
-        return compile_error_stream(&format!(
-            "adsmt-heuristic-checker: σ minimum-table anchor check failed: {msg}"
-        ))
-        .into();
+    let cached = try_cache_hit(&source);
+    if !cached {
+        if let Err(msg) = validate_fragment_inline(&module) {
+            return compile_error_stream(&format!(
+                "adsmt-heuristic-checker: fragment violation in `{path}`: {msg}"
+            ))
+            .into();
+        }
+        if let Err(msg) = verify_minimum_anchor() {
+            return compile_error_stream(&format!(
+                "adsmt-heuristic-checker: σ minimum-table anchor check failed: {msg}"
+            ))
+            .into();
+        }
+        try_cache_write(&source);
     }
 
     let canonical = canonical_encoding(&source);
@@ -157,6 +161,94 @@ const MINIMUM_TABLE_SOURCE: &str = include_str!(
     "../../adsmt-heuristic-checker/minimum-table/minimum.kb"
 );
 
+/// Try to short-circuit a macro expansion via the J-tier cache
+/// at `$ADSMT_HEURISTIC_CACHE_DIR` (or `$OUT_DIR /
+/// adsmt-heuristic-cache/` as the cargo-friendly fallback).
+///
+/// Returns `Some(())` when the cache hit succeeded — i.e., the
+/// `(user_source, minimum_source)` pair was already validated
+/// on a previous build and the cache file is present. The
+/// caller skips re-parsing in that case.
+///
+/// The cache key matches
+/// `adsmt_heuristic_checker::cache::CacheKey::compute(user, min)`
+/// exactly — we replicate the canonical-payload + K12 logic here
+/// rather than depending on `adsmt-heuristic-checker` (which
+/// would create a cycle since the checker re-exports the
+/// macros). The two implementations must stay in lock-step;
+/// `tests/cache_layout.rs` integration test pins the
+/// equivalence.
+fn try_cache_hit(user_source: &str) -> bool {
+    use std::path::PathBuf;
+    let dir = match std::env::var("ADSMT_HEURISTIC_CACHE_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("OUT_DIR")
+                .ok()
+                .map(|p| PathBuf::from(p).join("adsmt-heuristic-cache"))
+        })
+    {
+        Some(d) => d,
+        None => return false,
+    };
+    let stem = cache_file_stem(user_source, MINIMUM_TABLE_SOURCE);
+    let path = dir.join(format!("{stem}.canonical"));
+    path.exists()
+}
+
+/// Persist a successful validation outcome to the cache so
+/// subsequent rebuilds short-circuit via [`try_cache_hit`].
+/// Best-effort: silently no-ops when no cache dir is set, when
+/// the dir can't be created, or when the write fails. Cache
+/// failures must never break the build — they only forfeit the
+/// rebuild speed-up.
+fn try_cache_write(user_source: &str) {
+    use std::path::PathBuf;
+    let dir = match std::env::var("ADSMT_HEURISTIC_CACHE_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("OUT_DIR")
+                .ok()
+                .map(|p| PathBuf::from(p).join("adsmt-heuristic-cache"))
+        })
+    {
+        Some(d) => d,
+        None => return,
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let stem = cache_file_stem(user_source, MINIMUM_TABLE_SOURCE);
+    let canonical = canonical_encoding(user_source);
+    let _ = std::fs::write(dir.join(format!("{stem}.canonical")), canonical);
+}
+
+/// Compute the cache file stem (`<primary_hex>_<shadow_hex>`)
+/// matching `adsmt_heuristic_checker::cache::CacheKey::compute`.
+fn cache_file_stem(user: &str, minimum: &str) -> String {
+    use lu_common::k12::{hash_with_customization, hex};
+    const CS_PRIMARY: &[u8] = b"adsmt-heuristic-cache-v1-primary";
+    const CS_SHADOW: &[u8] = b"adsmt-heuristic-cache-v1-shadow";
+    let payload = canonical_cache_payload(user, minimum);
+    let primary = hash_with_customization(payload.as_bytes(), CS_PRIMARY);
+    let shadow = hash_with_customization(payload.as_bytes(), CS_SHADOW);
+    format!("{}_{}", hex(&primary), hex(&shadow))
+}
+
+fn canonical_cache_payload(user: &str, minimum: &str) -> String {
+    let mut buf = String::with_capacity(user.len() + minimum.len() + 8);
+    for line in user.lines() {
+        buf.push_str(line.trim_end());
+        buf.push('\n');
+    }
+    buf.push_str("---\n");
+    for line in minimum.lines() {
+        buf.push_str(line.trim_end());
+        buf.push('\n');
+    }
+    buf
+}
+
 /// Render the lu-kb source canonical encoding + item count into
 /// a stable handle the runtime checker can consume.
 ///
@@ -172,6 +264,17 @@ const MINIMUM_TABLE_SOURCE: &str = include_str!(
 ///
 /// On any failure emits `compile_error!(...)`.
 fn expand_from_source(source: &str, origin: &str) -> TokenStream {
+    // v0.19 J-full: cache-aware short-circuit. When the
+    // `(user_source, minimum_source)` pair was already
+    // validated on a previous build (cache file present), we
+    // skip the parse/validate trio and only need the module to
+    // emit a deterministic canonical-encoding handle. The
+    // module parse is still cheap (lu-kb parser is fast) so we
+    // keep it for the `item_count` accessor — the savings come
+    // from skipping the fragment + minimum-table-anchor
+    // re-walks, which are the heavier steps.
+    let cached = try_cache_hit(source);
+
     let module = match lu_common::kb::parse(source) {
         Ok(m) => m,
         Err(e) => {
@@ -181,19 +284,25 @@ fn expand_from_source(source: &str, origin: &str) -> TokenStream {
             .into();
         }
     };
-    if let Err(msg) = validate_fragment_inline(&module) {
-        return compile_error_stream(&format!(
-            "adsmt-heuristic-checker: fragment violation in {origin}: {msg}"
-        ))
-        .into();
+
+    if !cached {
+        if let Err(msg) = validate_fragment_inline(&module) {
+            return compile_error_stream(&format!(
+                "adsmt-heuristic-checker: fragment violation in {origin}: {msg}"
+            ))
+            .into();
+        }
+        if let Err(msg) = verify_minimum_anchor() {
+            return compile_error_stream(&format!(
+                "adsmt-heuristic-checker: σ minimum-table anchor check failed (the embedded minimum.kb bytes can't be parsed): {msg}. \
+                 This usually means adsmt-heuristic-checker-macros was rebuilt against an inconsistent adsmt-heuristic-checker minimum-table source."
+            ))
+            .into();
+        }
+        // Validation succeeded — persist for future builds.
+        try_cache_write(source);
     }
-    if let Err(msg) = verify_minimum_anchor() {
-        return compile_error_stream(&format!(
-            "adsmt-heuristic-checker: σ minimum-table anchor check failed (the embedded minimum.kb bytes can't be parsed): {msg}. \
-             This usually means adsmt-heuristic-checker-macros was rebuilt against an inconsistent adsmt-heuristic-checker minimum-table source."
-        ))
-        .into();
-    }
+
     let canonical = canonical_encoding(source);
     let item_count = module.items.len();
     let expanded = quote! {
