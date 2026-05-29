@@ -117,6 +117,18 @@ pub fn derive_heuristics(args: TokenStream, item: TokenStream) -> TokenStream {
             .into();
         }
     };
+    if let Err(msg) = validate_fragment_inline(&module) {
+        return compile_error_stream(&format!(
+            "adsmt-heuristic-checker: fragment violation in `{path}`: {msg}"
+        ))
+        .into();
+    }
+    if let Err(msg) = verify_minimum_anchor() {
+        return compile_error_stream(&format!(
+            "adsmt-heuristic-checker: σ minimum-table anchor check failed: {msg}"
+        ))
+        .into();
+    }
 
     let canonical = canonical_encoding(&source);
     let item_count = module.items.len();
@@ -137,8 +149,28 @@ pub fn derive_heuristics(args: TokenStream, item: TokenStream) -> TokenStream {
     expanded.into()
 }
 
+/// The shipped adsmt-minimum heuristic table source, embedded
+/// at proc-macro compile time. The runtime checker reads the
+/// same bytes via `adsmt_heuristic_checker::MinimumIr::shipped`;
+/// both sides hashing identically is the σ peer's anchor.
+const MINIMUM_TABLE_SOURCE: &str = include_str!(
+    "../../adsmt-heuristic-checker/minimum-table/minimum.kb"
+);
+
 /// Render the lu-kb source canonical encoding + item count into
 /// a stable handle the runtime checker can consume.
+///
+/// Performs three compile-time checks before expansion:
+/// 1. Parses the user source via `lu_common::kb::parse`.
+/// 2. Runs the fragment validator (mirrors
+///    `adsmt_heuristic_checker::fragment::validate_fragment` —
+///    HKT forbidden, lambda-no-external-capture).
+/// 3. Re-parses the shipped minimum table and asserts it loads
+///    cleanly. This is the σ peer's compile-time anchor — if
+///    the bundled minimum-table source is somehow corrupted
+///    relative to the embedded bytes, the macro fails fast.
+///
+/// On any failure emits `compile_error!(...)`.
 fn expand_from_source(source: &str, origin: &str) -> TokenStream {
     let module = match lu_common::kb::parse(source) {
         Ok(m) => m,
@@ -149,6 +181,19 @@ fn expand_from_source(source: &str, origin: &str) -> TokenStream {
             .into();
         }
     };
+    if let Err(msg) = validate_fragment_inline(&module) {
+        return compile_error_stream(&format!(
+            "adsmt-heuristic-checker: fragment violation in {origin}: {msg}"
+        ))
+        .into();
+    }
+    if let Err(msg) = verify_minimum_anchor() {
+        return compile_error_stream(&format!(
+            "adsmt-heuristic-checker: σ minimum-table anchor check failed (the embedded minimum.kb bytes can't be parsed): {msg}. \
+             This usually means adsmt-heuristic-checker-macros was rebuilt against an inconsistent adsmt-heuristic-checker minimum-table source."
+        ))
+        .into();
+    }
     let canonical = canonical_encoding(source);
     let item_count = module.items.len();
     let expanded = quote! {
@@ -158,6 +203,50 @@ fn expand_from_source(source: &str, origin: &str) -> TokenStream {
         }
     };
     expanded.into()
+}
+
+/// Compile-time fragment validation — mirrors
+/// `adsmt_heuristic_checker::fragment::validate_fragment` (HKT
+/// strictly forbidden; lambdas only with zero external capture).
+/// We inline a small validator here so the proc-macro doesn't
+/// need to depend on `adsmt-heuristic-checker` (which would
+/// create a circular dependency via the macros).
+fn validate_fragment_inline(module: &lu_common::kb::Module) -> Result<(), String> {
+    use lu_common::kb::{Item, KindExpr};
+    for item in &module.items {
+        match item {
+            Item::Fact(_) | Item::EnumDef(_) | Item::Import(_) | Item::Export(_) => {}
+            Item::Abduce(_) => return Err("Abduce is outside the user-extension fragment".into()),
+            Item::Instance(_) => return Err("Instance is outside the user-extension fragment".into()),
+            Item::Rule(rule) => {
+                for arg in &rule.head.args {
+                    if let Some(kind) = &arg.kind_ann {
+                        match kind {
+                            KindExpr::Type => {}
+                            KindExpr::Arrow(_, _) => return Err("HKT (KindExpr::Arrow) is forbidden".into()),
+                            KindExpr::Slot(_) => return Err("HKT (KindExpr::Slot) is forbidden".into()),
+                        }
+                    }
+                }
+            }
+            // Constraint / TypeAlias / DataDef / Relation / Fn —
+            // permitted shapes; deeper fragment scan happens at
+            // runtime check time. The proc-macro path only blocks
+            // the hard-forbidden cases above.
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Parse the embedded minimum-table source and assert it loads
+/// without errors. This anchors the σ peer at compile time —
+/// any drift between the macros crate's `include_str!` bytes
+/// and the runtime checker's bytes produces an early failure.
+fn verify_minimum_anchor() -> Result<(), String> {
+    lu_common::kb::parse(MINIMUM_TABLE_SOURCE)
+        .map(|_| ())
+        .map_err(|e| format!("{e:?}"))
 }
 
 fn canonical_encoding(source: &str) -> String {

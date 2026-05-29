@@ -52,3 +52,15 @@ fn import_resolves_source_file_relative() {
         import_adsmt_heuristics!("source_relative_empty.kb");
     assert_eq!(source.item_count, 0);
 }
+
+#[test]
+fn import_macro_accepts_minimum_table_shape() {
+    // File-form lookups preserve indentation, which the lu-kb
+    // parser is sensitive to. This confirms the proc-macro's
+    // three compile-time checks (parse + fragment + minimum-
+    // table anchor) all pass on a file that mirrors the shipped
+    // minimum table's shape.
+    let source: AdsmtHeuristicsSource =
+        import_adsmt_heuristics!("tests/fixtures/minimum_table_shape.kb");
+    assert!(source.item_count >= 2);
+}

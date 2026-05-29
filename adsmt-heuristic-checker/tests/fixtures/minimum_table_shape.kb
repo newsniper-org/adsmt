@@ -1,0 +1,12 @@
+# Minimum-table-shaped fixture for the adsmt_heuristics! /
+# import_adsmt_heuristics! proc-macro acceptance test. Mirrors
+# the shape of `minimum-table/minimum.kb` — EnumDef + FactBlock
+# — which is the form the proc-macro's compile-time fragment
+# scanner must accept.
+
+enum Color:
+  red
+  blue
+
+fact requirement:
+  target_a <- color_red
