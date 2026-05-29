@@ -300,7 +300,56 @@ impl Certificate {
 /// Mutable builder that hands out fresh step ids.
 #[derive(Default, Debug)]
 pub struct CertBuilder {
-    steps: Vec<Step>,
+    /// `pub(crate)` to let `prover_emit` and other in-crate
+    /// modules attach classical-axiom markers and other v0.17
+    /// metadata after a step has been added. External callers go
+    /// through the dedicated marker-setter methods.
+    pub(crate) steps: Vec<Step>,
+}
+
+impl CertBuilder {
+    /// Set the `direct_required_classical` for a previously added
+    /// step. Replaces any existing value. Idempotent across
+    /// repeated calls with the same set.
+    pub fn set_direct_required_classical(
+        &mut self,
+        step: StepId,
+        set: ClassicalSet,
+    ) {
+        if let Some(s) = self.steps.get_mut(step.0 as usize) {
+            s.direct_required_classical = set;
+        }
+    }
+
+    /// Set the `transitive_required_classical` for a previously
+    /// added step.
+    pub fn set_transitive_required_classical(
+        &mut self,
+        step: StepId,
+        set: ClassicalSet,
+    ) {
+        if let Some(s) = self.steps.get_mut(step.0 as usize) {
+            s.transitive_required_classical = set;
+        }
+    }
+
+    /// Append to a step's `should_import_classical` set.
+    pub fn add_should_import_classical(
+        &mut self,
+        step: StepId,
+        fam: ClassicalModuleFamily,
+    ) {
+        if let Some(s) = self.steps.get_mut(step.0 as usize) {
+            s.should_import_classical.insert(fam);
+        }
+    }
+
+    /// Append an `allow_to_import_classical` marker to a step.
+    pub fn add_allow_marker(&mut self, step: StepId, marker: AllowMarker) {
+        if let Some(s) = self.steps.get_mut(step.0 as usize) {
+            s.allow_to_import_classical.push(marker);
+        }
+    }
 }
 
 impl CertBuilder {

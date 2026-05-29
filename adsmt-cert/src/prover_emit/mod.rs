@@ -52,6 +52,9 @@
 pub mod common;
 
 pub use common::{
+    aggregate_allow, aggregate_required, aggregate_should,
     classify_type, collect_free_vars, escape_for_comment,
-    strip_app_head, witness_summary, ClassifiedType,
+    isabelle_import_line, lean_import_line, missing_imports,
+    resolve_imports, rocq_import_line, strip_app_head,
+    witness_summary, ClassifiedType,
 };
