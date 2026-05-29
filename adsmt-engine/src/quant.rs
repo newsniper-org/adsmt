@@ -189,4 +189,88 @@ mod tests {
         let strs: Vec<String> = insts.iter().map(|t| t.to_string()).collect();
         assert!(strs.iter().any(|s| s.contains('a')));
     }
+
+    // === v0.19 D.2 — HOL quantifier extension ===
+
+    #[test]
+    fn instantiates_function_typed_bound_variable() {
+        // forall (f: Int -> Int). f a   over universe { id_int, succ, a }
+        // ⇒ instantiated to `id_int a` and `succ a`.
+        let int_to_int = Type::fun(int_(), int_()).unwrap();
+        let id_int = Term::const_("id_int", int_to_int.clone());
+        let succ = Term::const_("succ", int_to_int.clone());
+        let a = Term::const_("a", int_());
+
+        let mut u = TermUniverse::new();
+        u.insert(id_int.clone());
+        u.insert(succ.clone());
+        u.insert(a.clone());
+        // Ground applications must appear in the universe for the
+        // body-trigger `f a` to align: the E-matcher matches `f a`
+        // (with `f` flex) against each universe term, so a universe
+        // entry of `id_int a` is required to bind `f ↦ id_int`.
+        u.insert(Term::app(id_int.clone(), a.clone()).unwrap());
+        u.insert(Term::app(succ.clone(), a.clone()).unwrap());
+
+        let f_var = Var { name: "f".into(), ty: int_to_int };
+        let body = Term::app(
+            Term::Var(Arc::new(f_var.clone())),
+            a.clone(),
+        )
+        .unwrap();
+        let insts = instantiate_one(&f_var, &body, &u);
+        assert!(!insts.is_empty(), "HOL flex over fn sort should produce instantiations");
+        let strs: Vec<String> = insts.iter().map(|t| t.to_string()).collect();
+        // Expect at least one of `id_int a` / `succ a` to surface.
+        assert!(strs.iter().any(|s| s.contains("id_int")));
+    }
+
+    #[test]
+    fn partition_handles_nested_forall_as_one_assertion() {
+        // forall x:Int. forall y:Int. P x y    is a single top-level
+        // forall assertion. The inner forall remains in the body.
+        let int_to_int_to_bool =
+            Type::fun(int_(), Type::fun(int_(), Type::bool_()).unwrap()).unwrap();
+        let p = Term::const_("P", int_to_int_to_bool);
+        let x = Var { name: "x".into(), ty: int_() };
+        let y = Var { name: "y".into(), ty: int_() };
+        let body_inner = Term::app(
+            Term::app(p, Term::Var(Arc::new(x.clone()))).unwrap(),
+            Term::Var(Arc::new(y.clone())),
+        )
+        .unwrap();
+        let inner = Term::mk_forall(y, body_inner).unwrap();
+        let outer = Term::mk_forall(x, inner).unwrap();
+        let (qs, _rest) = partition_quantifiers(&[(outer, true)]);
+        assert_eq!(qs.len(), 1, "outer forall is the single quantifier");
+        // The outer body is itself a forall — the engine's
+        // instantiation pass will dispatch a second round on the
+        // remaining inner quantifier after the outer is instantiated.
+        assert!(qs[0].1.dest_forall().is_some());
+    }
+
+    #[test]
+    fn instantiate_skips_sort_mismatched_subterm() {
+        // forall x:Int. body  — universe contains a Bool subterm that
+        // must NOT be picked up as an instantiation candidate even
+        // though it sits next to an Int candidate.
+        let bool_lit = Term::true_const();
+        let a = Term::var("a", int_());
+        let p = Term::const_("P", Type::fun(int_(), Type::bool_()).unwrap());
+        let p_a = Term::app(p.clone(), a.clone()).unwrap();
+        let mut u = TermUniverse::new();
+        u.insert(bool_lit);
+        u.insert(a);
+        u.insert(p_a);
+
+        let x_var = Var { name: "x".into(), ty: int_() };
+        let body = Term::app(p, Term::Var(Arc::new(x_var.clone()))).unwrap();
+        let insts = instantiate_one(&x_var, &body, &u);
+        // Every instantiation has the body shape `P <Int term>`, never
+        // `P true_const`.
+        for inst in &insts {
+            let s = inst.to_string();
+            assert!(!s.contains("True") || !s.contains("(P "), "no P(Bool) instantiation");
+        }
+    }
 }
