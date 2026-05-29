@@ -57,7 +57,154 @@ impl SourceLoc {
     }
 }
 
+/// Cross-ITP family of classical axioms (D4 = δ in the design
+/// discussion). Each variant maps to a precise per-ITP module
+/// (Rocq `Classical_Prop`, Lean `Classical.em`, Isabelle no-op,
+/// etc.) by per-backend table in `prover_emit`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ClassicalModuleFamily {
+    /// Propositional classical reasoning (LEM, NNPP). Rocq:
+    /// `Classical_Prop`. Lean: built-in `Classical.em`. Isabelle:
+    /// no-op (`Main` is classical).
+    Propositional,
+    /// Predicate-level classical reasoning. Rocq:
+    /// `Classical_Pred_Type`. Lean: limited via `Classical.choice`.
+    /// Isabelle: no-op.
+    Predicate,
+    /// Hilbert ε / classical choice. Rocq: `ClassicalEpsilon`.
+    /// Lean: `Classical.choice`. Isabelle: no-op.
+    Choice,
+    /// Functional extensionality. Rocq:
+    /// `FunctionalExtensionality`. Lean: `funext`. Isabelle:
+    /// no-op.
+    FunExt,
+}
+
+/// A set of [`ClassicalModuleFamily`] values, kept as a small
+/// sorted-deduplicated `Vec` for stable comparison and emit
+/// determinism.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClassicalSet {
+    members: Vec<ClassicalModuleFamily>,
+}
+
+impl ClassicalSet {
+    /// Empty set — the default for fields that haven't yet been
+    /// populated by a cert producer.
+    pub const fn empty() -> Self {
+        Self { members: Vec::new() }
+    }
+
+    /// Construct from an iterable. Duplicates are removed and the
+    /// result is kept in a canonical order.
+    pub fn from_iter<I: IntoIterator<Item = ClassicalModuleFamily>>(iter: I) -> Self {
+        let mut members: Vec<ClassicalModuleFamily> = iter.into_iter().collect();
+        members.sort_by_key(family_sort_key);
+        members.dedup();
+        Self { members }
+    }
+
+    /// Add a family to the set. No-op if already present.
+    pub fn insert(&mut self, fam: ClassicalModuleFamily) {
+        if !self.members.contains(&fam) {
+            self.members.push(fam);
+            self.members.sort_by_key(family_sort_key);
+        }
+    }
+
+    /// True if the family is in the set.
+    pub fn contains(&self, fam: ClassicalModuleFamily) -> bool {
+        self.members.contains(&fam)
+    }
+
+    /// True if the set has zero members.
+    pub fn is_empty(&self) -> bool { self.members.is_empty() }
+
+    /// Iterate in canonical order.
+    pub fn iter(&self) -> impl Iterator<Item = ClassicalModuleFamily> + '_ {
+        self.members.iter().copied()
+    }
+
+    /// Union with another set. The result is a new
+    /// [`ClassicalSet`]; neither operand is mutated.
+    pub fn union(&self, other: &ClassicalSet) -> ClassicalSet {
+        let mut result = self.members.clone();
+        for &fam in &other.members {
+            if !result.contains(&fam) {
+                result.push(fam);
+            }
+        }
+        result.sort_by_key(family_sort_key);
+        ClassicalSet { members: result }
+    }
+}
+
+fn family_sort_key(fam: &ClassicalModuleFamily) -> u8 {
+    match fam {
+        ClassicalModuleFamily::Propositional => 0,
+        ClassicalModuleFamily::Predicate => 1,
+        ClassicalModuleFamily::Choice => 2,
+        ClassicalModuleFamily::FunExt => 3,
+    }
+}
+
+/// One `allow_to_import_classical` marker instance per the
+/// D1.B truth table. An allowlist of [`ClassicalModuleFamily`]
+/// together with two boolean options:
+///
+/// - `lazy = false` (default) — `allow` is a gatekeeper only;
+///   imports happen iff other markers (`should`) explicitly
+///   request them.
+/// - `lazy = true, scan = false` — include iff a sibling `should`
+///   in the same file requests the same module.
+/// - `lazy = true, scan = true` — include iff the rendered output
+///   contains the module's axioms (post-hoc text scan).
+/// - `lazy = false, scan = true` — `scan` ignored; same as
+///   gatekeeper.
+///
+/// Multiple markers with identical `(allowlist, lazy, scan)`
+/// collapse to one (allowlist union); different-options markers
+/// coexist and evaluate independently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllowMarker {
+    pub allowlist: ClassicalSet,
+    pub lazy: bool,
+    pub scan: bool,
+}
+
+impl AllowMarker {
+    /// Default-shaped marker: gatekeeper only.
+    pub fn gatekeeper(allowlist: ClassicalSet) -> Self {
+        Self { allowlist, lazy: false, scan: false }
+    }
+}
+
 /// A single proof step.
+///
+/// # Classical-axiom markers (v0.17)
+///
+/// Per the "Classical axiom imports (on-demand)" policy
+/// (`memory/prover_emit_policy.md`), each step optionally carries
+/// four marker fields that drive prover_emit's import-header
+/// composition:
+///
+/// - [`Step::direct_required_classical`] — modules the step
+///   *itself* requires (theory-witness / Bool→Prop reflection /
+///   etc.).
+/// - [`Step::transitive_required_classical`] — modules accumulated
+///   from this step's parent chain via the pair-to-pair
+///   inheritance rule (D7 = δ' in the design discussion).
+/// - [`Step::should_import_classical`] — caller-injected hint
+///   forcing the listed modules into the file header regardless
+///   of usage analysis.
+/// - [`Step::allow_to_import_classical`] — caller-injected hint
+///   permitting modules into the header with `lazy` / `scan`
+///   semantics per the truth table in the policy doc.
+///
+/// All four default to empty / `None`. Existing cert producers
+/// that don't yet emit classical-axiom witnesses see no change
+/// (the default empty sets contribute nothing to emit-time
+/// import resolution).
 #[derive(Clone, Debug)]
 pub struct Step {
     pub id: StepId,
@@ -68,6 +215,30 @@ pub struct Step {
     /// positions; remains `None` for steps with no natural source
     /// (internal kernel applications, theory deductions).
     pub source_loc: Option<SourceLoc>,
+    /// Modules this step's own kernel/theory operation requires.
+    /// Empty for HOL kernel rules; non-empty for theory steps that
+    /// invoke classical reasoning (currently: DRAT witnesses ⇒
+    /// `{Propositional}`).
+    pub direct_required_classical: ClassicalSet,
+    /// Modules accumulated from the step's parent chain via
+    /// pair-to-pair inheritance (D7 = δ'). The pair
+    /// `(direct, transitive)` flows as a unit when a child step
+    /// references a parent: the parent's `direct` contribution
+    /// promotes one hop into the child's `transitive`, and the
+    /// parent's `transitive` accumulates into the child's
+    /// `transitive`.
+    pub transitive_required_classical: ClassicalSet,
+    /// `should_import_classical` marker — modules forced into the
+    /// file header regardless of usage analysis. Multiple `should`
+    /// markers across the cert (and its mid-blocks and
+    /// emit-call layer) union additively per D1.A-2 = δ+ε.
+    pub should_import_classical: ClassicalSet,
+    /// `allow_to_import_classical` markers — each carries an
+    /// allowlist with `(lazy, scan)` options per D1.B's truth
+    /// table. Multiple markers with identical options collapse to
+    /// one (allowlist union); different-options markers coexist
+    /// and are evaluated independently at emit-time.
+    pub allow_to_import_classical: Vec<AllowMarker>,
 }
 
 /// Which rule produced this step.
@@ -154,6 +325,10 @@ impl CertBuilder {
             body,
             result,
             source_loc,
+            direct_required_classical: ClassicalSet::empty(),
+            transitive_required_classical: ClassicalSet::empty(),
+            should_import_classical: ClassicalSet::empty(),
+            allow_to_import_classical: Vec::new(),
         });
         id
     }
