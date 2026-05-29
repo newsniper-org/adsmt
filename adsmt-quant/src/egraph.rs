@@ -125,15 +125,30 @@ impl EGraph {
     /// the merge changed the union-find (i.e. they were in
     /// distinct classes), `false` when they were already
     /// equal.
+    ///
+    /// **Stage 2** — after the primitive union, runs the
+    /// congruence-closure cascade ([`Self::repair`]) so that
+    /// peers `f(a)` and `f(b)` become equivalent whenever
+    /// `a = b` is asserted. The cascade is the "upward
+    /// merging" half of EUF and is what makes the E-graph
+    /// useful as a backend for theory combination.
     pub fn merge(&mut self, a: ENodeId, b: ENodeId) -> bool {
+        let changed = self.union(a, b);
+        if changed {
+            self.repair(self.find(a));
+        }
+        changed
+    }
+
+    /// Primitive union-find merge, no congruence cascade.
+    /// Exposed as `pub(crate)` so the cascade can re-enter
+    /// without re-triggering itself.
+    fn union(&mut self, a: ENodeId, b: ENodeId) -> bool {
         let ra = self.find(a);
         let rb = self.find(b);
         if ra == rb { return false; }
-        // Union by id-order — keep the smaller-id node as the
-        // root so deterministic iteration is preserved.
         let (root, child) = if ra.0 < rb.0 { (ra, rb) } else { (rb, ra) };
         self.parent[child.0 as usize] = root;
-        // Merge parent lists.
         let child_parents = self
             .class_parents
             .remove(&child)
@@ -143,6 +158,41 @@ impl EGraph {
             .or_default()
             .extend(child_parents);
         true
+    }
+
+    /// v0.21 A.2 stage 2 — congruence-closure cascade.
+    ///
+    /// Scans the parent E-nodes of `class`, groups them by
+    /// (head, normalized-child-class-ids), and merges any
+    /// parents that now share a normalised shape. Each new
+    /// merge enqueues the resulting class so the cascade
+    /// reaches a fixpoint. Worst-case linear in the parent-
+    /// edge count of the merged class (no path compression yet).
+    fn repair(&mut self, class: ENodeId) {
+        let mut worklist: Vec<ENodeId> = vec![class];
+        while let Some(c) = worklist.pop() {
+            let c = self.find(c);
+            let parents = self.class_parents(c);
+            let mut by_norm_key: HashMap<(String, Vec<ENodeId>), ENodeId> =
+                HashMap::new();
+            for p_id in parents {
+                let p_node = &self.nodes[p_id.0 as usize];
+                let norm: Vec<ENodeId> = p_node
+                    .key
+                    .children
+                    .iter()
+                    .map(|ch| self.find(*ch))
+                    .collect();
+                let key = (p_node.key.head.clone(), norm);
+                if let Some(&existing) = by_norm_key.get(&key) {
+                    if self.union(p_id, existing) {
+                        worklist.push(self.find(p_id));
+                    }
+                } else {
+                    by_norm_key.insert(key, p_id);
+                }
+            }
+        }
     }
 
     /// Are `a` and `b` in the same E-class?
@@ -251,9 +301,9 @@ mod tests {
     #[test]
     fn merge_consolidates_class_parent_lists() {
         // (f a), (f b) — distinct E-nodes. Merge a = b: the
-        // shared class's parent list now contains both `f a`
-        // and `f b` (the stage-2 cascade will then notice the
-        // app heads agree and merge them too — pending stage 2).
+        // shared class's parent list contains both `f a` and
+        // `f b`. With the stage-2 cascade in place, `f a` and
+        // `f b` are now also in the same E-class.
         let mut g = EGraph::new();
         let f = Term::const_("f", Type::fun(int_(), int_()).unwrap());
         let a = Term::var("a", int_());
@@ -267,5 +317,68 @@ mod tests {
         let parents = g.class_parents(a_id);
         assert!(parents.contains(&fa));
         assert!(parents.contains(&fb));
+    }
+
+    // === Stage 2 — congruence-closure cascade ===
+
+    #[test]
+    fn congruence_cascade_merges_fa_and_fb_after_a_equals_b() {
+        // `(f a)` and `(f b)` start distinct; merging `a = b`
+        // upward-merges them via the stage-2 cascade.
+        let mut g = EGraph::new();
+        let f = Term::const_("f", Type::fun(int_(), int_()).unwrap());
+        let a = Term::var("a", int_());
+        let b = Term::var("b", int_());
+        let a_id = g.add(&a);
+        let b_id = g.add(&b);
+        let fa = g.add(&Term::app(f.clone(), a).unwrap());
+        let fb = g.add(&Term::app(f, b).unwrap());
+        assert!(!g.equivalent(fa, fb));
+        g.merge(a_id, b_id);
+        assert!(
+            g.equivalent(fa, fb),
+            "congruence cascade should equate (f a) and (f b)"
+        );
+    }
+
+    #[test]
+    fn congruence_cascade_chains_through_two_hops() {
+        // `(f (g a))` and `(f (g b))` with `a = b`:
+        // - merge a = b
+        // - cascade lifts `(g a) = (g b)`
+        // - cascade lifts `(f (g a)) = (f (g b))`
+        let mut g = EGraph::new();
+        let int_to_int = Type::fun(int_(), int_()).unwrap();
+        let g_fn = Term::const_("g", int_to_int.clone());
+        let f = Term::const_("f", int_to_int);
+        let a = Term::var("a", int_());
+        let b = Term::var("b", int_());
+        let a_id = g.add(&a);
+        let b_id = g.add(&b);
+        let ga = Term::app(g_fn.clone(), a).unwrap();
+        let gb = Term::app(g_fn, b).unwrap();
+        let fga = g.add(&Term::app(f.clone(), ga).unwrap());
+        let fgb = g.add(&Term::app(f, gb).unwrap());
+        assert!(!g.equivalent(fga, fgb));
+        g.merge(a_id, b_id);
+        assert!(g.equivalent(fga, fgb), "two-hop cascade");
+    }
+
+    #[test]
+    fn congruence_cascade_does_not_overmerge_different_heads() {
+        // `(f a)` vs `(g a)` — same child class, different
+        // head ⇒ stay distinct after merging a = anything else.
+        let mut g = EGraph::new();
+        let int_to_int = Type::fun(int_(), int_()).unwrap();
+        let f = Term::const_("f", int_to_int.clone());
+        let g_fn = Term::const_("g", int_to_int);
+        let a = Term::var("a", int_());
+        let b = Term::var("b", int_());
+        let a_id = g.add(&a);
+        let b_id = g.add(&b);
+        let fa = g.add(&Term::app(f, a).unwrap());
+        let ga = g.add(&Term::app(g_fn, b).unwrap());
+        g.merge(a_id, b_id);
+        assert!(!g.equivalent(fa, ga), "different heads must not merge");
     }
 }
