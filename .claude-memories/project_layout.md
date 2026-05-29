@@ -30,11 +30,19 @@ BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later as of v0.18):
 - `adsmt-heuristic-checker-macros` — proc-macro entry points
   (`adsmt_heuristics!`, `import_adsmt_heuristics!`,
   `#[derive_heuristics]`)
-- `adsmt-lints` — rlib + cdylib for offline-first lints
-  (`adsmt_dead_heuristic_pattern` at Warn). nightly-gated
-  `dylint-plugin` feature lifts to a real cargo-dylint plugin
-- `adsmt-cli` — `lu-smt` binary
-- `adsmt-ffi` — C ABI for Lean4/Python/WASM
+- `adsmt-lints` — **runtime audit library** (rlib only since
+  v0.18 F.4-redo; the cargo-dylint plugin path was scrapped
+  in favour of runtime audits because cert is a runtime
+  object). Exposes `dead_pattern_audit(&Certificate)` +
+  `audit_to_json` (versioned JSON schema for IDE
+  consumption).
+- `adsmt-cli` — `lu-smt` binary. v0.19 added `--audit-json`
+  flag emitting the dead-pattern audit JSON to stderr after
+  each `(check-sat)`.
+- `adsmt-ffi` — C ABI for Lean4/Python/WASM. v0.19 froze the
+  surface header (`include/adsmt.h`) + ABI policy
+  (`ABI_POLICY.md`). v0.x → no guarantees; v1.0+ → full
+  semver-bound.
 
 **External**:
 - `external/logicutils/` — git submodule, branch `v0.x-smt`. Tracks
@@ -53,11 +61,20 @@ BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later as of v0.18):
 **Out-of-tree adsmt-contrib workspace** (`~/adsmt-contrib/`,
 separate git repo):
 - `adsmt-emit-rocq` — Rocq backend (Ltac2 only; Ltac1 excluded).
-  Mirrors `adsmt-cert::lean_emit` shape exactly.
-- `adsmt-emit-isabelle` — Isabelle/HOL backend via Isar.
+  Mirrors `adsmt-cert::lean_emit` shape exactly. v0.19 K-full:
+  Trans/EqMp/Deduct/Abs/Beta/Inst/InstType all emit real proof
+  terms.
+- `adsmt-emit-isabelle` — Isabelle/HOL backend via Isar. Same
+  K-full coverage as Rocq.
 - Both consume `adsmt_cert::prover_emit::common` for the shared
   semantic anchors (Bool→Prop, classical-axiom import family
-  enum, etc.).
+  enum, scan-arm axiom keyword tables, etc.).
+
+**Tooling** (`tooling/`):
+- `tooling/vscode-extension/` — v0.19 F.1 VS Code extension
+  consuming the `adsmt-lints` JSON schema for dead-pattern
+  diagnostics. Strict TS, CommonJS, schema version 1.
+- (future) LSP server, language analyzer integrations.
 
 **Why this matters:**
 - Design rationale lives in
