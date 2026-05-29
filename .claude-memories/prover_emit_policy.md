@@ -383,6 +383,24 @@ A user IR cache is valid iff the path from old → current contains
 The newest attribute's semver auto-sets the lower bound for all
 future compatibility checks.
 
+### v0.x exclusion policy (adopted 2026-05-29)
+
+The 8-layer safeguard treats adsmt's pre-1.0 line as
+**completely out of scope**. Concretely:
+
+- Every layer silently drops `major == 0` entries from its
+  canonical view (see `retain_in_scope` in
+  `adsmt_heuristic_checker::breaking_versions`).
+- v0.x → v0.y, v0.x → v1.y, and v1.x → v0.y are **all**
+  unguarded — no forward or backward compatibility checks fire.
+- v1.0.0 is the first version that anchors the safeguard.
+- v0.x snapshots may still be vendored under
+  `tests/snapshots/vX.Y.Z/` for historical reference, but the
+  regression test ignores them.
+
+Until v1.0.0 ships the safeguard is wiring that's exercised by
+tests but never blocks a build for a compatibility reason.
+
 ### 8-layer offline safeguard (cmn-e = σ+γ+ε+ι+κ+π+τ+λ)
 
 Peer-equal layers (coord-1 = δ) all mirror the same

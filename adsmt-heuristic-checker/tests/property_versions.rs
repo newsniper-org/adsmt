@@ -17,7 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use adsmt_heuristic_checker::breaking_versions::{
-    parse_line_list, PeerContribution,
+    parse_line_list, version_is_in_compat_scope, PeerContribution,
 };
 use adsmt_heuristic_checker::sigma_check::{
     CARGO_TOML_BYTES, HISTORY_BYTES, LOCKFILE_BYTES,
@@ -41,6 +41,12 @@ fn enumerate_historical_versions() -> Vec<String> {
         let f = path.join("breaking-versions.txt");
         if let Ok(body) = fs::read_to_string(&f) {
             for v in parse_line_list(&body) {
+                // v0.x exclusion: historical entries below v1.0.0
+                // are out of scope for the property test (per the
+                // policy adopted 2026-05-29).
+                if !version_is_in_compat_scope(&v) {
+                    continue;
+                }
                 if !out.contains(&v) {
                     out.push(v);
                 }

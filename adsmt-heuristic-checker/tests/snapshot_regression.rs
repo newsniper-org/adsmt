@@ -14,7 +14,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use adsmt_heuristic_checker::breaking_versions::parse_line_list;
+use adsmt_heuristic_checker::breaking_versions::{
+    parse_line_list, version_is_in_compat_scope,
+};
 use adsmt_heuristic_checker::sigma_check::LOCKFILE_BYTES;
 
 fn snapshots_root() -> PathBuf {
@@ -57,9 +59,17 @@ fn every_snapshot_is_subset_of_current_lockfile() {
     );
     for (tag, snap_versions) in snapshots {
         for v in &snap_versions {
+            // Per the v0.x exclusion policy (adopted 2026-05-29),
+            // pre-1.0 versions are out of scope for the safeguard
+            // and don't participate in the snapshot regression
+            // assertion. They may still be vendored for historical
+            // reference but the test ignores them.
+            if !version_is_in_compat_scope(v) {
+                continue;
+            }
             assert!(
                 current.contains(v),
-                "snapshot {tag} requires version `{v}` to be present in the current lockfile; remove of a historical breaking-version is forbidden",
+                "snapshot {tag} requires version `{v}` to be present in the current lockfile; remove of a historical (v1.0+) breaking-version is forbidden",
             );
         }
     }

@@ -2,6 +2,28 @@
 //! tracking (per `prover_emit_policy.md` § "8-layer offline
 //! safeguard").
 //!
+//! # v0.x exclusion
+//!
+//! adsmt's v0.x line is pre-1.0 and **not subject to either
+//! forward or backward compatibility guarantees** (user policy
+//! adopted 2026-05-29). Every layer of the safeguard silently
+//! drops `major == 0` versions from its canonical view:
+//!
+//! - [`pair_hash`] runs on the post-filter list (v0.x-only lists
+//!   hash identically to the empty list).
+//! - [`cross_check`] normalises peers with [`retain_in_scope`]
+//!   before comparison.
+//! - The `tests/snapshot_regression.rs` / `tests/property_
+//!   versions.rs` peers parse `tests/snapshots/vX.Y.Z/` entries
+//!   but the regression assertion only fires on v1.0.0+ entries
+//!   (vendoring v0.x snapshots is allowed but they're informative
+//!   only).
+//!
+//! v1.0.0 is the first version that participates in the
+//! safeguard. Until then the safeguard is functionally inactive
+//! — present as scaffolding so the wiring is exercised, but no
+//! actual cross-version compatibility is guaranteed.
+//!
 //! The peers
 //! `σ + γ + ε + ι + κ + π + τ + λ` collectively mirror the same
 //! information (the set of semver versions at which
@@ -41,6 +63,45 @@ pub const CS_PRIMARY: &[u8] = b"adsmt-breaking-versions-v1-primary";
 
 /// Customization string for the shadow K12 digest pass.
 pub const CS_SHADOW: &[u8] = b"adsmt-breaking-versions-v1-shadow";
+
+/// Major-version floor below which the safeguard is intentionally
+/// inactive.
+///
+/// adsmt's v0.x line is pre-1.0 and explicitly **not subject to**
+/// either forward or backward compatibility guarantees. Per the
+/// user policy adopted 2026-05-29, every layer of the 8-layer
+/// safeguard treats `major == 0` versions as out of scope —
+/// dropped from the version list before hashing, ignored by the
+/// snapshot regression test, skipped by the cross-peer compare.
+/// The first version that participates is the v1.0.0 release.
+pub const COMPAT_CHECK_MAJOR_FLOOR: u32 = 1;
+
+/// True when `version` is in scope for compatibility checking
+/// (semver major ≥ [`COMPAT_CHECK_MAJOR_FLOOR`]).
+///
+/// The parser is intentionally narrow: it splits on the first
+/// `.` and parses the prefix as `u32`. Anything that doesn't
+/// fit (empty string, non-numeric prefix, etc.) returns `false`
+/// — when the version can't be parsed at all, treating it as
+/// out of scope is the safe default.
+pub fn version_is_in_compat_scope(version: &str) -> bool {
+    let major_str = version.split('.').next().unwrap_or("");
+    match major_str.parse::<u32>() {
+        Ok(major) => major >= COMPAT_CHECK_MAJOR_FLOOR,
+        Err(_) => false,
+    }
+}
+
+/// Filter a slice of version strings to retain only those in
+/// scope (drops every `v0.x` entry). Returns a fresh `Vec` in
+/// the original order.
+pub fn retain_in_scope(versions: &[String]) -> Vec<String> {
+    versions
+        .iter()
+        .filter(|v| version_is_in_compat_scope(v))
+        .cloned()
+        .collect()
+}
 
 /// A `(primary, shadow)` K12-256 digest pair.
 ///
@@ -90,6 +151,14 @@ impl HashPair {
 /// strings, ASCII bytes, no trailing newline. Sorted ensures
 /// determinism even if callers hand in an unsorted list; dedup
 /// guards against accidental duplicates.
+///
+/// **v0.x exclusion**: per the policy adopted 2026-05-29,
+/// `v0.x` versions are out of scope for the safeguard. The
+/// canonical payload silently drops every entry with semver
+/// major below [`COMPAT_CHECK_MAJOR_FLOOR`]. A list of only
+/// v0.x versions therefore hashes identically to the empty list,
+/// which is the intended semantics — the safeguard has nothing
+/// to anchor against until v1.0.0 ships.
 pub fn pair_hash(versions: &[String]) -> HashPair {
     let canonical = canonical_payload(versions);
     let primary = hash_with_customization(canonical.as_bytes(), CS_PRIMARY);
@@ -98,7 +167,7 @@ pub fn pair_hash(versions: &[String]) -> HashPair {
 }
 
 fn canonical_payload(versions: &[String]) -> String {
-    let mut sorted: Vec<String> = versions.iter().cloned().collect();
+    let mut sorted: Vec<String> = retain_in_scope(versions);
     sorted.sort();
     sorted.dedup();
     sorted.join("\n")
@@ -262,7 +331,7 @@ pub fn cross_check(peers: &[PeerContribution]) -> Result<(), CrossCheckError> {
 }
 
 fn normalized(versions: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = versions.iter().cloned().collect();
+    let mut out: Vec<String> = retain_in_scope(versions);
     out.sort();
     out.dedup();
     out
@@ -281,22 +350,82 @@ mod tests {
 
     #[test]
     fn primary_and_shadow_diverge_for_any_input() {
-        let h = pair_hash(&["0.2.0".into(), "0.5.0".into()]);
+        let h = pair_hash(&["1.2.0".into(), "1.5.0".into()]);
         assert_ne!(h.primary(), h.shadow());
     }
 
     #[test]
     fn canonical_encoding_invariant_to_order() {
-        let a = pair_hash(&["0.5.0".into(), "0.2.0".into()]);
-        let b = pair_hash(&["0.2.0".into(), "0.5.0".into()]);
+        let a = pair_hash(&["1.5.0".into(), "1.2.0".into()]);
+        let b = pair_hash(&["1.2.0".into(), "1.5.0".into()]);
         assert_eq!(a, b);
     }
 
     #[test]
     fn canonical_encoding_dedups() {
-        let a = pair_hash(&["0.2.0".into(), "0.2.0".into()]);
-        let b = pair_hash(&["0.2.0".into()]);
+        let a = pair_hash(&["1.2.0".into(), "1.2.0".into()]);
+        let b = pair_hash(&["1.2.0".into()]);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn version_in_compat_scope_below_floor_is_false() {
+        assert!(!version_is_in_compat_scope("0.17.0"));
+        assert!(!version_is_in_compat_scope("0.18.0"));
+        assert!(!version_is_in_compat_scope("0.99.99"));
+    }
+
+    #[test]
+    fn version_in_compat_scope_at_or_above_floor_is_true() {
+        assert!(version_is_in_compat_scope("1.0.0"));
+        assert!(version_is_in_compat_scope("2.5.3"));
+    }
+
+    #[test]
+    fn version_in_compat_scope_garbage_returns_false() {
+        assert!(!version_is_in_compat_scope(""));
+        assert!(!version_is_in_compat_scope("v1.0"));
+        assert!(!version_is_in_compat_scope("not-a-version"));
+    }
+
+    #[test]
+    fn retain_in_scope_drops_v0_entries() {
+        let input = vec![
+            "0.17.0".into(),
+            "1.0.0".into(),
+            "1.5.2".into(),
+            "0.18.1".into(),
+            "2.0.0".into(),
+        ];
+        let kept = retain_in_scope(&input);
+        assert_eq!(
+            kept,
+            vec!["1.0.0".to_string(), "1.5.2".to_string(), "2.0.0".to_string()]
+        );
+    }
+
+    #[test]
+    fn pair_hash_treats_v0_only_list_as_empty() {
+        let v0_only = vec!["0.5.0".into(), "0.17.0".into()];
+        let empty: Vec<String> = vec![];
+        assert_eq!(pair_hash(&v0_only), pair_hash(&empty));
+    }
+
+    #[test]
+    fn cross_check_agrees_on_v0_only_peers() {
+        // Two peers carrying different v0.x versions still
+        // agree, because both filter to empty.
+        let result = cross_check(&[
+            PeerContribution {
+                label: "a".into(),
+                versions: vec!["0.17.0".into()],
+            },
+            PeerContribution {
+                label: "b".into(),
+                versions: vec!["0.18.0".into()],
+            },
+        ]);
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -310,7 +439,8 @@ mod tests {
 
     #[test]
     fn cross_check_agrees_on_matching_peers() {
-        let v = vec!["0.2.0".into(), "0.5.0".into()];
+        // v1.x to stay in scope after the v0.x filter.
+        let v = vec!["1.2.0".into(), "1.5.0".into()];
         let result = cross_check(&[
             PeerContribution { label: "a".into(), versions: v.clone() },
             PeerContribution { label: "b".into(), versions: v.clone() },
@@ -321,9 +451,11 @@ mod tests {
 
     #[test]
     fn cross_check_flags_diverging_peers() {
+        // Use v1.x entries — v0.x versions get filtered out by
+        // the in-scope policy and never trigger divergence.
         let result = cross_check(&[
-            PeerContribution { label: "a".into(), versions: vec!["0.2.0".into()] },
-            PeerContribution { label: "b".into(), versions: vec!["0.5.0".into()] },
+            PeerContribution { label: "a".into(), versions: vec!["1.0.0".into()] },
+            PeerContribution { label: "b".into(), versions: vec!["1.5.0".into()] },
         ]);
         assert!(matches!(result, Err(CrossCheckError::VersionListDiverges { .. })));
     }
