@@ -50,3 +50,42 @@ claude-resume:
     @echo ""
     @echo "To resume context, start Claude Code in this directory and ask:"
     @echo "  \"Read the latest file in .claude-conversations/ and continue.\""
+
+# Refresh the read-only status snapshot at ~/adsmt-status/. Other
+# Claude Code agents (operating in unrelated working directories)
+# pull the snapshot from there on demand. Always safe to run.
+status:
+    @scripts/snapshot-status.sh
+    @echo "✓ Snapshot refreshed at ${ADSMT_STATUS_DIR:-$HOME/adsmt-status}/"
+    @echo "  HEAD: $(cat ${ADSMT_STATUS_DIR:-$HOME/adsmt-status}/head.txt)"
+
+# Run the workspace test suite and update the cached tests.txt
+# entry in the snapshot. Slow — run it before sharing the snapshot
+# externally if the count matters to the consumer.
+status-tests:
+    @echo "Running cargo test --workspace --all-features (this takes a minute)..."
+    @count=$(cargo test --workspace --all-features 2>&1 | awk '/^test result/ { ok+=$4 } END { print ok }'); \
+        echo "$count tests passing as of $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            > "${ADSMT_STATUS_DIR:-$HOME/adsmt-status}/tests.txt" ; \
+        echo "✓ tests.txt updated: $count passing"
+    @just status
+
+# (Optional, manual) Wire snapshot-status.sh into the local git
+# post-commit hook so every commit auto-refreshes ~/adsmt-status/.
+# This is OFF by default — the user must explicitly opt in by
+# running `just install-status-hook`. Uninstall with the matching
+# `just uninstall-status-hook` recipe.
+install-status-hook:
+    @mkdir -p .git/hooks
+    @printf '#!/usr/bin/env bash\nset +e\n"$(git rev-parse --show-toplevel)/scripts/snapshot-status.sh" 2>/dev/null\nexit 0\n' \
+        > .git/hooks/post-commit
+    @chmod +x .git/hooks/post-commit
+    @echo "✓ Installed .git/hooks/post-commit — snapshot will refresh after every commit"
+
+uninstall-status-hook:
+    @if [ -f .git/hooks/post-commit ]; then \
+        rm -f .git/hooks/post-commit ; \
+        echo "✓ Removed .git/hooks/post-commit" ; \
+    else \
+        echo "⚠ No .git/hooks/post-commit installed" ; \
+    fi
