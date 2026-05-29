@@ -28,23 +28,47 @@ pub struct DatatypeDecl {
     pub sort_name: String,
     pub constructors: Vec<String>,
     pub is_finite: bool,
+    /// v0.19 C.4 — per-constructor argument arity. Index aligns
+    /// with `constructors`. `arities[i] = 0` for nullary
+    /// constructors (the finite-enum case); positive values for
+    /// argument-bearing constructors (`Succ Nat` → 1,
+    /// `Cons head tail` → 2).
+    pub arities: Vec<u32>,
 }
 
 impl DatatypeDecl {
     pub fn finite_enum(sort_name: impl Into<String>, constructors: Vec<String>) -> Self {
+        let len = constructors.len();
         Self {
             sort_name: sort_name.into(),
             constructors,
             is_finite: true,
+            arities: vec![0u32; len],
         }
     }
 
     pub fn inductive(sort_name: impl Into<String>, constructors: Vec<String>) -> Self {
+        let len = constructors.len();
         Self {
             sort_name: sort_name.into(),
             constructors,
             is_finite: false,
+            // Inductive constructors default to 0 (nullary); use
+            // `with_arities` to populate.
+            arities: vec![0u32; len],
         }
+    }
+
+    /// v0.19 C.4 — set per-constructor arities (positional).
+    /// Must match `constructors.len()` or panics.
+    pub fn with_arities(mut self, arities: Vec<u32>) -> Self {
+        assert_eq!(
+            self.constructors.len(),
+            arities.len(),
+            "arities length must match constructors length",
+        );
+        self.arities = arities;
+        self
     }
 }
 
@@ -70,6 +94,33 @@ impl Datatypes {
         self.decls
             .values()
             .find(|d| d.constructors.iter().any(|c| c == ctor_name))
+    }
+
+    /// v0.19 C.4 — decompose a term of the shape
+    /// `App(App(...App(Const(ctor), arg1)...), argN)` into
+    /// `(ctor_name, [arg1, ..., argN])` when the head constant
+    /// is a registered constructor.
+    ///
+    /// Static method — doesn't need `&self` because callers
+    /// already know which sort they're processing; the
+    /// constructor-name string is sufficient for downstream
+    /// injectivity reasoning.
+    pub(crate) fn dest_constructor_app(t: &Term) -> Option<(String, Vec<Term>)> {
+        let mut args: Vec<Term> = Vec::new();
+        let mut cur = t.clone();
+        loop {
+            match cur {
+                Term::App(f, x) => {
+                    args.push((*x).clone());
+                    cur = (*f).clone();
+                }
+                Term::Const(c) => {
+                    args.reverse();
+                    return Some((c.name.clone(), args));
+                }
+                _ => return None,
+            }
+        }
     }
 
     /// Recognize whether `t` is one of the registered constructor
@@ -126,6 +177,34 @@ impl Theory for Datatypes {
             Some(w) => CheckResult::Unsat { witness: w.clone() },
             None => CheckResult::Sat,
         }
+    }
+
+    fn derive_equalities(&self) -> Vec<(Term, Term)> {
+        // v0.19 C.4 — constructor injectivity.
+        //
+        // When `C(a1, ..., an) = C(b1, ..., bn)` is asserted
+        // (positive polarity), the equalities `a_i = b_i` hold
+        // pointwise. We mine `asserted_eqs` for any equality
+        // whose both sides are applications of the *same*
+        // constructor and emit the per-argument equalities.
+        //
+        // Pure derived equalities — caller routes them through
+        // the polite combination as new assertions.
+        let mut out = Vec::new();
+        for (a, b) in &self.asserted_eqs {
+            let head_a = Self::dest_constructor_app(a);
+            let head_b = Self::dest_constructor_app(b);
+            if let (Some((ca, args_a)), Some((cb, args_b))) =
+                (head_a, head_b)
+            {
+                if ca == cb && args_a.len() == args_b.len() {
+                    for (arg_a, arg_b) in args_a.into_iter().zip(args_b) {
+                        out.push((arg_a, arg_b));
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn explain(&self) -> Option<TheoryWitness> { self.conflict.clone() }
@@ -248,5 +327,111 @@ mod tests {
         let _ = dt.assert(Literal::negative(eq).unwrap());
         dt.pop(1);
         assert!(matches!(dt.check(), CheckResult::Sat));
+    }
+
+    // === v0.19 C.4 — recursive datatypes (injectivity) ===
+
+    #[test]
+    fn dest_constructor_app_extracts_arity_one() {
+        // `Succ x` decomposed into ("Succ", [x]).
+        let nat_ty = Type::const_("Nat", Kind::Type);
+        let succ = Term::const_(
+            "Succ",
+            Type::fun(nat_ty.clone(), nat_ty.clone()).unwrap(),
+        );
+        let x = Term::var("x", nat_ty);
+        let term = Term::app(succ, x.clone()).unwrap();
+        let (name, args) = Datatypes::dest_constructor_app(&term)
+            .expect("decomposition succeeds");
+        assert_eq!(name, "Succ");
+        assert_eq!(args.len(), 1);
+        assert!(args[0].alpha_eq(&x));
+    }
+
+    #[test]
+    fn dest_constructor_app_extracts_arity_two() {
+        // `Cons h t` decomposed into ("Cons", [h, t]).
+        let int_ty = Type::const_("Int", Kind::Type);
+        let list_ty = Type::const_("List_Int", Kind::Type);
+        let cons_ty = Type::fun(
+            int_ty.clone(),
+            Type::fun(list_ty.clone(), list_ty.clone()).unwrap(),
+        )
+        .unwrap();
+        let cons = Term::const_("Cons", cons_ty);
+        let h = Term::var("h", int_ty);
+        let t = Term::var("t", list_ty);
+        let term =
+            Term::app(Term::app(cons, h.clone()).unwrap(), t.clone()).unwrap();
+        let (name, args) = Datatypes::dest_constructor_app(&term)
+            .expect("decomposition succeeds");
+        assert_eq!(name, "Cons");
+        assert_eq!(args.len(), 2);
+        assert!(args[0].alpha_eq(&h));
+        assert!(args[1].alpha_eq(&t));
+    }
+
+    #[test]
+    fn injectivity_derives_argument_equalities() {
+        // Assert `Cons h1 t1 = Cons h2 t2` and check
+        // derive_equalities yields h1 = h2, t1 = t2.
+        let int_ty = Type::const_("Int", Kind::Type);
+        let list_ty = Type::const_("List_Int", Kind::Type);
+        let cons_ty = Type::fun(
+            int_ty.clone(),
+            Type::fun(list_ty.clone(), list_ty.clone()).unwrap(),
+        )
+        .unwrap();
+        let cons = Term::const_("Cons", cons_ty);
+        let h1 = Term::var("h1", int_ty.clone());
+        let h2 = Term::var("h2", int_ty);
+        let t1 = Term::var("t1", list_ty.clone());
+        let t2 = Term::var("t2", list_ty);
+        let lhs = Term::app(
+            Term::app(cons.clone(), h1.clone()).unwrap(),
+            t1.clone(),
+        )
+        .unwrap();
+        let rhs = Term::app(
+            Term::app(cons, h2.clone()).unwrap(),
+            t2.clone(),
+        )
+        .unwrap();
+
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive(
+                "List_Int",
+                vec!["Cons".into(), "Nil".into()],
+            )
+            .with_arities(vec![2, 0]),
+        );
+        let eq = Term::mk_eq(lhs, rhs).unwrap();
+        let _ = dt.assert(Literal::positive(eq).unwrap());
+
+        let derived = dt.derive_equalities();
+        assert_eq!(derived.len(), 2, "expected pointwise injectivity");
+        assert!(derived.iter().any(|(a, b)| a.alpha_eq(&h1) && b.alpha_eq(&h2)));
+        assert!(derived.iter().any(|(a, b)| a.alpha_eq(&t1) && b.alpha_eq(&t2)));
+    }
+
+    #[test]
+    fn with_arities_sets_per_constructor_arity() {
+        let decl = DatatypeDecl::inductive(
+            "Tree_Int",
+            vec!["Leaf".into(), "Node".into()],
+        )
+        .with_arities(vec![1, 3]);
+        assert_eq!(decl.arities, vec![1, 3]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn with_arities_panics_on_length_mismatch() {
+        let _ = DatatypeDecl::inductive(
+            "Bad",
+            vec!["A".into(), "B".into()],
+        )
+        .with_arities(vec![1]);
     }
 }
