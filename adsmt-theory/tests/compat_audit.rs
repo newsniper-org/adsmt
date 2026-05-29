@@ -84,6 +84,33 @@ fn agree_on_disjoint_variables() {
 }
 
 #[test]
+fn lin_arith_check_calls_simplex_for_extra_strength() {
+    // Three-variable chain x ≤ y, y ≤ z, z ≤ x - 1.
+    // The hand-rolled FM catches this already, but routing through
+    // the integrated check() should yield Unsat regardless of which
+    // layer detected it.
+    use adsmt_theory::arith::LinArith;
+    use adsmt_theory::trait_::{AssertResult, Literal, Theory};
+
+    fn diff_le(x_name: &str, y_name: &str, k: i128) -> Term {
+        let op_ty = Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap()).unwrap();
+        let minus_ty = Type::fun(int_ty(), Type::fun(int_ty(), int_ty()).unwrap()).unwrap();
+        let minus = Term::const_("-", minus_ty);
+        let le = Term::const_("<=", op_ty);
+        let x = Term::var(x_name, int_ty());
+        let y = Term::var(y_name, int_ty());
+        let diff = Term::app(Term::app(minus, x).unwrap(), y).unwrap();
+        let k_lit = Term::const_(&format!("int:{k}"), int_ty());
+        Term::app(Term::app(le, diff).unwrap(), k_lit).unwrap()
+    }
+    let mut t = LinArith::lia();
+    let _: AssertResult = t.assert(Literal::positive(diff_le("x", "y", 0)).unwrap());
+    let _ = t.assert(Literal::positive(diff_le("y", "z", 0)).unwrap());
+    let _ = t.assert(Literal::positive(diff_le("z", "x", -1)).unwrap());
+    assert!(matches!(t.check(), CheckResult::Unsat { .. }));
+}
+
+#[test]
 fn audit_summary_smoke() {
     // Run a broader sweep; record disagreements as test failure.
     let scenarios: Vec<(Vec<BoundAtom>, Vec<SumAtom>)> = vec![

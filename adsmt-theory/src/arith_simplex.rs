@@ -27,11 +27,17 @@ mod with_simplex {
         pub k: i128,
     }
 
-    /// One asserted 2-variable sum: `x + y op k`.
+    /// One asserted 2-variable linear constraint `x + sign*y op k`,
+    /// where `sign` is `+1` for sum-form or `-1` for difference-
+    /// form. The LinArith → simplex bridge (v0.17 T#38) feeds
+    /// difference-form constraints when its FM layer recognised
+    /// `x − y op k`; the simplex backend models them by adding a
+    /// signed coefficient row.
     #[derive(Clone, Debug)]
     pub struct SumAtom {
         pub x: String,
         pub y: String,
+        pub sign: i128,
         pub op: &'static str,
         pub k: i128,
     }
@@ -120,7 +126,7 @@ mod with_simplex {
             let zid = tab.fresh_var();
             let mut coeffs: rustc_hash::FxHashMap<VarId, FastRational> = Default::default();
             coeffs.insert(xid, FastRational::from(1i64));
-            coeffs.insert(yid, FastRational::from(1i64));
+            coeffs.insert(yid, FastRational::from(s.sign as i64));
             let row = Row::from_expr(zid, FastRational::from(0i64), coeffs);
             tab.add_row(row).map_err(|e| format!("simplex add_row: {e}"))?;
             let (bt, value) = encode_bound(s.op, s.k);
@@ -187,7 +193,7 @@ mod with_simplex {
                 BoundAtom { var: "x".into(), op: ">=", k: 0 },
                 BoundAtom { var: "y".into(), op: ">=", k: 0 },
             ];
-            let sums = vec![SumAtom { x: "x".into(), y: "y".into(), op: "<=", k: 10 }];
+            let sums = vec![SumAtom { x: "x".into(), y: "y".into(), sign: 1, op: "<=", k: 10 }];
             assert_eq!(check(&bounds, &sums), Ok(true));
         }
 
@@ -200,7 +206,7 @@ mod with_simplex {
                 BoundAtom { var: "x".into(), op: ">=", k: 3 },
                 BoundAtom { var: "y".into(), op: ">=", k: 3 },
             ];
-            let sums = vec![SumAtom { x: "x".into(), y: "y".into(), op: "<=", k: 5 }];
+            let sums = vec![SumAtom { x: "x".into(), y: "y".into(), sign: 1, op: "<=", k: 5 }];
             assert_eq!(check(&bounds, &sums), Ok(false));
         }
     }

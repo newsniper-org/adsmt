@@ -435,6 +435,51 @@ fn self_loop_infeasible(op: &str, k: i128) -> bool {
     }
 }
 
+impl LinArith {
+    /// Project the live `bounds` and `two_vars` state into the
+    /// `(BoundAtom, SumAtom)` shape consumed by the simplex
+    /// backend. Used by the T#38 integration so the simplex sees
+    /// the same problem the hand-rolled path is solving. Public
+    /// only inside the crate.
+    #[cfg(feature = "oxiz-math")]
+    pub(crate) fn dump_for_simplex(
+        &self,
+    ) -> (
+        Vec<crate::arith_simplex::BoundAtom>,
+        Vec<crate::arith_simplex::SumAtom>,
+    ) {
+        let mut bounds = Vec::new();
+        for (var, b) in &self.bounds {
+            if let Some((k, strict)) = b.lower {
+                bounds.push(crate::arith_simplex::BoundAtom {
+                    var: var.clone(),
+                    op: if strict { ">" } else { ">=" },
+                    k,
+                });
+            }
+            if let Some((k, strict)) = b.upper {
+                bounds.push(crate::arith_simplex::BoundAtom {
+                    var: var.clone(),
+                    op: if strict { "<" } else { "<=" },
+                    k,
+                });
+            }
+        }
+        let sums = self
+            .two_vars
+            .iter()
+            .map(|tv| crate::arith_simplex::SumAtom {
+                x: tv.x.clone(),
+                y: tv.y.clone(),
+                sign: tv.sign,
+                op: tv.op,
+                k: tv.k,
+            })
+            .collect();
+        (bounds, sums)
+    }
+}
+
 fn tighter_lower(a: (i128, bool), b: (i128, bool)) -> (i128, bool) {
     if a.0 > b.0 { a }
     else if a.0 < b.0 { b }
@@ -503,6 +548,24 @@ impl Theory for LinArith {
         if let Some(w) = self.propagate_two_var_via_bounds() {
             self.conflict = Some(w.clone());
             return CheckResult::Unsat { witness: w };
+        }
+        // Stage 3 (T#38, oxiz-math feature only): downgrade an
+        // otherwise-Sat verdict if the Simplex backend independently
+        // refutes the bounds + two-var pool. Hand-rolled propagation
+        // is incomplete on more complex LP cases (e.g. fractional
+        // tightenings the FM closure can't see), so the simplex
+        // catches conflicts the FM/bound path misses.
+        #[cfg(feature = "oxiz-math")]
+        if self.conflict.is_none() {
+            let (bounds, sums) = self.dump_for_simplex();
+            if let Ok(false) = crate::arith_simplex::check(&bounds, &sums) {
+                let w = TheoryWitness::Opaque {
+                    kind: self.name_.into(),
+                    notes: "simplex backend refuted the bounds + two-var pool".into(),
+                };
+                self.conflict = Some(w.clone());
+                return CheckResult::Unsat { witness: w };
+            }
         }
         match &self.conflict {
             Some(w) => CheckResult::Unsat { witness: w.clone() },
