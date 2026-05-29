@@ -252,6 +252,139 @@ impl<'s> Parser<'s> {
     }
 }
 
+/// v0.21 A.1 — convert an LFSC sort S-expression into Lean 4
+/// surface syntax. Recognises the LFSC base sorts plus arrow
+/// types; everything else round-trips through the printed
+/// S-expression form as a fallback so the consumer never
+/// crashes on an unknown sort shape.
+///
+/// LFSC base sorts (per oxiz-proof's emitter):
+///   - `bool` → Lean `Prop`
+///   - `mpz`  → Lean `Int`
+///   - `mpq`  → Lean `Rat`
+///   - `(bitvec n)` → Lean `BitVec n`
+///   - `(! _ <a> <b>)` → Lean `<a> → <b>` (arrow / Π over `_`)
+///   - any other named atom or list → Lean identifier of the
+///     same printed form
+pub fn sort_to_lean(s: &SExpr) -> String {
+    match s {
+        SExpr::Atom(a) => match a.as_str() {
+            "bool" => "Prop".into(),
+            "mpz" => "Int".into(),
+            "mpq" => "Rat".into(),
+            other => other.to_string(),
+        },
+        SExpr::IntLit(n) => n.to_string(),
+        SExpr::List(items) => {
+            if let Some(SExpr::Atom(head)) = items.first() {
+                match head.as_str() {
+                    "bitvec" if items.len() == 2 => {
+                        return format!("BitVec {}", items[1]);
+                    }
+                    "!" if items.len() == 4 => {
+                        // Pi binder `(! var <sort> <body>)`. Treat
+                        // `var = _` as an anonymous arrow; otherwise
+                        // a real dependent function.
+                        let var = &items[1];
+                        let sort = sort_to_lean(&items[2]);
+                        let body = sort_to_lean(&items[3]);
+                        return if matches!(var, SExpr::Atom(a) if a == "_") {
+                            format!("({sort} → {body})")
+                        } else {
+                            format!("({var} : {sort}) → {body}")
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            s.to_string()
+        }
+    }
+}
+
+/// v0.21 A.1 — Rocq surface syntax for LFSC sorts. Same
+/// recognition table as [`sort_to_lean`] with Rocq spellings:
+///   - `bool` → `Prop`
+///   - `mpz` → `Z`
+///   - `mpq` → `Q`
+///   - `(bitvec n)` → `Bitvec.t n`
+///   - arrow types use `<a> -> <b>`
+pub fn sort_to_rocq(s: &SExpr) -> String {
+    match s {
+        SExpr::Atom(a) => match a.as_str() {
+            "bool" => "Prop".into(),
+            "mpz" => "Z".into(),
+            "mpq" => "Q".into(),
+            other => other.to_string(),
+        },
+        SExpr::IntLit(n) => n.to_string(),
+        SExpr::List(items) => {
+            if let Some(SExpr::Atom(head)) = items.first() {
+                match head.as_str() {
+                    "bitvec" if items.len() == 2 => {
+                        return format!("Bitvec.t {}", items[1]);
+                    }
+                    "!" if items.len() == 4 => {
+                        let var = &items[1];
+                        let sort = sort_to_rocq(&items[2]);
+                        let body = sort_to_rocq(&items[3]);
+                        return if matches!(var, SExpr::Atom(a) if a == "_") {
+                            format!("({sort} -> {body})")
+                        } else {
+                            format!("forall {var} : {sort}, {body}")
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            s.to_string()
+        }
+    }
+}
+
+/// v0.21 A.1 — Isabelle surface syntax for LFSC sorts.
+///   - `bool` → `bool` (Isabelle's own propositional sort)
+///   - `mpz` → `int`
+///   - `mpq` → `real`
+///   - `(bitvec n)` → `n word`
+///   - arrow types use `<a> ⇒ <b>` (Isar non-dep function arrow)
+pub fn sort_to_isabelle(s: &SExpr) -> String {
+    match s {
+        SExpr::Atom(a) => match a.as_str() {
+            "bool" => "bool".into(),
+            "mpz" => "int".into(),
+            "mpq" => "real".into(),
+            other => other.to_string(),
+        },
+        SExpr::IntLit(n) => n.to_string(),
+        SExpr::List(items) => {
+            if let Some(SExpr::Atom(head)) = items.first() {
+                match head.as_str() {
+                    "bitvec" if items.len() == 2 => {
+                        return format!("{} word", items[1]);
+                    }
+                    "!" if items.len() == 4 => {
+                        let var = &items[1];
+                        let sort = sort_to_isabelle(&items[2]);
+                        let body = sort_to_isabelle(&items[3]);
+                        return if matches!(var, SExpr::Atom(a) if a == "_") {
+                            format!("{sort} \\<Rightarrow> {body}")
+                        } else {
+                            // Isabelle's bound-name surface in Pi
+                            // types lives behind a locale/HOL
+                            // wrapper — for the scaffold we render
+                            // the bare arrow.
+                            format!("{sort} \\<Rightarrow> {body} \\<comment> \\<open>bound {var}\\<close>")
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            s.to_string()
+        }
+    }
+}
+
 /// v0.21 A.1 (partial) per-ITP consumer scaffold.
 ///
 /// Produces a Lean 4 source snippet that previews the LFSC
@@ -268,12 +401,15 @@ impl<'s> Parser<'s> {
 /// shape it can extend.
 pub fn render_lean(doc: &LfscDocument) -> String {
     let mut out = String::new();
-    out.push_str("-- adsmt LFSC consumer (v0.21 A.1 scaffold)\n");
+    out.push_str("-- adsmt LFSC consumer (v0.21 A.1)\n");
     out.push_str(&format!("-- {} top-level declaration(s)\n\n", doc.len()));
     for (i, d) in doc.declarations().iter().enumerate() {
         match d {
             LfscDecl::Declare { name, sort } => {
-                out.push_str(&format!("-- LFSC declare: {name} :: {sort}\n"));
+                let lean_sort = sort_to_lean(sort);
+                out.push_str(&format!(
+                    "axiom {name} : {lean_sort}  -- LFSC declare: {name} :: {sort}\n"
+                ));
             }
             LfscDecl::Define { name, body } => {
                 out.push_str(&format!("-- LFSC define: {name} := {body}\n"));
@@ -298,12 +434,15 @@ pub fn render_lean(doc: &LfscDocument) -> String {
 /// `(* … *)` comments for the rest.
 pub fn render_rocq(doc: &LfscDocument) -> String {
     let mut out = String::new();
-    out.push_str("(* adsmt LFSC consumer (v0.21 A.1 scaffold) *)\n");
+    out.push_str("(* adsmt LFSC consumer (v0.21 A.1) *)\n");
     out.push_str(&format!("(* {} top-level declaration(s) *)\n\n", doc.len()));
     for (i, d) in doc.declarations().iter().enumerate() {
         match d {
             LfscDecl::Declare { name, sort } => {
-                out.push_str(&format!("(* LFSC declare: {name} :: {sort} *)\n"));
+                let rocq_sort = sort_to_rocq(sort);
+                out.push_str(&format!(
+                    "Axiom {name} : {rocq_sort}.  (* LFSC declare: {name} :: {sort} *)\n"
+                ));
             }
             LfscDecl::Define { name, body } => {
                 out.push_str(&format!("(* LFSC define: {name} := {body} *)\n"));
@@ -331,12 +470,15 @@ pub fn render_rocq(doc: &LfscDocument) -> String {
 /// the embedding context.
 pub fn render_isabelle(doc: &LfscDocument) -> String {
     let mut out = String::new();
-    out.push_str("(* adsmt LFSC consumer (v0.21 A.1 scaffold) *)\n");
+    out.push_str("(* adsmt LFSC consumer (v0.21 A.1) *)\n");
     out.push_str(&format!("(* {} top-level declaration(s) *)\n\n", doc.len()));
     for (i, d) in doc.declarations().iter().enumerate() {
         match d {
             LfscDecl::Declare { name, sort } => {
-                out.push_str(&format!("(* LFSC declare: {name} :: {sort} *)\n"));
+                let isa_sort = sort_to_isabelle(sort);
+                out.push_str(&format!(
+                    "axiomatization {name} :: \"{isa_sort}\"  (* LFSC declare: {name} :: {sort} *)\n"
+                ));
             }
             LfscDecl::Define { name, body } => {
                 out.push_str(&format!("(* LFSC define: {name} := {body} *)\n"));
@@ -483,9 +625,75 @@ mod tests {
         .unwrap();
         let lean = render_lean(&doc);
         assert!(lean.contains("LFSC declare: nat"));
+        assert!(lean.contains("axiom nat"));
         assert!(lean.contains("theorem lfsc_check_1"));
         assert!(lean.contains("trivial"));
         assert!(lean.contains("LFSC check: (truth foo)"));
+    }
+
+    // === Sort lowering ===
+
+    #[test]
+    fn sort_to_lean_maps_base_sorts() {
+        assert_eq!(sort_to_lean(&SExpr::Atom("bool".into())), "Prop");
+        assert_eq!(sort_to_lean(&SExpr::Atom("mpz".into())), "Int");
+        assert_eq!(sort_to_lean(&SExpr::Atom("mpq".into())), "Rat");
+        // Unknown atom → pass-through.
+        assert_eq!(sort_to_lean(&SExpr::Atom("nat".into())), "nat");
+    }
+
+    #[test]
+    fn sort_to_lean_renders_bitvec() {
+        let s = parse_document("(bitvec 32)").unwrap();
+        match &s.declarations()[0] {
+            LfscDecl::Other(e) => assert_eq!(sort_to_lean(e), "BitVec 32"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn sort_to_lean_renders_arrow_via_pi_underscore() {
+        // (! _ mpz bool) → (Int → Prop)
+        let s = parse_document("(! _ mpz bool)").unwrap();
+        match &s.declarations()[0] {
+            LfscDecl::Other(e) => {
+                assert_eq!(sort_to_lean(e), "(Int → Prop)");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn sort_to_rocq_maps_base_sorts() {
+        assert_eq!(sort_to_rocq(&SExpr::Atom("bool".into())), "Prop");
+        assert_eq!(sort_to_rocq(&SExpr::Atom("mpz".into())), "Z");
+        assert_eq!(sort_to_rocq(&SExpr::Atom("mpq".into())), "Q");
+    }
+
+    #[test]
+    fn sort_to_isabelle_maps_base_sorts() {
+        assert_eq!(
+            sort_to_isabelle(&SExpr::Atom("bool".into())),
+            "bool"
+        );
+        assert_eq!(
+            sort_to_isabelle(&SExpr::Atom("mpz".into())),
+            "int"
+        );
+        assert_eq!(
+            sort_to_isabelle(&SExpr::Atom("mpq".into())),
+            "real"
+        );
+    }
+
+    #[test]
+    fn render_lean_uses_lowered_sort_in_axiom_line() {
+        let doc = parse_document("(declare flag bool)").unwrap();
+        let lean = render_lean(&doc);
+        assert!(
+            lean.contains("axiom flag : Prop"),
+            "expected `axiom flag : Prop`, got: {lean}"
+        );
     }
 
     #[test]
