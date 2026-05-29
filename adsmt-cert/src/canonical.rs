@@ -272,11 +272,225 @@ pub enum StepBody {
     },
 }
 
+/// A discriminator tag for [`StepBody`], used by
+/// [`StepPattern::Kind`] to pattern-match steps by their kernel
+/// rule without inspecting the body's payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StepKindTag {
+    Assume,
+    Refl,
+    Trans,
+    Abs,
+    Beta,
+    EqMp,
+    Deduct,
+    Inst,
+    InstType,
+    Theory,
+    Instance,
+    Assumed,
+}
+
+impl StepKindTag {
+    /// Derive the tag from a step body — pure inspection.
+    pub fn of(body: &StepBody) -> StepKindTag {
+        match body {
+            StepBody::Assume(_) => StepKindTag::Assume,
+            StepBody::Refl(_) => StepKindTag::Refl,
+            StepBody::Trans { .. } => StepKindTag::Trans,
+            StepBody::Abs { .. } => StepKindTag::Abs,
+            StepBody::Beta { .. } => StepKindTag::Beta,
+            StepBody::EqMp { .. } => StepKindTag::EqMp,
+            StepBody::Deduct { .. } => StepKindTag::Deduct,
+            StepBody::Inst { .. } => StepKindTag::Inst,
+            StepBody::InstType { .. } => StepKindTag::InstType,
+            StepBody::Theory { .. } => StepKindTag::Theory,
+            StepBody::Instance { .. } => StepKindTag::Instance,
+            StepBody::Assumed { .. } => StepKindTag::Assumed,
+        }
+    }
+}
+
+/// Closed-enum pattern for matching cert steps. Per D1.A-1.pat.dsl
+/// = α, the boolean fragment `{And, Or, Not}` provides full
+/// expressive completeness; [`StepPattern::xor`],
+/// [`StepPattern::at_most_one`], and [`StepPattern::exactly_one`]
+/// are desugar helpers built on top of the core constructors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StepPattern {
+    /// Matches every `Theory` step whose `name` field equals
+    /// the given string.
+    Theory(String),
+    /// Matches every step whose kind tag matches.
+    Kind(StepKindTag),
+    /// Matches every step whose id falls in the range.
+    IdRange(std::ops::RangeInclusive<u32>),
+    /// Logical conjunction — matches when every operand matches.
+    And(Vec<StepPattern>),
+    /// Logical disjunction — matches when at least one operand
+    /// matches.
+    Or(Vec<StepPattern>),
+    /// Logical negation.
+    Not(Box<StepPattern>),
+}
+
+impl StepPattern {
+    /// Does this pattern match the given step?
+    pub fn matches(&self, step: &Step) -> bool {
+        match self {
+            StepPattern::Theory(name) => match &step.body {
+                StepBody::Theory { name: n, .. } => n == name,
+                _ => false,
+            },
+            StepPattern::Kind(tag) => StepKindTag::of(&step.body) == *tag,
+            StepPattern::IdRange(range) => range.contains(&step.id.0),
+            StepPattern::And(ps) => ps.iter().all(|p| p.matches(step)),
+            StepPattern::Or(ps) => ps.iter().any(|p| p.matches(step)),
+            StepPattern::Not(p) => !p.matches(step),
+        }
+    }
+
+    /// `a XOR b` desugar — `(a OR b) AND NOT (a AND b)`.
+    pub fn xor(a: StepPattern, b: StepPattern) -> StepPattern {
+        StepPattern::And(vec![
+            StepPattern::Or(vec![a.clone(), b.clone()]),
+            StepPattern::Not(Box::new(StepPattern::And(vec![a, b]))),
+        ])
+    }
+
+    /// `AtMostOne(v₁, …, vₙ)` (n ≥ 2) desugar — `NOT(OR_{i<j}(v_i AND v_j))`.
+    ///
+    /// Panics when `vs.len() < 2` (callers should use a regular
+    /// `Or` or constant for the degenerate cases).
+    pub fn at_most_one(vs: Vec<StepPattern>) -> StepPattern {
+        assert!(
+            vs.len() >= 2,
+            "StepPattern::at_most_one requires at least 2 inputs",
+        );
+        let mut pairs = Vec::new();
+        for i in 0..vs.len() {
+            for j in (i + 1)..vs.len() {
+                pairs.push(StepPattern::And(vec![vs[i].clone(), vs[j].clone()]));
+            }
+        }
+        StepPattern::Not(Box::new(StepPattern::Or(pairs)))
+    }
+
+    /// `ExactlyOne(v₁, …, vₙ)` (n ≥ 2) desugar —
+    /// `AtMostOne(vs) AND Or(vs)`. At `n = 2` collapses to the
+    /// usual binary XOR semantics.
+    pub fn exactly_one(vs: Vec<StepPattern>) -> StepPattern {
+        assert!(
+            vs.len() >= 2,
+            "StepPattern::exactly_one requires at least 2 inputs",
+        );
+        let at_most = StepPattern::at_most_one(vs.clone());
+        let some_true = StepPattern::Or(vs);
+        StepPattern::And(vec![at_most, some_true])
+    }
+}
+
+/// A pattern marker: attaches `local_markers` to every step
+/// matching `pattern`. Per D1.A-1.pat.interact = α the pattern
+/// marker contributes additively alongside block markers (no
+/// override semantics).
+#[derive(Clone, Debug)]
+pub struct PatternMarker {
+    pub pattern: StepPattern,
+    pub local_markers: ClassicalMarkerSet,
+}
+
+/// A `should ∪ allow` marker bundle, used by both mid-blocks
+/// and pattern markers as the contribution unit.
+#[derive(Clone, Debug, Default)]
+pub struct ClassicalMarkerSet {
+    pub should: ClassicalSet,
+    pub allow: Vec<AllowMarker>,
+}
+
+impl ClassicalMarkerSet {
+    pub const fn empty() -> Self {
+        Self { should: ClassicalSet::empty(), allow: Vec::new() }
+    }
+
+    /// True when both halves are empty.
+    pub fn is_empty(&self) -> bool {
+        self.should.is_empty() && self.allow.is_empty()
+    }
+}
+
+/// One item inside a [`MidBlock`]'s `contents`: either a leaf
+/// reference to a step id, or a nested sub-block.
+#[derive(Clone, Debug)]
+pub enum MidBlockItem {
+    Step(StepId),
+    NestedBlock(Box<MidBlock>),
+}
+
+/// A strictly-nested mid-block scope (Rust-block-inspired, per
+/// D1.A-1.slot.γ-rust = α). Carries local markers (visible only
+/// inside the block) and exported markers (re-contributed to
+/// the enclosing scope) plus the sequence of step refs and
+/// sub-blocks the block covers.
+#[derive(Clone, Debug)]
+pub struct MidBlock {
+    pub name: Option<String>,
+    pub contents: Vec<MidBlockItem>,
+    pub local_markers: ClassicalMarkerSet,
+    pub exported_markers: ClassicalMarkerSet,
+}
+
+impl MidBlock {
+    pub fn new() -> Self {
+        Self {
+            name: None,
+            contents: Vec::new(),
+            local_markers: ClassicalMarkerSet::empty(),
+            exported_markers: ClassicalMarkerSet::empty(),
+        }
+    }
+}
+
+impl Default for MidBlock {
+    fn default() -> Self { Self::new() }
+}
+
 /// A complete proof certificate.
+///
+/// # Mid-block scopes (v0.18, D1.A-1.slot.γ-rust = α)
+///
+/// `mid_blocks` is the optional middle layer in the four-tier
+/// classical-axiom marker attachment hierarchy (`per-step →
+/// per-mid-block → per-cert → per-emit-call`). Each block is a
+/// strictly-nested Rust-block-inspired scope: it lists the
+/// step IDs (and nested sub-blocks) it covers, carries its own
+/// `local_markers` + `exported_markers`, and may sit inside
+/// another block.
+///
+/// Cert producers freely populate or omit `mid_blocks`. Per
+/// D1.A-2 = δ+ε all four layers contribute additively, so an
+/// empty `mid_blocks` simply means "no mid-layer contribution"
+/// — the cert remains valid and the file-level resolved set is
+/// unchanged.
+///
+/// # Pattern markers (v0.18, D1.A-1.pat.* = α)
+///
+/// `pattern_markers` is a cross-cutting marker layer that
+/// attaches `local_markers` to any step matching the marker's
+/// `StepPattern`. Pattern matching is closed-enum: `Theory /
+/// Kind / IdRange / And / Or / Not`. Convenience helpers
+/// (`StepPattern::xor`, `at_most_one`, `exactly_one`) desugar
+/// via standard boolean equivalences.
 #[derive(Clone, Debug)]
 pub struct Certificate {
     pub steps: Vec<Step>,
     pub conclusion: StepId,
+    /// Optional mid-block scope tree. Per D1.A-1 = (optional +
+    /// γ-rust α + strictly nested), default empty.
+    pub mid_blocks: Vec<MidBlock>,
+    /// Cross-cutting pattern markers. Each one attaches markers
+    /// to every step that matches its pattern.
+    pub pattern_markers: Vec<PatternMarker>,
 }
 
 impl Certificate {
@@ -305,6 +519,11 @@ pub struct CertBuilder {
     /// metadata after a step has been added. External callers go
     /// through the dedicated marker-setter methods.
     pub(crate) steps: Vec<Step>,
+    /// Mid-block scope tree (D1.A-1 = (optional + γ-rust α +
+    /// strictly nested), v0.18). Default empty.
+    pub(crate) mid_blocks: Vec<MidBlock>,
+    /// Pattern markers (D1.A-1.pat.* = α, v0.18). Default empty.
+    pub(crate) pattern_markers: Vec<PatternMarker>,
 }
 
 impl CertBuilder {
@@ -350,6 +569,20 @@ impl CertBuilder {
             s.allow_to_import_classical.push(marker);
         }
     }
+
+    /// Append a mid-block to the cert-level scope tree. Cert
+    /// producers freely introduce or omit blocks per
+    /// D1.A-1 = optional.
+    pub fn add_mid_block(&mut self, block: MidBlock) {
+        self.mid_blocks.push(block);
+    }
+
+    /// Append a pattern marker to the cert. Pattern markers
+    /// match cert-wide; contribution is additive (D1.A-1.pat.interact
+    /// = α).
+    pub fn add_pattern_marker(&mut self, marker: PatternMarker) {
+        self.pattern_markers.push(marker);
+    }
 }
 
 impl CertBuilder {
@@ -390,7 +623,12 @@ impl CertBuilder {
     }
 
     pub fn finalize(self, conclusion: StepId) -> Certificate {
-        Certificate { steps: self.steps, conclusion }
+        Certificate {
+            steps: self.steps,
+            conclusion,
+            mid_blocks: self.mid_blocks,
+            pattern_markers: self.pattern_markers,
+        }
     }
 
     /// Non-consuming snapshot — produces a [`Certificate`] from the
@@ -401,6 +639,8 @@ impl CertBuilder {
         Certificate {
             steps: self.steps.clone(),
             conclusion,
+            mid_blocks: self.mid_blocks.clone(),
+            pattern_markers: self.pattern_markers.clone(),
         }
     }
 
@@ -530,5 +770,185 @@ mod tests {
             Some(loc),
         );
         assert_eq!(b.steps()[s0.0 as usize].source_loc, Some(loc));
+    }
+
+    // === mid-block + pattern-marker tests (v0.18 F.5) ===
+
+    #[test]
+    fn cert_defaults_have_empty_mid_blocks_and_pattern_markers() {
+        let mut b = CertBuilder::new();
+        let x = Term::var("x", int_());
+        let s0 = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+        );
+        let cert = b.finalize(s0);
+        assert!(cert.mid_blocks.is_empty());
+        assert!(cert.pattern_markers.is_empty());
+    }
+
+    #[test]
+    fn step_kind_tag_round_trip() {
+        let x = Term::var("x", int_());
+        let body = StepBody::Refl(x);
+        assert_eq!(StepKindTag::of(&body), StepKindTag::Refl);
+    }
+
+    #[test]
+    fn step_pattern_kind_matches_refl() {
+        let x = Term::var("x", int_());
+        let mut b = CertBuilder::new();
+        let s0 = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+        );
+        let step = &b.steps()[s0.0 as usize];
+        let pattern = StepPattern::Kind(StepKindTag::Refl);
+        assert!(pattern.matches(step));
+        let other = StepPattern::Kind(StepKindTag::Trans);
+        assert!(!other.matches(step));
+    }
+
+    #[test]
+    fn step_pattern_id_range_matches_bounds() {
+        let x = Term::var("x", int_());
+        let mut b = CertBuilder::new();
+        let s0 = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x.clone()).unwrap() },
+        );
+        let s1 = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+        );
+        let in_range = StepPattern::IdRange(0..=0);
+        assert!(in_range.matches(&b.steps()[s0.0 as usize]));
+        assert!(!in_range.matches(&b.steps()[s1.0 as usize]));
+    }
+
+    #[test]
+    fn step_pattern_xor_desugar_matches_exclusive_or() {
+        let x = Term::var("x", int_());
+        let mut b = CertBuilder::new();
+        let s0 = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+        );
+        let step = &b.steps()[s0.0 as usize];
+        // Refl XOR Trans — Refl matches, Trans doesn't => XOR true.
+        let xor = StepPattern::xor(
+            StepPattern::Kind(StepKindTag::Refl),
+            StepPattern::Kind(StepKindTag::Trans),
+        );
+        assert!(xor.matches(step));
+        // Refl XOR Refl — both match => XOR false.
+        let same = StepPattern::xor(
+            StepPattern::Kind(StepKindTag::Refl),
+            StepPattern::Kind(StepKindTag::Refl),
+        );
+        assert!(!same.matches(step));
+    }
+
+    #[test]
+    fn step_pattern_at_most_one_desugar_correct() {
+        let x = Term::var("x", int_());
+        let mut b = CertBuilder::new();
+        let s0 = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+        );
+        let step = &b.steps()[s0.0 as usize];
+        // At most one of {Refl, Trans, Abs} — only Refl matches => true.
+        let amo = StepPattern::at_most_one(vec![
+            StepPattern::Kind(StepKindTag::Refl),
+            StepPattern::Kind(StepKindTag::Trans),
+            StepPattern::Kind(StepKindTag::Abs),
+        ]);
+        assert!(amo.matches(step));
+        // At most one of {Refl, Refl} — both match (same predicate)
+        // so AtMostOne is false.
+        let dup = StepPattern::at_most_one(vec![
+            StepPattern::Kind(StepKindTag::Refl),
+            StepPattern::Kind(StepKindTag::Refl),
+        ]);
+        assert!(!dup.matches(step));
+    }
+
+    #[test]
+    fn step_pattern_exactly_one_equals_xor_at_n_eq_2() {
+        let x = Term::var("x", int_());
+        let mut b = CertBuilder::new();
+        let s0 = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+        );
+        let step = &b.steps()[s0.0 as usize];
+        let xor = StepPattern::xor(
+            StepPattern::Kind(StepKindTag::Refl),
+            StepPattern::Kind(StepKindTag::Trans),
+        );
+        let exactly = StepPattern::exactly_one(vec![
+            StepPattern::Kind(StepKindTag::Refl),
+            StepPattern::Kind(StepKindTag::Trans),
+        ]);
+        assert_eq!(xor.matches(step), exactly.matches(step));
+    }
+
+    #[test]
+    fn pattern_marker_attaches_to_builder() {
+        let x = Term::var("x", int_());
+        let mut b = CertBuilder::new();
+        let s0 = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+        );
+        let marker = PatternMarker {
+            pattern: StepPattern::Kind(StepKindTag::Refl),
+            local_markers: ClassicalMarkerSet {
+                should: ClassicalSet::from_iter([
+                    ClassicalModuleFamily::Propositional,
+                ]),
+                allow: vec![],
+            },
+        };
+        b.add_pattern_marker(marker);
+        let cert = b.finalize(s0);
+        assert_eq!(cert.pattern_markers.len(), 1);
+    }
+
+    #[test]
+    fn mid_block_attaches_to_builder() {
+        let x = Term::var("x", int_());
+        let mut b = CertBuilder::new();
+        let s0 = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+        );
+        let block = MidBlock {
+            name: Some("test_block".into()),
+            contents: vec![MidBlockItem::Step(s0)],
+            local_markers: ClassicalMarkerSet::empty(),
+            exported_markers: ClassicalMarkerSet::empty(),
+        };
+        b.add_mid_block(block);
+        let cert = b.finalize(s0);
+        assert_eq!(cert.mid_blocks.len(), 1);
+        assert_eq!(cert.mid_blocks[0].name.as_deref(), Some("test_block"));
+    }
+
+    #[test]
+    #[should_panic(expected = "at_most_one requires at least 2")]
+    fn at_most_one_panics_on_single_input() {
+        let _ = StepPattern::at_most_one(vec![
+            StepPattern::Kind(StepKindTag::Refl),
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly_one requires at least 2")]
+    fn exactly_one_panics_on_single_input() {
+        let _ = StepPattern::exactly_one(vec![
+            StepPattern::Kind(StepKindTag::Refl),
+        ]);
     }
 }

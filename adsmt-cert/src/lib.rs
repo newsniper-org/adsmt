@@ -15,8 +15,9 @@ pub mod recorder;
 pub mod witness;
 
 pub use canonical::{
-    AllowMarker, CertBuilder, Certificate, CertificateDelta, Checkpoint, ClassicalModuleFamily,
-    ClassicalSet, Sequent, SourceLoc, Step, StepBody, StepId,
+    AllowMarker, CertBuilder, Certificate, CertificateDelta, Checkpoint, ClassicalMarkerSet,
+    ClassicalModuleFamily, ClassicalSet, MidBlock, MidBlockItem, PatternMarker, Sequent, SourceLoc,
+    Step, StepBody, StepId, StepKindTag, StepPattern,
 };
 pub use emit::{emit_certificate, emit_certificate_delta};
 pub use lean_emit::{emit_lean, try_emit_lean, MissingImports};
