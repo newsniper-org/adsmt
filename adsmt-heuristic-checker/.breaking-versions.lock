@@ -1,0 +1,11 @@
+# adsmt-heuristic-checker breaking-version lockfile (γ peer).
+#
+# One semver per line. Blank lines and lines starting with `#`
+# are ignored. This file mirrors the `#![breaking_changes_semver]`
+# attributes on `src/lib.rs` AND the
+# `[package.metadata.adsmt] breaking_versions` array in
+# `Cargo.toml` (τ peer). Cross-check at build/test time catches
+# divergence.
+#
+# v0.17.0: no shipped breakings yet — this file is intentionally
+# empty below the comment block.

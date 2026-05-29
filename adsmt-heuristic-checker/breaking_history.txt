@@ -1,0 +1,8 @@
+# adsmt-heuristic-checker breaking-version manifest (ε peer).
+#
+# Append-only. Once added, a version line MUST NOT be removed —
+# the snapshot regression tests (ι) and the property-test (κ)
+# will fail if any historical version disappears.
+#
+# v0.17.0: no shipped breakings yet — this file is intentionally
+# empty below the comment block.

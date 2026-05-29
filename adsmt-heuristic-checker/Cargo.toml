@@ -19,3 +19,10 @@ thiserror.workspace = true
 # `src/lib.rs`. The newest attribute auto-sets the lower bound for
 # compatibility checks (see prover_emit_policy.md § "Per-user IR
 # cache"). At v0.17.0 the list is empty — no breakings yet.
+
+# Peer source τ for the breaking-version safeguard. Mirrors
+# `src/lib.rs`'s `#![breaking_changes_semver(...)]` attributes,
+# `.breaking-versions.lock`, and `breaking_history.txt`. Cross-
+# check at build/test time catches divergence. Empty at v0.17.0.
+[package.metadata.adsmt]
+breaking_versions = []

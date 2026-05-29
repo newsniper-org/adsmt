@@ -46,6 +46,8 @@
 // land as `#![breaking_changes_semver("x.y.z")]` attributes
 // appended below this comment.
 
+pub mod breaking_versions;
+
 use thiserror::Error;
 
 /// Frozen IR for the adsmt-minimum heuristic table.
