@@ -19,6 +19,6 @@ pub use canonical::{
     ClassicalSet, Sequent, SourceLoc, Step, StepBody, StepId,
 };
 pub use emit::{emit_certificate, emit_certificate_delta};
-pub use lean_emit::emit_lean;
+pub use lean_emit::{emit_lean, try_emit_lean, MissingImports};
 pub use recorder::{ProofHandle, recorder as r};
 pub use witness::{InstanceWitness, TheoryWitness};
