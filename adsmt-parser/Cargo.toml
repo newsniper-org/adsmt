@@ -9,3 +9,6 @@ description = "SMT-LIB v2 parser/emitter and lu-kb surface parser"
 adsmt-core.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
+# Path dependency on the workspace-excluded logicutils submodule.
+# `lu-common::kb` provides the authoritative lu-kb parser.
+lu-common = { path = "../external/logicutils/lu-common", default-features = false }

@@ -1,16 +1,27 @@
 //! Theory of arrays.
 //!
-//! v0.3 ships **read-over-write reasoning**: `(select (store a i v) j)`
-//! resolves to `v` when `i = j` and to `(select a j)` when `i ≠ j`.
-//! The theory recognizes these patterns syntactically and asserts the
-//! resulting equality into UF for downstream congruence reasoning.
+//! **Read-over-write reasoning** for `(select (store a i v) j)`:
+//! - same-index (`i = j`): reduces to `v`
+//! - different-index (`i ≠ j`): reduces to `(select a j)` whenever
+//!   the disequality `i ≠ j` is locally known to the theory
 //!
-//! Array extensionality (`(∀i. a i = b i) → a = b`) and store
-//! permutation rewrites come with v0.5.
+//! The theory tracks two local channels:
+//! - **derived equalities** — surfaced to UF / other theories via
+//!   the Nelson-Oppen `derive_equalities` hook
+//! - **local disequalities** — collected from negative-polarity
+//!   `(= i j)` assertions and used to fire the different-index
+//!   rewrite without depending on UF's disequality propagation
+//!
+//! **Extensionality** (`a ≠ b → ∃k. select a k ≠ select b k`) is
+//! recorded as a derivation hook that surfaces `(diff a b)` style
+//! witness atoms when an array-disequality is asserted; the
+//! quantifier-elimination pipeline above the theory layer then
+//! instantiates the witness.
 //!
 //! Built-in symbols:
 //! - `select : (Array I E) -> I -> E`
 //! - `store  : (Array I E) -> I -> E -> (Array I E)`
+//! - `diff   : (Array I E) -> (Array I E) -> I` (extensionality witness)
 
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
 use adsmt_core::{Term, Type};
@@ -20,11 +31,30 @@ use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 #[derive(Default)]
 pub struct Arrays {
     /// Equalities the array theory has derived and wants to share with
-    /// other theories via Nelson-Oppen propagation. v0.3 surfaces
-    /// read-over-write conclusions here.
+    /// other theories via Nelson-Oppen propagation. Read-over-write
+    /// conclusions land here.
     derived_eqs: Vec<(Term, Term)>,
+    /// Locally known disequalities — unordered pairs `(a, b)` where
+    /// `a ≠ b` was asserted (typically the negative-polarity of an
+    /// equality literal). Used to fire the different-index
+    /// read-over-write rewrite without a back-channel from UF.
+    local_disequalities: Vec<(Term, Term)>,
+    /// Pending extensionality witnesses: when `a ≠ b` was asserted
+    /// at the array-sort level, a `(diff a b)` index witness is
+    /// queued so the quantifier loop above can route it as an
+    /// instantiation candidate.
+    pending_extensionality: Vec<(Term, Term)>,
     conflict: Option<TheoryWitness>,
-    scope_stack: Vec<usize>,
+    scope_stack: Vec<ArraysScope>,
+}
+
+/// Per-push snapshot — used by `pop` to truncate the relevant
+/// vectors atomically.
+#[derive(Clone, Copy, Default, Debug)]
+struct ArraysScope {
+    derived_eqs_len: usize,
+    local_diseq_len: usize,
+    pending_ext_len: usize,
 }
 
 impl Arrays {
@@ -57,25 +87,54 @@ impl Arrays {
         None
     }
 
-    /// Reduce one read-over-write step on the term `t`, if applicable.
-    /// Returns `Some((reduced, side_condition))` where `side_condition`
-    /// is the equality between the indices when `t` was reduced to the
-    /// store's value, or `None` when no rewrite applies.
-    fn read_over_write(t: &Term) -> Option<(Term, Term)> {
+    /// Reduce one read-over-write step on the term `t`, if
+    /// applicable. Returns `Some((reduced, side_condition))` where
+    /// `side_condition` is the equality (same-index case) or
+    /// disequality (different-index case) between the store and
+    /// select indices; the caller must already have established it.
+    /// Returns `None` when no rewrite applies — including the
+    /// different-index case if `disequalities` does not contain
+    /// `(i, j)` or `(j, i)`.
+    fn read_over_write(t: &Term, disequalities: &[(Term, Term)]) -> Option<(Term, Term)> {
         let (arr, j) = Self::dest_select(t)?;
         let (a, i, v) = Self::dest_store(&arr)?;
         if i.alpha_eq(&j) {
             // (select (store a i v) i) = v
-            Some((v, Term::mk_eq(i.clone(), j).ok()?))
-        } else {
-            // (select (store a i v) j) reduces to (select a j) when
-            // we *know* i ≠ j. v0.3 alpha doesn't yet have the
-            // disequality side-channel from UF; surface as a derived
-            // equality when subsequent reasoning establishes the
-            // disequality. For now defer.
-            let _ = (a, v);
-            None
+            return Some((v, Term::mk_eq(i.clone(), j).ok()?));
         }
+        if Self::pair_known_disequal(&i, &j, disequalities) {
+            // (select (store a i v) j) → (select a j) when i ≠ j
+            return Some((Self::mk_select_term(&a, &j)?, Term::mk_eq(i, j).ok()?));
+        }
+        let _ = v;
+        None
+    }
+
+    /// Predicate: `(a, b)` (in any order) appears in `pairs` modulo
+    /// α-equivalence.
+    fn pair_known_disequal(a: &Term, b: &Term, pairs: &[(Term, Term)]) -> bool {
+        pairs.iter().any(|(p, q)| {
+            (p.alpha_eq(a) && q.alpha_eq(b)) || (p.alpha_eq(b) && q.alpha_eq(a))
+        })
+    }
+
+    /// Build `(select arr idx)` reusing the surrounding term's typing.
+    fn mk_select_term(arr: &Term, idx: &Term) -> Option<Term> {
+        let arr_ty = arr.type_of();
+        let idx_ty = idx.type_of();
+        let elem_ty = arr_ty.dest_fun().map(|(_, e)| e).unwrap_or(idx_ty.clone());
+        let sel_ty = Type::fun(
+            arr_ty.clone(),
+            Type::fun(idx_ty, elem_ty).ok()?,
+        )
+        .ok()?;
+        let sel = Term::const_("select", sel_ty);
+        Term::app(Term::app(sel, arr.clone()).ok()?, idx.clone()).ok()
+    }
+
+    /// True iff `ty` is an `Array...`-named sort.
+    fn is_array_sort(ty: &Type) -> bool {
+        ty.to_string().starts_with("Array")
     }
 }
 
@@ -87,15 +146,55 @@ impl Theory for Arrays {
     }
 
     fn assert(&mut self, lit: Literal) -> AssertResult {
-        // Recognise `(select (store a i v) i) = w` patterns and derive
-        // `v = w` (or whatever the simplified form is).
-        if let Some((lhs, rhs)) = lit.term.dest_eq() {
-            if let Some((reduced, _side)) = Self::read_over_write(&lhs) {
-                self.derived_eqs.push((reduced, rhs.clone()));
+        let Some((lhs, rhs)) = lit.term.dest_eq() else {
+            return AssertResult::Ignored;
+        };
+
+        // Negative polarity: route by operand sort.
+        //
+        // * **Element-sort disequalities** (e.g. `i ≠ j`) go into
+        //   `local_disequalities` because they unlock the
+        //   different-index branch of `read-over-write`.
+        // * **Array-sort disequalities** (e.g. `a ≠ b`) bypass
+        //   `local_disequalities` and queue an extensionality witness
+        //   `(diff a b)` instead. They cannot drive different-index
+        //   reasoning directly; only after the quantifier layer
+        //   instantiates the witness does the resulting *element*-
+        //   level disequality (`select(a, d) ≠ select(b, d)`) re-enter
+        //   the assert path and join `local_disequalities`.
+        //
+        // Skip the trivial `t ≠ t` case (should be impossible upstream
+        // but defensive).
+        if !lit.polarity {
+            if !lhs.alpha_eq(&rhs) {
+                if Self::is_array_sort(&lhs.type_of()) {
+                    let ext_known = Self::pair_known_disequal(
+                        &lhs,
+                        &rhs,
+                        &self.pending_extensionality,
+                    );
+                    if !ext_known {
+                        self.pending_extensionality.push((lhs.clone(), rhs.clone()));
+                    }
+                } else {
+                    let known =
+                        Self::pair_known_disequal(&lhs, &rhs, &self.local_disequalities);
+                    if !known {
+                        self.local_disequalities.push((lhs.clone(), rhs.clone()));
+                    }
+                }
             }
-            if let Some((reduced, _side)) = Self::read_over_write(&rhs) {
-                self.derived_eqs.push((lhs, reduced));
-            }
+            return AssertResult::Accepted;
+        }
+
+        // Positive polarity: try read-over-write rewriting on both
+        // sides. Same-index always fires; different-index requires a
+        // matching local disequality.
+        if let Some((reduced, _side)) = Self::read_over_write(&lhs, &self.local_disequalities) {
+            self.derived_eqs.push((reduced, rhs.clone()));
+        }
+        if let Some((reduced, _side)) = Self::read_over_write(&rhs, &self.local_disequalities) {
+            self.derived_eqs.push((lhs, reduced));
         }
         AssertResult::Ignored
     }
@@ -121,13 +220,19 @@ impl Theory for Arrays {
     }
 
     fn push(&mut self) {
-        self.scope_stack.push(self.derived_eqs.len());
+        self.scope_stack.push(ArraysScope {
+            derived_eqs_len: self.derived_eqs.len(),
+            local_diseq_len: self.local_disequalities.len(),
+            pending_ext_len: self.pending_extensionality.len(),
+        });
     }
 
     fn pop(&mut self, levels: u32) {
         for _ in 0..levels {
-            if let Some(n) = self.scope_stack.pop() {
-                self.derived_eqs.truncate(n);
+            if let Some(snap) = self.scope_stack.pop() {
+                self.derived_eqs.truncate(snap.derived_eqs_len);
+                self.local_disequalities.truncate(snap.local_diseq_len);
+                self.pending_extensionality.truncate(snap.pending_ext_len);
             }
         }
         self.conflict = None;
@@ -135,8 +240,36 @@ impl Theory for Arrays {
 
     fn reset(&mut self) {
         self.derived_eqs.clear();
+        self.local_disequalities.clear();
+        self.pending_extensionality.clear();
         self.conflict = None;
         self.scope_stack.clear();
+    }
+}
+
+impl Arrays {
+    /// Inspect the queue of pending extensionality witnesses. Each
+    /// `(a, b)` here was asserted as `a ≠ b` at an array sort. The
+    /// quantifier layer above the theory routes these as
+    /// `(diff a b)` candidate atoms — extensionality says some
+    /// index `k` exists with `select a k ≠ select b k`, and
+    /// instantiating `k := diff a b` gives a concrete witness.
+    pub fn pending_extensionality(&self) -> &[(Term, Term)] {
+        &self.pending_extensionality
+    }
+
+    /// Drain the extensionality queue. Used by the quantifier layer
+    /// after it routes the witnesses so they don't fire repeatedly.
+    pub fn drain_extensionality(&mut self) -> Vec<(Term, Term)> {
+        std::mem::take(&mut self.pending_extensionality)
+    }
+
+    /// Inspect the locally-known disequalities — exposed primarily
+    /// for tests and downstream consumers that want to reflect on
+    /// what the theory has accumulated. Returned ordering is
+    /// insertion order.
+    pub fn local_disequalities(&self) -> &[(Term, Term)] {
+        &self.local_disequalities
     }
 }
 
@@ -194,9 +327,9 @@ mod tests {
     }
 
     #[test]
-    fn read_over_write_different_index_is_deferred() {
+    fn read_over_write_different_index_without_disequality_is_deferred() {
         // (select (store a i v) j) — different indices, no rewrite
-        // until UF supplies the disequality.
+        // until the disequality `i ≠ j` is locally known.
         let mut arr = Arrays::new();
         let a = Term::var("a", arr_int_int());
         let i = Term::var("i", int_());
@@ -207,6 +340,96 @@ mod tests {
         let eq = Term::mk_eq(lhs, w).unwrap();
         let _ = arr.assert(Literal::positive(eq).unwrap());
         assert!(arr.derive_equalities().is_empty());
+    }
+
+    #[test]
+    fn read_over_write_different_index_with_local_disequality_fires() {
+        // Assert `i ≠ j` first, then `(select (store a i v) j) = w`
+        // → derive `(select a j) = w`.
+        let mut arr = Arrays::new();
+        let a = Term::var("a", arr_int_int());
+        let i = Term::var("i", int_());
+        let j = Term::var("j", int_());
+        let v = Term::var("v", int_());
+        let w = Term::var("w", int_());
+        // 1. Disequality.
+        let i_eq_j = Term::mk_eq(i.clone(), j.clone()).unwrap();
+        let _ = arr.assert(Literal::negative(i_eq_j).unwrap());
+        assert_eq!(arr.local_disequalities().len(), 1);
+        // 2. Read over write with non-matching index.
+        let lhs = mk_select(mk_store(a.clone(), i, v), j.clone());
+        let eq = Term::mk_eq(lhs, w.clone()).unwrap();
+        let _ = arr.assert(Literal::positive(eq).unwrap());
+        let derived = arr.derive_equalities();
+        assert_eq!(derived.len(), 1);
+        // derived[0].0 should be (select a j)
+        let expected_select = mk_select(a, j);
+        assert!(
+            derived[0].0.alpha_eq(&expected_select),
+            "expected `(select a j)` on LHS of derived, got {:?}",
+            derived[0].0
+        );
+        assert!(derived[0].1.alpha_eq(&w));
+    }
+
+    #[test]
+    fn array_disequality_queues_extensionality_witness() {
+        // Assert `a1 ≠ a2` where both are of array sort
+        // → extensionality witness `(diff a1 a2)` queued.
+        let mut arr = Arrays::new();
+        let a1 = Term::var("a1", arr_int_int());
+        let a2 = Term::var("a2", arr_int_int());
+        let eq = Term::mk_eq(a1.clone(), a2.clone()).unwrap();
+        let _ = arr.assert(Literal::negative(eq).unwrap());
+        assert_eq!(arr.pending_extensionality().len(), 1);
+        let (ext_a, ext_b) = arr.pending_extensionality()[0].clone();
+        assert!(ext_a.alpha_eq(&a1) || ext_a.alpha_eq(&a2));
+        assert!(ext_b.alpha_eq(&a1) || ext_b.alpha_eq(&a2));
+    }
+
+    #[test]
+    fn non_array_disequality_does_not_queue_extensionality() {
+        // Int disequality should NOT generate extensionality.
+        let mut arr = Arrays::new();
+        let i = Term::var("i", int_());
+        let j = Term::var("j", int_());
+        let eq = Term::mk_eq(i, j).unwrap();
+        let _ = arr.assert(Literal::negative(eq).unwrap());
+        assert_eq!(arr.local_disequalities().len(), 1);
+        assert!(arr.pending_extensionality().is_empty());
+    }
+
+    #[test]
+    fn drain_extensionality_clears_the_queue() {
+        let mut arr = Arrays::new();
+        let a1 = Term::var("a1", arr_int_int());
+        let a2 = Term::var("a2", arr_int_int());
+        let eq = Term::mk_eq(a1, a2).unwrap();
+        let _ = arr.assert(Literal::negative(eq).unwrap());
+        let drained = arr.drain_extensionality();
+        assert_eq!(drained.len(), 1);
+        assert!(arr.pending_extensionality().is_empty());
+    }
+
+    #[test]
+    fn push_pop_restores_disequalities_and_extensionality() {
+        let mut arr = Arrays::new();
+        let i = Term::var("i", int_());
+        let j = Term::var("j", int_());
+        let a1 = Term::var("a1", arr_int_int());
+        let a2 = Term::var("a2", arr_int_int());
+        arr.push();
+        let _ = arr.assert(
+            Literal::negative(Term::mk_eq(i, j).unwrap()).unwrap(),
+        );
+        let _ = arr.assert(
+            Literal::negative(Term::mk_eq(a1, a2).unwrap()).unwrap(),
+        );
+        assert_eq!(arr.local_disequalities().len(), 1);
+        assert_eq!(arr.pending_extensionality().len(), 1);
+        arr.pop(1);
+        assert!(arr.local_disequalities().is_empty());
+        assert!(arr.pending_extensionality().is_empty());
     }
 
     #[test]

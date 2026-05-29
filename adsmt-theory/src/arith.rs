@@ -1,14 +1,31 @@
 //! Linear integer / real arithmetic (LIA / LRA).
 //!
-//! v0.7 alpha: **bound propagation** on variables. Recognises
-//! atoms of the form `(op x k)` where `x` is a variable, `k` an
-//! integer/real literal, and `op ∈ { ≤, <, ≥, >, = }`. Tracks
-//! per-variable bounds; conflict when a lower bound exceeds the
-//! upper bound. Full Simplex tableau (multi-variable inequalities,
-//! Fourier-Motzkin abduction) lands in v0.9.
+//! Two complementary strategies:
+//!
+//! 1. **Single-variable bound propagation** on `(op x k)` where `x`
+//!    is a variable and `k` an integer/real literal. Tracks
+//!    per-variable lower / upper bounds; conflict when a lower
+//!    bound exceeds the upper bound. LIA tightens strict
+//!    inequalities to non-strict via integer semantics
+//!    (`x > k` ⇔ `x ≥ k+1`).
+//!
+//! 2. **Fourier-Motzkin** on two-variable forms
+//!    `(op (+ x y) k)`, `(op (- x y) k)`, and bare `(op x y)`.
+//!    Cross-pair elimination derives transitive chains
+//!    (e.g. `x ≤ y, y ≤ z` → `x ≤ z`) and surfaces self-loop
+//!    conflicts (`x − x ≤ −1`). Bound-driven propagation
+//!    converts two-var constraints to tightened single-var
+//!    bounds whenever one variable's bound is already known.
+//!
+//! Simplex tableau (`adsmt-theory::arith_simplex`) is the
+//! eventual strategic backend for multi-coefficient inequalities;
+//! integration with this theory's assert/check path lands
+//! alongside this FM work.
 //!
 //! Built-in comparison operators:
 //! - `(<= x k)`, `(< x k)`, `(>= x k)`, `(> x k)`
+//! - `(<= (+ x y) k)`, `(<= (- x y) k)`, `(<= x y)` plus
+//!   strict / reversed variants for two-variable forms
 
 use std::collections::HashMap;
 
@@ -27,12 +44,17 @@ struct Bounds {
 }
 
 
-/// A two-variable linear inequality `x + y op k` recorded for v0.9
-/// Fourier-Motzkin elimination.
+/// A two-variable linear inequality `x + sign*y op k` recorded for
+/// Fourier-Motzkin elimination. `sign` is `+1` or `-1`; LinArith
+/// runs FM both via single-variable bound propagation
+/// (`propagate_two_var_via_bounds`) and via cross-pair elimination
+/// of the recorded `TwoVar`s.
 #[derive(Clone, Debug)]
 struct TwoVar {
     x: String,
     y: String,
+    /// `+1` for `x + y`, `-1` for `x - y`. Multiplies the `y` term.
+    sign: i128,
     op: &'static str, // "<=" | "<" | ">=" | ">"
     k: i128,
 }
@@ -55,11 +77,19 @@ impl LinArith {
                conflict: None, scope_stack: Vec::new() }
     }
 
-    /// Recognise `(<= (+ x y) k)` and friends — two-variable sum
-    /// inequalities. Returns `(x_name, y_name, op, k)` if matched.
-    fn parse_sum_comparison(t: &Term) -> Option<(String, String, &'static str, i128)> {
+    /// Recognise two-variable inequality forms. Returns
+    /// `(x_name, y_coeff_sign, y_name, op, k)` where `y_coeff_sign`
+    /// is `+1` for `(+ x y)` style and `-1` for `(- x y)` style.
+    /// The recorded `TwoVar.k` always represents the inequality
+    /// `x + y_sign * y op k`.
+    ///
+    /// Forms recognised:
+    /// - `(<= (+ x y) k)` → `(x, +1, y, "<=", k)`
+    /// - `(<= (- x y) k)` → `(x, -1, y, "<=", k)`
+    /// - `(<= x y)` → treated as `x - y <= 0`
+    fn parse_sum_comparison(t: &Term) -> Option<(String, i128, String, &'static str, i128)> {
         let Term::App(outer, rhs) = t else { return None; };
-        let Term::App(head, sum) = &**outer else { return None; };
+        let Term::App(head, lhs) = &**outer else { return None; };
         let Term::Const(c) = &**head else { return None; };
         let op = match c.name.as_str() {
             "<=" | "le" => "<=",
@@ -68,76 +98,222 @@ impl LinArith {
             ">"  | "gt" => ">",
             _ => return None,
         };
+        // Form 1: `(<= x y)` — bare variable-variable comparison.
+        if let Some(k) = Self::int_lit(rhs)
+            && let (Term::Var(vx), Term::Var(vy)) = (&**lhs, &**rhs)
+        {
+            // Should not actually reach — rhs is the literal — but
+            // covers the malformed-shape case defensively.
+            return Some((vx.name.clone(), -1, vy.name.clone(), op, k));
+        }
+        if let (Term::Var(vx), Term::Var(vy)) = (&**lhs, &**rhs) {
+            // `(<= x y)` ≡ `x - y <= 0`
+            return Some((vx.name.clone(), -1, vy.name.clone(), op, 0));
+        }
         let k = Self::int_lit(rhs)?;
-        // sum must be `(+ x y)` with x, y both variables.
-        if let Term::App(plus_outer, y) = &**sum
+        // Form 2: `(<= (+ x y) k)` or `(<= (- x y) k)`.
+        if let Term::App(plus_outer, y) = &**lhs
             && let Term::App(plus_head, x) = &**plus_outer
-                && let Term::Const(pc) = &**plus_head
-                    && pc.name == "+"
-                        && let (Term::Var(vx), Term::Var(vy)) = (&**x, &**y) {
-                            return Some((vx.name.clone(), vy.name.clone(), op, k));
-                        }
+            && let Term::Const(pc) = &**plus_head
+            && let (Term::Var(vx), Term::Var(vy)) = (&**x, &**y)
+        {
+            let sign = match pc.name.as_str() {
+                "+" => 1i128,
+                "-" => -1i128,
+                _ => return None,
+            };
+            return Some((vx.name.clone(), sign, vy.name.clone(), op, k));
+        }
         None
     }
 
-    /// Apply Fourier-Motzkin: given `x + y op k` and existing single-
-    /// variable bounds on `x` and `y`, derive new bounds on each
-    /// variable. Returns Some(witness) on infeasibility.
-    fn propagate_two_var(&mut self) -> Option<TheoryWitness> {
+    /// Apply Fourier-Motzkin via single-variable bound propagation.
+    /// For each `x + sign*y op k` constraint, use the existing bound
+    /// on one variable to derive a tighter bound on the other.
+    /// Returns `Some(witness)` on infeasibility.
+    fn propagate_two_var_via_bounds(&mut self) -> Option<TheoryWitness> {
         let snapshot = self.two_vars.clone();
         for tv in &snapshot {
-            // For `x + y <= k`: x <= k - y_min (where y_min is y's lower bound).
-            let x_lo = self.bounds.get(&tv.x).and_then(|b| b.lower).map(|(v, _)| v);
-            let y_lo = self.bounds.get(&tv.y).and_then(|b| b.lower).map(|(v, _)| v);
+            // Conceptual: `x op (k - sign*y)`.
+            // To bound `x` we need bound on `sign*y`; to bound `y`
+            // we need bound on `x`.
+            //
+            // For `x + sign*y <= k`:
+            //   if sign = +1, need y_lo to derive x_up: x <= k - y_lo
+            //   if sign = -1, need y_up to derive x_up: x <= k + y_up
+            //   Symmetric for y.
+            // Combined: pick the "low extreme of sign*y" — that is,
+            //   sign=+1 → y_lo (lowest value y can be → highest sign*y? no, lowest sign*y)
+            //   actually `sign * y_lo` IS the lowest value of sign*y
+            //   when sign=+1 (y small ⇒ sign*y small). When sign=-1,
+            //   sign*y = -y; -y is smallest when y is largest, so we
+            //   need y_up.
+            let (y_for_x_le, x_for_y_le, y_for_x_ge, x_for_y_ge) = if tv.sign > 0 {
+                // x_up uses y_lo, y_up uses x_lo
+                (
+                    self.bounds.get(&tv.y).and_then(|b| b.lower).map(|(v, _)| v),
+                    self.bounds.get(&tv.x).and_then(|b| b.lower).map(|(v, _)| v),
+                    self.bounds.get(&tv.y).and_then(|b| b.upper).map(|(v, _)| v),
+                    self.bounds.get(&tv.x).and_then(|b| b.upper).map(|(v, _)| v),
+                )
+            } else {
+                // x_up uses y_up (because sign*y = -y), y_up uses x_lo
+                (
+                    self.bounds.get(&tv.y).and_then(|b| b.upper).map(|(v, _)| v),
+                    self.bounds.get(&tv.x).and_then(|b| b.lower).map(|(v, _)| v),
+                    self.bounds.get(&tv.y).and_then(|b| b.lower).map(|(v, _)| v),
+                    self.bounds.get(&tv.x).and_then(|b| b.upper).map(|(v, _)| v),
+                )
+            };
             match tv.op {
-                "<=" => {
-                    if let Some(y_low) = y_lo {
-                        // x <= k - y_low
-                        if let Some(w) = self.record_bound(tv.x.clone(), "<=", tv.k - y_low) {
+                "<=" | "<" => {
+                    let strict_op = tv.op;
+                    if let Some(y_v) = y_for_x_le {
+                        // x <= k - sign*y_v
+                        let bound = tv.k - tv.sign * y_v;
+                        if let Some(w) = self.record_bound(tv.x.clone(), strict_op, bound) {
                             return Some(w);
                         }
                     }
-                    if let Some(x_low) = x_lo
-                        && let Some(w) = self.record_bound(tv.y.clone(), "<=", tv.k - x_low) {
+                    if let Some(x_v) = x_for_y_le {
+                        // sign*y <= k - x_v ; if sign=+1, y <= k - x_v
+                        // if sign=-1, -y <= k - x_v ⇒ y >= x_v - k.
+                        let bound_raw = tv.k - x_v;
+                        let (target_op, target_k) = if tv.sign > 0 {
+                            (strict_op, bound_raw)
+                        } else {
+                            // negate op since we multiply by -1
+                            let neg = match strict_op {
+                                "<=" => ">=",
+                                "<"  => ">",
+                                _    => return None,
+                            };
+                            (neg, -bound_raw)
+                        };
+                        if let Some(w) = self.record_bound(tv.y.clone(), target_op, target_k) {
                             return Some(w);
                         }
+                    }
                 }
-                "<" => {
-                    if let Some(y_low) = y_lo
-                        && let Some(w) = self.record_bound(tv.x.clone(), "<", tv.k - y_low) {
+                ">=" | ">" => {
+                    let strict_op = tv.op;
+                    if let Some(y_v) = y_for_x_ge {
+                        let bound = tv.k - tv.sign * y_v;
+                        if let Some(w) = self.record_bound(tv.x.clone(), strict_op, bound) {
                             return Some(w);
                         }
-                    if let Some(x_low) = x_lo
-                        && let Some(w) = self.record_bound(tv.y.clone(), "<", tv.k - x_low) {
+                    }
+                    if let Some(x_v) = x_for_y_ge {
+                        let bound_raw = tv.k - x_v;
+                        let (target_op, target_k) = if tv.sign > 0 {
+                            (strict_op, bound_raw)
+                        } else {
+                            let neg = match strict_op {
+                                ">=" => "<=",
+                                ">"  => "<",
+                                _    => return None,
+                            };
+                            (neg, -bound_raw)
+                        };
+                        if let Some(w) = self.record_bound(tv.y.clone(), target_op, target_k) {
                             return Some(w);
                         }
-                }
-                ">=" => {
-                    // x + y >= k means x >= k - y_max
-                    let y_up = self.bounds.get(&tv.y).and_then(|b| b.upper).map(|(v, _)| v);
-                    let x_up = self.bounds.get(&tv.x).and_then(|b| b.upper).map(|(v, _)| v);
-                    if let Some(y_max) = y_up
-                        && let Some(w) = self.record_bound(tv.x.clone(), ">=", tv.k - y_max) {
-                            return Some(w);
-                        }
-                    if let Some(x_max) = x_up
-                        && let Some(w) = self.record_bound(tv.y.clone(), ">=", tv.k - x_max) {
-                            return Some(w);
-                        }
-                }
-                ">" => {
-                    let y_up = self.bounds.get(&tv.y).and_then(|b| b.upper).map(|(v, _)| v);
-                    let x_up = self.bounds.get(&tv.x).and_then(|b| b.upper).map(|(v, _)| v);
-                    if let Some(y_max) = y_up
-                        && let Some(w) = self.record_bound(tv.x.clone(), ">", tv.k - y_max) {
-                            return Some(w);
-                        }
-                    if let Some(x_max) = x_up
-                        && let Some(w) = self.record_bound(tv.y.clone(), ">", tv.k - x_max) {
-                            return Some(w);
-                        }
+                    }
                 }
                 _ => {}
+            }
+        }
+        None
+    }
+
+    /// Cross-pair Fourier-Motzkin: combine two `TwoVar` constraints
+    /// to eliminate a shared variable. Each `TwoVar` represents
+    /// `x + sign * y op k`. To eliminate the middle variable by
+    /// addition, we require `a.y == b.x` AND `a.sign == -1` so that
+    /// `a.sign * y_mid + 1 * y_mid = 0`. Derived constraint:
+    /// `a.x + b.sign * b.y  op  a.k + b.k`.
+    ///
+    /// Iterates a small fixed number of passes so the closure
+    /// stabilises before checking for conflict. Two guards prevent
+    /// runaway growth around cycles like `x ≤ y ≤ z ≤ x − 1` (which
+    /// would otherwise emit `x − x ≤ −1`, `≤ −2`, `≤ −3`, …):
+    ///
+    /// 1. **Tightness**: a derived `TwoVar` is only added if it is
+    ///    strictly tighter than every existing entry with the same
+    ///    `(x, y, sign, op)`. A weaker or equal constraint is
+    ///    redundant and skipped.
+    /// 2. **Eager self-loop conflict**: as soon as a self-loop entry
+    ///    (`x == y` with `1 + sign == 0`) becomes infeasible, return
+    ///    the witness immediately. No need to finish the closure.
+    fn fm_cross_eliminate(&mut self) -> Option<TheoryWitness> {
+        const MAX_PASSES: usize = 16;
+        for _ in 0..MAX_PASSES {
+            let before = self.two_vars.len();
+            let snapshot = self.two_vars.clone();
+            for i in 0..snapshot.len() {
+                for j in 0..snapshot.len() {
+                    if i == j { continue; }
+                    let a = &snapshot[i];
+                    let b = &snapshot[j];
+                    if !matches!(a.op, "<=" | "<") || !matches!(b.op, "<=" | "<") {
+                        continue;
+                    }
+                    // Cancellation requires a's y-coefficient and b's
+                    // x-coefficient (always 1) to sum to 0; with our
+                    // shape this means a.sign == -1 AND a.y == b.x.
+                    if a.sign != -1 { continue; }
+                    if a.y != b.x { continue; }
+                    let new_x = a.x.clone();
+                    let new_y = b.y.clone();
+                    let new_sign = b.sign;
+                    let new_k = a.k + b.k;
+                    let new_op = if a.op == "<" || b.op == "<" { "<" } else { "<=" };
+                    // Tightness: skip unless strictly tighter than
+                    // any existing entry for the same shape. For `<=`
+                    // / `<`, "tighter" means smaller `k`; for strict
+                    // vs non-strict at the same `k`, `<` is tighter.
+                    let redundant = self.two_vars.iter().any(|t| {
+                        t.x == new_x && t.y == new_y && t.sign == new_sign
+                            && existing_dominates_le(t.op, t.k, new_op, new_k)
+                    });
+                    if redundant { continue; }
+                    let entry = TwoVar {
+                        x: new_x.clone(),
+                        y: new_y.clone(),
+                        sign: new_sign,
+                        op: new_op,
+                        k: new_k,
+                    };
+                    // Eager conflict on self-loop infeasibility.
+                    if entry.x == entry.y && 1 + entry.sign == 0
+                        && self_loop_infeasible(entry.op, entry.k)
+                    {
+                        return Some(TheoryWitness::Opaque {
+                            kind: self.name_.into(),
+                            notes: format!(
+                                "FM chain conflict: derived `0 {} {}` from cycle through {}",
+                                entry.op, entry.k, entry.x
+                            ),
+                        });
+                    }
+                    self.two_vars.push(entry);
+                }
+            }
+            if self.two_vars.len() == before {
+                break;
+            }
+        }
+        // Post-closure scan for self-loops we may have already had on
+        // entry (rare, but covers ¬-driven negative-polarity asserts).
+        for tv in &self.two_vars {
+            if tv.x == tv.y && 1 + tv.sign == 0 && self_loop_infeasible(tv.op, tv.k) {
+                return Some(TheoryWitness::Opaque {
+                    kind: self.name_.into(),
+                    notes: format!(
+                        "FM chain conflict: derived `0 {} {}` from cycle through {}",
+                        tv.op, tv.k, tv.x
+                    ),
+                });
             }
         }
         None
@@ -222,6 +398,43 @@ impl LinArith {
     }
 }
 
+/// Does an existing `(op, k)` ≤-style constraint dominate (i.e.
+/// imply) the candidate? Returns true when the existing entry
+/// already proves the new one, so adding the new one is redundant.
+///
+/// For `x ≤ k`, smaller `k` is stronger. `x < k` is stronger than
+/// `x ≤ k` at the same `k`, but `x ≤ k-1` and `x < k` are
+/// equivalent — caller has already LIA-tightened, so we just need
+/// the lexicographic compare here.
+fn existing_dominates_le(
+    existing_op: &str,
+    existing_k: i128,
+    new_op: &str,
+    new_k: i128,
+) -> bool {
+    let ex_strict = matches!(existing_op, "<");
+    let nw_strict = matches!(new_op, "<");
+    if existing_k < new_k {
+        return true;
+    }
+    if existing_k == new_k {
+        // ex stricter or equal ⇒ ex dominates nw.
+        return ex_strict || !nw_strict;
+    }
+    false
+}
+
+/// Is a `0 op k`-style self-loop entry infeasible?
+fn self_loop_infeasible(op: &str, k: i128) -> bool {
+    match op {
+        "<=" => k < 0,
+        "<"  => k <= 0,
+        ">=" => k > 0,
+        ">"  => k >= 0,
+        _ => false,
+    }
+}
+
 fn tighter_lower(a: (i128, bool), b: (i128, bool)) -> (i128, bool) {
     if a.0 > b.0 { a }
     else if a.0 < b.0 { b }
@@ -243,14 +456,14 @@ impl Theory for LinArith {
     }
 
     fn assert(&mut self, lit: Literal) -> AssertResult {
-        // Try sum comparison first (v0.9).
-        if let Some((x, y, op, k)) = Self::parse_sum_comparison(&lit.term) {
+        // Try two-variable comparison first (FM input).
+        if let Some((x, sign, y, op, k)) = Self::parse_sum_comparison(&lit.term) {
             let final_op = if lit.polarity {
                 op
             } else {
                 match op { "<=" => ">", "<" => ">=", ">=" => "<", ">" => "<=", _ => return AssertResult::Ignored }
             };
-            self.two_vars.push(TwoVar { x, y, op: final_op, k });
+            self.two_vars.push(TwoVar { x, y, sign, op: final_op, k });
             return AssertResult::Accepted;
         }
         if !lit.polarity {
@@ -279,7 +492,15 @@ impl Theory for LinArith {
     }
 
     fn check(&mut self) -> CheckResult {
-        if let Some(w) = self.propagate_two_var() {
+        // Stage 1: cross-pair FM elimination to detect chain-driven
+        // inconsistencies (e.g. `x ≤ y, y ≤ z, z ≤ x - 1`).
+        if let Some(w) = self.fm_cross_eliminate() {
+            self.conflict = Some(w.clone());
+            return CheckResult::Unsat { witness: w };
+        }
+        // Stage 2: use single-variable bounds to drive multi-variable
+        // constraints into tightened single-variable bounds.
+        if let Some(w) = self.propagate_two_var_via_bounds() {
             self.conflict = Some(w.clone());
             return CheckResult::Unsat { witness: w };
         }
@@ -421,6 +642,58 @@ mod tests {
         let r = t.assert(Literal::positive(le_term("x", -5)).unwrap());
         assert!(matches!(r, AssertResult::Conflict { .. }));
         t.pop(1);
+        assert!(matches!(t.check(), CheckResult::Sat));
+    }
+
+    // === Fourier-Motzkin extensions: subtraction, bare pair, chain ===
+
+    fn diff_le_term(x_name: &str, y_name: &str, k: i128) -> Term {
+        // (<= (- x y) k)
+        let op_ty = Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap()).unwrap();
+        let minus_ty = Type::fun(int_ty(), Type::fun(int_ty(), int_ty()).unwrap()).unwrap();
+        let minus = Term::const_("-", minus_ty);
+        let le = Term::const_("<=", op_ty);
+        let x = Term::var(x_name, int_ty());
+        let y = Term::var(y_name, int_ty());
+        let diff = Term::app(Term::app(minus, x).unwrap(), y).unwrap();
+        let k_lit = Term::const_(&format!("int:{k}"), int_ty());
+        Term::app(Term::app(le, diff).unwrap(), k_lit).unwrap()
+    }
+
+    #[test]
+    fn fm_subtraction_form_drives_bounds() {
+        // x - y ≤ 0  ≡  x ≤ y. With y ≤ 5, derive x ≤ 5.
+        // Then assert x ≥ 6 → conflict.
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(le_term("y", 5)).unwrap());
+        t.assert(Literal::positive(diff_le_term("x", "y", 0)).unwrap());
+        t.assert(Literal::positive(ge_term("x", 6)).unwrap());
+        assert!(matches!(t.check(), CheckResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn fm_chain_three_variable_unsat() {
+        // x ≤ y, y ≤ z, z ≤ x - 1   →   unsat via FM cross-pair
+        let mut t = LinArith::lia();
+        // Encode each as `a - b ≤ 0` (or 0 / -1).
+        t.assert(Literal::positive(diff_le_term("x", "y", 0)).unwrap());
+        t.assert(Literal::positive(diff_le_term("y", "z", 0)).unwrap());
+        t.assert(Literal::positive(diff_le_term("z", "x", -1)).unwrap());
+        let verdict = t.check();
+        assert!(
+            matches!(verdict, CheckResult::Unsat { .. }),
+            "expected Unsat from FM chain elimination, got {verdict:?}"
+        );
+    }
+
+    #[test]
+    fn fm_chain_consistent_three_variable_is_sat() {
+        // x ≤ y, y ≤ z, plus x ≥ 0, z ≤ 10  →  sat.
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(diff_le_term("x", "y", 0)).unwrap());
+        t.assert(Literal::positive(diff_le_term("y", "z", 0)).unwrap());
+        t.assert(Literal::positive(ge_term("x", 0)).unwrap());
+        t.assert(Literal::positive(le_term("z", 10)).unwrap());
         assert!(matches!(t.check(), CheckResult::Sat));
     }
 }
