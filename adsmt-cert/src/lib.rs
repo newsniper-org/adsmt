@@ -10,6 +10,7 @@ pub mod drat;
 pub mod emit;
 pub mod lean_emit;
 pub mod oxiz_drat_bridge;
+pub mod prover_emit;
 pub mod recorder;
 pub mod witness;
 
