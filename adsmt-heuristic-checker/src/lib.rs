@@ -49,6 +49,20 @@
 pub mod breaking_versions;
 pub mod sigma_check;
 
+/// Captured at compile time by the `adsmt_heuristics!` family of
+/// proc-macros (see `adsmt-heuristic-checker-macros`). Holds the
+/// canonical encoding of a lu-kb heuristic source and a small
+/// metadata summary the runtime checker reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdsmtHeuristicsSource {
+    pub canonical_encoding: &'static str,
+    pub item_count: usize,
+}
+
+pub use adsmt_heuristic_checker_macros::{
+    adsmt_heuristics, derive_heuristics, import_adsmt_heuristics,
+};
+
 use thiserror::Error;
 
 /// Frozen IR for the adsmt-minimum heuristic table.

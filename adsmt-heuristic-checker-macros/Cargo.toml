@@ -1,0 +1,20 @@
+[package]
+name = "adsmt-heuristic-checker-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Proc-macro entry points for adsmt's classical-axiom heuristic compile-time validation. Provides adsmt_heuristics!, import_adsmt_heuristics!, and #[derive_heuristics] forms (per σ peer of the 8-layer offline safeguard)."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+# proc-macro work needs proc_macro2 / quote / syn at the entry
+# point. We keep the dep set minimal so build time stays low.
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
+# Run-time parsing of the embedded lu-kb source happens inside
+# the proc-macro process itself; lu-common provides the parser
+# and the breaking-version helpers.
+lu-common = { path = "../external/logicutils/lu-common", default-features = false, features = ["k12"] }

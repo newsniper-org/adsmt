@@ -12,6 +12,10 @@ adsmt-theory.workspace = true
 # lu-common provides K12-256 for the frozen-hash safeguard and the
 # kb AST that user-extension heuristics are written in.
 lu-common = { path = "../external/logicutils/lu-common", default-features = false, features = ["k12"] }
+# Proc-macro entry points for compile-time heuristic embedding.
+# Re-exported through the `macros` module so users see a single
+# import surface (`use adsmt_heuristic_checker::*`).
+adsmt-heuristic-checker-macros = { path = "../adsmt-heuristic-checker-macros" }
 thiserror.workspace = true
 
 # `breaking_changes_semver` attributes are tracked by the

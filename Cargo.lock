@@ -89,9 +89,20 @@ version = "0.18.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
+ "adsmt-heuristic-checker-macros",
  "adsmt-theory",
  "lu-common",
  "thiserror",
+]
+
+[[package]]
+name = "adsmt-heuristic-checker-macros"
+version = "0.18.0"
+dependencies = [
+ "lu-common",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

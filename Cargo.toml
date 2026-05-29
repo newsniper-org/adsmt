@@ -10,6 +10,7 @@ members = [
     "adsmt-engine",
     "adsmt-parser",
     "adsmt-heuristic-checker",
+    "adsmt-heuristic-checker-macros",
     "adsmt-lints",
     "adsmt-cli",
     "adsmt-ffi",
