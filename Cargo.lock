@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adsmt-abduce"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-class",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cert"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-core",
  "indexmap",
@@ -26,7 +26,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-class"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cli"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "indexmap",
  "smallvec",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-engine"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-abduce",
  "adsmt-cert",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-ffi"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-core",
  "adsmt-engine",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-heuristic-checker"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-lints"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-heuristic-checker",
  "thiserror",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-parser"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-core",
  "indexmap",
@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-quant"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-theory"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -654,7 +654,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lu-common"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "csv",
  "serde",

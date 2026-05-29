@@ -17,7 +17,18 @@ members = [
 exclude = ["external/logicutils", "external/oxiz"]
 
 [workspace.package]
-version = "0.17.0"
+# Minor bump 0.17 → 0.18 lands the classical-axiom on-demand
+# pipeline (per ypeg's 2026-05-29 request) — markers on Step,
+# prover_emit aggregation/resolution/missing-imports, the
+# adsmt-heuristic-checker subcrate with the 8-layer offline
+# safeguard, the adsmt-lints workspace member, and the in-tree
+# Lean import injection. Out-of-tree Rocq + Isabelle emit
+# backends ship matching changes in their own commits.
+#
+# logicutils v0.x-smt bumps in lockstep to 0.18.0 per the
+# match-minor synchronisation rule (revised from the original
+# "+2" offset since the v0.17 mid-cycle audit).
+version = "0.18.0"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 
