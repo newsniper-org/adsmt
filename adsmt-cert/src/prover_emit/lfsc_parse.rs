@@ -252,6 +252,108 @@ impl<'s> Parser<'s> {
     }
 }
 
+/// v0.21 A.1 (partial) per-ITP consumer scaffold.
+///
+/// Produces a Lean 4 source snippet that previews the LFSC
+/// document's structure as commented top-level entries. Each
+/// `(declare …)` lands as `-- LFSC declare: <name>`, each
+/// `(define …)` as `-- LFSC define: <name>`, each `(check …)`
+/// as a `theorem` skeleton with `sorry` so the Lean kernel
+/// still type-checks the module. Unrecognised forms become
+/// `-- LFSC other: <sexpr>` lines.
+///
+/// The richer mapping — actual sort/term translation, proof
+/// reconstruction from `(check …)` — is the next phase. This
+/// scaffold's job is to give downstream Lean tooling a stable
+/// shape it can extend.
+pub fn render_lean(doc: &LfscDocument) -> String {
+    let mut out = String::new();
+    out.push_str("-- adsmt LFSC consumer (v0.21 A.1 scaffold)\n");
+    out.push_str(&format!("-- {} top-level declaration(s)\n\n", doc.len()));
+    for (i, d) in doc.declarations().iter().enumerate() {
+        match d {
+            LfscDecl::Declare { name, sort } => {
+                out.push_str(&format!("-- LFSC declare: {name} :: {sort}\n"));
+            }
+            LfscDecl::Define { name, body } => {
+                out.push_str(&format!("-- LFSC define: {name} := {body}\n"));
+            }
+            LfscDecl::Check { term } => {
+                out.push_str(&format!(
+                    "theorem lfsc_check_{i} : True := by trivial\n  -- LFSC check: {term}\n"
+                ));
+            }
+            LfscDecl::Other(e) => {
+                out.push_str(&format!("-- LFSC other: {e}\n"));
+            }
+        }
+    }
+    out
+}
+
+/// v0.21 A.1 (partial) per-ITP consumer scaffold for Rocq.
+///
+/// Same shape as [`render_lean`], targeting Rocq's surface:
+/// `Lemma … : True. Proof. trivial. Qed.` for each `(check …)`,
+/// `(* … *)` comments for the rest.
+pub fn render_rocq(doc: &LfscDocument) -> String {
+    let mut out = String::new();
+    out.push_str("(* adsmt LFSC consumer (v0.21 A.1 scaffold) *)\n");
+    out.push_str(&format!("(* {} top-level declaration(s) *)\n\n", doc.len()));
+    for (i, d) in doc.declarations().iter().enumerate() {
+        match d {
+            LfscDecl::Declare { name, sort } => {
+                out.push_str(&format!("(* LFSC declare: {name} :: {sort} *)\n"));
+            }
+            LfscDecl::Define { name, body } => {
+                out.push_str(&format!("(* LFSC define: {name} := {body} *)\n"));
+            }
+            LfscDecl::Check { term } => {
+                out.push_str(&format!(
+                    "Lemma lfsc_check_{i} : True. Proof. trivial. Qed. (* LFSC check: {term} *)\n"
+                ));
+            }
+            LfscDecl::Other(e) => {
+                out.push_str(&format!("(* LFSC other: {e} *)\n"));
+            }
+        }
+    }
+    out
+}
+
+/// v0.21 A.1 (partial) per-ITP consumer scaffold for Isabelle.
+///
+/// Same shape as [`render_lean`] and [`render_rocq`], targeting
+/// Isabelle's Isar surface: `lemma … : "True" by simp` for each
+/// `(check …)`, `(* … *)` comments for the rest. The header
+/// `theory …` boilerplate is intentionally omitted — callers
+/// wrap it because the theory name + import list depends on
+/// the embedding context.
+pub fn render_isabelle(doc: &LfscDocument) -> String {
+    let mut out = String::new();
+    out.push_str("(* adsmt LFSC consumer (v0.21 A.1 scaffold) *)\n");
+    out.push_str(&format!("(* {} top-level declaration(s) *)\n\n", doc.len()));
+    for (i, d) in doc.declarations().iter().enumerate() {
+        match d {
+            LfscDecl::Declare { name, sort } => {
+                out.push_str(&format!("(* LFSC declare: {name} :: {sort} *)\n"));
+            }
+            LfscDecl::Define { name, body } => {
+                out.push_str(&format!("(* LFSC define: {name} := {body} *)\n"));
+            }
+            LfscDecl::Check { term } => {
+                out.push_str(&format!(
+                    "lemma lfsc_check_{i}: \"True\" by simp (* LFSC check: {term} *)\n"
+                ));
+            }
+            LfscDecl::Other(e) => {
+                out.push_str(&format!("(* LFSC other: {e} *)\n"));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,5 +471,59 @@ mod tests {
     fn unclosed_list_is_eof_error() {
         let err = parse_document("(declare nat type").unwrap_err();
         assert!(matches!(err, ParseError::UnexpectedEof(_)));
+    }
+
+    // === Per-ITP consumer scaffolds ===
+
+    #[test]
+    fn render_lean_emits_check_as_theorem_skeleton() {
+        let doc = parse_document(
+            "(declare nat type) (check (truth foo))",
+        )
+        .unwrap();
+        let lean = render_lean(&doc);
+        assert!(lean.contains("LFSC declare: nat"));
+        assert!(lean.contains("theorem lfsc_check_1"));
+        assert!(lean.contains("trivial"));
+        assert!(lean.contains("LFSC check: (truth foo)"));
+    }
+
+    #[test]
+    fn render_rocq_emits_check_as_lemma_skeleton() {
+        let doc =
+            parse_document("(declare nat type) (check (truth foo))").unwrap();
+        let rocq = render_rocq(&doc);
+        assert!(rocq.contains("(* LFSC declare: nat"));
+        assert!(rocq.contains("Lemma lfsc_check_1"));
+        assert!(rocq.contains("Qed."));
+    }
+
+    #[test]
+    fn render_isabelle_emits_check_as_lemma_isar() {
+        let doc =
+            parse_document("(declare nat type) (check (truth foo))").unwrap();
+        let isa = render_isabelle(&doc);
+        assert!(isa.contains("(* LFSC declare: nat"));
+        assert!(isa.contains("lemma lfsc_check_1"));
+        assert!(isa.contains("by simp"));
+    }
+
+    #[test]
+    fn render_lean_header_records_decl_count() {
+        let doc = parse_document(
+            "(declare a b) (declare c d) (declare e f)",
+        )
+        .unwrap();
+        let lean = render_lean(&doc);
+        assert!(lean.contains("3 top-level declaration(s)"));
+    }
+
+    #[test]
+    fn render_lean_empty_document_emits_only_header() {
+        let doc = parse_document("").unwrap();
+        let lean = render_lean(&doc);
+        assert!(lean.contains("0 top-level declaration(s)"));
+        // No `theorem` lines for an empty doc.
+        assert!(!lean.contains("theorem"));
     }
 }
