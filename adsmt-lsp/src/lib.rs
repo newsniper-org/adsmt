@@ -112,6 +112,9 @@ impl LanguageServer for Backend {
                     trigger_characters: Some(vec!["(".to_string()]),
                     ..Default::default()
                 }),
+                // v0.25 25LSP.6 — workspace-wide symbol search
+                // across every open document.
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -193,6 +196,35 @@ impl LanguageServer for Backend {
         _params: CompletionParams,
     ) -> Result<Option<CompletionResponse>> {
         Ok(Some(CompletionResponse::Array(completion_items())))
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let query = params.query.to_lowercase();
+        let state = self.state.read().await;
+        let mut out = Vec::new();
+        for doc in state.documents.values() {
+            for (name, range) in &doc.symbols {
+                if !query.is_empty() && !name.to_lowercase().contains(&query) {
+                    continue;
+                }
+                #[allow(deprecated)]
+                out.push(SymbolInformation {
+                    name: name.clone(),
+                    kind: SymbolKind::FUNCTION,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: doc.uri.clone(),
+                        range: *range,
+                    },
+                    container_name: None,
+                });
+            }
+        }
+        Ok(Some(out))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -313,6 +345,21 @@ pub fn identifier_at_position(text: &str, position: LspPosition) -> Option<Strin
     }
     if start == end { return None; }
     Some(chars[start..end].iter().collect())
+}
+
+/// v0.25 25LSP.6 — substring filter against a per-document
+/// symbol index. Empty query matches everything; non-empty
+/// query matches case-insensitive substring.
+pub fn filter_symbols<'a>(
+    symbols: &'a HashMap<String, Range>,
+    query: &str,
+) -> Vec<(&'a str, Range)> {
+    let q = query.to_lowercase();
+    symbols
+        .iter()
+        .filter(|(name, _)| q.is_empty() || name.to_lowercase().contains(&q))
+        .map(|(name, range)| (name.as_str(), *range))
+        .collect()
 }
 
 /// v0.25 25LSP.5 — static completion item table.

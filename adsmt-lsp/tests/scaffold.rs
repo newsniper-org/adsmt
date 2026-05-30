@@ -160,6 +160,37 @@ fn completion_items_include_kb_keywords() {
     }
 }
 
+// === v0.25 25LSP.6 — workspace symbol filtering ===
+
+#[test]
+fn filter_symbols_returns_everything_on_empty_query() {
+    let text = "(declare-const x Int) (declare-fun f (Int) Bool)";
+    let symbols = adsmt_lsp::build_symbol_index(text);
+    let filtered = adsmt_lsp::filter_symbols(&symbols, "");
+    assert_eq!(filtered.len(), 2);
+}
+
+#[test]
+fn filter_symbols_matches_substring_case_insensitive() {
+    let text = r#"
+        (declare-const myConst Int)
+        (declare-fun otherFunc (Int) Bool)
+        (declare-const xyz Int)
+    "#;
+    let symbols = adsmt_lsp::build_symbol_index(text);
+    let filtered = adsmt_lsp::filter_symbols(&symbols, "FUNC");
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].0, "otherFunc");
+}
+
+#[test]
+fn filter_symbols_returns_empty_on_no_match() {
+    let text = "(declare-const x Int)";
+    let symbols = adsmt_lsp::build_symbol_index(text);
+    let filtered = adsmt_lsp::filter_symbols(&symbols, "no-such-thing");
+    assert!(filtered.is_empty());
+}
+
 #[test]
 fn completion_items_carry_kind_and_detail_for_keywords() {
     let items = adsmt_lsp::completion_items();
