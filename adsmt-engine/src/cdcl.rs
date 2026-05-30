@@ -109,6 +109,14 @@ pub struct CdclState {
     /// every score by `decay_factor` so recently-active atoms
     /// dominate the decision order. See [`pick_vsids_atom`].
     pub activity: HashMap<String, f64>,
+    /// v0.21 B.1 follow-up — phase saving. Records the polarity
+    /// each atom most recently held on the trail before being
+    /// popped by a backtrack. New decisions on the same atom
+    /// reuse the saved polarity rather than always defaulting
+    /// to `true`. Classical CDCL "phase saving" heuristic —
+    /// keeps locality across restarts and tends to flip many
+    /// Unknown verdicts to Sat on satisfiable inputs.
+    pub saved_phase: HashMap<String, bool>,
 }
 
 impl CdclState {
@@ -153,11 +161,16 @@ impl CdclState {
     /// Roll the trail back to the entries at `level` and below,
     /// removing higher-level entries from `assign` as we pop.
     /// Resets `decision_level` to `level`.
+    ///
+    /// Each popped entry's polarity is recorded in
+    /// [`Self::saved_phase`] so a subsequent decision on the same
+    /// atom can reuse it (phase-saving).
     pub fn backtrack_to(&mut self, level: u32) {
         while let Some(last) = self.trail.last() {
             if last.decision_level <= level { break; }
             let entry = self.trail.pop().expect("checked above");
             self.assign.remove(&entry.atom_key);
+            self.saved_phase.insert(entry.atom_key, entry.polarity);
         }
         self.decision_level = level;
     }
@@ -259,7 +272,10 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
         // No conflict — pick a VSIDS-ranked decision or report Sat.
         let key = pick_vsids_atom(&owned[..input_len], &state);
         let Some(key) = key else { return BoolResult::Sat; };
-        state.push(key, true, Reason::Decision);
+        // Phase saving: prefer the previously-assigned polarity,
+        // falling back to `true` on a cold start.
+        let phase = state.saved_phase.get(&key).copied().unwrap_or(true);
+        state.push(key, phase, Reason::Decision);
     }
 }
 
@@ -710,6 +726,33 @@ mod tests {
         assert!(keys.contains(&"r".to_string()));
         assert!(keys.contains(&"p".to_string()));
         assert_eq!(bj_level, 1, "backjump to the level of ¬p");
+    }
+
+    // === Phase saving ===
+
+    #[test]
+    fn backtrack_records_polarity_in_saved_phase() {
+        let mut state = CdclState::new();
+        state.push("p".into(), true, Reason::Decision);
+        state.push("q".into(), false, Reason::Propagated { clause_idx: 0 });
+        state.backtrack_to(0);
+        // Both popped entries recorded their polarity.
+        assert_eq!(state.saved_phase.get("p").copied(), Some(true));
+        assert_eq!(state.saved_phase.get("q").copied(), Some(false));
+    }
+
+    #[test]
+    fn backtrack_to_level_zero_is_idempotent_on_saved_phase() {
+        let mut state = CdclState::new();
+        // First decision at level 1.
+        state.push("p".into(), false, Reason::Decision);
+        state.backtrack_to(0);
+        assert_eq!(state.saved_phase.get("p").copied(), Some(false));
+        // Re-decide with the opposite polarity, backtrack again —
+        // the saved phase updates to the most recent polarity.
+        state.push("p".into(), true, Reason::Decision);
+        state.backtrack_to(0);
+        assert_eq!(state.saved_phase.get("p").copied(), Some(true));
     }
 
     // === Learnt clause deletion policy ===
