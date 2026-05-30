@@ -18,28 +18,35 @@ members = [
 exclude = ["external/logicutils", "external/oxiz"]
 
 [workspace.package]
-# Minor bump 0.19 → 0.21 opens the v0.21 cycle (odd-minor
-# cycle naming per project convention). Per the restored +2
-# offset rule, logicutils bumps 0.21.0 → 0.23.0 in lockstep.
+# Minor bump 0.21 → 0.23 opens the v0.23 cycle. logicutils
+# bumps 0.23.0 → 0.25.0 in lockstep (+2 offset preserved;
+# 0.24 skipped, same convention as 0.19/0.20/0.22).
 #
-# v0.21 scope (per project_cycle_versioning.md):
-#   * **P5 v1.0 architectural decision** carried forward from
-#     v0.19 — adsmt ⇔ OxiZ relationship (E.1), logicutils +
-#     adsmt v1.0 unification plan (E.2), first
-#     `#![breaking_changes_semver("1.0.0")]` attribute (E.4),
-#     v1.0 transition notes in policy docs (H.2). All blocked
-#     on user decision; v0.21 is the cycle where these land.
-#   * v0.19 substantial carry-over:
-#       — A.2 L-full LFSC parser + per-ITP consumer.
-#       — A.3 full EUF-tracked incremental E-graph + per-trigger
-#         learning loop (the `learn_triggers` helper landed in
-#         v0.19 as the lightweight half).
-#       — B.3 full 1-UIP CDCL clause learning + non-chronological
-#         backjumping (the Luby restart half landed in v0.19).
-#   * F.3 LSP exploration (carry-over, scope TBD with user).
-#   * v0.21 cycle audit + status snapshot conventions
-#     refresh.
-version = "0.21.0"
+# v0.23 = **phase 1 of the v1.0 RC roadmap** (lsp_roadmap.md).
+# Headline theme: **preemptive stabilisation** — every public
+# surface that LSP (phase 2) and v1.0 RC (phase 3) will depend
+# on gets frozen here, before any LSP-side code is touched.
+#
+# v0.23 scope:
+#   * C ABI freeze candidate promotion (`adsmt-ffi/include/
+#     adsmt.h` + `ABI_POLICY.md`).
+#   * SMT-LIB dialect freeze — parser shapes, lu-kb keywords,
+#     classical-axiom marker syntax. Surface drift forbidden
+#     after sign-off.
+#   * Certificate format freeze — S-expression cert + Lean
+#     reflection + Rocq/Isabelle emit shapes locked.
+#   * CDCL deepening — two-watched literals replacing the
+#     per-clause `evaluate_clause` scan (queued from v0.21
+#     B.1 follow-ups).
+#   * EGraph integration — wire `EGraph::push/pop` into the
+#     polite combination scope (21A.2 stage 4 wire-up
+#     identified as v0.23 work).
+#   * Theory deepening final pass — any v0.21 carry-over
+#     plus the missing pieces flagged during the v1.0
+#     transition note audit.
+#   * Mid-cycle audit (`23H.1`) and post-freeze audit
+#     (`23H.2`).
+version = "0.23.0"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 
