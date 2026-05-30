@@ -14,6 +14,7 @@ members = [
     "adsmt-lints",
     "adsmt-cli",
     "adsmt-ffi",
+    "adsmt-lsp",
 ]
 exclude = ["external/logicutils", "external/oxiz"]
 

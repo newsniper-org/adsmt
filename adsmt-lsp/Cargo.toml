@@ -1,0 +1,23 @@
+[package]
+name = "adsmt-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LSP server for adsmt — surfaces the cli audit JSON + cert structure to editor-agnostic clients (vscode-extension, neovim, emacs). v0.25 phase 2 of the v1.0 RC roadmap; mandatory completion target per 21F.3 option 4."
+
+[[bin]]
+name = "adsmt-lsp"
+path = "src/main.rs"
+
+[dependencies]
+adsmt-cert.workspace = true
+adsmt-core.workspace = true
+adsmt-parser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
+tower-lsp = "0.20"
+
+[features]
+default = []
