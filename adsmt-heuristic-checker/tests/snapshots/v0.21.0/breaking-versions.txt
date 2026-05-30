@@ -1,0 +1,11 @@
+# ι peer snapshot for adsmt-heuristic-checker v0.21.0.
+#
+# Records the breaking-version list shipped at v0.21.0. Used by
+# `tests/snapshot_regression.rs::every_snapshot_is_subset_of_current_lockfile`
+# to enforce that no future cycle accidentally removes a
+# historical (v1.0+) entry from `.breaking-versions.lock`.
+#
+# v0.21.0 registers the first forward-looking v1.0.0 marker per
+# the 21E.4 task — the v1.0 unification transition itself is the
+# breaking, even though v1.0.0 has not yet released.
+1.0.0

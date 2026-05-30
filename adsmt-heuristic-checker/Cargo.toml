@@ -31,11 +31,15 @@ thiserror.workspace = true
 # `#![breaking_changes_semver("x.y.z")]` inner attribute on
 # `src/lib.rs`. The newest attribute auto-sets the lower bound for
 # compatibility checks (see prover_emit_policy.md § "Per-user IR
-# cache"). At v0.17.0 the list is empty — no breakings yet.
+# cache"). At v0.21.0 the list registers the first forward-looking
+# v1.0.0 entry per 21E.4.
 
 # Peer source τ for the breaking-version safeguard. Mirrors
 # `src/lib.rs`'s `#![breaking_changes_semver(...)]` attributes,
 # `.breaking-versions.lock`, and `breaking_history.txt`. Cross-
-# check at build/test time catches divergence. Empty at v0.17.0.
+# check at build/test time catches divergence. v0.21.0 adds the
+# first 1.0.0 marker per the v1.0 transition plan (21E.4) — see
+# the corresponding entries in `.breaking-versions.lock` and
+# `breaking_history.txt`.
 [package.metadata.adsmt]
-breaking_versions = []
+breaking_versions = ["1.0.0"]

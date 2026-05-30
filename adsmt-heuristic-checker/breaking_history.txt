@@ -4,5 +4,16 @@
 # the snapshot regression tests (ι) and the property-test (κ)
 # will fail if any historical version disappears.
 #
-# v0.17.0: no shipped breakings yet — this file is intentionally
-# empty below the comment block.
+# v0.17.0: no shipped breakings — file was empty until v0.21.0.
+#
+# v0.21.0 (2026-05-30): first v1.0.0 entry registered per the
+# v0.21 21E.4 task. Driving decisions:
+#   - 21E.1 = option 5 (bidirectional embed with OxiZ)
+#   - 21E.2 = option 2-A' (logicutils absorption + adsmt-meta
+#     metacrate + CLI binary preservation + perpetual auto-
+#     migration chains + state/ subtree segregation)
+# The 1.0.0 entry is forward-looking; the actual v1.0.0 release
+# binds the kb-absorption surface + abductive-trait extraction
+# + ABI freeze under semver. No code at v0.21.0 introduces a
+# v1.0.0 breaking — the entry is the audit-trail anchor.
+1.0.0

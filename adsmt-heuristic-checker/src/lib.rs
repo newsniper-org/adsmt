@@ -42,9 +42,24 @@
 //! breakings accumulate as `#![breaking_changes_semver("x.y.z")]`
 //! attributes on this crate's `src/lib.rs`.
 
-// At v0.17.0 there are no shipped breakings. Future breakings
-// land as `#![breaking_changes_semver("x.y.z")]` attributes
-// appended below this comment.
+// At v0.17.0 there were no shipped breakings.
+//
+// v0.21.0 registers the first forward-looking marker per 21E.4
+// (the v1.0 transition itself, driven by 21E.1 = option 5 and
+// 21E.2 = option 2-A'). The inline inner attribute form
+// `#![breaking_changes_semver("1.0.0")]` is *not* applied as a
+// compiler-level attribute — Rust would reject the unknown
+// attribute and registering an inert proc-macro just for the
+// marker isn't worth the dependency. The four authoritative
+// peers (`.breaking-versions.lock` γ, `breaking_history.txt` ε,
+// `[package.metadata.adsmt] breaking_versions` τ in `Cargo.toml`,
+// `tests/snapshots/v0.21.0/breaking-versions.txt` ι) carry the
+// `1.0.0` entry; λ (the K12 double-pass digest) computes
+// against the lockfile bytes at runtime.
+//
+// When the actual v1.0.0 release lands the marker semantics
+// stay identical — a real attribute macro can be added at that
+// point if desired without disturbing the manifest peers.
 
 pub mod breaking_versions;
 pub mod cache;

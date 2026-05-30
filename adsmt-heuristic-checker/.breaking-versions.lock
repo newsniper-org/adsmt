@@ -7,5 +7,15 @@
 # `Cargo.toml` (τ peer). Cross-check at build/test time catches
 # divergence.
 #
-# v0.17.0: no shipped breakings yet — this file is intentionally
-# empty below the comment block.
+# v0.17.0: no shipped breakings yet — this file was empty until
+# v0.21.0.
+#
+# v0.21.0 (2026-05-30): registers the first v1.0.0 entry per
+# 21E.4. v1.0.0 is the marker version under the v1.0 unification
+# plan (21E.1 = option 5 bidirectional embed; 21E.2 = option 2-A'
+# logicutils absorption). Until v1.0.0 actually releases the
+# entry stays as a forward-looking marker — peer τ/ε/ι are
+# synchronised but the underlying breaking is the v0.21 → v1.0
+# transition itself (kb absorption + abductive trait surface
+# externalisation + ITP/ABI surface freeze).
+1.0.0
