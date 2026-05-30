@@ -25,19 +25,23 @@
 //! Times are criterion's median estimate; all measurements use
 //! `--warm-up-time 1 --measurement-time 3`.
 //!
-//! | benchmark                | v0.21 G.1 | CDCL fallback | Δ    |
-//! |--------------------------|-----------|---------------|------|
-//! | fresh_solver             | 122.6 ns  | 121.6 ns      | -1%  |
-//! | propositional_unsat      |  1.89 µs  |  2.06 µs      | +9%  |
-//! | lia_bound_conflict_unsat |  2.82 µs  |  3.01 µs      | +7%  |
+//! | benchmark                | v0.21 G.1 | CDCL fallback | +phase/act |
+//! |--------------------------|-----------|---------------|------------|
+//! | fresh_solver             | 122.6 ns  | 121.6 ns      |  124.8 ns  |
+//! | propositional_unsat      |  1.89 µs  |  2.06 µs      |   2.10 µs  |
+//! | lia_bound_conflict_unsat |  2.82 µs  |  3.01 µs      |   3.11 µs  |
 //!
-//! The +7–9% regression on the easy-case unsat paths is the
+//! The first column → second column step paid the one-time
 //! CDCL bookkeeping cost (trail entries, VSIDS activity bumps,
-//! learnt-clause storage) showing through. Accepted as a
-//! one-time trade — harder instances that the old
-//! `dpll(_, 16)` couldn't close now resolve within the same
-//! Luby schedule, and the `oxiz` / `cadical` feature paths
-//! (production default) are unaffected.
+//! learnt-clause storage). The third column adds phase saving
+//! + per-learnt-clause activity tracking introduced after the
+//! initial CDCL wiring; the additional ~2–3% is the
+//! `saved_phase` HashMap + `learnt_activity` Vec, and is
+//! expected to amortise away on harder instances where phase
+//! saving prevents re-traversing already-known-bad branches.
+//!
+//! The `oxiz` / `cadical` feature paths (production default)
+//! are unaffected by either step.
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
