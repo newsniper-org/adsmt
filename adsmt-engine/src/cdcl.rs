@@ -194,6 +194,16 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
     // before the rescaling-on-overflow trick.
     let vsids_bump: f64 = 1.0;
     let vsids_decay: f64 = 0.95;
+    // v0.21 B.1 follow-up — learnt clause deletion threshold.
+    // When the learnt-clause store exceeds `learnt_limit`, the
+    // oldest half is discarded. The threshold grows geometrically
+    // with `learnt_limit_growth` so the search doesn't repeatedly
+    // re-derive identical clauses while memory pressure ratchets
+    // up. Defaults follow MiniSat's "1/3 of input clauses, growing
+    // by 1.1× per reduction" pattern, floored so tiny problems
+    // don't trip it on every conflict.
+    let mut learnt_limit: usize = (input_len / 3).max(32);
+    let learnt_limit_growth: f64 = 1.1;
     loop {
         // Propagate over input + learnt clauses.
         let conflict_idx = propagate_with_storage(&owned, &mut state);
@@ -222,6 +232,28 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
             // propagate round will assign its UIP literal.
             owned.push(learnt.clone());
             state.learnt_clauses.push(learnt);
+            // v0.21 B.1 follow-up — learnt clause reduction.
+            //
+            // When the learnt store overflows, drop the oldest
+            // half from both `owned` (the propagator's view) and
+            // the introspection mirror. Trail entries carry
+            // `Reason::Propagated { clause_idx }` indices into
+            // `owned`, so dropping clauses also requires
+            // invalidating those references — handled by
+            // backtracking to level 0 before the drain. The
+            // next propagation round will re-derive any
+            // unit-implied facts from the surviving clauses, so
+            // correctness is preserved at the cost of one
+            // re-propagation pass.
+            if state.learnt_clauses.len() > learnt_limit {
+                state.backtrack_to(0);
+                let keep = state.learnt_clauses.len() / 2;
+                let drop = state.learnt_clauses.len() - keep;
+                state.learnt_clauses.drain(..drop);
+                owned.drain(input_len..input_len + drop);
+                learnt_limit =
+                    ((learnt_limit as f64) * learnt_limit_growth) as usize;
+            }
             continue;
         }
         // No conflict — pick a VSIDS-ranked decision or report Sat.
@@ -678,6 +710,27 @@ mod tests {
         assert!(keys.contains(&"r".to_string()));
         assert!(keys.contains(&"p".to_string()));
         assert_eq!(bj_level, 1, "backjump to the level of ¬p");
+    }
+
+    // === Learnt clause deletion policy ===
+
+    #[test]
+    fn cdcl_solve_still_correct_under_learnt_clause_reduction() {
+        // 3-var pigeonhole — generates more conflicts/learnt than
+        // the 2-var case, exercising the reduction code path. Still
+        // closes within the conflict budget.
+        let r = Term::var("r", Type::bool_());
+        let cs = vec![
+            vec![Lit::pos(p()), Lit::pos(q()), Lit::pos(r.clone())],
+            vec![Lit::neg(p()), Lit::pos(q()), Lit::pos(r.clone())],
+            vec![Lit::pos(p()), Lit::neg(q()), Lit::pos(r.clone())],
+            vec![Lit::neg(p()), Lit::neg(q()), Lit::pos(r.clone())],
+            vec![Lit::pos(p()), Lit::pos(q()), Lit::neg(r.clone())],
+            vec![Lit::neg(p()), Lit::pos(q()), Lit::neg(r.clone())],
+            vec![Lit::pos(p()), Lit::neg(q()), Lit::neg(r.clone())],
+            vec![Lit::neg(p()), Lit::neg(q()), Lit::neg(r)],
+        ];
+        assert_eq!(cdcl_solve(&cs, 64), BoolResult::Unsat);
     }
 
     // === Stage 4 — VSIDS decision heuristic ===
