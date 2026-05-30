@@ -126,6 +126,14 @@ pub struct CdclState {
     /// clauses rather than the oldest, retaining the "glue"
     /// clauses that actually pay for themselves.
     pub learnt_activity: Vec<f64>,
+    /// v0.21 B.1 follow-up — per-learnt-clause Literal Block
+    /// Distance (LBD / glue score). LBD is the number of
+    /// distinct decision levels among the clause's literals at
+    /// the moment the clause was learnt — low values (≤ 6)
+    /// identify "glue" clauses that connect many independent
+    /// branches of the search and are the most valuable to
+    /// retain. Parallel to [`Self::learnt_clauses`].
+    pub learnt_lbd: Vec<usize>,
 }
 
 impl CdclState {
@@ -248,9 +256,11 @@ pub fn cdcl_solve_with_model(
             state.decay_activity(vsids_decay);
             state.decay_learnt_activity(clause_decay);
             state.backtrack_to(bj_level);
+            let lbd = compute_lbd(&learnt, &state);
             owned.push(learnt.clone());
             state.learnt_clauses.push(learnt);
             state.learnt_activity.push(1.0);
+            state.learnt_lbd.push(lbd);
             if state.learnt_clauses.len() > learnt_limit {
                 state.backtrack_to(0);
                 let keep = state.learnt_clauses.len() / 2;
@@ -365,9 +375,11 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
             // is now unit-propagating at the current level
             // (that's the 1-UIP guarantee), so the next
             // propagate round will assign its UIP literal.
+            let lbd = compute_lbd(&learnt, &state);
             owned.push(learnt.clone());
             state.learnt_clauses.push(learnt);
             state.learnt_activity.push(1.0);
+            state.learnt_lbd.push(lbd);
             // v0.21 B.1 follow-up — learnt clause reduction.
             //
             // When the learnt store overflows, drop the oldest
@@ -384,25 +396,27 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
             if state.learnt_clauses.len() > learnt_limit {
                 state.backtrack_to(0);
                 let keep = state.learnt_clauses.len() / 2;
-                // v0.21 B.1 follow-up — activity-based retention.
-                // Sort indices by activity (ascending) and drop
-                // the lowest-scoring half rather than the oldest.
-                // Glue / frequently-used clauses survive even
-                // when they were learnt early.
-                let mut indexed: Vec<(usize, f64)> = state
+                // v0.21 B.1 follow-up — LBD-aware activity
+                // retention. Glue clauses (LBD ≤ 6) are
+                // unconditionally protected; among the rest, the
+                // lowest-activity entries get dropped.
+                const GLUE_LBD_THRESHOLD: usize = 6;
+                let mut candidates: Vec<(usize, f64)> = state
                     .learnt_activity
                     .iter()
                     .copied()
                     .enumerate()
+                    .filter(|(i, _)| {
+                        state.learnt_lbd.get(*i).copied().unwrap_or(usize::MAX)
+                            > GLUE_LBD_THRESHOLD
+                    })
                     .collect();
-                indexed.sort_by(|a, b| {
+                candidates.sort_by(|a, b| {
                     a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
                 });
-                let drop_count = indexed.len() - keep;
-                // `to_drop` holds the indices (into the learnt
-                // store) to remove. Sort descending so we can
-                // pop them out without shifting earlier indices.
-                let mut to_drop: Vec<usize> = indexed
+                let drop_count = state.learnt_clauses.len().saturating_sub(keep);
+                let drop_count = drop_count.min(candidates.len());
+                let mut to_drop: Vec<usize> = candidates
                     .into_iter()
                     .take(drop_count)
                     .map(|(i, _)| i)
@@ -411,6 +425,7 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
                 for idx in to_drop {
                     state.learnt_clauses.remove(idx);
                     state.learnt_activity.remove(idx);
+                    state.learnt_lbd.remove(idx);
                     owned.remove(input_len + idx);
                 }
                 learnt_limit =
@@ -675,6 +690,24 @@ pub fn analyze_conflict_1uip(
     (learnt, backjump_level)
 }
 
+/// v0.21 B.1 follow-up — compute the Literal Block Distance of
+/// a clause against the current trail. The LBD is the number
+/// of distinct decision levels among the clause's literals; a
+/// low value indicates the clause connects many independent
+/// branches of the search and is therefore a "glue" clause
+/// worth retaining through clause-database reductions.
+pub fn compute_lbd(clause: &Clause, state: &CdclState) -> usize {
+    use std::collections::HashSet;
+    let mut levels: HashSet<u32> = HashSet::new();
+    for lit in clause {
+        let key = atom_key(lit);
+        if let Some(entry) = state.trail.iter().find(|e| e.atom_key == key) {
+            levels.insert(entry.decision_level);
+        }
+    }
+    levels.len()
+}
+
 /// Find any clause literal whose atom-key matches `key`, returning
 /// its underlying [`adsmt_core::Term`] so we can rebuild a new
 /// `Lit` with the opposite polarity for the learnt clause.
@@ -888,6 +921,29 @@ mod tests {
         assert!(keys.contains(&"r".to_string()));
         assert!(keys.contains(&"p".to_string()));
         assert_eq!(bj_level, 1, "backjump to the level of ¬p");
+    }
+
+    // === LBD ===
+
+    #[test]
+    fn compute_lbd_counts_distinct_decision_levels() {
+        let r = Term::var("r", Type::bool_());
+        let mut state = CdclState::new();
+        // Level 1
+        state.push("p".into(), true, Reason::Decision);
+        state.push("q".into(), true, Reason::Propagated { clause_idx: 0 });
+        // Level 2
+        state.push("r".into(), true, Reason::Decision);
+        // Clause mentioning p (lvl 1) and r (lvl 2) → LBD = 2.
+        let clause = vec![Lit::neg(p()), Lit::neg(r.clone())];
+        assert_eq!(compute_lbd(&clause, &state), 2);
+        // Clause mentioning p and q (both lvl 1) → LBD = 1.
+        let clause = vec![Lit::neg(p()), Lit::neg(q())];
+        assert_eq!(compute_lbd(&clause, &state), 1);
+        // Clause mentioning an atom not on the trail → LBD = 0.
+        let z = Term::var("z", Type::bool_());
+        let clause = vec![Lit::pos(z)];
+        assert_eq!(compute_lbd(&clause, &state), 0);
     }
 
     // === cdcl_solve_with_model ===
