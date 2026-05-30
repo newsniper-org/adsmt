@@ -183,6 +183,22 @@ fn filter_symbols_matches_substring_case_insensitive() {
     assert_eq!(filtered[0].0, "otherFunc");
 }
 
+// === v0.25 25LSP.7 — code action placeholder ===
+
+#[test]
+fn migration_code_actions_returns_disabled_placeholder() {
+    let uri = tower_lsp::lsp_types::Url::parse("file:///tmp/test.kb").unwrap();
+    let actions = adsmt_lsp::migration_code_actions(&uri, "");
+    assert_eq!(actions.len(), 1);
+    match &actions[0] {
+        tower_lsp::lsp_types::CodeActionOrCommand::CodeAction(ca) => {
+            assert!(ca.title.contains("migrate"));
+            assert!(ca.disabled.is_some());
+        }
+        _ => panic!("expected CodeAction variant"),
+    }
+}
+
 #[test]
 fn filter_symbols_returns_empty_on_no_match() {
     let text = "(declare-const x Int)";

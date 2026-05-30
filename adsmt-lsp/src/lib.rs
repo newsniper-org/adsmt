@@ -115,6 +115,13 @@ impl LanguageServer for Backend {
                 // v0.25 25LSP.6 — workspace-wide symbol search
                 // across every open document.
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                // v0.25 25LSP.7 — auto-migration code actions
+                // (v0.x → v1.x kb files). Concrete migration
+                // logic lands once `lu-common::migration` does;
+                // for now the handler returns whatever
+                // `migration_code_actions` can detect via
+                // syntactic heuristics.
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -196,6 +203,18 @@ impl LanguageServer for Backend {
         _params: CompletionParams,
     ) -> Result<Option<CompletionResponse>> {
         Ok(Some(CompletionResponse::Array(completion_items())))
+    }
+
+    async fn code_action(
+        &self,
+        params: CodeActionParams,
+    ) -> Result<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri.clone();
+        let state = self.state.read().await;
+        let Some(doc) = state.documents.get(&uri) else {
+            return Ok(Some(vec![]));
+        };
+        Ok(Some(migration_code_actions(&uri, &doc.text)))
     }
 
     async fn symbol(
@@ -345,6 +364,49 @@ pub fn identifier_at_position(text: &str, position: LspPosition) -> Option<Strin
     }
     if start == end { return None; }
     Some(chars[start..end].iter().collect())
+}
+
+/// v0.25 25LSP.7 — surface kb-file auto-migration as inline
+/// code actions.
+///
+/// The full implementation depends on `lu-common::migration`,
+/// which only lands once the v1.0 absorption (21E.2 option
+/// 2-A') completes. Until then this helper returns:
+///
+/// 1. **Whole-document migration stub** — a placeholder
+///    `WorkspaceEdit`-less code action that just announces the
+///    intent. Useful as a smoke signal that the LSP plumbing is
+///    wired correctly; the action does nothing if invoked.
+///
+/// 2. **Heuristic v0.x detection** — if the document contains
+///    surface forms that v1.0 will rename (currently none, but
+///    the slot is here so the dispatcher doesn't have to be
+///    re-wired), surface a per-occurrence "rewrite" action.
+///
+/// Phase 3 (v1.0 RC) replaces the placeholder with real
+/// chained migration calls.
+pub fn migration_code_actions(uri: &Url, _text: &str) -> Vec<CodeActionOrCommand> {
+    vec![CodeActionOrCommand::CodeAction(CodeAction {
+        title: "adsmt: migrate v0.x kb file to v1.x (placeholder)".to_string(),
+        kind: Some(CodeActionKind::SOURCE),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit {
+            changes: Some({
+                let mut map = HashMap::new();
+                map.insert(uri.clone(), Vec::<TextEdit>::new());
+                map
+            }),
+            ..Default::default()
+        }),
+        command: None,
+        is_preferred: None,
+        disabled: Some(CodeActionDisabled {
+            reason:
+                "v1.0 absorption pending — see lu-common::migration roadmap"
+                    .to_string(),
+        }),
+        data: None,
+    })]
 }
 
 /// v0.25 25LSP.6 — substring filter against a per-document
