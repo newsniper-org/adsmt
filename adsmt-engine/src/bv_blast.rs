@@ -191,6 +191,16 @@ pub fn blast_term(t: &Term, w: u32, env: &mut BlastEnv) -> Option<Vec<Bit>> {
     if let Term::Var(v) = t {
         return Some((0..w).map(|i| Bit::Atom(bit_var(&v.name, i))).collect());
     }
+    // v0.23 C.1 — `bvnot` is a single-arg unary; handle before
+    // the binop dispatch.
+    if let Some((op, op_w, arg)) = t.dest_bv_unop() {
+        if op_w != w { return None; }
+        let arg_bits = blast_term(&arg, w, env)?;
+        return match op.as_str() {
+            "bvnot" => Some(arg_bits.into_iter().map(|b| b.negate()).collect()),
+            _ => None,
+        };
+    }
     if let Some((op, op_w, lhs, rhs)) = t.dest_bv_binop() {
         if op_w != w { return None; }
         let lhs_bits = blast_term(&lhs, w, env)?;
@@ -598,6 +608,40 @@ mod tests {
         let lit = Term::bv_lit(5, 4);
         let cs = blast_eq_clauses(&mul, &lit, 4, &mut env).unwrap();
         assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    // === v0.23 C.1 — bvnot ===
+
+    #[test]
+    fn bvnot_concrete_literal_is_bitwise_complement() {
+        // (bvnot 0b0101) = 0b1010 over width 4.
+        let mut env = BlastEnv::new();
+        let arg = Term::bv_lit(0b0101, 4);
+        let not_arg = Term::mk_bvnot(arg, 4).unwrap();
+        let lit = Term::bv_lit(0b1010, 4);
+        let cs = blast_eq_clauses(&not_arg, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvnot_wrong_complement_is_unsat() {
+        let mut env = BlastEnv::new();
+        let arg = Term::bv_lit(0b0101, 4);
+        let not_arg = Term::mk_bvnot(arg, 4).unwrap();
+        let lit = Term::bv_lit(0b1111, 4);
+        let cs = blast_eq_clauses(&not_arg, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Unsat);
+    }
+
+    #[test]
+    fn bvnot_with_variable_admits_solution() {
+        // (bvnot x) = 0b1010 ⇒ x = 0b0101.
+        let mut env = BlastEnv::new();
+        let x = Term::var("x", Term::bv_sort(4));
+        let not_x = Term::mk_bvnot(x, 4).unwrap();
+        let lit = Term::bv_lit(0b1010, 4);
+        let cs = blast_eq_clauses(&not_x, &lit, 4, &mut env).unwrap();
+        assert_eq!(crate::bool_solver::dpll(&cs, 32), BoolResult::Sat);
     }
 
     #[test]

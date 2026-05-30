@@ -479,6 +479,35 @@ impl Term {
         Term::app(Term::app(Self::bv_binop_const("bvmul", width), lhs)?, rhs)
     }
 
+    /// v0.23 C.1 — unary BV NOT (bitwise complement). Returns
+    /// `(bvnot_<width> arg)`. Eager constant folding lives in
+    /// `Bv::reduce_unop`; bit-blast wiring in
+    /// `adsmt-engine::bv_blast::blast_term`.
+    pub fn mk_bvnot(arg: Term, width: u32) -> KernelResult<Term> {
+        let bv = Self::bv_sort(width);
+        let ty = Type::fun(bv.clone(), bv).unwrap();
+        let head = Term::const_(&format!("bvnot_{width}"), ty);
+        Term::app(head, arg)
+    }
+
+    /// Destructure a BV unary op `(<op>_w arg)` returning
+    /// `(op, width, arg)`. Currently recognises only `bvnot`.
+    pub fn dest_bv_unop(&self) -> Option<(String, u32, Term)> {
+        if let Term::App(head, arg) = self
+            && let Term::Const(c) = &**head
+        {
+            let nm = &c.name;
+            for op in ["bvnot"] {
+                if let Some(rest) = nm.strip_prefix(&format!("{op}_"))
+                    && let Ok(w) = rest.parse::<u32>()
+                {
+                    return Some((op.into(), w, (**arg).clone()));
+                }
+            }
+        }
+        None
+    }
+
     /// Destructure a BV binop `(<op>_w lhs rhs)` returning `(op, width, lhs, rhs)`.
     pub fn dest_bv_binop(&self) -> Option<(String, u32, Term, Term)> {
         if let Term::App(outer, rhs) = self
