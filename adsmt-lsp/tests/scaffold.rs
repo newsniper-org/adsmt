@@ -29,3 +29,31 @@ fn document_type_carries_required_fields() {
     assert_eq!(doc.language_id, "smt2");
     assert!(doc.text.contains("check-sat"));
 }
+
+// === v0.25 25LSP.2 — parse-diagnostics surface ===
+
+#[test]
+fn parse_diagnostics_returns_empty_for_valid_smtlib() {
+    let diags = adsmt_lsp::parse_diagnostics("(check-sat)");
+    assert!(diags.is_empty());
+}
+
+#[test]
+fn parse_diagnostics_surfaces_error_for_malformed_input() {
+    // Unclosed paren — guaranteed parse failure.
+    let diags = adsmt_lsp::parse_diagnostics("(check-sat");
+    assert_eq!(diags.len(), 1);
+    let d = &diags[0];
+    assert_eq!(d.severity, Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR));
+    assert_eq!(d.source.as_deref(), Some("adsmt-parser"));
+    assert!(!d.message.is_empty());
+}
+
+#[test]
+fn parse_diagnostics_for_multi_command_input_with_one_error() {
+    // First command parses; second is malformed. The parser
+    // surfaces the first error and stops.
+    let src = "(check-sat) (declare-const x";
+    let diags = adsmt_lsp::parse_diagnostics(src);
+    assert_eq!(diags.len(), 1);
+}

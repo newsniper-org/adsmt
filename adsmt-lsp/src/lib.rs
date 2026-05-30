@@ -75,8 +75,19 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
-                // Capability bitmap empty for the 25LSP.1 scaffold.
-                // 25LSP.2 fills in diagnostic, 25LSP.3 definition, …
+                // v0.25 25LSP.2 — publish-side diagnostics:
+                // no client opt-in needed (push model), but
+                // advertise that we *will* push.
+                diagnostic_provider: Some(
+                    DiagnosticServerCapabilities::Options(
+                        DiagnosticOptions {
+                            identifier: Some("adsmt".to_string()),
+                            inter_file_dependencies: false,
+                            workspace_diagnostics: false,
+                            work_done_progress_options: Default::default(),
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -109,22 +120,80 @@ impl LanguageServer for Backend {
             version: params.text_document.version,
             text: params.text_document.text,
         };
-        self.state.write().await.documents.insert(doc.uri.clone(), doc);
+        let uri = doc.uri.clone();
+        let text = doc.text.clone();
+        let version = doc.version;
+        self.state.write().await.documents.insert(uri.clone(), doc);
+        self.publish_smtlib_diagnostics(uri, &text, Some(version)).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let uri = params.text_document.uri.clone();
+        let version = params.text_document.version;
         let mut state = self.state.write().await;
-        if let Some(doc) = state.documents.get_mut(&params.text_document.uri) {
-            // FULL sync mode: replace the text with the last
-            // content change.
+        if let Some(doc) = state.documents.get_mut(&uri) {
             if let Some(change) = params.content_changes.into_iter().last() {
                 doc.text = change.text;
             }
-            doc.version = params.text_document.version;
+            doc.version = version;
+            let text = doc.text.clone();
+            drop(state);
+            self.publish_smtlib_diagnostics(uri, &text, Some(version)).await;
         }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        self.state.write().await.documents.remove(&params.text_document.uri);
+        let uri = params.text_document.uri.clone();
+        self.state.write().await.documents.remove(&uri);
+        // Clear any diagnostics on the closed document.
+        self.client.publish_diagnostics(uri, vec![], None).await;
+    }
+}
+
+impl Backend {
+    /// v0.25 25LSP.2 — run the SMT-LIB parser over the
+    /// document text and surface any errors as LSP Diagnostics.
+    ///
+    /// Initial scope: parser-level errors only. Solver-level
+    /// audit (dead-pattern via `adsmt-lints::dead_pattern_audit`)
+    /// requires the full check-sat pipeline and will land as a
+    /// separate background pass in 25LSP.2 follow-up.
+    async fn publish_smtlib_diagnostics(
+        &self,
+        uri: Url,
+        text: &str,
+        version: Option<i32>,
+    ) {
+        let diagnostics = parse_diagnostics(text);
+        self.client.publish_diagnostics(uri, diagnostics, version).await;
+    }
+}
+
+/// Convert a SMT-LIB parser run on `text` into LSP Diagnostics.
+/// Exposed at module scope so the integration tests can call it
+/// without constructing a `Backend`.
+pub fn parse_diagnostics(text: &str) -> Vec<Diagnostic> {
+    use adsmt_parser::smtlib::parse_smtlib;
+    match parse_smtlib(text) {
+        Ok(_) => Vec::new(),
+        Err(e) => {
+            // We don't have byte offsets out of the error type
+            // today (SmtLibError holds messages, not positions),
+            // so anchor the diagnostic at the document head and
+            // include the full message body. Position-aware
+            // diagnostics land in 25LSP.6 once the symbol index
+            // can resolve identifiers back to ranges.
+            let range = Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 0),
+            };
+            vec![Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("adsmt-parser".to_string()),
+                message: format!("{e}"),
+                ..Default::default()
+            }]
+        }
     }
 }
