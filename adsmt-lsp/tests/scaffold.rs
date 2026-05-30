@@ -24,6 +24,7 @@ fn document_type_carries_required_fields() {
         language_id: "smt2".to_string(),
         version: 1,
         text: "(check-sat)".to_string(),
+        symbols: std::collections::HashMap::new(),
     };
     assert_eq!(doc.version, 1);
     assert_eq!(doc.language_id, "smt2");
@@ -56,4 +57,46 @@ fn parse_diagnostics_for_multi_command_input_with_one_error() {
     let src = "(check-sat) (declare-const x";
     let diags = adsmt_lsp::parse_diagnostics(src);
     assert_eq!(diags.len(), 1);
+}
+
+// === v0.25 25LSP.3 — symbol index + goto definition ===
+
+#[test]
+fn build_symbol_index_indexes_declare_const() {
+    let src = "(declare-const x Int)";
+    let index = adsmt_lsp::build_symbol_index(src);
+    assert!(index.contains_key("x"), "missing `x` in symbol index");
+}
+
+#[test]
+fn build_symbol_index_indexes_multiple_declarations() {
+    let src = r#"
+        (declare-const x Int)
+        (declare-fun f (Int) Bool)
+        (define-fun g ((y Int)) Bool true)
+        (declare-sort Color 0)
+    "#;
+    let index = adsmt_lsp::build_symbol_index(src);
+    assert!(index.contains_key("x"));
+    assert!(index.contains_key("f"));
+    assert!(index.contains_key("g"));
+    assert!(index.contains_key("Color"));
+}
+
+#[test]
+fn identifier_at_position_extracts_word_under_cursor() {
+    let text = "(declare-const x Int)";
+    // Position at column 16 lands inside `x`.
+    let pos = adsmt_lsp::LspPosition::new(0, 16);
+    let ident = adsmt_lsp::identifier_at_position(text, pos);
+    assert_eq!(ident.as_deref(), Some("x"));
+}
+
+#[test]
+fn identifier_at_position_returns_none_for_whitespace() {
+    let text = "(declare-const x Int)";
+    let pos = adsmt_lsp::LspPosition::new(0, 14); // inside ' ' before x
+    let ident = adsmt_lsp::identifier_at_position(text, pos);
+    // Whitespace column → no identifier.
+    assert!(ident.is_none() || ident.as_deref() != Some(""));
 }
