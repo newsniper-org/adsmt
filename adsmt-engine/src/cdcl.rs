@@ -192,6 +192,103 @@ impl CdclState {
     }
 }
 
+/// v0.21 B.1 follow-up — Sat outcome carrying the satisfying
+/// assignment.
+#[derive(Clone, Debug)]
+pub enum CdclOutcome {
+    Sat { model: HashMap<String, bool> },
+    Unsat,
+    Unknown,
+}
+
+impl From<CdclOutcome> for BoolResult {
+    fn from(o: CdclOutcome) -> Self {
+        match o {
+            CdclOutcome::Sat { .. } => BoolResult::Sat,
+            CdclOutcome::Unsat => BoolResult::Unsat,
+            CdclOutcome::Unknown => BoolResult::Unknown,
+        }
+    }
+}
+
+/// Like [`cdcl_solve`] but yields the satisfying assignment on
+/// the Sat path. The model is just `state.assign` at the moment
+/// the outer loop has no more open clauses to decide on — every
+/// atom mentioned in the input clauses is bound to a polarity
+/// that satisfies every clause.
+pub fn cdcl_solve_with_model(
+    clauses: &[Clause],
+    max_conflicts: usize,
+) -> CdclOutcome {
+    let mut state = CdclState::new();
+    let input_len = clauses.len();
+    let mut owned: Vec<Clause> = clauses.to_vec();
+    let mut conflicts = 0;
+    let vsids_bump: f64 = 1.0;
+    let vsids_decay: f64 = 0.95;
+    let mut learnt_limit: usize = (input_len / 3).max(32);
+    let learnt_limit_growth: f64 = 1.1;
+    let clause_bump: f64 = 1.0;
+    let clause_decay: f64 = 0.999;
+    loop {
+        let conflict_idx = propagate_with_storage(
+            &owned,
+            &mut state,
+            input_len,
+            clause_bump,
+        );
+        if let Some(idx) = conflict_idx {
+            conflicts += 1;
+            if conflicts > max_conflicts { return CdclOutcome::Unknown; }
+            if state.decision_level == 0 { return CdclOutcome::Unsat; }
+            let (learnt, bj_level) =
+                analyze_conflict_1uip(&owned, &state, idx);
+            if learnt.is_empty() { return CdclOutcome::Unsat; }
+            state.bump_activity(&learnt, vsids_bump);
+            state.decay_activity(vsids_decay);
+            state.decay_learnt_activity(clause_decay);
+            state.backtrack_to(bj_level);
+            owned.push(learnt.clone());
+            state.learnt_clauses.push(learnt);
+            state.learnt_activity.push(1.0);
+            if state.learnt_clauses.len() > learnt_limit {
+                state.backtrack_to(0);
+                let keep = state.learnt_clauses.len() / 2;
+                let mut indexed: Vec<(usize, f64)> = state
+                    .learnt_activity
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .collect();
+                indexed.sort_by(|a, b| {
+                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let drop_count = indexed.len() - keep;
+                let mut to_drop: Vec<usize> = indexed
+                    .into_iter()
+                    .take(drop_count)
+                    .map(|(i, _)| i)
+                    .collect();
+                to_drop.sort_by(|a, b| b.cmp(a));
+                for idx in to_drop {
+                    state.learnt_clauses.remove(idx);
+                    state.learnt_activity.remove(idx);
+                    owned.remove(input_len + idx);
+                }
+                learnt_limit =
+                    ((learnt_limit as f64) * learnt_limit_growth) as usize;
+            }
+            continue;
+        }
+        let key = pick_vsids_atom(&owned[..input_len], &state);
+        let Some(key) = key else {
+            return CdclOutcome::Sat { model: state.assign };
+        };
+        let phase = state.saved_phase.get(&key).copied().unwrap_or(true);
+        state.push(key, phase, Reason::Decision);
+    }
+}
+
 /// v0.21 B.1 stages 1+2+3 entry point: trail-based CDCL with
 /// 1-UIP conflict analysis, learnt-clause storage, and
 /// non-chronological backjumping.
@@ -791,6 +888,45 @@ mod tests {
         assert!(keys.contains(&"r".to_string()));
         assert!(keys.contains(&"p".to_string()));
         assert_eq!(bj_level, 1, "backjump to the level of ¬p");
+    }
+
+    // === cdcl_solve_with_model ===
+
+    #[test]
+    fn cdcl_solve_with_model_returns_satisfying_assignment() {
+        // (p ∨ q) ∧ p — sat; model must set p=true, q value is
+        // implementation-defined (may be either or unset).
+        let cs = vec![
+            vec![Lit::pos(p()), Lit::pos(q())],
+            vec![Lit::pos(p())],
+        ];
+        match cdcl_solve_with_model(&cs, 4) {
+            CdclOutcome::Sat { model } => {
+                assert_eq!(model.get("p").copied(), Some(true));
+            }
+            other => panic!("expected Sat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cdcl_solve_with_model_carries_unsat() {
+        // p ∧ ¬p — unsat. Outcome carries no model.
+        let cs = vec![vec![Lit::pos(p())], vec![Lit::neg(p())]];
+        assert!(matches!(
+            cdcl_solve_with_model(&cs, 4),
+            CdclOutcome::Unsat
+        ));
+    }
+
+    #[test]
+    fn cdcl_outcome_into_bool_result() {
+        // The From<CdclOutcome> for BoolResult conversion is what
+        // makes the model-carrying path drop-in compatible with
+        // callers that only need Sat/Unsat/Unknown.
+        let cs = vec![vec![Lit::pos(p())]];
+        let outcome = cdcl_solve_with_model(&cs, 4);
+        let br: BoolResult = outcome.into();
+        assert_eq!(br, BoolResult::Sat);
     }
 
     // === Learnt clause activity ===
