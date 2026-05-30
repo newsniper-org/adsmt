@@ -1,4 +1,4 @@
-//! v0.21 B.1 (stage 1) — trail-based DPLL backbone for CDCL.
+//! v0.21 B.1 — full CDCL solver.
 //!
 //! Sibling path to [`crate::bool_solver`]. Where `bool_solver`
 //! decides via functional copy-on-branch assignment maps,
@@ -7,27 +7,44 @@
 //! tagged by the **reason** that made it true:
 //!
 //!   - [`Reason::Decision`] — chosen by the splitter
-//!   - [`Reason::Propagated(clause_idx)`] — forced by unit
+//!   - [`Reason::Propagated { clause_idx }`] — forced by unit
 //!     propagation; the clause index identifies the antecedent
 //!
-//! The trail lets us, at any future point, walk back from a
-//! conflicting clause to recover the implication graph that the
-//! conflict-analysis pass (1-UIP cut) consumes. That analysis
-//! is the **stage 2** work — the v0.21 B.1 lands the trail
-//! backbone here so subsequent stages don't have to retrofit it.
+//! ## Capability summary
 //!
-//! ## Stage scope
+//! Stage rollout (all landed in v0.21 B.1):
 //!
-//! - **Stage 1 (this commit)**: trail data structure, reason
-//!   tagging, depth-bounded decide loop, unit propagation that
-//!   records antecedents, conflict reporting.
-//! - **Stage 2**: 1-UIP conflict analysis + learnt clauses.
-//! - **Stage 3**: non-chronological backjumping driven by the
-//!   learnt clause's second-highest decision level.
-//! - **Stage 4**: VSIDS / Luby restart integration.
+//! - **Stage 1** — trail + `Reason` tags + depth-bounded decide
+//!   loop + propagation that records antecedents.
+//! - **Stage 2** — 1-UIP conflict analysis
+//!   ([`analyze_conflict_1uip`]) yielding `(learnt, bj_level)`.
+//! - **Stage 3** — full CDCL outer loop ([`cdcl_solve`])
+//!   with `learnt_clauses` storage + non-chronological
+//!   backjumping.
+//! - **Stage 4** — Luby restart wrapper
+//!   ([`cdcl_with_restarts`]) + VSIDS atom-activity scoring
+//!   ([`pick_vsids_atom`]).
 //!
-//! Existing fallback `dpll_with_restarts` stays unchanged; this
-//! module is a parallel track until stages 2–4 land.
+//! Stage 4 follow-ups (also landed):
+//!
+//! - **Learnt clause deletion** with geometric `learnt_limit`
+//!   growth (MiniSat-style 1/3 + 1.1× pattern).
+//! - **Per-learnt-clause activity** tracking with
+//!   propagation-time bumps + `decay_learnt_activity`.
+//! - **LBD glue protection** — clauses with LBD ≤ 6 are
+//!   unconditionally retained through reductions.
+//! - **Phase saving** — backtrack records each popped entry's
+//!   polarity in `saved_phase`; subsequent decisions on the
+//!   same atom reuse it.
+//! - **Model carry-out** ([`cdcl_solve_with_model`]) — same
+//!   outer loop but yields the satisfying assignment on the
+//!   Sat path via [`CdclOutcome::Sat`].
+//!
+//! Pending (v0.23+): two-watched-literals scheme replacing the
+//! per-clause `evaluate_clause` scan in [`propagate_with_storage`],
+//! LBD-based restart triggers, and clause-LBD updates on glue
+//! re-derivation. Legacy `bool_solver::dpll_with_restarts` is
+//! kept around for the `cdcl_smoke` bench's A/B comparison.
 
 use std::collections::HashMap;
 
@@ -408,8 +425,16 @@ fn propagate_with_storage(
 }
 
 #[derive(Debug)]
+/// Test-only propagation outcome carried by the stage-1
+/// `propagate` helper. The production path uses
+/// [`propagate_with_storage`] which yields the conflict clause
+/// index directly; this enum survives only as a fixture for the
+/// `trail_records_propagation_with_reason` test, which asserts
+/// the trail shape under a no-conflict propagation.
+#[cfg(test)]
 enum PropOutcome { Conflict, Fixed }
 
+#[cfg(test)]
 fn propagate(clauses: &[Clause], state: &mut CdclState) -> PropOutcome {
     loop {
         let mut progress = false;
