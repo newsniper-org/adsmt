@@ -490,14 +490,26 @@ impl Term {
         Term::app(head, arg)
     }
 
+    /// v0.23 C.1 — unary BV negation (two's complement).
+    /// `(bvneg x) ≡ (bvadd (bvnot x) 0x1)`. Returns
+    /// `(bvneg_<width> arg)`; bit-blast lowering reuses the
+    /// existing ripple-carry adder under the bvnot/bvneg
+    /// composition.
+    pub fn mk_bvneg(arg: Term, width: u32) -> KernelResult<Term> {
+        let bv = Self::bv_sort(width);
+        let ty = Type::fun(bv.clone(), bv).unwrap();
+        let head = Term::const_(&format!("bvneg_{width}"), ty);
+        Term::app(head, arg)
+    }
+
     /// Destructure a BV unary op `(<op>_w arg)` returning
-    /// `(op, width, arg)`. Currently recognises only `bvnot`.
+    /// `(op, width, arg)`. Recognises `bvnot` and `bvneg`.
     pub fn dest_bv_unop(&self) -> Option<(String, u32, Term)> {
         if let Term::App(head, arg) = self
             && let Term::Const(c) = &**head
         {
             let nm = &c.name;
-            for op in ["bvnot"] {
+            for op in ["bvnot", "bvneg"] {
                 if let Some(rest) = nm.strip_prefix(&format!("{op}_"))
                     && let Ok(w) = rest.parse::<u32>()
                 {

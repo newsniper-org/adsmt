@@ -198,6 +198,19 @@ pub fn blast_term(t: &Term, w: u32, env: &mut BlastEnv) -> Option<Vec<Bit>> {
         let arg_bits = blast_term(&arg, w, env)?;
         return match op.as_str() {
             "bvnot" => Some(arg_bits.into_iter().map(|b| b.negate()).collect()),
+            // v0.23 C.1 — bvneg(x) ≡ bvnot(x) + 1.
+            // Implemented as the ripple-carry sum of negated bits
+            // plus an initial carry of 1.
+            "bvneg" => {
+                let negated: Vec<Bit> =
+                    arg_bits.into_iter().map(|b| b.negate()).collect();
+                let zero: Vec<Bit> = (0..w).map(|_| Bit::Const(false)).collect();
+                // Reuse ripple_carry_sub which already does
+                // `0 + (¬arg) + 1` semantics when called with
+                // carry=true; but ripple_carry_add over (negated,
+                // 0) with initial carry 1 is cleaner.
+                Some(ripple_carry_add_with_carry_in(negated, zero, Bit::Const(true), env))
+            }
             _ => None,
         };
     }
@@ -253,6 +266,29 @@ pub fn blast_term(t: &Term, w: u32, env: &mut BlastEnv) -> Option<Vec<Bit>> {
         };
     }
     None
+}
+
+/// v0.23 C.1 — ripple-carry adder with an explicit initial
+/// carry-in. Used by `bvneg` lowering (carry-in = true) and
+/// can be reused for `bvadd` variants in the future.
+fn ripple_carry_add_with_carry_in(
+    a_bits: Vec<Bit>,
+    b_bits: Vec<Bit>,
+    carry_in: Bit,
+    env: &mut BlastEnv,
+) -> Vec<Bit> {
+    let mut out = Vec::with_capacity(a_bits.len());
+    let mut carry: Bit = carry_in;
+    for (a, b) in a_bits.into_iter().zip(b_bits) {
+        let a_xor_b = env.xor_bits(a.clone(), b.clone());
+        let sum = env.xor_bits(a_xor_b.clone(), carry.clone());
+        let ab = env.and_bits(a, b);
+        let c_axb = env.and_bits(carry, a_xor_b);
+        let new_carry = env.or_bits(ab, c_axb);
+        out.push(sum);
+        carry = new_carry;
+    }
+    out
 }
 
 /// v0.21 C.1 — ripple-carry adder.
@@ -642,6 +678,40 @@ mod tests {
         let lit = Term::bv_lit(0b1010, 4);
         let cs = blast_eq_clauses(&not_x, &lit, 4, &mut env).unwrap();
         assert_eq!(crate::bool_solver::dpll(&cs, 32), BoolResult::Sat);
+    }
+
+    // === v0.23 C.1 — bvneg ===
+
+    #[test]
+    fn bvneg_concrete_literal_is_twos_complement() {
+        // (bvneg 0b0001) = 0b1111 (= -1 in 4-bit two's complement).
+        let mut env = BlastEnv::new();
+        let arg = Term::bv_lit(0b0001, 4);
+        let neg = Term::mk_bvneg(arg, 4).unwrap();
+        let lit = Term::bv_lit(0b1111, 4);
+        let cs = blast_eq_clauses(&neg, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvneg_zero_is_zero() {
+        // (bvneg 0) = 0 — the high-carry overflow drops cleanly.
+        let mut env = BlastEnv::new();
+        let neg = Term::mk_bvneg(Term::bv_lit(0, 4), 4).unwrap();
+        let lit = Term::bv_lit(0, 4);
+        let cs = blast_eq_clauses(&neg, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvneg_with_variable_admits_solution() {
+        // (bvneg x) = 0b1111 ⇒ x = 0b0001.
+        let mut env = BlastEnv::new();
+        let x = Term::var("x", Term::bv_sort(4));
+        let neg = Term::mk_bvneg(x, 4).unwrap();
+        let lit = Term::bv_lit(0b1111, 4);
+        let cs = blast_eq_clauses(&neg, &lit, 4, &mut env).unwrap();
+        assert_eq!(crate::bool_solver::dpll(&cs, 64), BoolResult::Sat);
     }
 
     #[test]
