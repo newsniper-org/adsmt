@@ -2,7 +2,7 @@
   "name": "adsmt-lints-vscode",
   "displayName": "adsmt Lints",
   "description": "Consumes adsmt-lints JSON audits and renders dead-pattern diagnostics in the editor.",
-  "version": "0.19.0",
+  "version": "0.25.0",
   "publisher": "adsmt",
   "license": "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later",
   "engines": {
@@ -39,6 +39,11 @@
           "type": "boolean",
           "default": true,
           "description": "When set, the extension watches the configured auditPath and re-renders diagnostics on every file-system change."
+        },
+        "adsmt-lints.lspBinary": {
+          "type": "string",
+          "default": "adsmt-lsp",
+          "description": "Path to the adsmt-lsp server binary (v0.25 25LSP.*). Defaults to `adsmt-lsp` on $PATH; override to point at a debug build."
         }
       }
     }
@@ -52,5 +57,8 @@
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
   }
 }

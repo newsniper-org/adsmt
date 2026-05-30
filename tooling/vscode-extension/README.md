@@ -1,7 +1,24 @@
 # adsmt Lints — VS Code extension
 
 Renders dead-pattern diagnostics from the `adsmt-lints` JSON
-audit document as VS Code Problems entries + editor squiggles.
+audit document as VS Code Problems entries + editor squiggles,
+and hosts the adsmt LSP client (v0.25 25EXT.1 split).
+
+## Architecture (v0.25)
+
+This extension is split along the editor-agnostic vs
+VSCode-specific axis per `lsp_roadmap.md` phase 2 / task
+25EXT.1:
+
+- `src/audit.ts` — **editor-agnostic** JSON parsing + types
+  for the `adsmt-lints` audit document. Reusable by any
+  TypeScript editor integration.
+- `src/extension.ts` — **VSCode-specific** glue: command
+  palette wiring, `DiagnosticCollection` ↔ `audit.ts`
+  conversion, file-watcher, and the LSP client that spawns
+  the `adsmt-lsp` server binary (`adsmt-lints.lspBinary`
+  setting points at the executable; defaults to `adsmt-lsp`
+  on PATH).
 
 ## Usage
 

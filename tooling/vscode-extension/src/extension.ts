@@ -1,59 +1,35 @@
 /*
- * adsmt-lints VS Code extension.
+ * adsmt-lints VS Code extension — vscode-specific layer.
  *
- * Consumes the JSON document produced by
- * `adsmt_lints::audit_to_json` (or by `lu-smt --audit-json`)
- * and renders each diagnostic as a VS Code Problems entry +
- * editor squiggle.
- *
- * v0.19 F.1 scaffold. The minimum-viable shape:
- *   - "adsmt: Load audit JSON" command — pick a file via the
- *     quick-open or use the configured `adsmt-lints.auditPath`,
- *     parse it as JSON, populate the diagnostics collection.
- *   - "adsmt: Clear lints diagnostics" command — remove every
- *     diagnostic the extension has added.
- *   - File-watcher on `adsmt-lints.auditPath` when
- *     `adsmt-lints.autoReload` is true — re-renders on every
- *     file-system change.
- *
- * JSON schema consumed: `adsmt_lints::DiagnosticsDocument`
- * (schema_version 1). Unknown schema versions are rejected
- * with a notification.
+ * v0.25 EXT.1 split per `lsp_roadmap.md`. The editor-agnostic
+ * JSON parsing + types live in `audit.ts`; this file holds the
+ * vscode-API consumers (commands, diagnostic collection,
+ * file-watcher) and the LSP client glue for the v0.25 25LSP.*
+ * server.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import {
+  LanguageClient,
+  LanguageClientOptions,
+  ServerOptions,
+  TransportKind,
+} from 'vscode-languageclient/node';
 
-interface SourceLocPayload {
-  line: number;
-  column: number;
-}
-
-interface StepIdPayload {
-  id: number;
-}
-
-interface DeadPatternDiagnostic {
-  marker_index: number;
-  marker_name: string | null;
-  severity: 'info' | 'warning' | 'error';
-  message: string;
-  source_loc: SourceLocPayload | null;
-  cert_step_count: number;
-  steps_matched_by_siblings: StepIdPayload[];
-}
-
-interface DiagnosticsDocument {
-  schema_version: number;
-  generator: string;
-  diagnostics: DeadPatternDiagnostic[];
-}
-
-const SUPPORTED_SCHEMA_VERSION = 1;
+import {
+  DeadPatternDiagnostic,
+  DiagnosticsDocument,
+  diagnosticCode,
+  loc0,
+  parseAuditJson,
+  ParseResult,
+} from './audit';
 
 let diagnosticCollection: vscode.DiagnosticCollection | null = null;
 let watcher: fs.FSWatcher | null = null;
+let lspClient: LanguageClient | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
   diagnosticCollection =
@@ -79,6 +55,44 @@ export function activate(context: vscode.ExtensionContext): void {
   if (auditPath && autoReload) {
     startWatching(auditPath);
   }
+
+  // v0.25 EXT.1 — start the adsmt-lsp language server.
+  const lspBinary =
+    config.get<string>('lspBinary') ?? 'adsmt-lsp';
+  startLspClient(context, lspBinary);
+}
+
+function startLspClient(
+  context: vscode.ExtensionContext,
+  binary: string,
+): void {
+  const serverOptions: ServerOptions = {
+    command: binary,
+    args: [],
+    transport: TransportKind.stdio,
+  };
+  const clientOptions: LanguageClientOptions = {
+    documentSelector: [
+      { scheme: 'file', language: 'smt-lib' },
+      { scheme: 'file', language: 'smt2' },
+      { scheme: 'file', language: 'lu-kb' },
+    ],
+    synchronize: {
+      configurationSection: 'adsmt-lints',
+    },
+  };
+  lspClient = new LanguageClient(
+    'adsmt-lsp',
+    'adsmt LSP',
+    serverOptions,
+    clientOptions,
+  );
+  lspClient.start();
+  context.subscriptions.push({
+    dispose: () => {
+      lspClient?.stop();
+    },
+  });
 }
 
 export function deactivate(): void {
@@ -92,9 +106,7 @@ async function loadAuditCommand(
 ): Promise<void> {
   const config = vscode.workspace.getConfiguration('adsmt-lints');
   const configured = config.get<string>('auditPath') ?? '';
-  const picked = configured
-    ? configured
-    : await pickAuditPath();
+  const picked = configured ? configured : await pickAuditPath();
   if (!picked) {
     return;
   }
@@ -122,23 +134,23 @@ async function renderFromPath(p: string): Promise<void> {
     );
     return;
   }
-  let doc: DiagnosticsDocument;
-  try {
-    doc = JSON.parse(body);
-  } catch (err) {
-    vscode.window.showErrorMessage(
-      `adsmt-lints: JSON parse error in ${p}: ${(err as Error).message}`,
-    );
-    return;
+  const result: ParseResult = parseAuditJson(body);
+  switch (result.kind) {
+    case 'parse-error':
+      vscode.window.showErrorMessage(
+        `adsmt-lints: JSON parse error in ${p}: ${result.message}`,
+      );
+      return;
+    case 'schema-mismatch':
+      vscode.window.showWarningMessage(
+        `adsmt-lints: unsupported audit schema version ${result.got}. ` +
+          `This extension build supports v${result.expected} only.`,
+      );
+      return;
+    case 'ok':
+      applyDiagnostics(p, result.doc);
+      return;
   }
-  if (doc.schema_version !== SUPPORTED_SCHEMA_VERSION) {
-    vscode.window.showWarningMessage(
-      `adsmt-lints: unsupported audit schema version ${doc.schema_version}. ` +
-        `This extension build supports v${SUPPORTED_SCHEMA_VERSION} only.`,
-    );
-    return;
-  }
-  applyDiagnostics(p, doc);
 }
 
 function applyDiagnostics(
@@ -162,19 +174,13 @@ function applyDiagnostics(
   const auditUri = vscode.Uri.file(auditPath);
   const byUri = new Map<string, vscode.Diagnostic[]>();
   for (const d of doc.diagnostics) {
-    const loc = d.source_loc;
-    const uri = auditUri.toString(); // v0.19 ships file-name-less diagnostics
-    const line = loc ? Math.max(0, loc.line - 1) : 0;
-    const col = loc ? Math.max(0, loc.column - 1) : 0;
+    const { line, col } = loc0(d.source_loc);
+    const uri = auditUri.toString();
     const range = new vscode.Range(line, col, line, col + 1);
     const sev = severityFromString(d.severity);
     const diag = new vscode.Diagnostic(range, d.message, sev);
     diag.source = 'adsmt-lints';
-    if (d.marker_name) {
-      diag.code = `pattern #${d.marker_index} (${d.marker_name})`;
-    } else {
-      diag.code = `pattern #${d.marker_index}`;
-    }
+    diag.code = diagnosticCode(d);
     const arr = byUri.get(uri) ?? [];
     arr.push(diag);
     byUri.set(uri, arr);
@@ -208,9 +214,6 @@ function startWatching(auditPath: string): void {
   }
   try {
     watcher = fs.watch(auditPath, { persistent: false }, async () => {
-      // Debounce by re-reading the file directly. fs.watch can
-      // fire multiple events for a single save; the parsing
-      // path is idempotent so we just re-render.
       await renderFromPath(auditPath);
     });
   } catch (err) {
@@ -224,3 +227,8 @@ function stopWatching(): void {
   watcher?.close();
   watcher = null;
 }
+
+// Re-export for tests that want to consume the parsing layer
+// without spinning up a full vscode extension host.
+export { parseAuditJson, diagnosticCode, loc0 } from './audit';
+export type { DeadPatternDiagnostic, DiagnosticsDocument } from './audit';
