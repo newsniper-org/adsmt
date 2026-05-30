@@ -8,6 +8,7 @@ description = "Theory trait, polite combination framework, and theory implementa
 [dependencies]
 adsmt-core.workspace = true
 adsmt-cert.workspace = true
+adsmt-quant.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
 smallvec.workspace = true

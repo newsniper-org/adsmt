@@ -13,3 +13,4 @@ pub mod arith_simplex;
 pub mod arrays;
 pub mod bv;
 pub mod datatypes;
+pub mod egraph_theory;
