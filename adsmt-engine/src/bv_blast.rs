@@ -227,6 +227,18 @@ pub fn blast_term(t: &Term, w: u32, env: &mut BlastEnv) -> Option<Vec<Bit>> {
             // set the initial carry `c_0 = true` so the `+1`
             // happens for free.
             "bvsub" => Some(ripple_carry_sub(lhs_bits, rhs_bits, env)),
+            // v0.21 C.1 follow-up — shift-and-add multiplier.
+            //
+            // result = Σ_i (b_i ? (a << i)_masked : 0)
+            //
+            // Each partial product is an AND of `b_i` with the
+            // appropriate `a` bit (cleared by a `Const(false)` for
+            // bits below the shift). The partial products are
+            // summed by reusing `ripple_carry_add`. Clause growth
+            // is O(width²); on width 4 that's a handful of
+            // Tseitin auxiliaries, well within what the built-in
+            // CDCL fallback closes.
+            "bvmul" => Some(shift_and_add_mul(lhs_bits, rhs_bits, env)),
             _ => None,
         };
     }
@@ -250,6 +262,34 @@ fn ripple_carry_add(a_bits: Vec<Bit>, b_bits: Vec<Bit>, env: &mut BlastEnv) -> V
     }
     // Final carry dropped — width-modulo semantics.
     out
+}
+
+/// v0.21 C.1 follow-up — shift-and-add multiplier.
+fn shift_and_add_mul(
+    a_bits: Vec<Bit>,
+    b_bits: Vec<Bit>,
+    env: &mut BlastEnv,
+) -> Vec<Bit> {
+    let w = a_bits.len();
+    let mut acc: Vec<Bit> = vec![Bit::Const(false); w];
+    for i in 0..w {
+        // Partial product i: a shifted left by i, AND'd with b[i].
+        // Bits below position i are zero (shifted out).
+        let mut partial: Vec<Bit> = Vec::with_capacity(w);
+        for j in 0..w {
+            if j < i {
+                partial.push(Bit::Const(false));
+            } else {
+                let bit = env.and_bits(
+                    b_bits[i].clone(),
+                    a_bits[j - i].clone(),
+                );
+                partial.push(bit);
+            }
+        }
+        acc = ripple_carry_add(acc, partial, env);
+    }
+    acc
 }
 
 /// v0.21 C.1 — subtraction via `a + (¬b) + 1`.
@@ -526,14 +566,51 @@ mod tests {
     }
 
     #[test]
-    fn bvmul_remains_unsupported() {
-        // bvmul (shift-and-add) is intentionally NOT in C.1 —
-        // ripple-carry addition is the foundation, multiplier
-        // reuse waits for the structural simplifier in v0.23.
+    fn bvmul_concrete_operands_satisfiable_to_correct_product() {
+        // (3 × 5) = 15 over width 4.
+        let mut env = BlastEnv::new();
+        let three = Term::bv_lit(3, 4);
+        let five = Term::bv_lit(5, 4);
+        let mul = Term::mk_bvmul(three, five, 4).unwrap();
+        let lit = Term::bv_lit(15, 4);
+        let cs = blast_eq_clauses(&mul, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvmul_concrete_operands_wrong_product_is_unsat() {
+        let mut env = BlastEnv::new();
+        let three = Term::bv_lit(3, 4);
+        let five = Term::bv_lit(5, 4);
+        let mul = Term::mk_bvmul(three, five, 4).unwrap();
+        let lit = Term::bv_lit(7, 4);
+        let cs = blast_eq_clauses(&mul, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Unsat);
+    }
+
+    #[test]
+    fn bvmul_overflow_wraps_at_width_4() {
+        // (7 × 3) = 21 = 0b10101 → low 4 bits = 0b0101 = 5.
+        let mut env = BlastEnv::new();
+        let a = Term::bv_lit(7, 4);
+        let b = Term::bv_lit(3, 4);
+        let mul = Term::mk_bvmul(a, b, 4).unwrap();
+        let lit = Term::bv_lit(5, 4);
+        let cs = blast_eq_clauses(&mul, &lit, 4, &mut env).unwrap();
+        assert_eq!(solve_via_dpll(&cs), BoolResult::Sat);
+    }
+
+    #[test]
+    fn bvmul_with_variable_admits_solution() {
+        // (x × 2) = 6 over width 4 — single satisfying x = 3.
         let mut env = BlastEnv::new();
         let x = Term::var("x", Term::bv_sort(4));
         let mul = Term::mk_bvmul(x, Term::bv_lit(2, 4), 4).unwrap();
-        let lit = Term::bv_lit(0b0010, 4);
-        assert!(blast_eq_clauses(&mul, &lit, 4, &mut env).is_none());
+        let lit = Term::bv_lit(6, 4);
+        let cs = blast_eq_clauses(&mul, &lit, 4, &mut env).unwrap();
+        // Multiplier shapes need a deeper DPLL budget than the
+        // adder shapes — width 4 already creates a handful of
+        // Tseitin auxiliaries per partial product.
+        assert_eq!(crate::bool_solver::dpll(&cs, 128), BoolResult::Sat);
     }
 }
