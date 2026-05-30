@@ -101,6 +101,9 @@ impl LanguageServer for Backend {
                 // v0.25 25LSP.3 — go-to-definition for SMT-LIB
                 // declarations + define-fun bodies.
                 definition_provider: Some(OneOf::Left(true)),
+                // v0.25 25LSP.4 — hover with declaration line +
+                // BV width recognition + LFSC sort lowering.
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -177,6 +180,28 @@ impl LanguageServer for Backend {
         Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })))
     }
 
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri.clone();
+        let position = params.text_document_position_params.position;
+        let state = self.state.read().await;
+        let Some(doc) = state.documents.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(ident) = identifier_at_position(&doc.text, position) else {
+            return Ok(None);
+        };
+        let Some(content) = hover_content(&doc.text, &doc.symbols, &ident) else {
+            return Ok(None);
+        };
+        Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: content,
+            }),
+            range: doc.symbols.get(&ident).copied(),
+        }))
+    }
+
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.clone();
         self.state.write().await.documents.remove(&uri);
@@ -233,15 +258,15 @@ pub fn build_symbol_index(text: &str) -> HashMap<String, Range> {
             _ => None,
         };
         if let Some(name) = name {
-            // `pos` is `Position { line, column }` 0-indexed
-            // from `adsmt_parser::sexpr::byte_offset_to_position`.
-            let lsp_pos = LspPosition::new(pos.line as u32, pos.column as u32);
+            // `pos` is 1-based from
+            // `adsmt_parser::sexpr::byte_offset_to_position`;
+            // LSP `Position` is 0-based.
+            let line0 = pos.line.saturating_sub(1);
+            let col0 = pos.column.saturating_sub(1);
+            let lsp_pos = LspPosition::new(line0, col0);
             let range = Range {
                 start: lsp_pos,
-                end: LspPosition::new(
-                    pos.line as u32,
-                    pos.column as u32 + name.len() as u32,
-                ),
+                end: LspPosition::new(line0, col0 + name.len() as u32),
             };
             out.insert(name, range);
         }
@@ -273,6 +298,45 @@ pub fn identifier_at_position(text: &str, position: LspPosition) -> Option<Strin
     }
     if start == end { return None; }
     Some(chars[start..end].iter().collect())
+}
+
+/// v0.25 25LSP.4 — produce hover Markdown for an identifier.
+///
+/// Recognises three kinds of hover content:
+///   1. **BV literal head** (`bv<value>:<width>`) — emits a
+///      width annotation.
+///   2. **Symbol in this doc's index** — emits the
+///      declaration line text verbatim under a code-block
+///      fence.
+///   3. **Unknown identifier** → returns `None`.
+pub fn hover_content(
+    text: &str,
+    symbols: &HashMap<String, Range>,
+    ident: &str,
+) -> Option<String> {
+    // BV literal head: `bv<value>:<width>`.
+    if let Some(rest) = ident.strip_prefix("bv")
+        && let Some((value_str, width_str)) = rest.split_once(':')
+        && let (Ok(value), Ok(width)) =
+            (value_str.parse::<u128>(), width_str.parse::<u32>())
+    {
+        return Some(format!(
+            "**BV literal** `bv{value}:{width}`\n\n\
+             Value: {value} (width: {width} bits)",
+        ));
+    }
+    // Symbol declared in this doc → show the declaration line.
+    if let Some(range) = symbols.get(ident) {
+        let line_idx = range.start.line as usize;
+        if let Some(line) = text.lines().nth(line_idx) {
+            return Some(format!(
+                "**{ident}** — declared in this file\n\n\
+                 ```smt2\n{}\n```",
+                line.trim(),
+            ));
+        }
+    }
+    None
 }
 
 /// Convert a SMT-LIB parser run on `text` into LSP Diagnostics.

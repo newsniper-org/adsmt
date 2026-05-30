@@ -100,3 +100,31 @@ fn identifier_at_position_returns_none_for_whitespace() {
     // Whitespace column → no identifier.
     assert!(ident.is_none() || ident.as_deref() != Some(""));
 }
+
+// === v0.25 25LSP.4 — hover ===
+
+#[test]
+fn hover_content_recognises_bv_literal() {
+    let symbols = std::collections::HashMap::new();
+    let hover = adsmt_lsp::hover_content("", &symbols, "bv5:8");
+    let body = hover.expect("bv literal recognised");
+    assert!(body.contains("BV literal"));
+    assert!(body.contains("Value: 5"));
+    assert!(body.contains("width: 8 bits"));
+}
+
+#[test]
+fn hover_content_recognises_indexed_symbol() {
+    let text = "(declare-const x Int)";
+    let symbols = adsmt_lsp::build_symbol_index(text);
+    let hover = adsmt_lsp::hover_content(text, &symbols, "x");
+    let body = hover.expect("x is indexed");
+    assert!(body.contains("**x**"));
+    assert!(body.contains("declare-const x Int"));
+}
+
+#[test]
+fn hover_content_returns_none_for_unknown_identifier() {
+    let symbols = std::collections::HashMap::new();
+    assert!(adsmt_lsp::hover_content("", &symbols, "no-such-symbol").is_none());
+}
