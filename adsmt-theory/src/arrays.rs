@@ -264,7 +264,21 @@ impl Theory for Arrays {
             self.derived_eqs.push((reduced, rhs.clone()));
         }
         if let Some((reduced, _side)) = Self::read_over_write(&rhs, &self.local_disequalities) {
-            self.derived_eqs.push((lhs, reduced));
+            self.derived_eqs.push((lhs.clone(), reduced));
+        }
+        // v0.21 follow-up — also try store-store normalisation
+        // (Arrays.C.3). Surfaces normalised nested-store equalities
+        // to the polite combination so EUF can equate
+        // `(store (store a i v₁) i v₂)` with `(store a i v₂)`.
+        if let Some((normalised, _witness)) =
+            Self::store_store_normalize(&lhs, &self.local_disequalities)
+        {
+            self.derived_eqs.push((normalised, rhs.clone()));
+        }
+        if let Some((normalised, _witness)) =
+            Self::store_store_normalize(&rhs, &self.local_disequalities)
+        {
+            self.derived_eqs.push((lhs, normalised));
         }
         AssertResult::Ignored
     }
