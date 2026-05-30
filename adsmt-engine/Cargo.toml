@@ -25,6 +25,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "solver_smoke"
 harness = false
 
+[[bench]]
+name = "cdcl_smoke"
+harness = false
+
 [features]
 default = []
 # Use the CaDiCaL SAT backend (C++ FFI) instead of the built-in DPLL.
