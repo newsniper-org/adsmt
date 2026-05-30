@@ -264,17 +264,23 @@ pub fn cdcl_solve_with_model(
             if state.learnt_clauses.len() > learnt_limit {
                 state.backtrack_to(0);
                 let keep = state.learnt_clauses.len() / 2;
-                let mut indexed: Vec<(usize, f64)> = state
+                const GLUE_LBD_THRESHOLD: usize = 6;
+                let mut candidates: Vec<(usize, f64)> = state
                     .learnt_activity
                     .iter()
                     .copied()
                     .enumerate()
+                    .filter(|(i, _)| {
+                        state.learnt_lbd.get(*i).copied().unwrap_or(usize::MAX)
+                            > GLUE_LBD_THRESHOLD
+                    })
                     .collect();
-                indexed.sort_by(|a, b| {
+                candidates.sort_by(|a, b| {
                     a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
                 });
-                let drop_count = indexed.len() - keep;
-                let mut to_drop: Vec<usize> = indexed
+                let drop_count = state.learnt_clauses.len().saturating_sub(keep);
+                let drop_count = drop_count.min(candidates.len());
+                let mut to_drop: Vec<usize> = candidates
                     .into_iter()
                     .take(drop_count)
                     .map(|(i, _)| i)
@@ -283,6 +289,7 @@ pub fn cdcl_solve_with_model(
                 for idx in to_drop {
                     state.learnt_clauses.remove(idx);
                     state.learnt_activity.remove(idx);
+                    state.learnt_lbd.remove(idx);
                     owned.remove(input_len + idx);
                 }
                 learnt_limit =
