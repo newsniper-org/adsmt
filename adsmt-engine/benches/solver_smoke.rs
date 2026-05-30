@@ -20,21 +20,24 @@
 //! Run with `cargo bench -p adsmt-engine --bench solver_smoke`.
 //! criterion writes HTML reports under `target/criterion/`.
 //!
-//! ## v0.21 G.1 baseline (2026-05-29, default features)
+//! ## Baseline history (default features)
 //!
-//! Recorded on the v0.21-open commit immediately after the B.1
-//! Luby-restart wrapper began driving the built-in DPLL fallback.
-//! Times are criterion's median estimate.
+//! Times are criterion's median estimate; all measurements use
+//! `--warm-up-time 1 --measurement-time 3`.
 //!
-//! | benchmark                  | time     | vs v0.19 G.1 |
-//! |----------------------------|----------|--------------|
-//! | fresh_solver               | 122.6 ns | unchanged    |
-//! | propositional_unsat        |  1.89 µs | unchanged    |
-//! | lia_bound_conflict_unsat   |  2.82 µs | new          |
+//! | benchmark                | v0.21 G.1 | CDCL fallback | Δ    |
+//! |--------------------------|-----------|---------------|------|
+//! | fresh_solver             | 122.6 ns  | 121.6 ns      | -1%  |
+//! | propositional_unsat      |  1.89 µs  |  2.06 µs      | +9%  |
+//! | lia_bound_conflict_unsat |  2.82 µs  |  3.01 µs      | +7%  |
 //!
-//! No regression from the restart-loop introduction — first
-//! Luby epoch already covers what the old single-shot
-//! `dpll(_, 16)` covered, so easy-case latency is preserved.
+//! The +7–9% regression on the easy-case unsat paths is the
+//! CDCL bookkeeping cost (trail entries, VSIDS activity bumps,
+//! learnt-clause storage) showing through. Accepted as a
+//! one-time trade — harder instances that the old
+//! `dpll(_, 16)` couldn't close now resolve within the same
+//! Luby schedule, and the `oxiz` / `cadical` feature paths
+//! (production default) are unaffected.
 
 use criterion::{criterion_group, criterion_main, Criterion};
 

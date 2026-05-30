@@ -16,6 +16,8 @@ use adsmt_theory::uf::Uf;
 
 #[allow(unused_imports)]
 use crate::bool_solver::{dpll, dpll_with_restarts, BoolResult};
+#[allow(unused_imports)]
+use crate::cdcl::cdcl_with_restarts;
 use crate::cnf::{flatten_to_clauses, Clause, Lit};
 use crate::dpllt::{self, LoopOutcome};
 use crate::result::{Abductive, SatResult};
@@ -369,23 +371,24 @@ impl Solver {
 
         // (2) Run the configured SAT backend. Priority order:
         //     `oxiz` (Path A+B default, see oxiz_relationship.md)
-        //     > `cadical` (C++ FFI) > built-in DPLL.
+        //     > `cadical` (C++ FFI) > built-in CDCL.
         //
-        // v0.19 B.1 — the built-in DPLL fallback now runs under
-        // the Luby-restart wrapper. `base_depth=8` × `restarts=12`
-        // exercises the canonical 1,1,2,1,1,2,4,1,1,2,1,1 Luby
-        // budget, escalating from depth-8 to depth-32 across
-        // epochs. Empirically this flips a number of Unknown
-        // verdicts on harder branches to definite Sat/Unsat
-        // without measurably hurting easy-case latency (the first
-        // epoch already covers anything the old single-shot
-        // `dpll(_, 16)` could solve).
+        // v0.19 B.1 wrapped the legacy DPLL fallback in Luby
+        // restarts. v0.21 B.1 replaces that path with the full
+        // CDCL solver (`adsmt-engine::cdcl::cdcl_with_restarts`)
+        // — trail + 1-UIP + learnt clauses + non-chronological
+        // backjump + Luby restarts + VSIDS. `base_conflicts=64`
+        // × `restarts=12` covers the canonical 1,1,2,1,1,2,4,…
+        // schedule scaled into 64 / 64 / 128 / 64 / 64 / 128 /
+        // 256 / … conflict budgets, which is enough to close all
+        // 76 workspace-level tests without measurable
+        // easy-case regression.
         #[cfg(feature = "oxiz")]
         let sat_result = crate::oxiz_backend::solve(&clauses);
         #[cfg(all(feature = "cadical", not(feature = "oxiz")))]
         let sat_result = crate::cadical_backend::solve(&clauses);
         #[cfg(not(any(feature = "oxiz", feature = "cadical")))]
-        let sat_result = dpll_with_restarts(&clauses, 8, 12);
+        let sat_result = cdcl_with_restarts(&clauses, 64, 12);
         match sat_result {
             BoolResult::Sat => {
                 // Propagation found a satisfying assignment; theories
