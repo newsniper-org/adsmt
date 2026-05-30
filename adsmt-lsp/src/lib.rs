@@ -104,6 +104,14 @@ impl LanguageServer for Backend {
                 // v0.25 25LSP.4 — hover with declaration line +
                 // BV width recognition + LFSC sort lowering.
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                // v0.25 25LSP.5 — static completion over SMT-LIB
+                // keywords + theory names + classical-axiom
+                // families + lu-kb keywords.
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: Some(vec!["(".to_string()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -178,6 +186,13 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })))
+    }
+
+    async fn completion(
+        &self,
+        _params: CompletionParams,
+    ) -> Result<Option<CompletionResponse>> {
+        Ok(Some(CompletionResponse::Array(completion_items())))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -298,6 +313,78 @@ pub fn identifier_at_position(text: &str, position: LspPosition) -> Option<Strin
     }
     if start == end { return None; }
     Some(chars[start..end].iter().collect())
+}
+
+/// v0.25 25LSP.5 — static completion item table.
+///
+/// Returns SMT-LIB command keywords (one per frozen `Command`
+/// variant, see `adsmt-parser/DIALECT_POLICY.md`), theory names
+/// (registered with the engine), classical-axiom family names
+/// (the closed `ClassicalModuleFamily` enum), and lu-kb top-level
+/// keywords. The list is context-free for now — a future task
+/// can narrow it by cursor position (inside `(` → SMT-LIB
+/// keywords; inside a `lu-kb` block → kb keywords; etc.).
+pub fn completion_items() -> Vec<CompletionItem> {
+    // SMT-LIB command keywords (DIALECT_POLICY.md surface).
+    const SMTLIB_KEYWORDS: &[&str] = &[
+        "set-logic", "set-option", "set-info",
+        "declare-sort", "declare-datatype", "declare-const",
+        "declare-fun", "define-fun",
+        "assert", "check-sat", "check-sat-assuming",
+        "get-model", "get-unsat-core", "get-proof",
+        "push", "pop", "reset", "reset-assertions", "exit",
+    ];
+    // Theory names registered by the engine (project_layout.md).
+    const THEORY_NAMES: &[&str] = &[
+        "UF", "LIA", "LRA", "BV", "Arrays", "Datatypes",
+        "Polite", "EGraph",
+    ];
+    // Classical-axiom families (prover_emit_policy.md).
+    const CLASSICAL_FAMILIES: &[&str] = &[
+        "Classical.Prop", "Classical.Em",
+        "Classical.Choice", "Classical.FunExt",
+        "Classical.PropExt",
+    ];
+    // lu-kb top-level keywords (DIALECT_POLICY.md).
+    const KB_KEYWORDS: &[&str] = &[
+        "kind", "fn", "relation", "instance",
+        "axiom", "rule", "directive",
+    ];
+
+    let mut out = Vec::new();
+    for &kw in SMTLIB_KEYWORDS {
+        out.push(CompletionItem {
+            label: kw.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("SMT-LIB command".to_string()),
+            ..Default::default()
+        });
+    }
+    for &name in THEORY_NAMES {
+        out.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::MODULE),
+            detail: Some("theory".to_string()),
+            ..Default::default()
+        });
+    }
+    for &fam in CLASSICAL_FAMILIES {
+        out.push(CompletionItem {
+            label: fam.to_string(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some("classical-axiom family".to_string()),
+            ..Default::default()
+        });
+    }
+    for &kw in KB_KEYWORDS {
+        out.push(CompletionItem {
+            label: kw.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("lu-kb keyword".to_string()),
+            ..Default::default()
+        });
+    }
+    out
 }
 
 /// v0.25 25LSP.4 — produce hover Markdown for an identifier.

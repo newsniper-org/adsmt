@@ -128,3 +128,48 @@ fn hover_content_returns_none_for_unknown_identifier() {
     let symbols = std::collections::HashMap::new();
     assert!(adsmt_lsp::hover_content("", &symbols, "no-such-symbol").is_none());
 }
+
+// === v0.25 25LSP.5 — completion ===
+
+#[test]
+fn completion_items_include_smtlib_keywords() {
+    let items = adsmt_lsp::completion_items();
+    let labels: Vec<String> = items.iter().map(|i| i.label.clone()).collect();
+    for kw in [
+        "set-logic", "declare-const", "assert", "check-sat", "push", "pop",
+    ] {
+        assert!(labels.contains(&kw.to_string()), "missing `{kw}`");
+    }
+}
+
+#[test]
+fn completion_items_include_theory_names() {
+    let items = adsmt_lsp::completion_items();
+    let labels: Vec<String> = items.iter().map(|i| i.label.clone()).collect();
+    for name in ["UF", "LIA", "LRA", "BV", "Arrays", "Datatypes", "EGraph"] {
+        assert!(labels.contains(&name.to_string()), "missing `{name}`");
+    }
+}
+
+#[test]
+fn completion_items_include_kb_keywords() {
+    let items = adsmt_lsp::completion_items();
+    let labels: Vec<String> = items.iter().map(|i| i.label.clone()).collect();
+    for kw in ["kind", "fn", "axiom", "rule", "directive"] {
+        assert!(labels.contains(&kw.to_string()), "missing kb keyword `{kw}`");
+    }
+}
+
+#[test]
+fn completion_items_carry_kind_and_detail_for_keywords() {
+    let items = adsmt_lsp::completion_items();
+    let assert_item = items
+        .iter()
+        .find(|i| i.label == "assert")
+        .expect("assert in list");
+    assert_eq!(
+        assert_item.kind,
+        Some(tower_lsp::lsp_types::CompletionItemKind::KEYWORD)
+    );
+    assert_eq!(assert_item.detail.as_deref(), Some("SMT-LIB command"));
+}
