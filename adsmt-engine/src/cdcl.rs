@@ -117,6 +117,15 @@ pub struct CdclState {
     /// keeps locality across restarts and tends to flip many
     /// Unknown verdicts to Sat on satisfiable inputs.
     pub saved_phase: HashMap<String, bool>,
+    /// v0.21 B.1 follow-up — per-learnt-clause activity score.
+    /// Parallel to [`Self::learnt_clauses`]: index `i` holds
+    /// the activity of `learnt_clauses[i]`. Each time the
+    /// propagator picks a learnt clause as a Unit antecedent
+    /// (or it shows up in the conflict resolution path) its
+    /// score is bumped; reduction drops the lowest-scoring
+    /// clauses rather than the oldest, retaining the "glue"
+    /// clauses that actually pay for themselves.
+    pub learnt_activity: Vec<f64>,
 }
 
 impl CdclState {
@@ -156,6 +165,13 @@ impl CdclState {
     /// resetting the score table.
     pub fn decay_activity(&mut self, factor: f64) {
         for v in self.activity.values_mut() { *v *= factor; }
+    }
+
+    /// Decay every learnt-clause activity score. Same shape as
+    /// [`Self::decay_activity`] but over the parallel
+    /// [`Self::learnt_activity`] vec.
+    pub fn decay_learnt_activity(&mut self, factor: f64) {
+        for v in self.learnt_activity.iter_mut() { *v *= factor; }
     }
 
     /// Roll the trail back to the entries at `level` and below,
@@ -217,9 +233,17 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
     // don't trip it on every conflict.
     let mut learnt_limit: usize = (input_len / 3).max(32);
     let learnt_limit_growth: f64 = 1.1;
+    // v0.21 B.1 follow-up — learnt clause activity tunings.
+    let clause_bump: f64 = 1.0;
+    let clause_decay: f64 = 0.999;
     loop {
         // Propagate over input + learnt clauses.
-        let conflict_idx = propagate_with_storage(&owned, &mut state);
+        let conflict_idx = propagate_with_storage(
+            &owned,
+            &mut state,
+            input_len,
+            clause_bump,
+        );
         if let Some(idx) = conflict_idx {
             conflicts += 1;
             if conflicts > max_conflicts {
@@ -237,6 +261,7 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
             // bounded without an explicit rescale.
             state.bump_activity(&learnt, vsids_bump);
             state.decay_activity(vsids_decay);
+            state.decay_learnt_activity(clause_decay);
             state.backtrack_to(bj_level);
             // Append the learnt clause and record it on the
             // separate learnt_clauses store. The learnt clause
@@ -245,6 +270,7 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
             // propagate round will assign its UIP literal.
             owned.push(learnt.clone());
             state.learnt_clauses.push(learnt);
+            state.learnt_activity.push(1.0);
             // v0.21 B.1 follow-up — learnt clause reduction.
             //
             // When the learnt store overflows, drop the oldest
@@ -261,9 +287,35 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
             if state.learnt_clauses.len() > learnt_limit {
                 state.backtrack_to(0);
                 let keep = state.learnt_clauses.len() / 2;
-                let drop = state.learnt_clauses.len() - keep;
-                state.learnt_clauses.drain(..drop);
-                owned.drain(input_len..input_len + drop);
+                // v0.21 B.1 follow-up — activity-based retention.
+                // Sort indices by activity (ascending) and drop
+                // the lowest-scoring half rather than the oldest.
+                // Glue / frequently-used clauses survive even
+                // when they were learnt early.
+                let mut indexed: Vec<(usize, f64)> = state
+                    .learnt_activity
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .collect();
+                indexed.sort_by(|a, b| {
+                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let drop_count = indexed.len() - keep;
+                // `to_drop` holds the indices (into the learnt
+                // store) to remove. Sort descending so we can
+                // pop them out without shifting earlier indices.
+                let mut to_drop: Vec<usize> = indexed
+                    .into_iter()
+                    .take(drop_count)
+                    .map(|(i, _)| i)
+                    .collect();
+                to_drop.sort_by(|a, b| b.cmp(a));
+                for idx in to_drop {
+                    state.learnt_clauses.remove(idx);
+                    state.learnt_activity.remove(idx);
+                    owned.remove(input_len + idx);
+                }
                 learnt_limit =
                     ((learnt_limit as f64) * learnt_limit_growth) as usize;
             }
@@ -311,9 +363,16 @@ fn pick_vsids_atom(input_clauses: &[Clause], state: &CdclState) -> Option<String
 /// Like [`propagate`] but reports the conflicting clause index
 /// instead of just a flag. The index references `clauses` (input
 /// + learnt) so conflict analysis can pull the antecedent.
+///
+/// When a learnt clause acts as a unit antecedent its activity
+/// score is bumped by `clause_bump`. The caller picks the bump
+/// (typically 1.0); decay is applied per-conflict at the
+/// outer-loop level via [`CdclState::decay_learnt_activity`].
 fn propagate_with_storage(
     clauses: &[Clause],
     state: &mut CdclState,
+    input_len: usize,
+    clause_bump: f64,
 ) -> Option<usize> {
     loop {
         let mut progress = false;
@@ -331,6 +390,12 @@ fn propagate_with_storage(
                             lit.polarity,
                             Reason::Propagated { clause_idx: idx },
                         );
+                        if idx >= input_len {
+                            let li = idx - input_len;
+                            if let Some(act) = state.learnt_activity.get_mut(li) {
+                                *act += clause_bump;
+                            }
+                        }
                         progress = true;
                     }
                 }
@@ -726,6 +791,16 @@ mod tests {
         assert!(keys.contains(&"r".to_string()));
         assert!(keys.contains(&"p".to_string()));
         assert_eq!(bj_level, 1, "backjump to the level of ¬p");
+    }
+
+    // === Learnt clause activity ===
+
+    #[test]
+    fn decay_learnt_activity_scales_every_entry() {
+        let mut state = CdclState::new();
+        state.learnt_activity = vec![2.0, 1.0, 4.0];
+        state.decay_learnt_activity(0.5);
+        assert_eq!(state.learnt_activity, vec![1.0, 0.5, 2.0]);
     }
 
     // === Phase saving ===
