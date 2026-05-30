@@ -1,10 +1,16 @@
 /*
  * adsmt — C ABI header.
  *
- * v0.19 surface freeze candidate. The surface itself remains
- * subject to change until v1.0 ships; this header documents the
- * current shape so downstream C / C++ / Lean4 binding writers
- * have a stable reference.
+ * v0.23 PHASE 1 FREEZE CANDIDATE. Promoted from "v0.19 surface
+ * freeze candidate" by the v0.23 23A.1 task on 2026-05-30 per
+ * `lsp_roadmap.md` phase 1. The 11-symbol surface enumerated
+ * below is intended as the v1.0.0 C ABI; any modification after
+ * the v0.23 sign-off requires either a deliberate v1.x major
+ * bump or a re-opening of the freeze decision.
+ *
+ * The Rust-side `#[no_mangle]` exports in `src/lib.rs` MUST
+ * correspond 1:1 with the declarations below; the
+ * `tests/c_abi_surface.rs` audit enforces this.
  *
  * Compatibility guarantees:
  *   - v0.x: NO compatibility (per the v0.x exclusion policy

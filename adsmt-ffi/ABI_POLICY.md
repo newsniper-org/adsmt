@@ -1,16 +1,26 @@
 # adsmt C ABI policy
 
-**Status**: v0.19 surface-freeze candidate. Full semver
-guarantees apply from v1.0.0.
+**Status**: **v0.23 phase 1 freeze candidate** (v1.0 RC
+pre-commit). Promoted from v0.19's "surface-freeze candidate"
+status by the v0.23 23A.1 task on 2026-05-30 per
+`lsp_roadmap.md` phase 1. The surface enumerated below is
+intended as the v1.0.0 C ABI; any modification after v0.23
+sign-off requires either (a) a deliberate v1.x major bump or
+(b) a re-opening of the freeze decision.
+
+Full semver guarantees apply from v1.0.0 (per `21E.4` the
+v1.0.0 marker is already registered in the 4-peer safeguard).
 
 ## Surface
 
 The complete C ABI surface lives in
 [`include/adsmt.h`](include/adsmt.h). Every exported function
 has a stable name, return type, and parameter list documented
-in that header.
+in that header. The Rust-side exports in `src/lib.rs` MUST
+correspond 1:1 with the header (enforced by
+`tests/c_abi_surface.rs` as of v0.23).
 
-Current exports (v0.19.0):
+Current exports (v0.23.0, phase 1 freeze candidate):
 
 | Symbol | Category |
 |---|---|
@@ -71,34 +81,36 @@ boundary.
 
 ## Pre-publication checklist (v1.0 entry)
 
-When the v1.0 architectural decision (P5) chooses to ship adsmt
-as a standalone library to crates.io, the ABI hardening
-checklist is:
+Phase 1 (v0.23) freeze candidate sign-off status:
 
-1. **Symbol audit** — compare `adsmt-ffi/src/lib.rs`'s exports
-   against `include/adsmt.h` and ensure 1:1 correspondence.
-2. **cbindgen verification** — optionally regenerate the header
-   via `cbindgen` to confirm no manual drift. The hand-written
-   header above is the authoritative source; cbindgen output
-   should diff cleanly.
-3. **soname** — pick a stable soname (`libadsmt.so.1`) and
-   document in this file. Symlinks `libadsmt.so` → `libadsmt.so.1`
-   for development.
-4. **Symbol visibility** — review `[lib]` settings in
-   `adsmt-ffi/Cargo.toml`; ensure `crate-type = ["cdylib",
-   "staticlib"]` so consumers get a shared + static library.
-5. **`#![breaking_changes_semver("1.0.0")]`** — register the
-   first attribute, activating the 8-layer safeguard for all
-   future C-ABI-touching bumps.
-6. **Memory ownership** — re-audit who owns what for every
-   pointer returned across the boundary. `adsmt_version` and
-   `adsmt_null_string` must consistently transfer ownership to
-   the caller (free via `adsmt_string_free`).
-7. **Thread safety** — document whether a single
-   `AdsmtSolverHandle` is safe to share across threads. Current
-   answer: **no** — handles are `!Sync`. Document explicitly.
-8. **Lean4 binding test** — round-trip every function from a
-   Lean4 `ffi` call to verify the marshalling.
+1. **Symbol audit** — ✅ enforced by `tests/c_abi_surface.rs`
+   (v0.23 23A.1). Drift between `include/adsmt.h` and the
+   Rust `#[no_mangle]` exports fails the test suite.
+2. **cbindgen verification** — pending. The hand-written
+   header is the authoritative source for v1.0; cbindgen is
+   useful as a cross-check but not required for the freeze.
+3. **soname** — TBD at v1.0 RC. Tentative: `libadsmt.so.1` →
+   `libadsmt.so` symlink at install time.
+4. **Symbol visibility** — ✅ `crate-type = ["cdylib",
+   "staticlib", "rlib"]` already set in `Cargo.toml`.
+5. **`#![breaking_changes_semver("1.0.0")]`** — registered as
+   forward-looking marker on `adsmt-heuristic-checker` per
+   21E.4. The phase 3 RC bump promotes it to a real attribute
+   on `adsmt-ffi/src/lib.rs` as well.
+6. **Memory ownership** — ✅ `adsmt_version` and
+   `adsmt_null_string` documented to transfer ownership;
+   caller frees via `adsmt_string_free`. `AdsmtSolverHandle`
+   owned by the caller from `_new` through `_free`. Double
+   `_free` returns `ADSMT_ERR_NULL` without crashing.
+7. **Thread safety** — ✅ documented: `AdsmtSolverHandle` is
+   **not Sync**. Each thread maintains its own handle.
+8. **Lean4 / leo4 binding test** — DEFERRED to phase 2 (v0.25)
+   per the leo4-wait policy in `oxiz_relationship.md`. The
+   v0.23 freeze locks the surface that leo4 will eventually
+   consume.
+
+Sign-off threshold: items 1, 4, 6, 7 are mandatory for phase 1
+sign-off; items 2, 3, 5, 8 are mandatory for phase 3 RC bump.
 
 ## Bindings tracking
 
