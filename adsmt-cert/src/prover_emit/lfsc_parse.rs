@@ -385,20 +385,203 @@ pub fn sort_to_isabelle(s: &SExpr) -> String {
     }
 }
 
+/// v0.21 A.1 — convert an LFSC term S-expression into Lean 4
+/// surface syntax. Recognises lambda binders, Pi binders, type
+/// annotations, side-condition applications, `(holds …)` proof
+/// wrappers, and `true`/`false`/`tt`/`ff` constants. Anything
+/// else round-trips through its printed S-expression form.
+///
+/// LFSC term shapes (per oxiz-proof's emitter):
+///   - `(\ var <sort> <body>)` → Lean `fun var : sort => body`
+///   - `(! var <sort> <body>)` → Lean `(var : sort) → body`
+///                              (anonymous `_` → bare arrow)
+///   - `(: <term> <sort>)`     → Lean `(term : sort)`
+///   - `(# <name> <args>...)`  → Lean `name args`
+///                              (side-condition app)
+///   - `(holds <term>)`        → Lean `term`
+///                              (proof obligation; the type
+///                              is already the Prop, holds is
+///                              the LFSC marker)
+///   - `tt`, `true`            → `True`
+///   - `ff`, `false`           → `False`
+///   - integer literal `n`     → `n`
+pub fn term_to_lean(t: &SExpr) -> String {
+    match t {
+        SExpr::Atom(a) => match a.as_str() {
+            "tt" | "true" => "True".into(),
+            "ff" | "false" => "False".into(),
+            other => other.to_string(),
+        },
+        SExpr::IntLit(n) => n.to_string(),
+        SExpr::List(items) => {
+            if let Some(SExpr::Atom(head)) = items.first() {
+                match head.as_str() {
+                    "\\" if items.len() == 4 => {
+                        return format!(
+                            "(fun {} : {} => {})",
+                            items[1],
+                            sort_to_lean(&items[2]),
+                            term_to_lean(&items[3]),
+                        );
+                    }
+                    "!" if items.len() == 4 => {
+                        // Pi binders live at the sort level in LFSC —
+                        // delegate to sort_to_lean so the body is
+                        // recognised as a sort rather than re-treated
+                        // as a term and missing base-sort mappings.
+                        return sort_to_lean(t);
+                    }
+                    ":" if items.len() == 3 => {
+                        return format!(
+                            "({} : {})",
+                            term_to_lean(&items[1]),
+                            sort_to_lean(&items[2]),
+                        );
+                    }
+                    "#" if items.len() >= 2 => {
+                        // Side condition application: (# name args...).
+                        let name = &items[1];
+                        let rest: Vec<String> = items[2..]
+                            .iter()
+                            .map(term_to_lean)
+                            .collect();
+                        return if rest.is_empty() {
+                            format!("{name}")
+                        } else {
+                            format!("({} {})", name, rest.join(" "))
+                        };
+                    }
+                    "holds" if items.len() == 2 => {
+                        return term_to_lean(&items[1]);
+                    }
+                    _ => {}
+                }
+            }
+            // Generic application form (head arg1 arg2 ...).
+            if items.is_empty() {
+                return "()".into();
+            }
+            let parts: Vec<String> = items.iter().map(term_to_lean).collect();
+            format!("({})", parts.join(" "))
+        }
+    }
+}
+
+/// v0.21 A.1 — Rocq surface syntax for LFSC terms. Same
+/// recognition table as [`term_to_lean`] with Rocq spellings.
+pub fn term_to_rocq(t: &SExpr) -> String {
+    match t {
+        SExpr::Atom(a) => match a.as_str() {
+            "tt" | "true" => "True".into(),
+            "ff" | "false" => "False".into(),
+            other => other.to_string(),
+        },
+        SExpr::IntLit(n) => n.to_string(),
+        SExpr::List(items) => {
+            if let Some(SExpr::Atom(head)) = items.first() {
+                match head.as_str() {
+                    "\\" if items.len() == 4 => {
+                        return format!(
+                            "(fun {} : {} => {})",
+                            items[1],
+                            sort_to_rocq(&items[2]),
+                            term_to_rocq(&items[3]),
+                        );
+                    }
+                    "!" if items.len() == 4 => {
+                        // Pi binder — delegate to sort_to_rocq.
+                        return sort_to_rocq(t);
+                    }
+                    ":" if items.len() == 3 => {
+                        return format!(
+                            "({} : {})",
+                            term_to_rocq(&items[1]),
+                            sort_to_rocq(&items[2]),
+                        );
+                    }
+                    "#" if items.len() >= 2 => {
+                        let name = &items[1];
+                        let rest: Vec<String> = items[2..]
+                            .iter()
+                            .map(term_to_rocq)
+                            .collect();
+                        return if rest.is_empty() {
+                            format!("{name}")
+                        } else {
+                            format!("({} {})", name, rest.join(" "))
+                        };
+                    }
+                    "holds" if items.len() == 2 => {
+                        return term_to_rocq(&items[1]);
+                    }
+                    _ => {}
+                }
+            }
+            if items.is_empty() { return "tt".into(); }
+            let parts: Vec<String> = items.iter().map(term_to_rocq).collect();
+            format!("({})", parts.join(" "))
+        }
+    }
+}
+
+/// v0.21 A.1 — Isabelle/Isar surface syntax for LFSC terms.
+/// Lambda uses `λ`, Pi-binders render as `∀` for non-anonymous
+/// vars and `⇒` for anonymous arrows, applications use
+/// plain juxtaposition.
+pub fn term_to_isabelle(t: &SExpr) -> String {
+    match t {
+        SExpr::Atom(a) => match a.as_str() {
+            "tt" | "true" => "True".into(),
+            "ff" | "false" => "False".into(),
+            other => other.to_string(),
+        },
+        SExpr::IntLit(n) => n.to_string(),
+        SExpr::List(items) => {
+            if let Some(SExpr::Atom(head)) = items.first() {
+                match head.as_str() {
+                    "\\" if items.len() == 4 => {
+                        return format!(
+                            "(\\<lambda>{}. {})",
+                            items[1],
+                            term_to_isabelle(&items[3]),
+                        );
+                    }
+                    "!" if items.len() == 4 => {
+                        return format!("({})", sort_to_isabelle(t));
+                    }
+                    ":" if items.len() == 3 => {
+                        return format!(
+                            "({}::{})",
+                            term_to_isabelle(&items[1]),
+                            sort_to_isabelle(&items[2]),
+                        );
+                    }
+                    "#" if items.len() >= 2 => {
+                        let name = &items[1];
+                        let rest: Vec<String> = items[2..]
+                            .iter()
+                            .map(term_to_isabelle)
+                            .collect();
+                        return if rest.is_empty() {
+                            format!("{name}")
+                        } else {
+                            format!("({} {})", name, rest.join(" "))
+                        };
+                    }
+                    "holds" if items.len() == 2 => {
+                        return term_to_isabelle(&items[1]);
+                    }
+                    _ => {}
+                }
+            }
+            if items.is_empty() { return "True".into(); }
+            let parts: Vec<String> = items.iter().map(term_to_isabelle).collect();
+            format!("({})", parts.join(" "))
+        }
+    }
+}
+
 /// v0.21 A.1 (partial) per-ITP consumer scaffold.
-///
-/// Produces a Lean 4 source snippet that previews the LFSC
-/// document's structure as commented top-level entries. Each
-/// `(declare …)` lands as `-- LFSC declare: <name>`, each
-/// `(define …)` as `-- LFSC define: <name>`, each `(check …)`
-/// as a `theorem` skeleton with `sorry` so the Lean kernel
-/// still type-checks the module. Unrecognised forms become
-/// `-- LFSC other: <sexpr>` lines.
-///
-/// The richer mapping — actual sort/term translation, proof
-/// reconstruction from `(check …)` — is the next phase. This
-/// scaffold's job is to give downstream Lean tooling a stable
-/// shape it can extend.
 pub fn render_lean(doc: &LfscDocument) -> String {
     let mut out = String::new();
     out.push_str("-- adsmt LFSC consumer (v0.21 A.1)\n");
@@ -412,11 +595,15 @@ pub fn render_lean(doc: &LfscDocument) -> String {
                 ));
             }
             LfscDecl::Define { name, body } => {
-                out.push_str(&format!("-- LFSC define: {name} := {body}\n"));
+                let lean_body = term_to_lean(body);
+                out.push_str(&format!(
+                    "def {name} := {lean_body}  -- LFSC define: {name}\n"
+                ));
             }
             LfscDecl::Check { term } => {
+                let lean_term = term_to_lean(term);
                 out.push_str(&format!(
-                    "theorem lfsc_check_{i} : True := by trivial\n  -- LFSC check: {term}\n"
+                    "theorem lfsc_check_{i} : {lean_term} := by sorry\n  -- LFSC check: {term}\n"
                 ));
             }
             LfscDecl::Other(e) => {
@@ -445,11 +632,15 @@ pub fn render_rocq(doc: &LfscDocument) -> String {
                 ));
             }
             LfscDecl::Define { name, body } => {
-                out.push_str(&format!("(* LFSC define: {name} := {body} *)\n"));
+                let rocq_body = term_to_rocq(body);
+                out.push_str(&format!(
+                    "Definition {name} := {rocq_body}. (* LFSC define: {name} *)\n"
+                ));
             }
             LfscDecl::Check { term } => {
+                let rocq_term = term_to_rocq(term);
                 out.push_str(&format!(
-                    "Lemma lfsc_check_{i} : True. Proof. trivial. Qed. (* LFSC check: {term} *)\n"
+                    "Lemma lfsc_check_{i} : {rocq_term}. Proof. Admitted. (* LFSC check: {term} *)\n"
                 ));
             }
             LfscDecl::Other(e) => {
@@ -481,11 +672,15 @@ pub fn render_isabelle(doc: &LfscDocument) -> String {
                 ));
             }
             LfscDecl::Define { name, body } => {
-                out.push_str(&format!("(* LFSC define: {name} := {body} *)\n"));
+                let isa_body = term_to_isabelle(body);
+                out.push_str(&format!(
+                    "definition {name} where \"{name} = {isa_body}\" (* LFSC define: {name} *)\n"
+                ));
             }
             LfscDecl::Check { term } => {
+                let isa_term = term_to_isabelle(term);
                 out.push_str(&format!(
-                    "lemma lfsc_check_{i}: \"True\" by simp (* LFSC check: {term} *)\n"
+                    "lemma lfsc_check_{i}: \"{isa_term}\" sorry (* LFSC check: {term} *)\n"
                 ));
             }
             LfscDecl::Other(e) => {
@@ -627,7 +822,7 @@ mod tests {
         assert!(lean.contains("LFSC declare: nat"));
         assert!(lean.contains("axiom nat"));
         assert!(lean.contains("theorem lfsc_check_1"));
-        assert!(lean.contains("trivial"));
+        assert!(lean.contains("sorry"));
         assert!(lean.contains("LFSC check: (truth foo)"));
     }
 
@@ -703,7 +898,7 @@ mod tests {
         let rocq = render_rocq(&doc);
         assert!(rocq.contains("(* LFSC declare: nat"));
         assert!(rocq.contains("Lemma lfsc_check_1"));
-        assert!(rocq.contains("Qed."));
+        assert!(rocq.contains("Admitted."));
     }
 
     #[test]
@@ -713,7 +908,85 @@ mod tests {
         let isa = render_isabelle(&doc);
         assert!(isa.contains("(* LFSC declare: nat"));
         assert!(isa.contains("lemma lfsc_check_1"));
-        assert!(isa.contains("by simp"));
+        assert!(isa.contains("sorry"));
+    }
+
+    // === Term lowering ===
+
+    #[test]
+    fn term_to_lean_renders_lambda_pi_annotation_holds() {
+        // (\ x mpz x) → fun x : Int => x
+        let doc = parse_document("(\\ x mpz x)").unwrap();
+        if let LfscDecl::Other(e) = &doc.declarations()[0] {
+            assert_eq!(term_to_lean(e), "(fun x : Int => x)");
+        } else { panic!() }
+        // (! _ mpz mpz) → (Int → Int)
+        let doc = parse_document("(! _ mpz mpz)").unwrap();
+        if let LfscDecl::Other(e) = &doc.declarations()[0] {
+            assert_eq!(term_to_lean(e), "(Int → Int)");
+        } else { panic!() }
+        // (: foo bool) → (foo : Prop)
+        let doc = parse_document("(: foo bool)").unwrap();
+        if let LfscDecl::Other(e) = &doc.declarations()[0] {
+            assert_eq!(term_to_lean(e), "(foo : Prop)");
+        } else { panic!() }
+        // (holds X) → X
+        let doc = parse_document("(holds bar)").unwrap();
+        if let LfscDecl::Other(e) = &doc.declarations()[0] {
+            assert_eq!(term_to_lean(e), "bar");
+        } else { panic!() }
+    }
+
+    #[test]
+    fn term_to_lean_renders_true_false_constants() {
+        assert_eq!(term_to_lean(&SExpr::Atom("tt".into())), "True");
+        assert_eq!(term_to_lean(&SExpr::Atom("ff".into())), "False");
+        assert_eq!(term_to_lean(&SExpr::Atom("true".into())), "True");
+        assert_eq!(term_to_lean(&SExpr::Atom("false".into())), "False");
+    }
+
+    #[test]
+    fn term_to_lean_renders_generic_application() {
+        // (f x y) → (f x y)
+        let doc = parse_document("(f x y)").unwrap();
+        if let LfscDecl::Other(e) = &doc.declarations()[0] {
+            assert_eq!(term_to_lean(e), "(f x y)");
+        } else { panic!() }
+    }
+
+    #[test]
+    fn term_to_rocq_renders_lambda_and_holds() {
+        let doc = parse_document("(\\ x mpz x)").unwrap();
+        if let LfscDecl::Other(e) = &doc.declarations()[0] {
+            assert_eq!(term_to_rocq(e), "(fun x : Z => x)");
+        } else { panic!() }
+        let doc = parse_document("(holds foo)").unwrap();
+        if let LfscDecl::Other(e) = &doc.declarations()[0] {
+            assert_eq!(term_to_rocq(e), "foo");
+        } else { panic!() }
+    }
+
+    #[test]
+    fn term_to_isabelle_renders_lambda_and_pi() {
+        let doc = parse_document("(\\ x mpz x)").unwrap();
+        if let LfscDecl::Other(e) = &doc.declarations()[0] {
+            assert_eq!(term_to_isabelle(e), "(\\<lambda>x. x)");
+        } else { panic!() }
+        let doc = parse_document("(! _ mpz mpz)").unwrap();
+        if let LfscDecl::Other(e) = &doc.declarations()[0] {
+            assert_eq!(term_to_isabelle(e), "(int \\<Rightarrow> int)");
+        } else { panic!() }
+    }
+
+    #[test]
+    fn render_lean_uses_lowered_term_in_theorem_body() {
+        let doc = parse_document("(check (holds (= a b)))").unwrap();
+        let lean = render_lean(&doc);
+        // After holds-stripping: `(= a b)` (generic application form).
+        assert!(
+            lean.contains("theorem lfsc_check_0 : (= a b) := by sorry"),
+            "expected theorem with lowered term, got: {lean}"
+        );
     }
 
     #[test]
