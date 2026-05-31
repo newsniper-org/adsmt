@@ -10,7 +10,7 @@
 //!    α-equivalent to the goal, emit a single-hypothesis candidate.
 //!    This is the v0.1 behaviour, preserved.
 //!
-//! 2. **Horn-rule chain** — for each [`HornRule`] whose head is
+//! 2. **Horn-rule chain** — for each [`HornRule`](crate::rule_base::HornRule) whose head is
 //!    α-equivalent to the goal, recursively resolve each body atom
 //!    and combine the results into a multi-hypothesis candidate.
 //!    Bounded by `MAX_DEPTH` to keep cycles like
@@ -111,7 +111,7 @@ impl<'a> SldEngine<'a> {
         self.candidates_with_budget(goal, DEFAULT_MAX_DEPTH)
     }
 
-    /// Like [`candidates`], but with an explicit chain-depth budget.
+    /// Like [`Self::candidates`], but with an explicit chain-depth budget.
     pub fn candidates_with_budget(
         &self,
         goal: &Term,

@@ -18,7 +18,7 @@
 //! - [`payload_bytes`] returning a borrow on the requested
 //!   format's bytes (or `None` when the witness isn't DRAT /
 //!   the format is empty).
-//! - [`emit_section_comment`] producing the prover-neutral
+//! - [`emit_section_summary`] producing the prover-neutral
 //!   "embedded DRAT payload" comment block backends inline
 //!   right after a Theory step's axiomatisation.
 //!

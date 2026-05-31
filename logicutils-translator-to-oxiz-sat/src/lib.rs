@@ -1,6 +1,3 @@
-#![allow(rustdoc::broken_intra_doc_links)]
-#![allow(rustdoc::private_intra_doc_links)]
-#![allow(rustdoc::redundant_explicit_links)]
 
 //! Deterministic, injective translator from `lu_common::kb`
 //! modules to `oxiz-sat` CNF formulas.
@@ -41,8 +38,8 @@
 //! The initial cut is intentionally narrow — enough for the
 //! adsmt-minimum heuristic table, more on opt-in:
 //!
-//! - [`EnumDef`] declarations close their respective domains.
-//! - [`FactBlock`] entries become ground atom assertions
+//! - [`EnumDef`](lu_common::kb::ast::EnumDef) declarations close their respective domains.
+//! - [`FactBlock`](lu_common::kb::ast::FactBlock) entries become ground atom assertions
 //!   (`target ← dep` becomes a single SAT variable named
 //!   `<block>::<target>::<dep>` constrained to TRUE).
 //! - All other top-level constructs are rejected with

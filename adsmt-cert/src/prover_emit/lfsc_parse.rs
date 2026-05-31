@@ -3,7 +3,7 @@
 //! Closes the read-side counterpart to the LFSC emit pipeline
 //! that v0.15+ built up. The emit side serializes adsmt
 //! certificates into LFSC byte form via
-//! [`oxiz_proof_emit::emit_lfsc_via_oxiz`]; the parse side here
+//! `adsmt_engine::oxiz_proof_emit::emit_lfsc_via_oxiz`; the parse side here
 //! recovers a typed AST from a previously-emitted LFSC document
 //! so per-ITP consumers (Lean4 / Rocq / Isabelle) can reflect
 //! the structured proof into their own surface language.

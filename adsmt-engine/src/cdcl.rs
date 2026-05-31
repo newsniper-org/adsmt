@@ -23,7 +23,7 @@
 //!   backjumping.
 //! - **Stage 4** — Luby restart wrapper
 //!   ([`cdcl_with_restarts`]) + VSIDS atom-activity scoring
-//!   ([`pick_vsids_atom`]).
+//!   (`pick_vsids_atom`, internal).
 //!
 //! Stage 4 follow-ups (also landed):
 //!
@@ -125,7 +125,7 @@ pub struct CdclState {
     /// Each conflict bumps the activity of every atom in the
     /// learnt clause; periodic [`Self::decay_activity`] scales
     /// every score by `decay_factor` so recently-active atoms
-    /// dominate the decision order. See [`pick_vsids_atom`].
+    /// dominate the decision order. See `pick_vsids_atom` (internal).
     pub activity: HashMap<String, f64>,
     /// v0.21 B.1 follow-up — phase saving. Records the polarity
     /// each atom most recently held on the trail before being

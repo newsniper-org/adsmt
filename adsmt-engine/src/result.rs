@@ -1,4 +1,4 @@
-//! Result types returned by [`crate::Solver::check_sat`] and [`Solver::abduce`].
+//! Result types returned by [`crate::Solver::check_sat`] and [`crate::Solver::abduce`].
 
 use adsmt_abduce::sld::Candidate;
 use adsmt_cert::Certificate;

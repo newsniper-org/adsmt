@@ -1,4 +1,5 @@
-//! Bridge between our [`DratProof`] and `oxiz-proof`'s DRAT format.
+//! Bridge between our [`DratProof`](crate::drat::DratProof) and
+//! `oxiz-proof`'s DRAT format.
 //!
 //! Path A+B, P3 (v0.15). When the `oxiz-proof` feature is enabled,
 //! we can:
@@ -16,14 +17,14 @@
 //! pair below is preserved for callers who only need step shape.
 //! Option C from the v0.15 audit — richer bidirectional conversion
 //! preserving clause ids (LRAT-style), source line numbers, and
-//! deletion order — is implemented in [`bridge::to_oxiz_proof_rich`]
-//! / [`bridge::from_oxiz_proof_rich`], which target the
-//! `oxiz_proof::Proof` graph (not the bare `DratProof`). The graph
-//! carries `ProofNodeId` per step, so clause ids round-trip
-//! naturally; deletion is encoded as an inference step with
-//! `rule = "delete"`; source positions ride alongside in a
-//! [`BridgeMetadata`] sidecar populated by callers that have the
-//! surrounding [`crate::Certificate`] context.
+//! deletion order — is implemented in `bridge::to_oxiz_proof_rich`
+//! / `bridge::from_oxiz_proof_rich` (gated behind the `oxiz-proof`
+//! feature), which target the `oxiz_proof::Proof` graph (not the
+//! bare `DratProof`). The graph carries `ProofNodeId` per step, so
+//! clause ids round-trip naturally; deletion is encoded as an
+//! inference step with `rule = "delete"`; source positions ride
+//! alongside in a `bridge::BridgeMetadata` sidecar populated by
+//! callers that have the surrounding [`crate::Certificate`] context.
 
 #[cfg(feature = "oxiz-proof")]
 pub mod bridge {

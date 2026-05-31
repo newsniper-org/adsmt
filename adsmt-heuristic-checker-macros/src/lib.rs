@@ -1,6 +1,3 @@
-#![allow(rustdoc::broken_intra_doc_links)]
-#![allow(rustdoc::private_intra_doc_links)]
-#![allow(rustdoc::redundant_explicit_links)]
 
 //! Proc-macro entry points for adsmt's classical-axiom
 //! heuristic compile-time validation.
@@ -46,7 +43,7 @@
 //!
 //! 1. Absolute path — used verbatim.
 //! 2. Relative path resolved against the invocation site's
-//!    source-file directory ([`Span::file`] returns the file
+//!    source-file directory (`proc_macro::Span::file` returns the file
 //!    path; we join the dirname with the user-supplied
 //!    relative path).
 //! 3. Fallback to `CARGO_MANIFEST_DIR`-relative (preserved as a

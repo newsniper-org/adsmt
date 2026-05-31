@@ -616,9 +616,9 @@ impl CertBuilder {
         self.add_with_loc(body, result, None)
     }
 
-    /// Like [`add`] but attaches a [`SourceLoc`] to the resulting step.
+    /// Like [`Self::add`] but attaches a [`SourceLoc`] to the resulting step.
     /// Pass `Some(loc)` when the step originates from a parsed input
-    /// position; `None` is equivalent to [`add`].
+    /// position; `None` is equivalent to [`Self::add`].
     pub fn add_with_loc(
         &mut self,
         body: StepBody,
@@ -669,7 +669,7 @@ impl CertBuilder {
     }
 
     /// Mark the current step count as a delta checkpoint. Subsequent
-    /// calls to [`steps_since`] return only steps added after this
+    /// calls to [`Self::steps_since`] return only steps added after this
     /// checkpoint.
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint(self.steps.len())

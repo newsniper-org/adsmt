@@ -86,7 +86,7 @@ pub trait Theory: Send {
     /// Is the current state consistent?
     fn check(&mut self) -> CheckResult;
 
-    /// Conflict witness if the most recent [`check`] returned `Unsat`.
+    /// Conflict witness if the most recent [`Self::check`] returned `Unsat`.
     /// Stateless theories may return `None` if they have not been
     /// checked since the last reset.
     fn explain(&self) -> Option<TheoryWitness>;
