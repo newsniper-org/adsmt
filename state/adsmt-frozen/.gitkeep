@@ -1,0 +1,11 @@
+# adsmt-frozen subtree (v1.0.0-rc.1 RC1.4)
+#
+# Reserved for the *pre-merge* adsmt project state (.claude-
+# conversations/, in-repo memory snapshots, .adsmt-status/, …)
+# at the moment of the v1.0.0 absorption (21E.2 option 2-A').
+#
+# Until the actual fold lands in a subsequent RC commit, this
+# directory is an empty placeholder kept under git via this
+# .gitkeep file. Cross-contamination with `../integrated/` or
+# `../logicutils-frozen/` is forbidden — each frozen subtree is
+# read-only audit material.

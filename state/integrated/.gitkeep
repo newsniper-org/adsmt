@@ -1,0 +1,5 @@
+# integrated subtree (v1.0.0-rc.1 RC1.4)
+#
+# Post-merge state going forward. Strictly separated from
+# `../adsmt-frozen/` and `../logicutils-frozen/`. Cross-
+# contamination is forbidden.
