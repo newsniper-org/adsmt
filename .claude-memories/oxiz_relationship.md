@@ -35,7 +35,80 @@ OxiZ"** — not a from-scratch Z3 alternative.
 | **P2: Math** | v0.13 | Import `oxiz-math` for Simplex; retire our v0.9 hand-rolled LIA Fourier-Motzkin |
 | **P3: Proof bridge** | v0.15 | Integrate `oxiz-proof` (DRAT/Alethe); our cert layer keeps `assumed` markers + Lean reflection. Includes the `enable_writer` PR (see below) so DRAT can be captured in memory. **Landed 2026-05-14 as commit `8bbf97e`**: DIMACS/Alethe/LFSC/Coq bytes via oxiz crates, `lean_emit` reflection module, `drat-trim` cross-check, fork submodule wired through `[patch.crates-io]`. 254 tests passing with all features. |
 | **P4: Coordination** | v0.17 | File issues/PRs on OxiZ — ITP binding (Lean4 + Rocq, equal priority), abduction trait. Be transparent about adsmt's role. **Also includes**: option C of the v0.15 `oxiz_drat_bridge` discussion — extend `to_oxiz`/`from_oxiz` (cert ⇄ oxiz-proof) into a richer bidirectional conversion preserving clause ids (LRAT), source line numbers, and deletion order. Deferred to P4 deliberately so the conversion grows alongside the upstream coordination work. |
-| **P5: v1.0 decision** | v0.19 | Either (a) adsmt stays as "OxiZ + Lean4/Rocq abductive frontend" with adsmt+logicutils merge, or (b) fold adsmt entirely into OxiZ as `oxiz-lean` / `oxiz-rocq` / `oxiz-abduce` extension crates |
+| **P5: v1.0 decision** | v0.19 → v0.21 carry-over → **decided 2026-05-30** | **Outcome: bidirectional embed** (sec "P5 outcome" below). Earlier framing presented two extremes (stay-separate vs fold-into-OxiZ); the chosen path is a middle option that preserves adsmt's governance + ITP/abductive identity while *adding* a layer of upstream contribution. |
+
+## P5 outcome (2026-05-30, user decision on 21E.1)
+
+**Selected: bidirectional embed** — adsmt remains a separate
+project with its own governance and BSD-2/Apache-2/LGPL triple
+license, but a delimited subset of code flows into OxiZ as
+upstream contributions:
+
+- **What stays in-tree (adsmt's identity surface)**:
+  `adsmt-core` (HOL+HKT kernel + 12 inference rules — the TCB
+  heart), `adsmt-class` (type-class layer + dictionary
+  passing), `adsmt-cert` (S-expression cert + Lean4 reflection
+  emit + `prover_emit` family for Lean/Rocq/Isabelle),
+  `adsmt-abduce` (SLD chain + minimize + rank + workflow),
+  `adsmt-quant` (Miller E-matching + prenex + tier-3 enum +
+  `learn_triggers` + `egraph`), `adsmt-heuristic-checker[-macros]`,
+  `adsmt-lints`, `adsmt-cli`, `adsmt-ffi`, `adsmt-parser`,
+  `adsmt-engine` (the DPLL(T) router + `cdcl` fallback +
+  `bv_blast` BV bit-blaster). These are our **differentiated
+  identity** and stay BSD-2/Apache-2/LGPL triple.
+- **What flows upstream as new OxiZ crates (or existing
+  contrib repos)**: the *abduction trait / driver* surface
+  that any solver could consume — `oxiz-contrib-abduction`
+  already exists at `newsniper-org/oxiz-contrib-abduction`
+  under this exact pattern. Future candidates: a polite-
+  combination-aware Theory trait extension, the LFSC
+  byte-stream parser scaffold (v0.21 A.1) if OxiZ's
+  `oxiz-proof` wants to consume it.
+- **Fork strategy update**: `feat/enable-writer` plus any
+  future `feat/<topic>` branches stay as the staging area;
+  the long-term goal is *every patch lands upstream and the
+  fork's branch list shrinks toward empty*. Strict-superset
+  rule still binds the fork. When the last divergence
+  vanishes the fork repo stays as an organizational mirror
+  but `[patch.crates-io]` can be retired.
+- **Governance boundary** (the explicit point that was
+  flagged as "moue boundary" in the option comparison): the
+  v1.0 decision deliberately *does not* freeze which extra
+  crates can move upstream over time. New candidates are
+  negotiated cycle-by-cycle through upstream issues — the
+  same Path A+B pattern that drove P1-P4. The criterion is
+  "would a non-adsmt OxiZ consumer benefit?" — yes →
+  candidate for upstreaming; no → stays in-tree as part of
+  adsmt's differentiated identity.
+- **License flow**: contributions made *as* upstream OxiZ
+  PRs flow under Apache-2.0 (OxiZ's license); contributions
+  staying in adsmt keep the triple license. No cross-port
+  required — the abductive trait surface is small enough
+  that an Apache-2 reimplementation upstream + a BSD-2 use
+  site in adsmt-abduce is the canonical pattern.
+- **semver scope at v1.0**: adsmt's own crates stabilize
+  independently (21E.4 lands the first
+  `breaking_changes_semver` attribute on whichever crate
+  reaches stability first — likely `adsmt-core`). OxiZ's
+  surface stabilizes on OxiZ's own schedule.
+- **logicutils**: the +2 offset rule retires once the v1.0
+  unification lands. 21E.2 covers the merge sequencing.
+
+**Rejected alternatives** (recorded for the audit trail):
+- Option 1 (status quo freeze): too weak on the 2026-05-13
+  "integrated form" promise.
+- Option 2 (hard default-on): unnecessary build weight; the
+  v0.21 `cdcl` fallback is real value on its own.
+- Option 3 (fork as separate product): violates Path B spirit.
+- Option 4 (component absorption): too dependent on cool-japan
+  governance; the 2026-05-26 issue#7 promotion refusal
+  signaled the upstream isn't asking for full absorption.
+- Option 6 (soft optional, default-off): walks back from
+  Path A+B without a strong reason.
+- Option 7 (separate identity): would discard the
+  abductive-frontend-on-OxiZ identity adopted 2026-05-13.
+- Option 8 (full unification monorepo): same governance
+  objection as Option 4, amplified across all three projects.
 
 ## Fork strategy (added 2026-05-14)
 
@@ -100,14 +173,33 @@ User confirmed 2026-05-13:
 
 > adsmt v1.0 = **adsmt + logicutils + OxiZ** integrated form
 
-This supersedes the earlier "adsmt + logicutils merge only" plan
-(see `logicutils_version_rule.md`). The three-project merge resolves
-when:
+Concretised 2026-05-30 by the 21E.1 + 21E.2 decisions:
+- **adsmt ↔ OxiZ** stays bidirectional embed (this file's
+  "P5 outcome" section). adsmt remains a separate project
+  with its own governance; a delimited subset of code flows
+  upstream as Apache-2 OxiZ contributions (the abductive
+  trait surface is the canonical example).
+- **adsmt ↔ logicutils** = option 2-A' (see
+  `logicutils_version_rule.md` §3). logicutils is fully
+  absorbed into the adsmt workspace; legacy `lu-*` CLI
+  binaries are preserved through `lu-cli`; an `adsmt-meta`
+  metacrate becomes the Linux-distro-friendly entry point;
+  v0.x → v1.x → v2.x kb files are migrated by perpetually-
+  retained chained converters; pre-merge state subtrees are
+  segregated under `state/{adsmt-frozen,logicutils-frozen,integrated}/`.
+
+The earlier "three-project merge" framing remains accurate
+for the *what*; the 21E.1/21E.2 decisions determine the *how*
+for each leg.
+
+Trigger conditions for the v1.0 cut (unchanged from
+2026-05-13):
 - adsmt's C ABI, SMT-LIB dialect, certificate format stabilize
-- OxiZ has matching surface for abductive extensions (P4 outcome
-  determines whether this needs PRs or stays in our crates)
-- logicutils v0.x-smt branch retires (kb language folded into the
-  unified workspace)
+- OxiZ has matching surface for abductive extensions (P4 +
+  P5-bidirectional-embed flow continues delivering these
+  through cycle-by-cycle PRs)
+- logicutils v0.x-smt branch retires (kb language folded into
+  the adsmt workspace per option 2-A')
 
 ## Dual-prover framing: Lean4 + Rocq as co-equal targets
 
