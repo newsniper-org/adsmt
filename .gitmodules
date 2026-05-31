@@ -11,3 +11,4 @@
 [submodule "docs/books"]
 	path = docs/books
 	url = https://github.com/newsniper-org/adsmt-books
+	branch = main
