@@ -99,9 +99,12 @@ mod tests {
     }
 
     #[test]
-    fn σ_peers_agree_at_v0_17_0() {
+    #[allow(non_snake_case)]
+    fn sigma_peers_agree_at_v0_17_0() {
         // v0.17.0 ships zero breakings; all three file peers
-        // must agree on the empty list.
+        // (the σ-peer trio) must agree on the empty list.
+        // Renamed in RC2.3 from `σ_peers_…` to `sigma_peers_…`
+        // to silence the `mixed_script_confusables` lint.
         verify_file_peers().expect("σ peers must agree at v0.17.0");
     }
 

@@ -40,10 +40,11 @@
 //!   outer loop but yields the satisfying assignment on the
 //!   Sat path via [`CdclOutcome::Sat`].
 //!
-//! Pending (v0.23+): two-watched-literals scheme replacing the
-//! per-clause `evaluate_clause` scan in [`propagate_with_storage`],
-//! LBD-based restart triggers, and clause-LBD updates on glue
-//! re-derivation. Legacy `bool_solver::dpll_with_restarts` is
+//! Two-watched-literals propagation landed at v1.0.0-rc.1 RC1.2;
+//! the `propagate_two_watched` function replaces the legacy
+//! per-clause `evaluate_clause` scan. Future work (LBD-based
+//! restart triggers, clause-LBD updates on glue re-derivation)
+//! remains queued. Legacy `bool_solver::dpll_with_restarts` is
 //! kept around for the `cdcl_smoke` bench's A/B comparison.
 
 use std::collections::HashMap;
@@ -407,7 +408,7 @@ fn pick_vsids_atom(input_clauses: &[Clause], state: &CdclState) -> Option<String
         match evaluate_clause(clause, &state.assign) {
             ClauseEval::Satisfied => continue,
             ClauseEval::Falsified => unreachable!("propagation caught"),
-            ClauseEval::Unit(_) => unreachable!("propagation drained"),
+            ClauseEval::Unit => unreachable!("propagation drained"),
             ClauseEval::Open => {
                 for lit in clause {
                     let key = atom_key(lit);
@@ -626,51 +627,6 @@ fn propagate_two_watched(
     None
 }
 
-/// Like [`propagate`] but reports the conflicting clause index
-/// instead of just a flag. The index references `clauses` (input
-/// + learnt) so conflict analysis can pull the antecedent.
-///
-/// When a learnt clause acts as a unit antecedent its activity
-/// score is bumped by `clause_bump`. The caller picks the bump
-/// (typically 1.0); decay is applied per-conflict at the
-/// outer-loop level via [`CdclState::decay_learnt_activity`].
-fn propagate_with_storage(
-    clauses: &[Clause],
-    state: &mut CdclState,
-    input_len: usize,
-    clause_bump: f64,
-) -> Option<usize> {
-    loop {
-        let mut progress = false;
-        for (idx, clause) in clauses.iter().enumerate() {
-            match evaluate_clause(clause, &state.assign) {
-                ClauseEval::Satisfied | ClauseEval::Open => continue,
-                ClauseEval::Falsified => return Some(idx),
-                ClauseEval::Unit(lit) => {
-                    let key = atom_key(&lit);
-                    if let Some(&v) = state.assign.get(&key) {
-                        if v != lit.polarity { return Some(idx); }
-                    } else {
-                        state.push(
-                            key,
-                            lit.polarity,
-                            Reason::Propagated { clause_idx: idx },
-                        );
-                        if idx >= input_len {
-                            let li = idx - input_len;
-                            if let Some(act) = state.learnt_activity.get_mut(li) {
-                                *act += clause_bump;
-                            }
-                        }
-                        progress = true;
-                    }
-                }
-            }
-        }
-        if !progress { return None; }
-    }
-}
-
 #[derive(Debug)]
 /// Test-only propagation outcome carried by the stage-1
 /// `propagate` helper. The production path uses
@@ -689,7 +645,7 @@ fn propagate(clauses: &[Clause], state: &mut CdclState) -> PropOutcome {
             match evaluate_clause(clause, &state.assign) {
                 ClauseEval::Satisfied | ClauseEval::Open => continue,
                 ClauseEval::Falsified => return PropOutcome::Conflict,
-                ClauseEval::Unit(lit) => {
+                ClauseEval::Unit => {
                     let key = atom_key(&lit);
                     if let Some(&v) = state.assign.get(&key) {
                         if v != lit.polarity {
@@ -901,7 +857,11 @@ fn any_atom_of_clause(clause: &Clause) -> adsmt_core::Term {
 enum ClauseEval {
     Satisfied,
     Falsified,
-    Unit(Lit),
+    // RC2.3 warning sweep — the `Lit` payload is unused since
+    // RC1.2 swapped the propagator to two-watched-literals; the
+    // remaining `evaluate_clause` call sites only branch on the
+    // discriminator. Drop the payload.
+    Unit,
     Open,
 }
 
@@ -917,7 +877,7 @@ fn evaluate_clause(clause: &Clause, assign: &HashMap<String, bool>) -> ClauseEva
     }
     match unassigned.len() {
         0 => ClauseEval::Falsified,
-        1 => ClauseEval::Unit(unassigned[0].clone()),
+        1 => ClauseEval::Unit,
         _ => ClauseEval::Open,
     }
 }
