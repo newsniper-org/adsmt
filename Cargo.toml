@@ -19,36 +19,35 @@ members = [
 exclude = ["external/logicutils", "external/oxiz"]
 
 [workspace.package]
-# Minor bump 0.23 → 0.25 opens the v0.25 cycle. logicutils stays
-# at 0.25.0 — the v0.23 cycle's logicutils bump was already
-# annotated as the *last* separately-versioned release before
-# v1.0 absorption (21E.2 option 2-A'). The +2 offset rule
-# effectively retires this cycle; logicutils may receive patch
-# bumps only.
+# v0.25 → 1.0.0-rc.1 opens **phase 3 of the v1.0 RC roadmap**
+# (lsp_roadmap.md). Headline theme: **v1.0 RC bump** — the
+# workspace surface freezes at this version under semver
+# semantics; further breaking changes require either 1.x major
+# bump or RC2 cut.
 #
-# v0.25 = **phase 2 of the v1.0 RC roadmap** (lsp_roadmap.md).
-# Headline theme: **LSP implementation + vscode-extension
-# split**. Mandatory completion target per user instruction
-# (21F.3 option 4).
-#
-# v0.25 scope:
-#   * New `adsmt-lsp` crate (or `tooling/adsmt-lsp/`) hosting
-#     a `tower-lsp`-based server. Six required capabilities:
-#       — textDocument/publishDiagnostics
-#       — textDocument/definition
-#       — textDocument/hover
-#       — textDocument/completion
-#       — workspace/symbol
-#       — textDocument/codeAction
-#   * vscode-extension split along the editor-agnostic vs
-#     VSCode-specific axis (server logic → agnostic; VSCode
-#     command palette / settings UI → vscode-specific).
-#   * Carry-over: 23B.1 CDCL two-watched literals (substantial
-#     inner-loop restructure deferred from v0.23 so LSP work
-#     and the CDCL rewrite don't collide).
-#   * Mid-cycle audit (25H.1) and phase 2 sign-off (25H.2 —
-#     gates entry to phase 3 v1.0 RC).
-version = "0.25.0"
+# v1.0.0-rc.1 scope (per `lsp_roadmap.md` §"Phase 3 entry
+# conditions"):
+#   * RC1.1 — phase 1 + phase 2 sign-off re-verify (done at
+#     cycle open; existing audit guards continue to enforce
+#     the freeze).
+#   * RC1.2 — land carried-over 25B.1 CDCL two-watched
+#     literals (substantial inner-loop restructure deferred
+#     from v0.23 / v0.25).
+#   * RC1.3 — promote 21E.4's forward-looking 1.0.0 marker
+#     into a real `#![breaking_changes_semver("1.0.0")]`
+#     attribute on `adsmt-ffi/src/lib.rs` + symmetric stamps
+#     on `adsmt-cert`, `adsmt-parser` per the phase 3 RC
+#     checklist items in each policy doc.
+#   * RC1.4 — logicutils absorption per 21E.2 option 2-A':
+#     every `lu-*` crate moves into the adsmt workspace,
+#     `external/logicutils/` submodule archived after the
+#     fold.
+#   * RC1.5 — `adsmt-meta` metacrate published.
+#   * RC1.6 — `lu-common::migration::v0_to_v1` chained
+#     converter shipped.
+#   * RC1.H.1 mid-cycle audit + RC1.H.2 RC sign-off (gates
+#     v1.0.0 stable bump).
+version = "1.0.0-rc.1"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 
