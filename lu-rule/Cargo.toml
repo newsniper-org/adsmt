@@ -7,7 +7,7 @@ description = "Pattern rule matching with backtracking for logicutils"
 
 [dependencies]
 lu-common = { workspace = true }
-lu-match = { path = "../lu-match" }
+lu-match = { version = "=1.0.0", path = "../lu-match" }
 clap = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
