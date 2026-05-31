@@ -15,6 +15,7 @@ members = [
     "adsmt-cli",
     "adsmt-ffi",
     "adsmt-lsp",
+    "adsmt-meta",
     # v1.0.0-rc.1 RC1.4.A — logicutils absorption per
     # 21E.2 option 2-A'. 12 crates moved from
     # external/logicutils/ to top-level workspace members.

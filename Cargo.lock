@@ -137,6 +137,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-meta"
+version = "1.0.0-rc.1"
+dependencies = [
+ "adsmt-abduce",
+ "adsmt-cert",
+ "adsmt-class",
+ "adsmt-core",
+ "adsmt-engine",
+ "adsmt-ffi",
+ "adsmt-heuristic-checker",
+ "adsmt-heuristic-checker-macros",
+ "adsmt-lints",
+ "adsmt-parser",
+ "adsmt-quant",
+ "adsmt-theory",
+ "freshcheck",
+ "logicutils-translator-to-oxiz-sat",
+ "lu-common",
+ "lu-deps",
+ "lu-expand",
+ "lu-match",
+ "lu-multi",
+ "lu-par",
+ "lu-query",
+ "lu-queue",
+ "lu-rule",
+ "stamp",
+]
+
+[[package]]
 name = "adsmt-parser"
 version = "1.0.0-rc.1"
 dependencies = [
