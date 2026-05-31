@@ -879,7 +879,7 @@ mod tests {
     #[test]
     fn mid_block_local_markers_contribute_to_should() {
         use crate::canonical::{
-            ClassicalMarkerSet, MidBlock, MidBlockItem, StepId,
+            ClassicalMarkerSet, MidBlock, MidBlockItem,
         };
         let mut b = CertBuilder::default();
         let h = r::assume(&mut b, p()).unwrap();

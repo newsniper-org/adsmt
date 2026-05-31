@@ -30,6 +30,7 @@ impl ProofHandle {
 }
 
 /// Public namespace `r::*` for the recording rule wrappers.
+#[allow(clippy::module_inception)]
 pub mod recorder {
     use super::*;
 

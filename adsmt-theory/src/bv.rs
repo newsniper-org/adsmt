@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
 use adsmt_core::{Term, Type};
 
-use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
+use crate::{bv::BinOpEqFactsResult::Failure, trait_::{AssertResult, CheckResult, Literal, Theory}};
 
 /// Per-variable bit-level knowledge.
 ///
@@ -58,6 +58,14 @@ pub struct Bv {
     conflict: Option<TheoryWitness>,
     scope_stack: Vec<BvScope>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BinOpEqFactsResult {
+    Some(String, u128, u128),
+    None,
+    Failure(TheoryWitness)
+}
+
 
 #[derive(Clone, Debug, Default)]
 struct BvScope {
@@ -166,7 +174,7 @@ impl Bv {
         binop_lhs: &Term,
         binop_rhs: &Term,
         eq_rhs_lit: u128,
-    ) -> Result<Option<(String, u128, u128)>, TheoryWitness> {
+    ) -> BinOpEqFactsResult {
         let mask_all = Self::width_mask(width);
         let lhs_lit = binop_lhs.dest_bv_lit().map(|(v, _)| v);
         let rhs_lit = binop_rhs.dest_bv_lit().map(|(v, _)| v);
@@ -177,7 +185,7 @@ impl Bv {
         let (var, lit_m) = match (lhs_var, rhs_lit, rhs_var, lhs_lit) {
             (Some(v), Some(m), _, _) => (v, m),
             (_, _, Some(v), Some(m)) => (v, m),
-            _ => return Ok(None),
+            _ => return BinOpEqFactsResult::None,
         };
         let eq_rhs_lit = eq_rhs_lit & mask_all;
         let lit_m = lit_m & mask_all;
@@ -187,7 +195,7 @@ impl Bv {
                 // Bits where lit_m=0 force eq_rhs bit to 0.
                 let zero_mask = !lit_m & mask_all;
                 if (eq_rhs_lit & zero_mask) != 0 {
-                    return Err(TheoryWitness::Opaque {
+                    return Failure(TheoryWitness::Opaque {
                         kind: "BV".into(),
                         notes: format!(
                             "bvand contradiction: (bvand {var} 0x{lit_m:x}) = 0x{eq_rhs_lit:x} has a 1-bit where the mask is 0"
@@ -195,13 +203,13 @@ impl Bv {
                     });
                 }
                 // For bits where lit_m=1, x_bit = eq_rhs_bit.
-                Ok(Some((var, lit_m, eq_rhs_lit & lit_m)))
+                BinOpEqFactsResult::Some(var, lit_m, eq_rhs_lit & lit_m)
             }
             "bvor" => {
                 // Bits where lit_m=1 force eq_rhs bit to 1.
                 let one_mask = lit_m;
                 if (eq_rhs_lit & one_mask) != one_mask {
-                    return Err(TheoryWitness::Opaque {
+                    return Failure(TheoryWitness::Opaque {
                         kind: "BV".into(),
                         notes: format!(
                             "bvor contradiction: (bvor {var} 0x{lit_m:x}) = 0x{eq_rhs_lit:x} has a 0-bit where the mask is 1"
@@ -210,13 +218,13 @@ impl Bv {
                 }
                 // For bits where lit_m=0, x_bit = eq_rhs_bit.
                 let zero_mask = !lit_m & mask_all;
-                Ok(Some((var, zero_mask, eq_rhs_lit & zero_mask)))
+                BinOpEqFactsResult::Some(var, zero_mask, eq_rhs_lit & zero_mask)
             }
             "bvxor" => {
                 // XOR is bijective: x is fully determined by lit_m XOR eq_rhs.
-                Ok(Some((var, mask_all, (lit_m ^ eq_rhs_lit) & mask_all)))
+                BinOpEqFactsResult::Some(var, mask_all, (lit_m ^ eq_rhs_lit) & mask_all)
             }
-            _ => Ok(None),
+            _ => BinOpEqFactsResult::None,
         }
     }
 
@@ -302,11 +310,11 @@ impl Theory for Bv {
                 let Some((eq_v, eq_w)) = eq_other.dest_bv_lit() else { continue; };
                 if eq_w != w { continue; }
                 match Self::binop_eq_facts(&op, w, &bl, &br, eq_v) {
-                    Err(witness) => {
+                    BinOpEqFactsResult::Failure(witness) => {
                         self.conflict = Some(witness.clone());
                         return AssertResult::Conflict { witness };
                     }
-                    Ok(Some((var, mask, value))) => {
+                    BinOpEqFactsResult::Some(var, mask, value) => {
                         if let Some(witness) =
                             self.record_bit_facts(&var, w, mask, value)
                         {
@@ -315,7 +323,7 @@ impl Theory for Bv {
                         }
                         return AssertResult::Accepted;
                     }
-                    Ok(None) => {}
+                    BinOpEqFactsResult::None => {}
                 }
             }
         }

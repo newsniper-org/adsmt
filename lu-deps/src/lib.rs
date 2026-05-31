@@ -54,12 +54,10 @@ impl DepGraph {
         }
 
         while let Some(node) = queue.pop_front() {
-            if visited.insert(node.clone()) {
-                if let Some(deps) = self.edges.get(&node) {
-                    for dep in deps {
-                        if !visited.contains(dep) {
-                            queue.push_back(dep.clone());
-                        }
+            if visited.insert(node.clone()) && let Some(deps) = self.edges.get(&node) {
+                for dep in deps {
+                    if !visited.contains(dep) {
+                        queue.push_back(dep.clone());
                     }
                 }
             }

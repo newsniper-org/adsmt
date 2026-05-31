@@ -286,7 +286,6 @@ pub fn execute_par_with(
             .iter()
             .map(|(k, v)| (k.to_string(), (*v).clone()))
             .collect();
-        let total = total;
 
         let handle = thread::spawn(move || {
             loop {

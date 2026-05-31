@@ -470,11 +470,9 @@ pub fn register_clause_watches(
         let key = (atom_key(lit), lit.polarity);
         state.watches.entry(key).or_default().push(idx);
     }
-    if w1 != w0 {
-        if let Some(lit) = clause.get(w1) {
-            let key = (atom_key(lit), lit.polarity);
-            state.watches.entry(key).or_default().push(idx);
-        }
+    if w1 != w0 && let Some(lit) = clause.get(w1) {
+        let key = (atom_key(lit), lit.polarity);
+        state.watches.entry(key).or_default().push(idx);
     }
     // Immediate unit-propagation check.
     let mut unassigned: Option<usize> = None;
@@ -565,10 +563,8 @@ fn propagate_two_watched(
             // clause is fine; keep watching.
             if let Some(other_lit) = clause.get(other_slot) {
                 let other_key = atom_key(other_lit);
-                if let Some(&v) = state.assign.get(&other_key) {
-                    if v == other_lit.polarity {
-                        continue;
-                    }
+                if let Some(&v) = state.assign.get(&other_key) && v == other_lit.polarity {
+                    continue;
                 }
             }
             // Look for a new watcher among the remaining

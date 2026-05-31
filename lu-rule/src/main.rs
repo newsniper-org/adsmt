@@ -111,7 +111,7 @@ fn main() -> std::process::ExitCode {
         let mut rec = Record::new()
             .field("target", &m.target)
             .field("recipe", &m.expanded_recipe)
-            .field("deps", &m.expanded_deps.join(" "));
+            .field("deps", m.expanded_deps.join(" "));
 
         for (k, v) in &m.bindings {
             rec = rec.field(k.as_str(), v.as_str());

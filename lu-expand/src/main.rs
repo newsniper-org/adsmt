@@ -150,7 +150,7 @@ fn main() -> std::process::ExitCode {
         let sep = cli.sep.as_deref().unwrap_or("\n");
         let expanded: Vec<String> = combinations
             .iter()
-            .map(|b| lu_match::expand_template(&template, b))
+            .map(|b| lu_match::expand_template(template, b))
             .collect();
         print!("{}", expanded.join(sep));
         if sep != "\n" {
@@ -167,7 +167,7 @@ fn main() -> std::process::ExitCode {
         };
 
         for bindings in &combinations {
-            let expanded = lu_match::expand_template(&template, bindings);
+            let expanded = lu_match::expand_template(template, bindings);
             let mut rec = Record::new().field("expanded", &expanded);
             for key in &keys {
                 if let Some(val) = bindings.get(key) {

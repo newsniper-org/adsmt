@@ -89,10 +89,10 @@ pub fn available_formats(witness: &TheoryWitness) -> Vec<PayloadFormat> {
 
 /// Return the bytes for the requested payload format, or `None`
 /// when the witness isn't DRAT or the format is empty.
-pub fn payload_bytes<'a>(
-    witness: &'a TheoryWitness,
+pub fn payload_bytes(
+    witness: &TheoryWitness,
     format: PayloadFormat,
-) -> Option<&'a [u8]> {
+) -> Option<&[u8]> {
     if let TheoryWitness::Drat {
         dimacs_bytes,
         alethe_bytes,

@@ -1,3 +1,6 @@
+#![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::doc_lazy_continuation)]
+
 //! Proof certificates for adsmt.
 //!
 //! Canonical S-expression format records every kernel rule application,

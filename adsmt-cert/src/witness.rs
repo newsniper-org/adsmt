@@ -14,7 +14,7 @@ use adsmt_core::Term;
 use crate::canonical::StepId;
 
 /// Witness accompanying a `Theory` step.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TheoryWitness {
     /// Equality reasoning via congruence and transitivity.
     Euf(EufWitness),
@@ -56,12 +56,12 @@ pub enum TheoryWitness {
 }
 
 /// Congruence-closure witness.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EufWitness {
     pub steps: Vec<EufStep>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EufStep {
     /// `t = t` is built in.
     Reflexivity(Term),
@@ -76,7 +76,7 @@ pub enum EufStep {
 }
 
 /// Farkas-style witness for linear arithmetic.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinArithWitness {
     pub bounds: Vec<LinearBound>,
     /// Nonnegative multipliers; their dot product with `bounds` must
@@ -84,7 +84,7 @@ pub struct LinArithWitness {
     pub farkas: Vec<i64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinearBound {
     pub coeffs: Vec<(String, i64)>,
     pub op: BoundOp,
@@ -94,12 +94,12 @@ pub struct LinearBound {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BoundOp { Le, Lt, Eq, Ne, Ge, Gt }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArrayWitness {
     pub chain: Vec<ArrayStep>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArrayStep {
     /// `select(a, i)` term.
     Select { array: Term, index: Term },
@@ -116,7 +116,7 @@ pub enum ArrayStep {
     Extensionality(Term),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatatypeWitness {
     pub kind: DatatypeReason,
     pub constructors: Vec<String>,
@@ -136,7 +136,7 @@ pub enum DatatypeReason {
 }
 
 /// Polite combination cardinality witness.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PoliteWitness {
     pub sort: String,
     /// `None` means ω (stably infinite).

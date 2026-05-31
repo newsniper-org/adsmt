@@ -214,25 +214,25 @@ fn validate_body_exprs(
     Ok(())
 }
 
-fn validate_expr(expr: &Expr, scope: &[String]) -> Result<(), FragmentError> {
+fn validate_expr(expr: &Expr, _scope: &[String]) -> Result<(), FragmentError> {
     match expr {
         Expr::Ident(_) | Expr::IntLit(_) | Expr::FloatLit(_)
             | Expr::StringLit(_) => Ok(()),
         Expr::Call(_name, args) => {
             for arg in args {
-                validate_expr(arg, scope)?;
+                validate_expr(arg, _scope)?;
             }
             Ok(())
         }
         Expr::BinOp(lhs, _op, rhs) => {
-            validate_expr(lhs, scope)?;
-            validate_expr(rhs, scope)?;
+            validate_expr(lhs, _scope)?;
+            validate_expr(rhs, _scope)?;
             Ok(())
         }
-        Expr::FieldAccess(inner, _field) => validate_expr(inner, scope),
+        Expr::FieldAccess(inner, _field) => validate_expr(inner, _scope),
         Expr::Pipe(lhs, rhs) => {
-            validate_expr(lhs, scope)?;
-            validate_expr(rhs, scope)?;
+            validate_expr(lhs, _scope)?;
+            validate_expr(rhs, _scope)?;
             Ok(())
         }
         Expr::Lambda(params, body) => {

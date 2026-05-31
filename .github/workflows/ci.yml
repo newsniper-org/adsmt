@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, testing]
   pull_request:
-    branches: [main]
+    branches: [main, testing]
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,24 +33,6 @@ jobs:
 
       - name: cargo test --workspace --features oxiz-math
         run: cargo test -p adsmt-theory --features oxiz-math
-
-  test-logicutils:
-    name: cargo test (external/logicutils)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo target
-        uses: Swatinem/rust-cache@v2
-
-      - name: cargo test --workspace (logicutils)
-        working-directory: external/logicutils
-        run: cargo test --workspace
 
   fmt:
     name: cargo fmt --check

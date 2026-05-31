@@ -385,6 +385,7 @@ pub fn sort_to_isabelle(s: &SExpr) -> String {
     }
 }
 
+
 /// v0.21 A.1 — convert an LFSC term S-expression into Lean 4
 /// surface syntax. Recognises lambda binders, Pi binders, type
 /// annotations, side-condition applications, `(holds …)` proof

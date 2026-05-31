@@ -167,7 +167,7 @@ fn main() -> std::process::ExitCode {
         let mut rec = Record::new();
         for name in &var_names {
             if let Some(val) = binding.get(name) {
-                rec = rec.field(name.as_str(), &val.to_string());
+                rec = rec.field(name.as_str(), val.to_string());
             }
         }
         if let Err(e) = writer.write_record(&rec) {

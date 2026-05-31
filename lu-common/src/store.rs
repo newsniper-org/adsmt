@@ -282,13 +282,9 @@ impl ContentStore {
                 if path.read_dir().map(|mut it| it.next().is_none()).unwrap_or(false) {
                     let _ = fs::remove_dir(&path);
                 }
-            } else if ft.is_file() && path.extension().is_some_and(|e| e == "json") {
-                if let Some(entry) = Self::load_leaf(&path) {
-                    if !Path::new(&entry.path).exists() {
-                        fs::remove_file(&path)?;
-                        *removed += 1;
-                    }
-                }
+            } else if ft.is_file() && path.extension().is_some_and(|e| e == "json") && let Some(entry) = Self::load_leaf(&path) && !Path::new(&entry.path).exists() {
+                fs::remove_file(&path)?;
+                *removed += 1;
             }
         }
         Ok(())
@@ -323,24 +319,21 @@ impl ContentStore {
             return self.insert_at(&sub_path, key, entry, depth + 1);
         }
 
-        if leaf_path.is_file() {
-            if let Some(existing) = Self::load_leaf(&leaf_path) {
-                if existing.path == key {
-                    // Same key — merge.
-                    Self::write_leaf(&leaf_path, &entry)?;
-                    return Ok(());
-                }
-                // True collision: replace the leaf with a subtree and
-                // re-insert *both* entries one level deeper. The hash
-                // function at depth+1 is independent of the one used
-                // here, so the two keys almost certainly land in
-                // different slots (otherwise we recurse again).
-                fs::remove_file(&leaf_path)?;
-                fs::create_dir(&sub_path)?;
-                self.insert_at(&sub_path, &existing.path.clone(), existing, depth + 1)?;
-                return self.insert_at(&sub_path, key, entry, depth + 1);
+        if leaf_path.is_file() && let Some(existing) = Self::load_leaf(&leaf_path) {
+            if existing.path == key {
+                // Same key — merge.
+                Self::write_leaf(&leaf_path, &entry)?;
+                return Ok(());
             }
-            // Unreadable leaf: overwrite it; safer than leaving corrupt JSON.
+            // True collision: replace the leaf with a subtree and
+            // re-insert *both* entries one level deeper. The hash
+            // function at depth+1 is independent of the one used
+            // here, so the two keys almost certainly land in
+            // different slots (otherwise we recurse again).
+            fs::remove_file(&leaf_path)?;
+            fs::create_dir(&sub_path)?;
+            self.insert_at(&sub_path, &existing.path.clone(), existing, depth + 1)?;
+            return self.insert_at(&sub_path, key, entry, depth + 1);
         }
 
         Self::write_leaf(&leaf_path, &entry)
@@ -368,12 +361,8 @@ impl ContentStore {
                 }
                 continue;
             }
-            if leaf_path.is_file() {
-                if let Some(entry) = Self::load_leaf(&leaf_path) {
-                    if entry.path == key {
-                        return Ok(Some(entry));
-                    }
-                }
+            if leaf_path.is_file() && let Some(entry) = Self::load_leaf(&leaf_path) && entry.path == key {
+                return Ok(Some(entry));
             }
             return Ok(None);
         }

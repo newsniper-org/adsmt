@@ -34,13 +34,15 @@ use adsmt_core::{Term, Type};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 
+pub type BoundValue = (i128, bool);
+
 /// Per-variable bounds, stored as `(lower_inclusive, upper_inclusive)`.
 #[derive(Clone, Debug)]
 #[derive(Default)]
 struct Bounds {
     /// `(value, strict)`: when `strict`, the variable must be strictly above the value.
-    lower: Option<(i128, bool)>,
-    upper: Option<(i128, bool)>,
+    lower: Option<BoundValue>,
+    upper: Option<BoundValue>,
 }
 
 
@@ -110,7 +112,7 @@ impl LinArith {
     pub fn tight_bounds_strict(
         &self,
         var: &str,
-    ) -> (Option<(i128, bool)>, Option<(i128, bool)>) {
+    ) -> (Option<BoundValue>, Option<BoundValue>) {
         match self.bounds.get(var) {
             None => (None, None),
             Some(b) => (b.lower, b.upper),
@@ -535,13 +537,13 @@ impl LinArith {
     }
 }
 
-fn tighter_lower(a: (i128, bool), b: (i128, bool)) -> (i128, bool) {
+fn tighter_lower(a: BoundValue, b: BoundValue) -> BoundValue {
     if a.0 > b.0 { a }
     else if a.0 < b.0 { b }
     else { (a.0, a.1 || b.1) } // same value: strict wins
 }
 
-fn tighter_upper(a: (i128, bool), b: (i128, bool)) -> (i128, bool) {
+fn tighter_upper(a: BoundValue, b: BoundValue) -> BoundValue {
     if a.0 < b.0 { a }
     else if a.0 > b.0 { b }
     else { (a.0, a.1 || b.1) }

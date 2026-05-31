@@ -166,10 +166,8 @@ fn flex_vars_in(t: &Term, flex: &HashSet<Arc<Var>>) -> Vec<Arc<Var>> {
     let mut out: Vec<Arc<Var>> = Vec::new();
     fn walk(t: &Term, flex: &HashSet<Arc<Var>>, out: &mut Vec<Arc<Var>>) {
         match t {
-            Term::Var(v) => {
-                if flex.contains(v) && !out.iter().any(|x| **x == **v) {
-                    out.push(v.clone());
-                }
+            Term::Var(v) if flex.contains(v) && !out.iter().any(|x| **x == **v) => {
+                out.push(v.clone());
             }
             Term::App(f, x) => {
                 walk(f, flex, out);
