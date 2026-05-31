@@ -1,3 +1,7 @@
+#![allow(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::private_intra_doc_links)]
+#![allow(rustdoc::redundant_explicit_links)]
+
 //! Quantifier handling for adsmt.
 //!
 //! Four tiers escalate on deadlock: Miller-pattern HO E-matching,

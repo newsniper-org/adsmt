@@ -1,3 +1,7 @@
+#![allow(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::private_intra_doc_links)]
+#![allow(rustdoc::redundant_explicit_links)]
+
 //! Parsers and emitters for adsmt input surfaces.
 //!
 //! v0.1 provides an S-expression layer used by SMT-LIB v2 input and

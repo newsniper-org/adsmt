@@ -1,3 +1,7 @@
+#![allow(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::private_intra_doc_links)]
+#![allow(rustdoc::redundant_explicit_links)]
+
 //! Runtime audit library for adsmt certificate hygiene checks.
 //!
 //! # Why this crate exists

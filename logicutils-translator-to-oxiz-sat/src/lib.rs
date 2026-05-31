@@ -1,3 +1,7 @@
+#![allow(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::private_intra_doc_links)]
+#![allow(rustdoc::redundant_explicit_links)]
+
 //! Deterministic, injective translator from `lu_common::kb`
 //! modules to `oxiz-sat` CNF formulas.
 //!
