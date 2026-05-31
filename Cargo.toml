@@ -35,35 +35,33 @@ members = [
 exclude = ["external/oxiz"]
 
 [workspace.package]
-# v0.25 → 1.0.0-rc.1 opens **phase 3 of the v1.0 RC roadmap**
-# (lsp_roadmap.md). Headline theme: **v1.0 RC bump** — the
-# workspace surface freezes at this version under semver
-# semantics; further breaking changes require either 1.x major
-# bump or RC2 cut.
+# 1.0.0-rc.1 → 1.0.0-rc.2 — pre-stable audit cycle. RC1 landed
+# every phase-3 deliverable; jumping straight to v1.0.0 stable
+# would be premature without a dedicated review pass over the
+# composed surface. RC2's job is exactly that pass.
 #
-# v1.0.0-rc.1 scope (per `lsp_roadmap.md` §"Phase 3 entry
-# conditions"):
-#   * RC1.1 — phase 1 + phase 2 sign-off re-verify (done at
-#     cycle open; existing audit guards continue to enforce
-#     the freeze).
-#   * RC1.2 — land carried-over 25B.1 CDCL two-watched
-#     literals (substantial inner-loop restructure deferred
-#     from v0.23 / v0.25).
-#   * RC1.3 — promote 21E.4's forward-looking 1.0.0 marker
-#     into a real `#![breaking_changes_semver("1.0.0")]`
-#     attribute on `adsmt-ffi/src/lib.rs` + symmetric stamps
-#     on `adsmt-cert`, `adsmt-parser` per the phase 3 RC
-#     checklist items in each policy doc.
-#   * RC1.4 — logicutils absorption per 21E.2 option 2-A':
-#     every `lu-*` crate moves into the adsmt workspace,
-#     `external/logicutils/` submodule archived after the
-#     fold.
-#   * RC1.5 — `adsmt-meta` metacrate published.
-#   * RC1.6 — `lu-common::migration::v0_to_v1` chained
-#     converter shipped.
-#   * RC1.H.1 mid-cycle audit + RC1.H.2 RC sign-off (gates
-#     v1.0.0 stable bump).
-version = "1.0.0-rc.1"
+# v1.0.0-rc.2 scope:
+#   * RC2.1 — feature-matrix audit: every `adsmt-meta` feature
+#     combination (default / no-cli / only-cli / full) builds
+#     clean on its own.
+#   * RC2.2 — `cargo publish --dry-run` per workspace member;
+#     catches manifest issues the workspace build hides
+#     (missing description, license, etc.).
+#   * RC2.3 — warning sweep: `mixed_script_confusables`,
+#     dead-code, unused-imports across the absorbed
+#     workspace. Decide each: silence with #[allow],
+#     fix at source, or document as intentional.
+#   * RC2.4 — doc audit (`cargo doc --workspace --no-deps`)
+#     clean; every public item documented.
+#   * RC2.5 — bench re-baseline under the two-watched-
+#     literals propagator (RC1.2); refresh both
+#     `solver_smoke` and `cdcl_smoke` doc-comment tables.
+#   * RC2.6 — runtime smoke test: launch `adsmt-lsp` binary,
+#     send initialize / didOpen / hover / completion /
+#     definition over stdin/stdout, verify responses.
+#   * RC2.H.1 mid-cycle audit + RC2.H.2 final stable sign-off
+#     (gates v1.0.0 bump).
+version = "1.0.0-rc.2"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 
