@@ -1,0 +1,12 @@
+[package]
+name = "lu-expand"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Combinatorial pattern expansion for logicutils"
+
+[dependencies]
+lu-common = { workspace = true }
+lu-match = { path = "../lu-match" }
+clap = { workspace = true }
+thiserror = { workspace = true }

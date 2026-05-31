@@ -15,8 +15,23 @@ members = [
     "adsmt-cli",
     "adsmt-ffi",
     "adsmt-lsp",
+    # v1.0.0-rc.1 RC1.4.A — logicutils absorption per
+    # 21E.2 option 2-A'. 12 crates moved from
+    # external/logicutils/ to top-level workspace members.
+    "lu-common",
+    "freshcheck",
+    "stamp",
+    "lu-match",
+    "lu-expand",
+    "lu-query",
+    "lu-rule",
+    "lu-queue",
+    "lu-par",
+    "lu-deps",
+    "lu-multi",
+    "logicutils-translator-to-oxiz-sat",
 ]
-exclude = ["external/logicutils", "external/oxiz"]
+exclude = ["external/oxiz"]
 
 [workspace.package]
 # v0.25 → 1.0.0-rc.1 opens **phase 3 of the v1.0 RC roadmap**
@@ -60,6 +75,10 @@ adsmt-quant = { path = "adsmt-quant" }
 adsmt-abduce = { path = "adsmt-abduce" }
 adsmt-engine = { path = "adsmt-engine" }
 adsmt-parser = { path = "adsmt-parser" }
+# v1.0.0-rc.1 RC1.4.A — absorbed lu-* path entries. lu-common
+# is the most-shared; the rest are consumed by the lu-* CLI
+# binary surface preserved under option 2-A'.
+lu-common = { path = "lu-common" }
 
 thiserror = "2.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -67,6 +86,15 @@ serde_json = "1.0.149"
 clap = { version = "4.6", features = ["derive"] }
 smallvec = "1.13"
 indexmap = "2.6"
+# v1.0.0-rc.1 RC1.4.A — workspace deps inherited from the
+# logicutils sub-workspace so absorbed crates can keep
+# `workspace = true` references.
+blake3 = "1.8"
+crc32fast = "1.5"
+crc = "3"
+toml = "1.1"
+csv = "1.4"
+glob = "0.3.3"
 
 [profile.release]
 lto = "thin"

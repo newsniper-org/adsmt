@@ -1,0 +1,92 @@
+# Maintainer: BYUNG-IK YEUN <yeun0908@gmail.com>
+#
+# HPC build variant: enables SLURM/SGE/PBS queue backends and the SHA3 hash
+# in addition to the defaults.  Use this on cluster head nodes / login nodes
+# where lu-queue must dispatch jobs to a real workload manager.
+pkgname=logicutils-hpc
+_upstream=logicutils
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="logicutils built with SLURM/SGE/PBS queue backends and SHA3 enabled (HPC variant)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/newsniper-org/logicutils"
+license=('BSD-2-Clause')
+depends=('gcc-libs')
+makedepends=('rust' 'cargo')
+optdepends=(
+    'slurm-llnl: SLURM workload manager client (sbatch, squeue, scancel)'
+    'gridengine: SGE workload manager client (qsub, qstat, qdel)'
+    'openpbs:    PBS workload manager client (qsub, qstat, qdel)'
+)
+provides=(
+    'freshcheck' 'stamp'
+    'lu-match' 'lu-expand'
+    'lu-query'  'lu-rule'
+    'lu-queue'  'lu-par' 'lu-deps'
+    'lu-multi'
+)
+conflicts=(
+    "${_upstream}"        "${_upstream}-git"
+    "${_upstream}-multi"  "${_upstream}-multi-git"
+    "${_upstream}-hpc-git"
+)
+options=('!lto')
+source=("${_upstream}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+# Cargo features compiled in for this variant.
+_features='slurm,sge,pbs,sha3'
+
+prepare() {
+    cd "${_upstream}-${pkgver}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "${_upstream}-${pkgver}"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --release --workspace --frozen --features "${_features}"
+}
+
+check() {
+    cd "${_upstream}-${pkgver}"
+    export RUSTUP_TOOLCHAIN=stable
+    # Run unit tests; integration with a real scheduler is out of scope here.
+    cargo test --release --workspace --frozen --features "${_features}"
+}
+
+package() {
+    cd "${_upstream}-${pkgver}"
+
+    local bins=(
+        freshcheck stamp
+        lu-match lu-expand
+        lu-query lu-rule
+        lu-queue lu-par lu-deps
+        lu-multi
+    )
+    for bin in "${bins[@]}"; do
+        install -Dm755 "target/release/${bin}" "${pkgdir}/usr/bin/${bin}"
+    done
+
+    local man_dir="${pkgdir}/usr/share/man"
+    install -Dm644 docs/man/freshcheck.1 "${man_dir}/man1/freshcheck.1"
+    install -Dm644 docs/man/stamp.1      "${man_dir}/man1/stamp.1"
+    install -Dm644 docs/man/lu-match.1   "${man_dir}/man1/lu-match.1"
+    install -Dm644 docs/man/lu-expand.1  "${man_dir}/man1/lu-expand.1"
+    install -Dm644 docs/man/lu-query.1   "${man_dir}/man1/lu-query.1"
+    install -Dm644 docs/man/lu-rule.1    "${man_dir}/man1/lu-rule.1"
+    install -Dm644 docs/man/lu-queue.1   "${man_dir}/man1/lu-queue.1"
+    install -Dm644 docs/man/lu-par.1     "${man_dir}/man1/lu-par.1"
+    install -Dm644 docs/man/lu-deps.1    "${man_dir}/man1/lu-deps.1"
+    install -Dm644 docs/man/lu-multi.1   "${man_dir}/man1/lu-multi.1"
+    install -Dm644 docs/man/lu-kb.5      "${man_dir}/man5/lu-kb.5"
+
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${_upstream}/README.md"
+    install -dm755 "${pkgdir}/usr/share/doc/${_upstream}/agents"
+    cp -r docs/agents/. "${pkgdir}/usr/share/doc/${_upstream}/agents/"
+
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

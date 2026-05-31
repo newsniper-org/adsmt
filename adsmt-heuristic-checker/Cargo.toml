@@ -10,8 +10,8 @@ build = "build.rs"
 # Build-time SAT verification of the shipped minimum table —
 # the translator hands the parsed module to oxiz-sat, the
 # verdict gates a successful build.
-lu-common = { path = "../external/logicutils/lu-common", default-features = false }
-logicutils-translator-to-oxiz-sat = { path = "../external/logicutils/logicutils-translator-to-oxiz-sat" }
+lu-common = { path = "../lu-common", default-features = false }
+logicutils-translator-to-oxiz-sat = { path = "../logicutils-translator-to-oxiz-sat" }
 oxiz-sat = { path = "../external/oxiz/oxiz-sat" }
 
 [dependencies]
@@ -20,7 +20,7 @@ adsmt-cert.workspace = true
 adsmt-theory.workspace = true
 # lu-common provides K12-256 for the frozen-hash safeguard and the
 # kb AST that user-extension heuristics are written in.
-lu-common = { path = "../external/logicutils/lu-common", default-features = false, features = ["k12"] }
+lu-common = { path = "../lu-common", default-features = false, features = ["k12"] }
 # Proc-macro entry points for compile-time heuristic embedding.
 # Re-exported through the `macros` module so users see a single
 # import surface (`use adsmt_heuristic_checker::*`).

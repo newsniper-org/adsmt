@@ -1,0 +1,15 @@
+[package]
+name = "lu-match"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Multi-wildcard pattern matching for logicutils"
+
+[dependencies]
+lu-common = { workspace = true }
+clap = { workspace = true }
+glob = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

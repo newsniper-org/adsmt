@@ -1,0 +1,77 @@
+.TH LU\-MATCH 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+lu\-match \- multi\-wildcard pattern matching with variable binding
+.SH SYNOPSIS
+.B lu\-match
+[\fIOPTIONS\fR] \fIPATTERN\fR [\fIINPUT\fR...]
+.SH DESCRIPTION
+.B lu\-match
+matches one or more inputs against a pattern containing named wildcards
+and prints the resulting variable bindings. Unlike POSIX glob, the
+pattern may contain several wildcards bound to distinct names; the
+matcher uses backtracking unification to find an assignment that makes
+the pattern equal to the input.
+
+A pattern is a literal string in which any occurrence of
+.B {NAME}
+is a wildcard captured into the variable
+.IR NAME .
+By default a wildcard matches a single path segment (no
+.B /
+characters). The variant
+.B {NAME:any}
+matches any string including separators;
+.B {NAME:segment}
+is the explicit form of the default.
+.SH OPTIONS
+.TP
+.B \-\-glob
+Treat
+.I INPUT
+as a directory and walk the filesystem, returning every file whose path
+matches \fIPATTERN\fR.
+.TP
+.BI \-\-template= TMPL
+After matching, expand
+.I TMPL
+using the captured bindings (using the same
+.B {NAME}
+syntax) and print the result instead of the bindings.
+.TP
+.BI \-\-filter= EXPR
+Drop matches that do not satisfy \fIEXPR\fR (e.g.
+.BR "X != Y" ).
+.TP
+.BI \-\-format= FORMAT
+Output format: \fIplain\fR, \fIjson\fR, \fItsv\fR, \fIcsv\fR, \fItoml\fR,
+\fIshell\fR. The
+.I shell
+format produces \fBNAME=VALUE\fR pairs suitable for
+.BR eval .
+.SH EXIT STATUS
+0 if at least one match is produced, 1 if no match, 2 on error.
+.SH EXAMPLES
+.PP
+Bind two wildcards from a filename:
+.PP
+.RS
+.nf
+$ lu\-match \(aqalign\-{X}\-{Y}.bam\(aq align\-sample1\-hg38.bam
+X=sample1
+Y=hg38
+.fi
+.RE
+.PP
+Walk the filesystem and emit derived target names:
+.PP
+.RS
+.nf
+lu\-match \-\-glob \-\-template=\(aqresults/{patient}\-{tissue}.bam\(aq \\\\
+\(aqdata/{patient}\-{tissue}.fastq\(aq
+.fi
+.RE
+.SH SEE ALSO
+.BR lu\-expand (1),
+.BR lu\-rule (1)
+.SH AUTHOR
+NEWSNIPER.

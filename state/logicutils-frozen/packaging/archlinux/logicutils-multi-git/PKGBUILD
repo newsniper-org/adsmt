@@ -1,0 +1,88 @@
+# Maintainer: BYUNG-IK YEUN <yeun0908@gmail.com>
+#
+# Slim multicall build, tracking upstream main.  Pairs with `logicutils-multi`
+# the way `logicutils-git` pairs with `logicutils`: same Cargo features
+# (Tier 1 / --no-default-features), git source, in-house pkgver().
+pkgname=logicutils-multi-git
+_pkgname=logicutils-multi
+_upstream=logicutils
+pkgver=0.2.0.r0.g0000000
+pkgrel=1
+pkgdesc="logicutils as a single multicall binary with symlinks (Tier 1, git, in-house)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/newsniper-org/logicutils"
+license=('BSD-2-Clause')
+depends=('gcc-libs')
+makedepends=('rust' 'cargo' 'git')
+provides=(
+    "${_pkgname}=${pkgver}"
+    'freshcheck' 'stamp'
+    'lu-match' 'lu-expand'
+    'lu-query'  'lu-rule'
+    'lu-queue'  'lu-par' 'lu-deps'
+    'lu-multi'
+)
+conflicts=(
+    'logicutils'
+    'logicutils-git'
+    'logicutils-multi'
+    'logicutils-hpc'
+    'logicutils-hpc-git'
+)
+options=('!lto')
+source=("${_upstream}::git+${url}.git#branch=main")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "${_upstream}"
+    local base
+    base=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+    printf '%s.r%s.g%s' \
+        "${base}" \
+        "$(git rev-list --count HEAD)" \
+        "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+    cd "${_upstream}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "${_upstream}"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --release --no-default-features -p lu-multi
+}
+
+package() {
+    cd "${_upstream}"
+
+    install -Dm755 target/release/lu-multi "${pkgdir}/usr/bin/lu-multi"
+
+    local utils=(
+        freshcheck stamp
+        lu-match lu-expand
+        lu-query lu-rule
+        lu-queue lu-par lu-deps
+    )
+    for u in "${utils[@]}"; do
+        ln -s lu-multi "${pkgdir}/usr/bin/${u}"
+    done
+
+    local man_dir="${pkgdir}/usr/share/man"
+    install -Dm644 docs/man/freshcheck.1 "${man_dir}/man1/freshcheck.1"
+    install -Dm644 docs/man/stamp.1      "${man_dir}/man1/stamp.1"
+    install -Dm644 docs/man/lu-match.1   "${man_dir}/man1/lu-match.1"
+    install -Dm644 docs/man/lu-expand.1  "${man_dir}/man1/lu-expand.1"
+    install -Dm644 docs/man/lu-query.1   "${man_dir}/man1/lu-query.1"
+    install -Dm644 docs/man/lu-rule.1    "${man_dir}/man1/lu-rule.1"
+    install -Dm644 docs/man/lu-queue.1   "${man_dir}/man1/lu-queue.1"
+    install -Dm644 docs/man/lu-par.1     "${man_dir}/man1/lu-par.1"
+    install -Dm644 docs/man/lu-deps.1    "${man_dir}/man1/lu-deps.1"
+    install -Dm644 docs/man/lu-multi.1   "${man_dir}/man1/lu-multi.1"
+    install -Dm644 docs/man/lu-kb.5      "${man_dir}/man5/lu-kb.5"
+
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

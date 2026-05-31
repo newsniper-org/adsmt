@@ -1,0 +1,33 @@
+pkgbase = logicutils-multi-git
+	pkgdesc = logicutils as a single multicall binary with symlinks (Tier 1, git, in-house)
+	pkgver = 0.2.0.r0.g0000000
+	pkgrel = 1
+	url = https://github.com/newsniper-org/logicutils
+	arch = x86_64
+	arch = aarch64
+	license = BSD-2-Clause
+	makedepends = rust
+	makedepends = cargo
+	makedepends = git
+	depends = gcc-libs
+	provides = logicutils-multi=0.2.0.r0.g0000000
+	provides = freshcheck
+	provides = stamp
+	provides = lu-match
+	provides = lu-expand
+	provides = lu-query
+	provides = lu-rule
+	provides = lu-queue
+	provides = lu-par
+	provides = lu-deps
+	provides = lu-multi
+	conflicts = logicutils
+	conflicts = logicutils-git
+	conflicts = logicutils-multi
+	conflicts = logicutils-hpc
+	conflicts = logicutils-hpc-git
+	options = !lto
+	source = logicutils::git+https://github.com/newsniper-org/logicutils.git#branch=main
+	sha256sums = SKIP
+
+pkgname = logicutils-multi-git

@@ -1,0 +1,219 @@
+.TH LU\-KB 5 "2026-05-13" "logicutils 0.17.0 (v0.x\-smt)" "File Formats"
+.SH NAME
+lu\-kb \- logicutils knowledge\-base language
+.SH DESCRIPTION
+The logicutils knowledge base is an indentation\-sensitive language
+combining deductive, abductive, and constraint logic programming with a
+small functional core. KB files are read by
+.BR lu\-query (1)
+and may be referenced from rule files consumed by
+.BR lu\-rule (1).
+
+A module is a sequence of top\-level
+.IR items :
+fact blocks, rule blocks, abductive blocks, constraint blocks, type
+declarations, function definitions, relation declarations, instance
+declarations, and import or export directives.
+
+.SH SYNTAX
+.SS Lexical structure
+Lines beginning with
+.B #
+are comments. Indentation, expressed in spaces or tabs consistently
+within a file, opens and closes blocks the same way Python does:
+deeper lines belong to the immediately preceding header line.
+
+.SS Facts
+.RS
+.nf
+fact depends:
+    main.o <\- main.c
+    main.o <\- header.h
+.fi
+.RE
+.PP
+Each line in a fact block is a directed pair
+.I "head <\- arg1 arg2 ..."
+that is added to the predicate named on the
+.B fact
+line.
+
+.SS Rules
+.RS
+.nf
+rule stale(Target):
+    depends(Target, Dep)
+    newer(Dep, Target)
+.fi
+.RE
+.PP
+A rule head is followed by a body of goals. Goals are predicate calls,
+.B not
+goals, conditions, or
+.B let
+bindings. Variables begin with an uppercase letter; ground values are
+identifiers, integers, floats, booleans, or strings.
+
+.SS Abduction
+.RS
+.nf
+abduce missing_source(File):
+    depends(Target, File)
+    not exists(File)
+    explain "source file may need generation"
+.fi
+.RE
+
+.SS Constraints
+.RS
+.nf
+constraint valid_alignment(x: SampleId, y: Reference):
+    x != y
+    exists("{x}.fastq")
+.fi
+.RE
+
+.SS Functions
+.RS
+.nf
+fn align_cmd(sample, ref):
+    "bwa mem {ref}.fa {sample}.fastq"
+.fi
+.RE
+Pipelines use the
+.B |>
+operator and lambdas use
+.IB args " => " expr \fR.\fP
+
+.SS Types
+.RS
+.nf
+type SampleId = String where matches("[A\-Z]{2}[0\-9]+")
+
+data AlignResult:
+    bam_path: Path
+    quality:  Float where value >= 0.0
+.fi
+.RE
+
+.SS Relations and instances
+Relations are multi\-parameter type relations. Instances may be
+declared outside the relation block, may host nested instances under a
+.B where
+clause, and inherit the constraints of every enclosing instance.
+
+.RS
+.nf
+relation Processable(Input, Output, Engine):
+    fn process(input: Input, engine: Engine) \-> Output
+
+instance Processable(Dataset, Model, GPU):
+    fn process(data, engine):
+        train(data)
+
+    instance Batchable(Dataset, Model) where Engine == GPU:
+        fn batch_size(input): estimate_vram(input)
+.fi
+.RE
+
+.SS Imports
+.RS
+.nf
+import bio.alignment (align, index)
+import utils.paths as P
+.fi
+.RE
+.B import
+may also appear inside any block, in which case its bindings are scoped
+to that block.
+
+.SH SMT EXTENSIONS (v0.x\-smt)
+The
+.B v0.x\-smt
+branch extends lu\-kb with constructs needed to drive the adsmt SMT
+solver, while remaining a strict superset of v0.2 syntax.
+
+.SS Higher\-kinded type parameters
+Relation parameters may carry a kind annotation for HKT support:
+.RS
+.nf
+relation Functor(F : Type \-> Type):
+    fn map(f: A \-> B, fa: F(A)) \-> F(B)
+
+relation Bifunctor(F(_, _)):
+    fn bimap(f: A \-> C, g: B \-> D, fab: F(A, B)) \-> F(C, D)
+.fi
+.RE
+The slot form
+.B F(_)
+is sugar for
+.IR "F : Type -> Type" ;
+.B F(_, _)
+for
+.IR "Type -> Type -> Type" ,
+and so on. Kind annotations are optional; inference picks the
+smallest kind that makes the relation well\-formed.
+
+.SS Functional dependencies
+Relations may declare functional dependencies between their
+parameters with a vertical bar after the parameter list:
+.RS
+.nf
+relation Processable(Input, Output, Engine) | Input, Engine \-> Output:
+    fn process(input: Input, engine: Engine) \-> Output
+.fi
+.RE
+
+.SS Overlapping instances
+The default coherence check rejects two instance heads that unify.
+The
+.B overlap
+keyword opts in to allowing such a pair:
+.RS
+.nf
+overlap instance Eq(List(A)) where Eq(A):
+    fn eq(xs, ys): list_eq(eq, xs, ys)
+.fi
+.RE
+
+.SS Abductive output
+The existing
+.B abduce
+block drives adsmt's abductive engine. The
+.B explain
+string threads directly to the solver's abductive output and to the
+Lean4
+.B smt_abduce
+tactic's hole annotation.
+
+.SS Finite enums (v0.5)
+The
+.B enum
+block declares a finite-cardinality sum type whose constructors are
+disjoint and exhaustive. Each constructor is nullary.
+.RS
+.nf
+enum Color:
+    Red
+    Green
+    Blue
+.fi
+.RE
+The adsmt backend exposes
+.B Color
+to its
+.B Datatypes
+theory with cardinality 3, contributes that bound to polite
+combination, and rejects assertions like
+.BR "Red = Green" .
+The existing
+.B data
+block remains the product/record form; use
+.B enum
+when every constructor is nullary and the type is meant to be finite.
+
+.SH SEE ALSO
+.BR lu\-query (1),
+.BR lu\-rule (1)
+.SH AUTHOR
+NEWSNIPER.

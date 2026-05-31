@@ -1,0 +1,15 @@
+[package]
+name = "freshcheck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "File freshness checking for logicutils"
+
+[dependencies]
+lu-common = { workspace = true }
+stamp = { path = "../stamp" }
+clap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,35 @@
+[package]
+name = "lu-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared types, traits, and output formats for logicutils"
+
+[features]
+default = ["blake3", "crc32"]
+blake3 = ["dep:blake3"]
+sha3 = ["dep:sha3", "dep:digest"]
+crc32 = ["dep:crc32fast"]
+crc64 = ["dep:crc"]
+crc128 = ["dep:crc"]
+# KangarooTwelve-256: short-input-friendly Keccak-family hash with
+# customization-string domain separation. Added for adsmt's
+# breaking-version frozen-hash use case (lu-common is the shared
+# anchor so the v1.0 logicutils+adsmt merger inherits it cleanly).
+k12 = ["dep:tiny-keccak"]
+
+[dependencies]
+blake3 = { workspace = true, optional = true }
+sha3 = { version = "0.11", optional = true }
+digest = { version = "0.11", optional = true }
+crc32fast = { workspace = true, optional = true }
+crc = { workspace = true, optional = true }
+tiny-keccak = { version = "2.0", features = ["k12"], optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+csv = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.27"

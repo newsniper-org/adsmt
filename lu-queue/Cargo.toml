@@ -1,0 +1,17 @@
+[package]
+name = "lu-queue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local and cluster queue abstraction for logicutils"
+
+[features]
+default = []
+slurm = []
+sge = []
+pbs = []
+
+[dependencies]
+lu-common = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }

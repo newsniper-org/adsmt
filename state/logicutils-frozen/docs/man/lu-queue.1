@@ -1,0 +1,70 @@
+.TH LU\-QUEUE 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+lu\-queue \- unified interface to local and cluster job queues
+.SH SYNOPSIS
+.B lu\-queue submit
+[\fIOPTIONS\fR] \fICOMMAND\fR [\fIARG\fR...]
+.br
+.B lu\-queue status
+\fIJOBID\fR
+.br
+.B lu\-queue wait
+\fIJOBID\fR...
+.br
+.B lu\-queue cancel
+\fIJOBID\fR...
+.br
+.B lu\-queue list
+.SH DESCRIPTION
+.B lu\-queue
+abstracts over a small set of job queue backends. Submitting a job
+prints its identifier on standard output so that shell scripts can
+capture it into a variable and pass it to subsequent
+.B \-\-deps
+flags, building dependency graphs out of nothing more than shell
+substitution.
+
+The local engine schedules jobs in worker threads of the current
+process. The cluster engines (compiled in via Cargo features) translate
+the generic options into the corresponding native flags
+.RB ( "sbatch" ", " "qsub" ).
+.SH SUBCOMMANDS
+.TP
+.B submit
+Submit \fICOMMAND\fR. Prints the job identifier.
+.TP
+.B status
+Print one of \fIpending\fR, \fIrunning\fR, \fIdone\fR, or \fIfailed\fR.
+.TP
+.B wait
+Block until each named job has reached a terminal state.
+.TP
+.B cancel
+Cancel one or more jobs.
+.TP
+.B list
+List every known job and its status.
+.SH OPTIONS
+.TP
+.BI \-\-engine= ENGINE
+\fIlocal\fR (default), \fIslurm\fR, \fIsge\fR, or \fIpbs\fR.
+.TP
+.BI \-\-slots= N
+Number of CPU slots requested.
+.TP
+.BI \-\-mem= SIZE
+Memory request, e.g.
+.IR 8G .
+.TP
+.BI \-\-time= DURATION
+Wall\-clock limit, e.g.
+.IR 2h30m .
+.TP
+.BI \-\-deps= JOBID,...
+Wait for the listed jobs before starting.
+.SH EXIT STATUS
+0 on success, 1 if a queried job failed, 2 on error.
+.SH SEE ALSO
+.BR lu\-par (1)
+.SH AUTHOR
+NEWSNIPER.

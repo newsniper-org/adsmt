@@ -1,0 +1,49 @@
+.TH LU\-EXPAND 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+lu\-expand \- combinatorial template expansion (Cartesian product)
+.SH SYNOPSIS
+.B lu\-expand
+[\fIOPTIONS\fR] \fITEMPLATE\fR
+.SH DESCRIPTION
+.B lu\-expand
+generates every combination of the supplied variable domains and
+substitutes each combination into \fITEMPLATE\fR using the
+.B {NAME}
+placeholder syntax shared with
+.BR lu\-match (1).
+
+The order of the output corresponds to a multi\-digit odometer: the
+last\-declared variable advances fastest.
+.SH OPTIONS
+.TP
+.BI \-\-var \  "NAME=v1,v2,..."
+Declare a variable and its inline value list. May be repeated.
+.TP
+.BI \-\-var\-file \  "NAME=PATH"
+Declare a variable whose values are loaded from a file (one per line).
+.TP
+.BI \-\-filter= EXPR
+Drop combinations that do not satisfy \fIEXPR\fR.
+.TP
+.BI \-\-sep= CHAR
+Field separator for inline lists (default
+.BR , ).
+.TP
+.BI \-\-format= FORMAT
+Output format: \fIplain\fR, \fIjson\fR, \fItsv\fR, \fIcsv\fR, \fItoml\fR.
+.SH EXIT STATUS
+0 on success, 2 on error.
+.SH EXAMPLES
+.PP
+Generate all alignment combinations except self\-alignments:
+.PP
+.RS
+.nf
+lu\-expand \-\-var \(aqS=s1,s2,s3\(aq \-\-var \(aqR=hg38,mm10\(aq \\\\
+\(aqalign\-{S}\-{R}.bam\(aq
+.fi
+.RE
+.SH SEE ALSO
+.BR lu\-match (1)
+.SH AUTHOR
+NEWSNIPER.

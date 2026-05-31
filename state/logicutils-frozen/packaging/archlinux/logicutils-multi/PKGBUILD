@@ -1,0 +1,74 @@
+# Maintainer: BYUNG-IK YEUN <yeun0908@gmail.com>
+#
+# Slim multicall build: only `lu-multi` is installed, with one symlink per
+# utility name.  Intended for resource-constrained environments (containers,
+# CI runners, embedded targets) — drops cryptographic hashing and cluster
+# backends via --no-default-features.
+pkgname=logicutils-multi
+_upstream=logicutils
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="logicutils as a single multicall binary with symlinks (Tier 1, no crypto/cluster features)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/newsniper-org/logicutils"
+license=('BSD-2-Clause')
+depends=('gcc-libs')
+makedepends=('rust' 'cargo')
+provides=(
+    'freshcheck' 'stamp'
+    'lu-match' 'lu-expand'
+    'lu-query'  'lu-rule'
+    'lu-queue'  'lu-par' 'lu-deps'
+    'lu-multi'
+)
+conflicts=(
+    'logicutils'       'logicutils-git'
+    'logicutils-multi-git'
+    'logicutils-hpc'   'logicutils-hpc-git'
+)
+options=('!lto')
+source=("${_upstream}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "${_upstream}-${pkgver}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "${_upstream}-${pkgver}"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --release --frozen --no-default-features -p lu-multi
+}
+
+package() {
+    cd "${_upstream}-${pkgver}"
+
+    install -Dm755 target/release/lu-multi "${pkgdir}/usr/bin/lu-multi"
+
+    local utils=(
+        freshcheck stamp
+        lu-match lu-expand
+        lu-query lu-rule
+        lu-queue lu-par lu-deps
+    )
+    for u in "${utils[@]}"; do
+        ln -s lu-multi "${pkgdir}/usr/bin/${u}"
+    done
+
+    install -Dm644 docs/man/freshcheck.1 "${pkgdir}/usr/share/man/man1/freshcheck.1"
+    install -Dm644 docs/man/stamp.1      "${pkgdir}/usr/share/man/man1/stamp.1"
+    install -Dm644 docs/man/lu-match.1   "${pkgdir}/usr/share/man/man1/lu-match.1"
+    install -Dm644 docs/man/lu-expand.1  "${pkgdir}/usr/share/man/man1/lu-expand.1"
+    install -Dm644 docs/man/lu-query.1   "${pkgdir}/usr/share/man/man1/lu-query.1"
+    install -Dm644 docs/man/lu-rule.1    "${pkgdir}/usr/share/man/man1/lu-rule.1"
+    install -Dm644 docs/man/lu-queue.1   "${pkgdir}/usr/share/man/man1/lu-queue.1"
+    install -Dm644 docs/man/lu-par.1     "${pkgdir}/usr/share/man/man1/lu-par.1"
+    install -Dm644 docs/man/lu-deps.1    "${pkgdir}/usr/share/man/man1/lu-deps.1"
+    install -Dm644 docs/man/lu-multi.1   "${pkgdir}/usr/share/man/man1/lu-multi.1"
+    install -Dm644 docs/man/lu-kb.5      "${pkgdir}/usr/share/man/man5/lu-kb.5"
+
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

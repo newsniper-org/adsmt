@@ -1,0 +1,56 @@
+.TH LU\-RULE 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+lu\-rule \- match a target against pattern rules with backtracking
+.SH SYNOPSIS
+.B lu\-rule
+[\fIOPTIONS\fR] \fITARGET\fR
+.SH DESCRIPTION
+.B lu\-rule
+selects a build rule that produces \fITARGET\fR. A rule file is a
+sequence of rule blocks separated by lines containing only
+.BR --- .
+Each block is a colon\-separated set of fields:
+
+.RS
+.nf
+pattern: align\-{X}\-{Y}.bam
+deps:    {X}.fa {Y}.fa
+recipe:  align {X}.fa {Y}.fa > align\-{X}\-{Y}.bam
+goal:    X != Y
+.fi
+.RE
+
+The
+.I pattern
+field is matched against \fITARGET\fR using the same wildcard syntax as
+.BR lu\-match (1).
+If \fIgoal\fR is present it must evaluate to true under the bindings
+produced by the match. \fIdeps\fR and \fIrecipe\fR are template\-expanded
+with those bindings.
+.SH OPTIONS
+.TP
+.B \-\-rulefile=\fIFILE\fR
+Rule file. If omitted, rules are read from standard input.
+.TP
+.B \-\-all
+Emit every matching rule, not just the first.
+.TP
+.B \-\-backtrack
+If the first matching rule fails its goal, try the next rule. Implied
+by
+.BR \-\-all .
+.TP
+.B \-\-dry\-run
+Print the expanded recipe to standard output and exit.
+.TP
+.BI \-\-format= FORMAT
+Output format: \fIplain\fR, \fIjson\fR, \fItsv\fR, \fIcsv\fR, \fItoml\fR,
+\fIshell\fR.
+.SH EXIT STATUS
+0 on a successful match, 1 if no rule matches, 2 on error.
+.SH SEE ALSO
+.BR lu\-match (1),
+.BR lu\-query (1),
+.BR lu\-deps (1)
+.SH AUTHOR
+NEWSNIPER.

@@ -1,0 +1,60 @@
+.TH LU\-QUERY 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+lu\-query \- evaluate queries against a logic knowledge base
+.SH SYNOPSIS
+.B lu\-query
+[\fIOPTIONS\fR] \fIQUERY\fR
+.SH DESCRIPTION
+.B lu\-query
+loads zero or more knowledge\-base files, optionally augmented with
+inline facts, and evaluates \fIQUERY\fR. \fIQUERY\fR has the form
+\fIpredicate(arg1, arg2, ...)\fR where each argument is a literal value
+or a variable (an identifier that begins with an uppercase letter).
+Solutions are printed as bindings of the query variables.
+
+The built\-in engine is a deductive Prolog\-like solver. The
+.B \-\-engine
+flag delegates to an external binary that adheres to the same CLI
+contract; this is the documented extension point for swapping the logic
+engine without changing the rest of the toolchain.
+
+The KB language is described in
+.BR lu\-kb (5).
+.SH OPTIONS
+.TP
+.BI \-\-kb= FILE
+Knowledge\-base file. Repeatable.
+.TP
+.BI \-\-fact \  "PRED(ARG,...)"
+Inline ground fact. Repeatable.
+.TP
+.B \-\-all
+Print every solution. Without this flag only the first solution is
+returned.
+.TP
+.BI \-\-engine= "builtin|PATH"
+Use the built\-in engine (default) or delegate to the external binary at
+\fIPATH\fR.
+.TP
+.BI \-\-timeout= SECONDS
+Abort the query after \fISECONDS\fR seconds.
+.TP
+.BI \-\-format= FORMAT
+Output format: \fIplain\fR, \fIjson\fR, \fItsv\fR, \fIcsv\fR, \fItoml\fR,
+\fIshell\fR.
+.SH EXIT STATUS
+0 if at least one solution exists, 1 if no solutions, 2 on error.
+.SH EXAMPLES
+.PP
+Find every stale target according to a project KB:
+.PP
+.RS
+.nf
+lu\-query \-\-kb project.kb \-\-all \(aqstale(T)\(aq
+.fi
+.RE
+.SH SEE ALSO
+.BR lu\-rule (1),
+.BR lu\-kb (5)
+.SH AUTHOR
+NEWSNIPER.

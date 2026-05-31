@@ -1,0 +1,11 @@
+[package]
+name = "lu-par"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dependency-aware parallel executor for logicutils"
+
+[dependencies]
+lu-common = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }

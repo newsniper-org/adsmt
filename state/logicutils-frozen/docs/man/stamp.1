@@ -1,0 +1,107 @@
+.TH STAMP 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+stamp \- record, query, and reconcile file signatures in a content store
+.SH SYNOPSIS
+.B stamp record
+[\fIOPTIONS\fR] \fIFILE\fR...
+.br
+.B stamp query
+[\fIOPTIONS\fR] \fIFILE\fR...
+.br
+.B stamp diff
+[\fIOPTIONS\fR] \fIFILE\fR...
+.br
+.B stamp gc
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B stamp
+manages an on\-disk content store (default
+.IR .lu\-store/ )
+that maps file paths to their cryptographic and structural signatures.
+
+The store is a *nested hash table* in the sense of Ticki's collision
+resolution scheme. At every depth a slot is selected by an FNV\-1a\-64
+hash whose seed has been mixed with the depth, giving an effectively
+independent hash family. Each slot is either a leaf JSON file
+(\fB<NN>.json\fR) or, if a collision occurred there, a subtree directory
+(\fB<NN>/\fR) holding the next level of the table. Inserting a key that
+collides with an existing leaf turns that leaf into a subtree and
+re\-distributes both entries one level deeper. Most paths terminate at
+depth 0; the disk layout never grows wider than 256 slots per node and
+never deeper than the longest collision chain.
+
+A
+.I .format
+marker file at the store root pins the schema version
+.RB ( v2 ).
+The first time
+.B stamp
+or
+.BR freshcheck (1)
+touches a store that lacks the marker, any v0.1 (flat\-fanout) entries
+present in the directory are transparently migrated into the v0.2
+layout and the marker is written.
+
+.B stamp
+is the storage backend used by
+.BR freshcheck (1)
+and may be invoked directly to inspect or repair the store.
+.SH SUBCOMMANDS
+.TP
+.B record
+Compute signatures for the given files using \fB\-\-method\fR and persist
+them. Existing entries are merged.
+.TP
+.B query
+Print recorded signatures for the given files in the chosen output format.
+Files with no recorded signature are skipped silently; pair with
+\fB\-\-format=plain\fR for human reading.
+.TP
+.B diff
+Compare the current contents of each file to the recorded signature.
+Output one line per file describing whether it is unchanged, changed,
+or missing from the store.
+.TP
+.B gc
+Remove store entries whose underlying files no longer exist.
+.SH OPTIONS
+.TP
+.BI \-\-method= METHOD
+Signature method: \fIhash\fR, \fIchecksum\fR, \fIsize\fR, \fItimestamp\fR.
+May be repeated to record several signatures per file.
+.TP
+.BI \-\-hash\-algo= ALGO
+.BI \-\-checksum\-algo= ALGO
+Same meanings as in
+.BR freshcheck (1).
+.TP
+.BI \-\-store= PATH
+Store directory.
+.TP
+.BI \-\-format= FORMAT
+Output format: \fIplain\fR, \fIjson\fR, \fItsv\fR, \fIcsv\fR, \fItoml\fR,
+\fIshell\fR.
+.TP
+.B \-\-protocol\-version
+Print the CLI protocol version and exit.
+.SH EXIT STATUS
+0 on success, 1 if a queried file has no record (or
+.B diff
+finds a mismatch),
+2 on error.
+.SH FILES
+.TP
+.I .lu\-store/
+Default store directory. Created on first use.
+.TP
+.I .lu\-store/[<NN>/...]<NN>.json
+Per\-path signature file. The component just before
+.I .json
+is the slot index (1 byte hex) at the leaf's depth; preceding
+.I <NN>/
+components are subtree directories created by collisions.
+.SH SEE ALSO
+.BR freshcheck (1),
+.BR lu\-deps (1)
+.SH AUTHOR
+NEWSNIPER.

@@ -1,0 +1,14 @@
+[package]
+name = "logicutils-translator-to-oxiz-sat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic, injective translator from lu-kb modules to oxiz-sat CNF formulas. Used by adsmt-heuristic-checker's minimum-table verification pass."
+
+[dependencies]
+lu-common = { workspace = true }
+# `oxiz-sat` lives in a sibling git submodule under adsmt
+# (external/oxiz/oxiz-sat). The relative path is stable for any
+# checkout that vendors both submodules.
+oxiz-sat = { path = "../external/oxiz/oxiz-sat" }
+thiserror = { workspace = true }

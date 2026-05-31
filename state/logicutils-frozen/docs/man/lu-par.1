@@ -1,0 +1,54 @@
+.TH LU\-PAR 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+lu\-par \- dependency\-aware parallel task executor
+.SH SYNOPSIS
+.B lu\-par
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B lu\-par
+is a DAG\-aware analogue of
+.BR "xargs \-P" .
+Tasks are read from standard input or
+.B \-\-taskfile
+as tab\-separated lines:
+
+.RS
+.nf
+ID\\tDEP1,DEP2,...\\tCOMMAND
+.fi
+.RE
+
+The graph is verified to be acyclic (Kahn\(cqs algorithm) and tasks are
+released to a worker pool as soon as all of their predecessors have
+finished. Output from each task is buffered and emitted atomically when
+the task completes.
+.SH OPTIONS
+.TP
+.BI \-j " N"
+Worker thread count.
+.TP
+.B \-\-keep\-going
+Continue scheduling tasks whose dependencies all succeeded even if a
+sibling has failed.
+.TP
+.BI \-\-retry= N
+Retry a failed task up to \fIN\fR times before declaring it failed.
+.TP
+.B \-\-progress
+Emit progress diagnostics on standard error.
+.TP
+.B \-\-transaction[=\fIPATH\fR]
+Treat the entire DAG as a transaction. Snapshot \fIPATH\fR (default
+\fB.lu\-store/\fR) before scheduling and, if any task ultimately fails
+(after retries), restore the directory bit\-for\-bit before exiting
+non\-zero. On a fully successful run the snapshot is discarded.
+.TP
+.BI \-\-taskfile= PATH
+Read tasks from \fIPATH\fR instead of standard input.
+.SH EXIT STATUS
+0 if every task succeeded, 1 if at least one task failed, 2 on error.
+.SH SEE ALSO
+.BR lu\-deps (1),
+.BR lu\-queue (1)
+.SH AUTHOR
+NEWSNIPER.

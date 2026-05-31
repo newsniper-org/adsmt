@@ -1,0 +1,56 @@
+.TH LU\-DEPS 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+lu\-deps \- dependency graph analysis and conversion
+.SH SYNOPSIS
+.B lu\-deps
+[\fIOPTIONS\fR] [\fIINPUT\fR]
+.SH DESCRIPTION
+.B lu\-deps
+reads a dependency graph from a variety of source formats, performs
+analysis (transitive closure, reverse lookup, topological sort), and
+emits the result in a chosen target format. The internal graph is a
+directed multi\-edge map from targets to dependencies.
+.SH OPTIONS
+.TP
+.BI \-\-from= FORMAT
+Input format: \fImakefile\fR, \fIgcc\fR (output of
+.BR "gcc \-M" ),
+\fIlu\-rules\fR (a rule file as understood by
+.BR lu\-rule (1)),
+or \fItsv\fR.
+.TP
+.BI \-\-to= FORMAT
+Output format: \fItsv\fR (default), \fIcsv\fR, \fIdot\fR, \fIjson\fR,
+\fItoml\fR, \fItaskfile\fR (the format consumed by
+.BR lu\-par (1)).
+.TP
+.B \-\-transitive
+Expand each node\(cqs dependency list to include all transitive
+predecessors.
+.TP
+.BI \-\-reverse \  TARGET
+Print every node that transitively depends on \fITARGET\fR.
+.TP
+.B \-\-topo
+Print nodes in topological order. Cycles cause an error.
+.SH EXIT STATUS
+0 on success, 1 if a cycle is detected when one is forbidden, 2 on
+error.
+.SH EXAMPLES
+.PP
+Convert
+.B "gcc \-M"
+output to a
+.BR lu\-par (1)
+task file:
+.PP
+.RS
+.nf
+gcc \-M \-MM main.c | lu\-deps \-\-from=gcc \-\-to=taskfile > tasks.tsv
+.fi
+.RE
+.SH SEE ALSO
+.BR lu\-par (1),
+.BR lu\-rule (1)
+.SH AUTHOR
+NEWSNIPER.

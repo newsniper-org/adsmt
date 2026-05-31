@@ -1,0 +1,41 @@
+.TH LU\-MULTI 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+lu\-multi \- multicall dispatcher for the logicutils suite
+.SH SYNOPSIS
+.B lu\-multi
+\fIUTILITY\fR [\fIARG\fR...]
+.br
+.IB SYMLINK \fR (linked to \fBlu\-multi\fR) [\fIARG\fR...]
+.SH DESCRIPTION
+.B lu\-multi
+is a busybox\-style multicall binary. When invoked through a symlink
+whose name matches one of the bundled utilities
+.RB ( freshcheck ", " stamp ", " lu\-match ", " lu\-expand ", "
+.BR lu\-query ", " lu\-rule ", " lu\-queue ", " lu\-par ", " lu\-deps )
+the request is dispatched to that utility. When invoked directly, the
+first positional argument is treated as the utility name.
+
+This single\-binary deployment is intended for resource\-constrained
+environments such as embedded systems and busybox\-based images.
+.SH OPTIONS
+.TP
+.B \-\-list
+Print the list of compiled\-in utilities and exit.
+.TP
+.B \-\-help
+Print a brief usage summary.
+.SH EXIT STATUS
+The exit status of the dispatched utility, or 2 if no utility could be
+selected.
+.SH SEE ALSO
+.BR freshcheck (1),
+.BR stamp (1),
+.BR lu\-match (1),
+.BR lu\-expand (1),
+.BR lu\-query (1),
+.BR lu\-rule (1),
+.BR lu\-queue (1),
+.BR lu\-par (1),
+.BR lu\-deps (1)
+.SH AUTHOR
+NEWSNIPER.

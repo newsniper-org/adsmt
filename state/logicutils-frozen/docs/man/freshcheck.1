@@ -1,0 +1,81 @@
+.TH FRESHCHECK 1 "2026-05-07" "logicutils 0.2.0" "User Commands"
+.SH NAME
+freshcheck \- decide whether a target file is fresh relative to its dependencies
+.SH SYNOPSIS
+.B freshcheck
+[\fIOPTIONS\fR] \fITARGET\fR [\fIDEPENDENCY\fR...]
+.SH DESCRIPTION
+.B freshcheck
+inspects \fITARGET\fR and its \fIDEPENDENCY\fR files and decides whether the
+target is up\-to\-date. The decision is reported via the exit status alone, so
+that the command can be chained with shell short\-circuit operators in
+makefiles, justfiles, or hand\-written scripts.
+
+The freshness criterion is selected with one or more
+.B \-\-method
+flags. Multiple methods are combined with
+.BR \-\-combine .
+Hash and checksum based decisions are persisted in a content store
+(default
+.IR .lu\-store/ )
+managed by
+.BR stamp (1).
+.SH OPTIONS
+.TP
+.BI \-\-method= METHOD
+Comparison method: \fItimestamp\fR, \fIhash\fR, \fIchecksum\fR, \fIsize\fR,
+or \fIalways\fR. May be repeated.
+.TP
+.BI \-\-hash\-algo= ALGO
+Hash algorithm when \fB\-\-method=hash\fR: \fIblake3\fR (default) or \fIsha3\fR.
+.TP
+.BI \-\-checksum\-algo= ALGO
+Checksum algorithm when \fB\-\-method=checksum\fR: \fIcrc32\fR (default),
+\fIcrc64\fR (gated by the \fIcrc64\fR Cargo feature), or \fIcrc128\fR
+(gated by the \fIcrc128\fR Cargo feature).
+.TP
+.BI \-\-combine= MODE
+How to combine multiple methods: \fIany\fR (stale if any method says stale)
+or \fIall\fR (default; stale only if every method agrees).
+.TP
+.BI \-\-store= PATH
+Content store path. Defaults to
+.IR .lu\-store/ .
+.TP
+.B \-\-protocol\-version
+Print the CLI protocol version and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+Target is fresh.
+.TP
+.B 1
+Target is stale (or missing).
+.TP
+.B 2
+Error (bad arguments, I/O failure, store corruption).
+.SH EXAMPLES
+.PP
+Recompile a C file only when its hash differs from the recorded one:
+.PP
+.RS
+.nf
+%.o: %.c
+\t@freshcheck \-\-method=hash $@ $< || $(CC) \-c $< \-o $@
+\t@stamp record $@
+.fi
+.RE
+.PP
+Combine timestamp and size with OR semantics:
+.PP
+.RS
+.nf
+freshcheck \-\-method=timestamp \-\-method=size \-\-combine=any out.bam in.fastq
+.fi
+.RE
+.SH SEE ALSO
+.BR stamp (1),
+.BR lu\-deps (1),
+.BR lu\-rule (1)
+.SH AUTHOR
+NEWSNIPER.

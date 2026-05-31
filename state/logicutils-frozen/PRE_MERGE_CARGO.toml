@@ -1,0 +1,65 @@
+[workspace]
+resolver = "3"
+members = [
+    "lu-common",
+    "freshcheck",
+    "stamp",
+    "lu-match",
+    "lu-expand",
+    "lu-query",
+    "lu-rule",
+    "lu-queue",
+    "lu-par",
+    "lu-deps",
+    "lu-multi",
+    "logicutils-translator-to-oxiz-sat",
+]
+
+[workspace.package]
+# v0.x-smt branch ⇔ adsmt version synchronisation rule.
+#
+# Original rule (set 2026-05-12): logicutils v0.x-smt minor =
+# adsmt minor + 2.
+# v0.17 mid-cycle audit (2026-05-29) relaxed it to match-minor.
+# v0.19 cycle (2026-05-29) **restored the original +2 offset**
+# per user policy. Patch bumps remain independent (logicutils
+# may patch ahead of adsmt for additive feature work and vice
+# versa).
+#
+# adsmt minor bump ⇒ logicutils v0.x-smt bumps to (adsmt minor + 2)
+# in the same conceptual unit.
+#
+# 0.18.0 → 0.21.0 minor jump synchronises with adsmt 0.18 →
+# 0.19 cycle bump under the restored +2 offset. The intervening
+# minors (0.19, 0.20) are intentionally skipped — they belong
+# to the post-restoration accounting.
+#
+# 0.21.0 → 0.23.0 (2026-05-29) opens the v0.x-smt slice paired
+# with adsmt's v0.21 cycle. Same +2 offset; 0.22 skipped.
+#
+# 0.23.0 → 0.25.0 (2026-05-30) opens the v0.x-smt slice paired
+# with adsmt's v0.23 cycle. Same +2 offset; 0.24 skipped. This
+# is the **last** separately-versioned logicutils release —
+# adsmt v1.0 absorbs every `lu-*` crate into the unified
+# workspace per `logicutils_version_rule.md` §3 (21E.2 option
+# 2-A').
+version = "0.25.0"
+edition = "2024"
+license = "BSD-2-Clause"
+repository = "https://github.com/logicutils/logicutils"
+
+[workspace.dependencies]
+lu-common = { path = "lu-common" }
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+blake3 = "1.8"
+crc32fast = "1.5"
+crc = "3"
+toml = "1.1"
+csv = "1.4"
+thiserror = "2.0"
+glob = "0.3.3"
+
+[profile.release]
+lto = "thin"

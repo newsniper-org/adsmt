@@ -1,0 +1,100 @@
+# Maintainer: BYUNG-IK YEUN <yeun0908@gmail.com>
+#
+# Tracks the upstream main branch.  Use this for in-house development; switch
+# to the released `logicutils` package once a tagged version satisfies your
+# needs.
+pkgname=logicutils-git
+_pkgname=logicutils
+pkgver=0.2.0.r0.g0000000
+pkgrel=1
+pkgdesc="Composable Unix-style utilities for logic-enhanced builds (git, in-house)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/newsniper-org/logicutils"
+license=('BSD-2-Clause')
+depends=('gcc-libs')
+makedepends=('rust' 'cargo' 'git')
+optdepends=(
+    'slurm-llnl: SLURM cluster backend for lu-queue'
+    'gridengine: SGE cluster backend for lu-queue'
+    'openpbs:    PBS cluster backend for lu-queue'
+)
+provides=(
+    "${_pkgname}=${pkgver}"
+    'freshcheck' 'stamp'
+    'lu-match' 'lu-expand'
+    'lu-query'  'lu-rule'
+    'lu-queue'  'lu-par' 'lu-deps'
+    'lu-multi'
+)
+conflicts=(
+    "${_pkgname}"
+    'logicutils-multi' 'logicutils-multi-git'
+    'logicutils-hpc'   'logicutils-hpc-git'
+)
+options=('!lto')
+source=("${_pkgname}::git+${url}.git#branch=main")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "${_pkgname}"
+    # Format: <crate-version>.r<commits-since-last-tag>.g<short-sha>
+    # If no tag is reachable, fall back to commit count + sha.
+    local base
+    base=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+    printf '%s.r%s.g%s' \
+        "${base}" \
+        "$(git rev-list --count HEAD)" \
+        "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+    cd "${_pkgname}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "${_pkgname}"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --release --workspace
+}
+
+check() {
+    cd "${_pkgname}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --release --workspace
+}
+
+package() {
+    cd "${_pkgname}"
+
+    local bins=(
+        freshcheck stamp
+        lu-match lu-expand
+        lu-query lu-rule
+        lu-queue lu-par lu-deps
+        lu-multi
+    )
+    for bin in "${bins[@]}"; do
+        install -Dm755 "target/release/${bin}" "${pkgdir}/usr/bin/${bin}"
+    done
+
+    install -Dm644 docs/man/freshcheck.1 "${pkgdir}/usr/share/man/man1/freshcheck.1"
+    install -Dm644 docs/man/stamp.1      "${pkgdir}/usr/share/man/man1/stamp.1"
+    install -Dm644 docs/man/lu-match.1   "${pkgdir}/usr/share/man/man1/lu-match.1"
+    install -Dm644 docs/man/lu-expand.1  "${pkgdir}/usr/share/man/man1/lu-expand.1"
+    install -Dm644 docs/man/lu-query.1   "${pkgdir}/usr/share/man/man1/lu-query.1"
+    install -Dm644 docs/man/lu-rule.1    "${pkgdir}/usr/share/man/man1/lu-rule.1"
+    install -Dm644 docs/man/lu-queue.1   "${pkgdir}/usr/share/man/man1/lu-queue.1"
+    install -Dm644 docs/man/lu-par.1     "${pkgdir}/usr/share/man/man1/lu-par.1"
+    install -Dm644 docs/man/lu-deps.1    "${pkgdir}/usr/share/man/man1/lu-deps.1"
+    install -Dm644 docs/man/lu-multi.1   "${pkgdir}/usr/share/man/man1/lu-multi.1"
+    install -Dm644 docs/man/lu-kb.5      "${pkgdir}/usr/share/man/man5/lu-kb.5"
+
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${_pkgname}/README.md"
+    install -dm755 "${pkgdir}/usr/share/doc/${_pkgname}/agents"
+    cp -r docs/agents/. "${pkgdir}/usr/share/doc/${_pkgname}/agents/"
+
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
