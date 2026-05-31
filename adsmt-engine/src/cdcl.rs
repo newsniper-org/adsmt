@@ -646,15 +646,21 @@ fn propagate(clauses: &[Clause], state: &mut CdclState) -> PropOutcome {
                 ClauseEval::Satisfied | ClauseEval::Open => continue,
                 ClauseEval::Falsified => return PropOutcome::Conflict,
                 ClauseEval::Unit => {
-                    let key = atom_key(&lit);
-                    if let Some(&v) = state.assign.get(&key) {
-                        if v != lit.polarity {
-                            return PropOutcome::Conflict;
-                        }
-                    } else {
-                        state.push(key, lit.polarity, Reason::Propagated { clause_idx: idx });
-                        progress = true;
-                    }
+                    // ClauseEval::Unit guarantees exactly one
+                    // unassigned literal and all others false;
+                    // recover the literal locally now that the
+                    // discriminator-only enum doesn't carry it.
+                    let lit = clause
+                        .iter()
+                        .find(|l| !state.assign.contains_key(&atom_key(l)))
+                        .expect("Unit means exactly one unassigned literal");
+                    let key = atom_key(lit);
+                    state.push(
+                        key,
+                        lit.polarity,
+                        Reason::Propagated { clause_idx: idx },
+                    );
+                    progress = true;
                 }
             }
         }
