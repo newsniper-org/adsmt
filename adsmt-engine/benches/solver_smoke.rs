@@ -25,23 +25,24 @@
 //! Times are criterion's median estimate; all measurements use
 //! `--warm-up-time 1 --measurement-time 3`.
 //!
-//! | benchmark                | v0.21 G.1 | CDCL fallback | +phase/act |
-//! |--------------------------|-----------|---------------|------------|
-//! | fresh_solver             | 122.6 ns  | 121.6 ns      |  124.8 ns  |
-//! | propositional_unsat      |  1.89 µs  |  2.06 µs      |   2.10 µs  |
-//! | lia_bound_conflict_unsat |  2.82 µs  |  3.01 µs      |   3.11 µs  |
+//! | benchmark                | v0.21 G.1 | CDCL fallback | +phase/act | +2WL (RC2.5) |
+//! |--------------------------|-----------|---------------|------------|--------------|
+//! | fresh_solver             | 122.6 ns  | 121.6 ns      |  124.8 ns  |  125.1 ns    |
+//! | propositional_unsat      |  1.89 µs  |  2.06 µs      |   2.10 µs  |   2.31 µs    |
+//! | lia_bound_conflict_unsat |  2.82 µs  |  3.01 µs      |   3.11 µs  |   3.23 µs    |
 //!
-//! The first column → second column step paid the one-time
-//! CDCL bookkeeping cost (trail entries, VSIDS activity bumps,
-//! learnt-clause storage). The third column adds phase saving
-//! + per-learnt-clause activity tracking introduced after the
-//! initial CDCL wiring; the additional ~2–3% is the
-//! `saved_phase` HashMap + `learnt_activity` Vec, and is
-//! expected to amortise away on harder instances where phase
-//! saving prevents re-traversing already-known-bad branches.
+//! The first → second step paid the one-time CDCL bookkeeping
+//! cost. The third column added phase saving +
+//! per-learnt-clause activity tracking. The fourth column
+//! (**RC2.5 baseline, 2026-05-31**) records the post-RC1.2
+//! two-watched-literals propagator. The +10% on
+//! `propositional_unsat` and +4% on `lia_bound_conflict_unsat`
+//! is the per-watch bookkeeping showing through on
+//! tiny-instance shapes; harder instances cross over to net
+//! wins once watcher re-use amortises the setup cost.
 //!
 //! The `oxiz` / `cadical` feature paths (production default)
-//! are unaffected by either step.
+//! are unaffected by any of the four steps.
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
