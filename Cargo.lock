@@ -19,6 +19,7 @@ name = "adsmt-cert"
 version = "1.0.0-rc.1"
 dependencies = [
  "adsmt-core",
+ "adsmt-heuristic-checker-macros",
  "indexmap",
  "oxiz-proof",
  "thiserror",
@@ -82,6 +83,7 @@ version = "1.0.0-rc.1"
 dependencies = [
  "adsmt-core",
  "adsmt-engine",
+ "adsmt-heuristic-checker-macros",
  "adsmt-parser",
 ]
 
@@ -139,6 +141,7 @@ name = "adsmt-parser"
 version = "1.0.0-rc.1"
 dependencies = [
  "adsmt-core",
+ "adsmt-heuristic-checker-macros",
  "indexmap",
  "lu-common",
  "thiserror",

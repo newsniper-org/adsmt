@@ -93,10 +93,10 @@ Phase 1 (v0.23) freeze candidate sign-off status:
    `libadsmt.so` symlink at install time.
 4. **Symbol visibility** — ✅ `crate-type = ["cdylib",
    "staticlib", "rlib"]` already set in `Cargo.toml`.
-5. **`#![breaking_changes_semver("1.0.0")]`** — registered as
-   forward-looking marker on `adsmt-heuristic-checker` per
-   21E.4. The phase 3 RC bump promotes it to a real attribute
-   on `adsmt-ffi/src/lib.rs` as well.
+5. **`#![breaking_changes_semver("1.0.0")]`** — ✅ promoted to
+   a real outer attribute on `_BREAKING_MARKER_1_0_0` in
+   `adsmt-ffi/src/lib.rs` by v1.0.0-rc.1 RC1.3. The σ peer of
+   the 8-layer safeguard is now live in source.
 6. **Memory ownership** — ✅ `adsmt_version` and
    `adsmt_null_string` documented to transfer ownership;
    caller frees via `adsmt_string_free`. `AdsmtSolverHandle`

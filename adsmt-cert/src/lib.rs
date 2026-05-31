@@ -5,6 +5,12 @@
 //! [`recorder`] module wraps the kernel rules in [`adsmt_core`] so that
 //! invoking them also appends a step to a [`CertBuilder`].
 
+// v1.0.0-rc.1 RC1.3 — promote the 21E.4 forward-looking 1.0.0
+// marker into a real attribute on the certificate format
+// authority crate.
+#[adsmt_heuristic_checker_macros::breaking_changes_semver("1.0.0")]
+const _BREAKING_MARKER_1_0_0: () = ();
+
 pub mod canonical;
 pub mod drat;
 pub mod emit;

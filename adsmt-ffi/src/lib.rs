@@ -18,6 +18,14 @@ use std::ptr;
 use adsmt_core::{Term, Type};
 use adsmt_engine::{SatResult, Solver};
 
+// v1.0.0-rc.1 RC1.3 — promote the 21E.4 forward-looking 1.0.0
+// marker into a real attribute on the C ABI authority crate.
+// The σ peer of the 8-layer safeguard is now live in source;
+// future v1.x bumps stamp additional `#[breaking_changes_semver(...)]`
+// markers on new sentinel constants below this one.
+#[adsmt_heuristic_checker_macros::breaking_changes_semver("1.0.0")]
+const _BREAKING_MARKER_1_0_0: () = ();
+
 /// Opaque handle. Allocated by [`adsmt_solver_new`], freed by [`adsmt_solver_free`].
 pub struct AdsmtSolver(Solver);
 

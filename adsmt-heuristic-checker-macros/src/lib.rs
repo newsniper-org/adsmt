@@ -58,6 +58,36 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, LitStr};
 
+/// v1.0.0-rc.1 RC1.3 — inert attribute marker for the 8-layer
+/// offline safeguard's σ peer.
+///
+/// Accepts a single string literal version: `1.0.0`,
+/// `1.1.0`, etc. The attribute itself produces no code; it
+/// exists so the v0.21 21E.4 forward-looking marker can be
+/// stamped on the authoritative surface crates (`adsmt-ffi`,
+/// `adsmt-cert`, `adsmt-parser`) as a real attribute rather
+/// than only living in the four manifest peers.
+///
+/// Use as an outer attribute on a sentinel item:
+///
+/// ```ignore
+/// #[breaking_changes_semver("1.0.0")]
+/// const _BREAKING_MARKER_1_0_0: () = ();
+/// ```
+///
+/// The attribute is parsed at compile time so any typo in the
+/// version literal yields a compile error; the version string
+/// is otherwise discarded.
+#[proc_macro_attribute]
+pub fn breaking_changes_semver(
+    args: TokenStream,
+    item: TokenStream,
+) -> TokenStream {
+    let _version = parse_macro_input!(args as LitStr);
+    // Pass the item through unchanged.
+    item
+}
+
 /// `adsmt_heuristics! { /* inline lu-kb */ }` — receives the
 /// macro body as a literal token stream, re-renders it as text,
 /// runs the lu-kb parser, and on success expands to a `const`

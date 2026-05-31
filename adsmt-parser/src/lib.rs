@@ -5,6 +5,12 @@
 //! parser plugs into logicutils' grammar (post v0.x-smt branch
 //! integration) and re-exports the AST from there.
 
+// v1.0.0-rc.1 RC1.3 — promote the 21E.4 forward-looking 1.0.0
+// marker into a real attribute on the SMT-LIB dialect
+// authority crate.
+#[adsmt_heuristic_checker_macros::breaking_changes_semver("1.0.0")]
+const _BREAKING_MARKER_1_0_0: () = ();
+
 pub mod convert;
 pub mod sexpr;
 pub mod smtlib;

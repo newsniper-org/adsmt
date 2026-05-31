@@ -105,9 +105,9 @@ Phase 1 (v0.23) freeze candidate sign-off status:
 4. **Classical-marker policy audit** — ✅ already pinned by
    `adsmt-cert`'s canonical AST tests + `prover_emit_policy.md`
    alignment.
-5. **`#![breaking_changes_semver("1.0.0")]`** — registered as
-   the forward-looking marker per 21E.4; phase 3 RC bump
-   promotes it to a real attribute on `adsmt-parser/src/lib.rs`.
+5. **`#![breaking_changes_semver("1.0.0")]`** — ✅ promoted to
+   a real outer attribute on `_BREAKING_MARKER_1_0_0` in
+   `adsmt-parser/src/lib.rs` by v1.0.0-rc.1 RC1.3.
 6. **Error message stability** — TBD; phase 2 (LSP) will start
    surfacing these errors to users so wording becomes
    user-facing.
