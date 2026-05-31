@@ -98,6 +98,7 @@ pub fn hash_reader<R: Read>(algo: HashAlgorithm, reader: &mut R) -> Result<Conte
 }
 
 /// Compute a checksum for a reader.
+#[allow(unused_variables)]
 pub fn checksum_reader<R: Read>(algo: ChecksumAlgorithm, reader: &mut R) -> Result<ContentSignature, HashError> {
     match algo {
         #[cfg(feature = "crc32")]
