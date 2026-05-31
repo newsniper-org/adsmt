@@ -15,13 +15,33 @@ BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later as of v0.18):
 - `adsmt-cert` — S-expression certificate format + Lean4/Alethe emit +
   classical-axiom marker layer (mid-blocks, pattern markers,
   StepPattern enum with xor/at_most_one/exactly_one helpers)
-- `adsmt-theory` — Theory trait + polite combination + UF/arith/arrays/datatypes
+- `adsmt-theory` — Theory trait + polite combination + UF/arith/arrays/datatypes/BV/(v0.23) EgraphTheory wrapper. The EgraphTheory module wraps `adsmt_quant::egraph::EGraph` and is registered alongside UF when EUF congruence cascade visibility is required by peer theories via `derive_equalities`.
 - `adsmt-class` — Type-class layer (T_class) + dictionary passing
 - `adsmt-quant` — Quantifier handling (Miller E-matching, prenex,
-  Tier 3 bounded enumeration)
+  Tier 3 bounded enumeration). v0.19 A.3 partial: `trigger::learn_triggers`
+  greedy depth-ordered cover. v0.21 A.2 stages 1+2: new `egraph`
+  module — hash-consed + union-find `EGraph` with congruence-closure
+  cascade (upward merging on `merge`); stages 3 (incremental
+  E-matching loop) and 4 (push/pop scope) pending.
 - `adsmt-abduce` — Abductive engine (SLD chaining with Horn rules,
   minimize, rank, workflow)
-- `adsmt-engine` — DPLL(T) main loop (placeholder)
+- `adsmt-engine` — DPLL(T) main loop + Boolean engine (`bool_solver`),
+  CNF flattener (`cnf`), v0.19 C.1 **BV bit-blasting module
+  `bv_blast`** lowering BV equalities/binops into CNF over fresh
+  `__bvb_<var>_<idx>` atoms with `__bva_<n>` Tseitin auxiliaries.
+  v0.19 B.2: `dpllt::run_once` now eager-conflict short-circuits
+  on the first `AssertResult::Conflict` from any theory. v0.19
+  D.1: Tier 4 abductive escalation runs `minimize` + `rank_candidates`
+  on emitted `quant-tier4` candidates. v0.21 B.1: full CDCL in
+  the new `cdcl` module — trail + 1-UIP + learnt clauses +
+  non-chronological backjump + Luby restart wrapper + VSIDS +
+  clause deletion + activity-based retention + LBD glue
+  protection (≤ 6) + phase saving + Sat-side model carry-out
+  via `CdclOutcome::Sat { model }`. Wired as the built-in SAT
+  fallback in `Solver::check_ground`. Two-watched literals +
+  LBD-based restart triggers queued for v0.23. v0.21 C.1:
+  `bv_blast` extended with ripple-carry `bvadd`/`bvsub` and
+  shift-and-add `bvmul`.
 - `adsmt-parser` — SMT-LIB S-expression + lu-kb parsing (via
   `lu_common::kb` bridge)
 - `adsmt-heuristic-checker` — per-user-crate validator for
@@ -71,10 +91,17 @@ separate git repo):
   enum, scan-arm axiom keyword tables, etc.).
 
 **Tooling** (`tooling/`):
-- `tooling/vscode-extension/` — v0.19 F.1 VS Code extension
-  consuming the `adsmt-lints` JSON schema for dead-pattern
-  diagnostics. Strict TS, CommonJS, schema version 1.
-- (future) LSP server, language analyzer integrations.
+- `tooling/vscode-extension/` — VS Code extension. v0.19 F.1
+  shipped audit-JSON consumer; v0.25 EXT.1 split it into
+  `src/audit.ts` (editor-agnostic JSON parsing) and
+  `src/extension.ts` (VSCode-specific commands + LSP client
+  via `vscode-languageclient`). Talks to the v0.25 `adsmt-lsp`
+  server binary for live capabilities.
+- `adsmt-lsp` (workspace crate, v0.25 25LSP.*) — tower-lsp
+  server with 6 capabilities: publishDiagnostics, definition,
+  hover, completion, workspace/symbol, codeAction. Spawned
+  as a child process by the vscode-extension; usable from
+  any LSP client (neovim, emacs, helix).
 
 **Why this matters:**
 - Design rationale lives in

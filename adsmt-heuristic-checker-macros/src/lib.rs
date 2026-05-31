@@ -1,3 +1,7 @@
+#![allow(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::private_intra_doc_links)]
+#![allow(rustdoc::redundant_explicit_links)]
+
 //! Proc-macro entry points for adsmt's classical-axiom
 //! heuristic compile-time validation.
 //!

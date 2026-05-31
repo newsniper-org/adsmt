@@ -64,6 +64,7 @@ exclude = ["external/oxiz"]
 version = "1.0.0"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
+rust-version = "1.96"
 
 [workspace.dependencies]
 adsmt-core = { version = "=1.0.0", path = "adsmt-core" }

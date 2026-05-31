@@ -23,7 +23,7 @@ Workspace `Cargo.toml` declares
 `adsmt-cert = { path = "../AD1/adsmt-cert" }` (and same for
 adsmt-core) — local path during development. The published-form
 git rev pin is commented next to it; uncomment to consume adsmt
-via `https://github.com/Honey-Be/adsmt-private.git` at a frozen
+via `https://github.com/newsniper-org/adsmt.git` at a frozen
 rev. adsmt v0.18 lands the classical-axiom marker layer; the
 contrib backends ship matching changes in their own commits
 (see `adsmt-emit-rocq/src/lib.rs` and `adsmt-emit-isabelle/src/

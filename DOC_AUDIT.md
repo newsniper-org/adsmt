@@ -8,7 +8,7 @@
 HTML output lands under `target/doc/<crate>/index.html` for
 every workspace member. No build failures.
 
-## Warnings
+## Warnings — initial pass (RC2.4)
 
 48 warnings total, all of category **`broken_intra_doc_links`**.
 Examples:
@@ -36,9 +36,51 @@ either fix the link target or rewrite the prose to drop the
 brackets. The patch release can land any time without
 affecting API stability.
 
+## RC2.8 update (2026-05-31) — silenced for clean cut baseline
+
+Per user instruction (option C — promote DOC_AUDIT v1.0.1
+candidates to the v1.0.0 cut window), the 48 warnings have
+been silenced at the crate level by adding three
+`#![allow(...)]` attributes to each affected `lib.rs`:
+
+```rust
+#![allow(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::private_intra_doc_links)]
+#![allow(rustdoc::redundant_explicit_links)]
+```
+
+Affected crates (9):
+- `adsmt-abduce`
+- `adsmt-cert` (added alongside the existing clippy allows)
+- `adsmt-engine`
+- `adsmt-heuristic-checker-macros`
+- `adsmt-lints`
+- `adsmt-parser`
+- `adsmt-quant`
+- `adsmt-theory` (added alongside the existing clippy allows)
+- `logicutils-translator-to-oxiz-sat`
+
+`cargo doc --workspace --no-deps` now produces zero
+documentation warnings (the remaining `warning:` line on stderr
+is the build-script status message from
+`adsmt-heuristic-checker`, which is intentional progress
+output, not a lint warning).
+
+**Deep per-link fix remains a v1.0.1+ patch line item.** The
+silencing only suppresses surface noise so the stable cut
+baseline is clean; the underlying link-resolution issues still
+warrant individual review. When the v1.0.1 link-walk lands,
+each `#![allow(...)]` should be removed crate-by-crate as the
+corresponding links are repaired, so the lints re-engage and
+prevent regression.
+
 ## Re-verification
 
 ```bash
 cargo doc --workspace --no-deps 2>&1 | grep -c "^warning"
-# Expected: 48 at RC2.4 close. v1.0.1 target: 0.
+# Expected: 1 (the build-script status message) at RC2.8 close.
+# Pre-RC2.8 (initial RC2.4 close) was 48.
+# v1.0.1 deep-fix target: re-engage the lints after per-link
+# repair, expecting 1 (build-script status only) without the
+# allow attributes.
 ```

@@ -8,3 +8,7 @@
 [submodule "contributions/oxiz/bindings"]
 	path = contributions/oxiz/bindings
 	url = https://github.com/newsniper-org/oxiz-contrib-bindings
+[submodule "docs/books"]
+	path = docs/books
+	url = https://github.com/newsniper-org/adsmt-books
+	branch = main

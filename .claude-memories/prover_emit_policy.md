@@ -476,3 +476,44 @@ Importable lines land **after** the existing fixed prelude lines
   result-only emit, or to a Definition-only term-mode-only
   emit) would be a major architectural revision and gets
   recorded separately.
+
+## v1.0 transition note (added 2026-05-30 per 21H.2)
+
+The v1.0 unification decisions taken during v0.21
+(21E.1 = option 5 bidirectional embed; 21E.2 = option 2-A'
+logicutils absorption with `adsmt-meta` metacrate, CLI
+preservation, and perpetual auto-migration) do not alter this
+policy's *shape* but reframe its *scope*:
+
+- **Per-ITP backend surface**: the in-tree backends covered by
+  this policy remain `lean_emit` (the reference) and the
+  `prover_emit::common` anchors. The out-of-tree
+  `adsmt-emit-rocq` / `adsmt-emit-isabelle` continue to be
+  bound by the lockstep rule, but at v1.0 they may opt into
+  re-homing as Apache-2 contributions under OxiZ-side
+  `oxiz-contrib-emit-rocq` / `oxiz-contrib-emit-isabelle` repos
+  (option 5 = bidirectional embed). The lockstep rule
+  preserves byte-identical emit regardless of repo location.
+- **8-layer offline safeguard**: the v0.x exclusion policy
+  retires at v1.0 — every layer starts participating in the
+  cross-version compatibility check from v1.0.0 onward. The
+  first v1.0.0 entry was registered 2026-05-30 as the v0.21
+  21E.4 stamp; see `adsmt-heuristic-checker/breaking_history.txt`.
+- **kb-syntax** moves to the in-tree `lu-common` (now an
+  adsmt workspace member per 21E.2 option 2-A') at v1.0; the
+  policy's "minimum heuristic table" stays at its current
+  lu-kb-sourced shape but the *path* shifts from `external/
+  logicutils/lu-common/` to `crates/lu-common/`.
+- **License flow**: emit-side text generators stay BSD-2-
+  Clause OR Apache-2.0 OR LGPL-2.1-or-later (adsmt's triple);
+  out-of-tree contributions under OxiZ become Apache-2.0 at
+  the contribution boundary. No relicensing required for the
+  policy text itself.
+- **Classical-axiom imports policy**: unchanged at v1.0. The
+  on-demand `should_import_classical` / `allow_to_import_
+  classical` truth table, hierarchical module family enum,
+  scan two-pass wiring, and parent-inheritance rule all
+  carry forward verbatim.
+
+The policy itself remains stable across the v0.21 → v1.0
+transition; only the surrounding workspace topology shifts.
