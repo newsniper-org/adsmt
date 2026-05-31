@@ -110,10 +110,8 @@ fn do_match(segments: &[PatternSegment], input: &str, bindings: &mut Bindings) -
                 }
 
                 // Check consistency: if this variable was already bound, it must match
-                if let Some(existing) = bindings.get(name) {
-                    if existing != candidate {
-                        continue;
-                    }
+                if let Some(existing) = bindings.get(name) && existing != candidate {
+                    continue;
                 }
 
                 let old = bindings.insert(name.clone(), candidate.to_string());
@@ -216,10 +214,8 @@ pub fn glob_match(pattern: &Pattern, base_dir: &Path) -> Vec<(String, Bindings)>
 pub fn wildcard_names(pattern: &Pattern) -> Vec<String> {
     let mut names = Vec::new();
     for seg in &pattern.segments {
-        if let PatternSegment::Wildcard { name, .. } = seg {
-            if !names.contains(name) {
-                names.push(name.clone());
-            }
+        if let PatternSegment::Wildcard { name, .. } = seg && !names.contains(name) {
+            names.push(name.clone());
         }
     }
     names

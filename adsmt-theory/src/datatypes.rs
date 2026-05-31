@@ -194,13 +194,10 @@ impl Theory for Datatypes {
         for (a, b) in &self.asserted_eqs {
             let head_a = Self::dest_constructor_app(a);
             let head_b = Self::dest_constructor_app(b);
-            if let (Some((ca, args_a)), Some((cb, args_b))) =
-                (head_a, head_b)
-            {
-                if ca == cb && args_a.len() == args_b.len() {
-                    for (arg_a, arg_b) in args_a.into_iter().zip(args_b) {
-                        out.push((arg_a, arg_b));
-                    }
+            if let (Some((ca, args_a)), Some((cb, args_b))) = (head_a, head_b)
+                && ca == cb && args_a.len() == args_b.len() {
+                for (arg_a, arg_b) in args_a.into_iter().zip(args_b) {
+                    out.push((arg_a, arg_b));
                 }
             }
         }

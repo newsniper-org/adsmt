@@ -26,6 +26,7 @@ use indexmap::IndexMap;
 
 /// Pull every quantified assertion out of `assertions`, returning
 /// `(quantified, rest)`.
+#[allow(clippy::type_complexity)]
 pub fn partition_quantifiers(assertions: &[(Term, bool)]) -> (Vec<(Var, Term)>, Vec<(Term, bool)>) {
     let mut quants = Vec::new();
     let mut rest = Vec::new();

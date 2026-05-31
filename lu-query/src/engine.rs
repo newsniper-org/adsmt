@@ -291,22 +291,20 @@ impl Engine {
             if !full.is_file() {
                 continue;
             }
-            if let Ok(src) = std::fs::read_to_string(&full) {
-                if let Ok(submodule) = lu_common::kb::parse(&src) {
-                    // Recursively load the imported module. `names` and
-                    // `alias` are honored by name filtering after load.
-                    self.load_module(&submodule);
-                    if let Some(ref names) = imp.names {
-                        // Drop facts/rules that aren't in `names`. (Selective
-                        // import is surface-level; the parser already
-                        // accepted the syntax.)
-                        let allow: std::collections::HashSet<&str> =
-                            names.iter().map(String::as_str).collect();
-                        self.facts.retain(|f| allow.contains(f.name.as_str()) || self.exports.contains(&f.name));
-                        self.rules.retain(|r| allow.contains(r.head_name.as_str()) || self.exports.contains(&r.head_name));
-                    }
-                    return;
+            if let Ok(src) = std::fs::read_to_string(&full) && let Ok(submodule) = lu_common::kb::parse(&src) {
+                // Recursively load the imported module. `names` and
+                // `alias` are honored by name filtering after load.
+                self.load_module(&submodule);
+                if let Some(ref names) = imp.names {
+                    // Drop facts/rules that aren't in `names`. (Selective
+                    // import is surface-level; the parser already
+                    // accepted the syntax.)
+                    let allow: std::collections::HashSet<&str> =
+                        names.iter().map(String::as_str).collect();
+                    self.facts.retain(|f| allow.contains(f.name.as_str()) || self.exports.contains(&f.name));
+                    self.rules.retain(|r| allow.contains(r.head_name.as_str()) || self.exports.contains(&r.head_name));
                 }
+                return;
             }
         }
         // Imports that fail to resolve are non-fatal; the engine simply
@@ -330,16 +328,14 @@ impl Engine {
     fn dispatch_method(&self, method: &str, bindings: &Bindings) -> Option<&FnDecl> {
         let mut best: Option<(&FnDecl, usize)> = None;
         for inst in &self.instances {
-            if let Some(fnd) = inst.methods.get(method) {
-                if inst
-                    .where_clauses
-                    .iter()
-                    .all(|w| eval_condition(w, bindings))
-                {
-                    let specificity = inst.where_clauses.len();
-                    if best.map(|(_, s)| specificity >= s).unwrap_or(true) {
-                        best = Some((fnd, specificity));
-                    }
+            if let Some(fnd) = inst.methods.get(method) && inst
+                .where_clauses
+                .iter()
+                .all(|w| eval_condition(w, bindings))
+            {
+                let specificity = inst.where_clauses.len();
+                if best.map(|(_, s)| specificity >= s).unwrap_or(true) {
+                    best = Some((fnd, specificity));
                 }
             }
         }
@@ -348,10 +344,8 @@ impl Engine {
         if best.is_none() {
             for rel in self.relations.values() {
                 for m in &rel.members {
-                    if let RelationMember::Fn(f) = m {
-                        if f.name == method {
-                            return Some(f);
-                        }
+                    if let RelationMember::Fn(f) = m && f.name == method {
+                        return Some(f);
                     }
                 }
             }
@@ -514,10 +508,8 @@ impl Engine {
                 for binding in body_results {
                     let mut result = Bindings::new();
                     for (query_arg, param) in args.iter().zip(&rule.head_args) {
-                        if let QueryArg::Var(var_name) = query_arg {
-                            if let Some(val) = binding.get(param) {
-                                result.insert(var_name.clone(), val.clone());
-                            }
+                        if let QueryArg::Var(var_name) = query_arg && let Some(val) = binding.get(param) {
+                            result.insert(var_name.clone(), val.clone());
                         }
                     }
                     results.push(result);

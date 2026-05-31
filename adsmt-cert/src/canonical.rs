@@ -88,20 +88,32 @@ pub struct ClassicalSet {
     members: Vec<ClassicalModuleFamily>,
 }
 
+impl FromIterator<ClassicalModuleFamily> for ClassicalSet {
+    /// Construct from an iterable. Duplicates are removed and the
+    /// result is kept in a canonical order.
+    fn from_iter<I: IntoIterator<Item = ClassicalModuleFamily>>(iter: I) -> Self {
+        let mut members: Vec<ClassicalModuleFamily> = iter.into_iter().collect();
+        members.sort_by_key(family_sort_key);
+        members.dedup();
+        Self { members }
+    }
+}
+
+impl IntoIterator for ClassicalSet {
+    type Item = ClassicalModuleFamily;
+
+    type IntoIter = <Vec<ClassicalModuleFamily> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.members.into_iter()
+    }
+}
+
 impl ClassicalSet {
     /// Empty set — the default for fields that haven't yet been
     /// populated by a cert producer.
     pub const fn empty() -> Self {
         Self { members: Vec::new() }
-    }
-
-    /// Construct from an iterable. Duplicates are removed and the
-    /// result is kept in a canonical order.
-    pub fn from_iter<I: IntoIterator<Item = ClassicalModuleFamily>>(iter: I) -> Self {
-        let mut members: Vec<ClassicalModuleFamily> = iter.into_iter().collect();
-        members.sort_by_key(family_sort_key);
-        members.dedup();
-        Self { members }
     }
 
     /// Add a family to the set. No-op if already present.

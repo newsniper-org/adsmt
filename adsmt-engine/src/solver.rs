@@ -341,7 +341,6 @@ impl Solver {
             .partition(|(t, p)| *p && t.dest_forall().is_some());
         // (1) Decompose every asserted (term, polarity) into CNF clauses.
         let mut clauses: Vec<Clause> = Vec::new();
-        let lits = lits;
         for (term, polarity) in &lits {
             let asserted = if *polarity {
                 term.clone()

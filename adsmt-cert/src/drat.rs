@@ -10,7 +10,7 @@
 //! A clause is a `Vec<i32>` (positive = positive literal, negative =
 //! negation, terminated implicitly). Variables are dense u32 ids.
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DratStep {
     /// Add a clause that follows from the current formula by RUP.
     Add(Vec<i32>),
@@ -18,7 +18,7 @@ pub enum DratStep {
     Delete(Vec<i32>),
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct DratProof {
     pub steps: Vec<DratStep>,
 }

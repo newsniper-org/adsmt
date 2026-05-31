@@ -92,7 +92,7 @@ fn substitute_in(t: &Term, from: &Term, to: &Term) -> Option<Term> {
         }
         Term::Lam(v, body) => {
             substitute_in(body, from, to)
-                .and_then(|new_body| Some(Term::lam((**v).clone(), new_body)))
+                .map(|new_body| Term::lam((**v).clone(), new_body))
         }
     }
 }

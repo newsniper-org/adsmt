@@ -143,13 +143,11 @@ pub fn match_rules(
         let pattern = lu_match::parse_pattern(&rule.pattern)?;
         if let Some(bindings) = lu_match::match_pattern(&pattern, target) {
             // Check goal if present
-            if let Some(ref goal) = rule.goal {
-                if !evaluate_goal(goal, &bindings) {
-                    if backtrack {
-                        continue; // Try next rule
-                    } else {
-                        return Err(RuleError::NoMatch(target.into()));
-                    }
+            if let Some(ref goal) = rule.goal && !evaluate_goal(goal, &bindings) {
+                if backtrack {
+                    continue; // Try next rule
+                } else {
+                    return Err(RuleError::NoMatch(target.into()));
                 }
             }
 

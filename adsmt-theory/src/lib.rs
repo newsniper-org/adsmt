@@ -1,3 +1,6 @@
+#![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::doc_lazy_continuation)]
+
 //! Theory solvers and polite combination for adsmt.
 //!
 //! NO is treated as a trivial subcase of polite combination; each theory
