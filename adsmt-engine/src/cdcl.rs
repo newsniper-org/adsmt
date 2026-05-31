@@ -151,6 +151,26 @@ pub struct CdclState {
     /// branches of the search and are the most valuable to
     /// retain. Parallel to [`Self::learnt_clauses`].
     pub learnt_lbd: Vec<usize>,
+    /// v1.0.0-rc.1 RC1.2 (carried over from 23B.1 / 25B.1) —
+    /// two-watched-literals propagation metadata. Each entry
+    /// stores `[idx_of_watched_lit_0, idx_of_watched_lit_1]`
+    /// into the clause's literal list. For unit clauses both
+    /// indices are 0. Length matches the propagator's view of
+    /// clauses (input + learnt) at all times.
+    pub clause_watches: Vec<[usize; 2]>,
+    /// v1.0.0-rc.1 RC1.2 — watcher lists keyed by `(atom_key,
+    /// polarity_when_clause_becomes_falsified_against_this_lit)`.
+    /// When the trail pushes `(atom, true)`, the false-literals
+    /// against `atom` are the ones with `polarity = false`, so
+    /// the propagator looks up `watches[(atom, true)]` (the
+    /// clauses whose watched literal `Lit{atom, false}` just
+    /// became false) and re-evaluates them.
+    pub watches: HashMap<(String, bool), Vec<usize>>,
+    /// v1.0.0-rc.1 RC1.2 — head pointer into `trail` marking
+    /// the next entry the propagator hasn't processed yet. The
+    /// two-watched-literals propagator advances this monotonically;
+    /// backtrack rolls it back to the new trail length.
+    pub prop_head: usize,
 }
 
 impl CdclState {
@@ -214,6 +234,12 @@ impl CdclState {
             self.saved_phase.insert(entry.atom_key, entry.polarity);
         }
         self.decision_level = level;
+        // v1.0.0-rc.1 RC1.2 — clamp prop_head to the new trail
+        // length so the two-watched-literals propagator
+        // re-examines any entries that survived the backtrack.
+        if self.prop_head > self.trail.len() {
+            self.prop_head = self.trail.len();
+        }
     }
 }
 
@@ -248,6 +274,15 @@ pub fn cdcl_solve_with_model(
     let mut state = CdclState::new();
     let input_len = clauses.len();
     let mut owned: Vec<Clause> = clauses.to_vec();
+    // v1.0.0-rc.1 RC1.2 — initialise watcher metadata for the
+    // input clauses; learnt clauses register their watches at
+    // push time below. Empty clauses can't be watched (no
+    // literals to attach to), so detect them up front as an
+    // immediate Unsat sentinel.
+    if owned.iter().any(|c| c.is_empty()) {
+        return CdclOutcome::Unsat;
+    }
+    build_watches(&mut state, &owned);
     let mut conflicts = 0;
     let vsids_bump: f64 = 1.0;
     let vsids_decay: f64 = 0.95;
@@ -256,7 +291,7 @@ pub fn cdcl_solve_with_model(
     let clause_bump: f64 = 1.0;
     let clause_decay: f64 = 0.999;
     loop {
-        let conflict_idx = propagate_with_storage(
+        let conflict_idx = propagate_two_watched(
             &owned,
             &mut state,
             input_len,
@@ -274,7 +309,9 @@ pub fn cdcl_solve_with_model(
             state.decay_learnt_activity(clause_decay);
             state.backtrack_to(bj_level);
             let lbd = compute_lbd(&learnt, &state);
+            let new_idx = owned.len();
             owned.push(learnt.clone());
+            register_clause_watches(&mut state, &learnt, new_idx);
             state.learnt_clauses.push(learnt);
             state.learnt_activity.push(1.0);
             state.learnt_lbd.push(lbd);
@@ -309,6 +346,15 @@ pub fn cdcl_solve_with_model(
                     state.learnt_lbd.remove(idx);
                     owned.remove(input_len + idx);
                 }
+                // v1.0.0-rc.1 RC1.2 — rebuild watch metadata
+                // wholesale after a reduction. The indices in
+                // `clause_watches` and `watches` are all
+                // invalidated by the `remove`s above; we already
+                // backtracked to level 0, so the next
+                // propagation round will re-derive everything
+                // from the surviving clauses.
+                build_watches(&mut state, &owned);
+                state.prop_head = 0;
                 learnt_limit =
                     ((learnt_limit as f64) * learnt_limit_growth) as usize;
             }
@@ -377,6 +423,207 @@ fn pick_vsids_atom(input_clauses: &[Clause], state: &CdclState) -> Option<String
         }
     }
     best.map(|(k, _)| k)
+}
+
+/// v1.0.0-rc.1 RC1.2 — initialise the watch metadata for a
+/// fresh clause set. Each clause picks its first two literals
+/// as watched (or just the single literal for a unit clause);
+/// the watcher map gets one entry per `(atom_key, polarity_of_lit)`
+/// pointing at the owning clause index.
+///
+/// Called once at solver start and after `learnt_clauses`
+/// reduction; the per-conflict learnt-clause path uses
+/// `register_clause_watches` on the new clause alone instead of
+/// rebuilding the whole table.
+pub fn build_watches(state: &mut CdclState, clauses: &[Clause]) {
+    state.clause_watches.clear();
+    state.watches.clear();
+    for (idx, clause) in clauses.iter().enumerate() {
+        register_clause_watches(state, clause, idx);
+    }
+}
+
+/// Register a single clause's watches. Called by [`build_watches`]
+/// for input clauses and by the conflict path for each newly
+/// learnt clause.
+///
+/// Also performs an immediate unit-propagation check: if the
+/// clause is already at unit (exactly one unassigned literal,
+/// all others false), the UIP literal is pushed onto the trail
+/// with the clause as its antecedent. This handles both
+/// (a) genuine unit clauses (`len == 1`) and (b) learnt
+/// clauses freshly minted by 1-UIP analysis whose UIP literal
+/// is the only unassigned member after backjump.
+pub fn register_clause_watches(
+    state: &mut CdclState,
+    clause: &Clause,
+    idx: usize,
+) {
+    let w0 = 0usize;
+    let w1 = if clause.len() >= 2 { 1usize } else { 0usize };
+    if state.clause_watches.len() <= idx {
+        state.clause_watches.resize(idx + 1, [0, 0]);
+    }
+    state.clause_watches[idx] = [w0, w1];
+    if let Some(lit) = clause.get(w0) {
+        let key = (atom_key(lit), lit.polarity);
+        state.watches.entry(key).or_default().push(idx);
+    }
+    if w1 != w0 {
+        if let Some(lit) = clause.get(w1) {
+            let key = (atom_key(lit), lit.polarity);
+            state.watches.entry(key).or_default().push(idx);
+        }
+    }
+    // Immediate unit-propagation check.
+    let mut unassigned: Option<usize> = None;
+    let mut count_unassigned = 0usize;
+    let mut any_satisfied = false;
+    for (i, lit) in clause.iter().enumerate() {
+        let key = atom_key(lit);
+        match state.assign.get(&key) {
+            Some(&v) if v == lit.polarity => {
+                any_satisfied = true;
+                break;
+            }
+            Some(_) => {}
+            None => {
+                unassigned = Some(i);
+                count_unassigned += 1;
+            }
+        }
+    }
+    if !any_satisfied
+        && count_unassigned == 1
+        && let Some(u) = unassigned
+    {
+        let lit = &clause[u];
+        let key = atom_key(lit);
+        state.push(
+            key,
+            lit.polarity,
+            Reason::Propagated { clause_idx: idx },
+        );
+    }
+}
+
+/// v1.0.0-rc.1 RC1.2 — two-watched-literals propagation.
+///
+/// Walks `state.trail` from `state.prop_head` forward; for each
+/// newly assigned `(atom, polarity)`, examines the clauses
+/// watching the *opposite* polarity of that atom (those are the
+/// clauses whose watched literal just became false) and either:
+///   - swaps the watcher to another satisfied / unassigned
+///     literal in the clause, or
+///   - if the other watched literal is unassigned, propagates
+///     it as a Unit consequence, or
+///   - if both watchers are false, reports the conflicting
+///     clause index.
+///
+/// Returns `Some(clause_idx)` on conflict, `None` on fixpoint.
+fn propagate_two_watched(
+    clauses: &[Clause],
+    state: &mut CdclState,
+    input_len: usize,
+    clause_bump: f64,
+) -> Option<usize> {
+    while state.prop_head < state.trail.len() {
+        let entry = state.trail[state.prop_head].clone();
+        state.prop_head += 1;
+        // The literal whose polarity just became false is the
+        // negation of the assigned polarity.
+        let false_polarity = !entry.polarity;
+        let key = (entry.atom_key.clone(), false_polarity);
+        let watched_clauses: Vec<usize> = state
+            .watches
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        for clause_idx in watched_clauses {
+            let clause = &clauses[clause_idx];
+            let [w0, w1] = state.clause_watches[clause_idx];
+            // Identify which slot the now-falsified literal
+            // occupies in this clause.
+            let (false_slot, other_slot) = if w0 < clause.len()
+                && atom_key(&clause[w0]) == entry.atom_key
+                && clause[w0].polarity == false_polarity
+            {
+                (0usize, w1)
+            } else if w1 < clause.len()
+                && atom_key(&clause[w1]) == entry.atom_key
+                && clause[w1].polarity == false_polarity
+            {
+                (1usize, w0)
+            } else {
+                // Stale watcher entry from a previous swap that
+                // wasn't pruned from the map; skip.
+                continue;
+            };
+            let false_pos = state.clause_watches[clause_idx][false_slot];
+            // If the other watcher is already satisfied, the
+            // clause is fine; keep watching.
+            if let Some(other_lit) = clause.get(other_slot) {
+                let other_key = atom_key(other_lit);
+                if let Some(&v) = state.assign.get(&other_key) {
+                    if v == other_lit.polarity {
+                        continue;
+                    }
+                }
+            }
+            // Look for a new watcher among the remaining
+            // literals (anything but `false_pos` and `other_slot`).
+            let mut new_watcher: Option<usize> = None;
+            for (i, lit) in clause.iter().enumerate() {
+                if i == false_pos || i == other_slot { continue; }
+                let lit_key = atom_key(lit);
+                match state.assign.get(&lit_key) {
+                    Some(&v) if v != lit.polarity => continue,
+                    _ => { new_watcher = Some(i); break; }
+                }
+            }
+            if let Some(new_pos) = new_watcher {
+                // Swap the falsified watcher with the new one.
+                state.clause_watches[clause_idx][false_slot] = new_pos;
+                let new_lit = &clause[new_pos];
+                state
+                    .watches
+                    .entry((atom_key(new_lit), new_lit.polarity))
+                    .or_default()
+                    .push(clause_idx);
+                continue;
+            }
+            // No replacement — the other watcher is either
+            // unassigned (propagate) or false (conflict).
+            let Some(other_lit) = clause.get(other_slot) else {
+                return Some(clause_idx);
+            };
+            let other_key = atom_key(other_lit);
+            match state.assign.get(&other_key).copied() {
+                Some(v) if v != other_lit.polarity => {
+                    return Some(clause_idx);
+                }
+                Some(_) => {
+                    // already satisfied — should have been
+                    // caught above, but guard for safety
+                    continue;
+                }
+                None => {
+                    state.push(
+                        other_key.clone(),
+                        other_lit.polarity,
+                        Reason::Propagated { clause_idx },
+                    );
+                    if clause_idx >= input_len {
+                        let li = clause_idx - input_len;
+                        if let Some(act) = state.learnt_activity.get_mut(li) {
+                            *act += clause_bump;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Like [`propagate`] but reports the conflicting clause index
