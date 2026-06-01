@@ -30,6 +30,7 @@ adsmt는 SMT-as-tactic을 Lean 4 + OxiLean 측에서 호출 가능해야 한다.
 leo4가 들어오면 *그 사이의 binding 계층*이 표준화된다. 즉 통합 지점은
 **adsmt의 Rust API/FFI 계층 ↔ Lean tactic 계층** 사이.
 
+
 > **주목**: leo4 ROADMAP의 Phase 10-B1 항목은
 > "*the one new ABI surface (callbacks) that the adsmt flagship demo
 > needs*"라고 명시되어 있다. 즉 leo4 측은 **adsmt를 first-class
@@ -289,7 +290,6 @@ leo4 Phase 10-C5 정책 (2026-05-24 locked) 적용:
 
 **결론**: adsmt + leo4의 musl 또는 wasm 배포는 **OxiLean 측에 한정**됨.
 Lean 4 (mainline) 측은 glibc 강제.
-
 ## 10. 결정 필요 항목
 
 2026-05-31 밤 옵션 A 채택으로 일부 항목 closing:
