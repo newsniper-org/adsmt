@@ -74,13 +74,58 @@ each `#![allow(...)]` should be removed crate-by-crate as the
 corresponding links are repaired, so the lints re-engage and
 prevent regression.
 
-## Re-verification
+## D1 update (2026-06-01) — deep link-walk completed, pulled into v1.0.0 cut
+
+Per the 2026-05-31 v1.0.0 scope expansion (memory
+`v1_0_0_scope_expansion.md` option A), the v1.0.1 deep
+per-link fix has been pulled forward into the v1.0.0 cut
+window.
+
+The 9 `#![allow(rustdoc::*)]` crate-level attributes have been
+**fully removed**. Every previously-silenced warning has been
+fixed at source via one of:
+
+- *Explicit path qualifier* — e.g. `[`StepId`](crate::canonical::StepId)`
+  when the type lives in a sibling module and isn't in scope.
+- *`Self::` prefix* — for intra-impl `[`method`]` references
+  (e.g. `[`Self::candidates`]` on a sibling method of the
+  same struct).
+- *Plain text demotion* — for cross-crate references in crates
+  that don't pin the target as a workspace dep (e.g. parser →
+  cert, quant → theory in some spots), and for explicitly
+  private items (`pick_vsids_atom`, `Self::repair`) where
+  `--document-private-items` would be wrong to require.
+- *Variant-name normalisation* — e.g. `[`StepBody::Refl(t)`]`
+  → `[`StepBody::Refl`] carrying a term `t``; rustdoc rejects
+  the `Refl(t)` payload syntax.
+- *Redundant-link removal* — drop the explicit `(crate::…)`
+  target when the label itself already resolves
+  (two cases in `prover_emit/common.rs`).
+
+Total fixes: 38 unique source-level edits across 14 files
+in 9 crates.
+
+Verification (2026-06-01):
+
+```
+$ cargo doc --workspace --no-deps 2>&1 | grep -c "^warning"
+1
+```
+
+The single remaining `warning:` line is the build-script
+status message from `adsmt-heuristic-checker`'s validation
+of the shipped minimum heuristic table (intentional progress
+output, not a lint). Every `#![warn(rustdoc::*)]` lint is
+re-engaged at default level — any regression in a future
+commit will surface as a build-time warning, preventing the
+silenced regime from re-accreting.
+
+## Re-verification (post-D1)
 
 ```bash
 cargo doc --workspace --no-deps 2>&1 | grep -c "^warning"
-# Expected: 1 (the build-script status message) at RC2.8 close.
-# Pre-RC2.8 (initial RC2.4 close) was 48.
-# v1.0.1 deep-fix target: re-engage the lints after per-link
-# repair, expecting 1 (build-script status only) without the
-# allow attributes.
+# Expected: 1 (the build-script status message) at D1 close.
+# Pre-D1 (RC2.8 silenced regime): 1 (same count, but with
+# allow attrs masking the underlying warnings).
+# Pre-RC2.8 (initial RC2.4 close): 48.
 ```

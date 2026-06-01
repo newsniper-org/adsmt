@@ -1,7 +1,7 @@
 //! CaDiCaL SAT backend adapter.
 //!
 //! Behind the `cadical` feature flag. Encodes our [`Clause`] /
-//! [`Lit`] data into CaDiCaL's i32 literal convention and reports
+//! [`Lit`](crate::cnf::Lit) data into CaDiCaL's i32 literal convention and reports
 //! Sat/Unsat as a [`BoolResult`]. The default strategic backend is
 //! `oxiz` (Path A+B); this adapter stays available as a comparison
 //! / fallback path for callers who explicitly opt into CaDiCaL.

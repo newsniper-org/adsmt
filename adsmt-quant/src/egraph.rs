@@ -28,7 +28,7 @@
 //! - **Stage 3**: incremental E-matching loop driven by
 //!   [`crate::trigger::learn_triggers`].
 //! - **Stage 4**: push/pop scope integration with
-//!   [`adsmt-theory::trait_::Theory`].
+//!   `adsmt_theory::trait_::Theory`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -153,7 +153,7 @@ impl EGraph {
     /// equal.
     ///
     /// **Stage 2** — after the primitive union, runs the
-    /// congruence-closure cascade ([`Self::repair`]) so that
+    /// congruence-closure cascade (`Self::repair`, internal) so that
     /// peers `f(a)` and `f(b)` become equivalent whenever
     /// `a = b` is asserted. The cascade is the "upward
     /// merging" half of EUF and is what makes the E-graph
@@ -251,7 +251,7 @@ impl EGraph {
     }
 
     /// v0.21 A.2 stage 3 — project every E-node's term into a
-    /// [`TermUniverse`] so the existing
+    /// [`TermUniverse`](crate::ematch::TermUniverse) so the existing
     /// [`crate::ematch::EMatcher`] can run against the E-graph
     /// without re-implementation. The projection is union-find
     /// blind — every term ever added survives, congruence
@@ -281,7 +281,7 @@ impl EGraph {
     /// Pop the top `levels` snapshots, restoring the graph
     /// state captured by each [`Self::push`]. Calls with no
     /// matching push are silently ignored — same semantics
-    /// as [`adsmt-theory`]'s `Theory::pop`.
+    /// as `adsmt_theory`'s `Theory::pop`.
     pub fn pop(&mut self, levels: u32) {
         for _ in 0..levels {
             if let Some(snap) = self.scope_stack.pop() {

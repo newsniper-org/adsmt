@@ -8,6 +8,10 @@
 > **개정 2**: 2026-05-31 저녁 (#76 P0c IO walker 3-batch finisher 반영
 >             — `87d68af` / `daf8ba8` / `322ea64` —
 >             §4-D, §8 게이트 1, §10, §12 업데이트)
+> **개정 3**: 2026-05-31 밤 (사용자가 §8 로드맵 옵션 A 선택 →
+>             §4-A/B/D, §8 일정 모두 adsmt v1.0.0 cut 안에 묶임;
+>             §10 결정 항목 1 / 3 / 4 / 7이 user 결정으로 closing;
+>             별도 memory `v1_0_0_scope_expansion.md`로 승격)
 >
 > **관련 메모리**:
 > - `feedback_oxiz_bindings_split.md` — bindings/는 leo4 v1.0까지 freeze
@@ -25,6 +29,7 @@ adsmt는 SMT-as-tactic을 Lean 4 + OxiLean 측에서 호출 가능해야 한다.
 
 leo4가 들어오면 *그 사이의 binding 계층*이 표준화된다. 즉 통합 지점은
 **adsmt의 Rust API/FFI 계층 ↔ Lean tactic 계층** 사이.
+
 
 > **주목**: leo4 ROADMAP의 Phase 10-B1 항목은
 > "*the one new ABI surface (callbacks) that the adsmt flagship demo
@@ -249,17 +254,28 @@ adsmt 측 의존:
 
 ### 통합 단계별 일정
 
+**사용자 결정 (2026-05-31 밤)**: 옵션 A 채택 — `v1.1.x` / `v1.2.x`
+일정 전체를 `v1.0.0` cut 안에 묶음. adsmt v1.0.0 stable cut 시점은
+leo4-side milestone (v0.2.0 + mslean4 LECQ/LECR) 완료를 기다린다.
+별도 memory `v1_0_0_scope_expansion.md`로 승격됨.
+
 | 시점 | 작업 | 의존 |
 |---|---|---|
 | ~~Phase 10-B1.x P0c 마무리~~ | ~~(fork 진행 중)~~ — **충족 2026-05-31 저녁** | — |
 | **leo4 v0.2.0 출시** | `oxiz-binding-lean4` (core) 시작 | leo4 v0.2.0 |
 | **leo4 v0.2.0 + ε** | `oxiz-binding-lean4-contrib-abduction` 시작 | core binding |
-| **leo4 v0.2.0 + ε** | `adsmt-lean-binding` repo 신설 | leo4 v0.2.0, adsmt v1.0.0 |
-| **adsmt v1.1.x** | §4-A 통합 지점 (`lu-smt` 대체) 실장 | adsmt-lean-binding |
-| **adsmt v1.1.x** | §4-B typed abductive candidate | A 완료 |
-| **adsmt v1.1.x** (OxiLean only) | §4-D Lean → Rust callback (oracle/cost) — OxiLean 경로 | Phase 10-B1.x P0c (충족) |
-| **adsmt v1.2.x** (mainline Lean) | §4-D mainline Lean 4 경로 | Phase 10-B1.x mslean4 LECQ/LECR (post-RC) |
+| **leo4 v0.2.0 + ε** | `adsmt-lean-binding` repo 신설 | leo4 v0.2.0, adsmt main `testing` |
+| **adsmt main `testing`** | §4-A 통합 지점 (`lu-smt` 대체) 실장 | adsmt-lean-binding |
+| **adsmt main `testing`** | §4-B typed abductive candidate | A 완료 |
+| **adsmt main `testing`** (OxiLean only) | §4-D Lean → Rust callback (oracle/cost) — OxiLean 경로 | Phase 10-B1.x P0c (충족) |
+| **adsmt main `testing`** (mainline Lean) | §4-D mainline Lean 4 경로 | leo4 mslean4 LECQ/LECR (post-RC sub-phase) |
+| **adsmt v1.0.0 cut** | 위 모두 GREEN + user 승인 (`feedback_stable_signoff_user_approval.md`) | 전부 |
 | **post-v1.0** | §4-C typed term marshalling | leo4 v1.0 + IDL kind discipline 검증 |
+
+> **leo4-무관 use case의 consumer-facing line**: v1.0.0 cut이 leo4
+> 일정에 의해 미뤄지는 동안, cert text emit / `lu-smt` CLI / direct
+> Rust API 등 leo4를 쓰지 않는 use case는 **adsmt testing channel
+> (`1.0.0-rc.M` on `testing` branch)** 으로 서비스됨.
 
 ## 9. musl / wasm 타겟 정책
 
@@ -274,26 +290,28 @@ leo4 Phase 10-C5 정책 (2026-05-24 locked) 적용:
 
 **결론**: adsmt + leo4의 musl 또는 wasm 배포는 **OxiLean 측에 한정**됨.
 Lean 4 (mainline) 측은 glibc 강제.
-
 ## 10. 결정 필요 항목
 
-브레인스토밍 단계 — 답이 아직 없음:
+2026-05-31 밤 옵션 A 채택으로 일부 항목 closing:
 
-1. adsmt-lean-binding을 별도 repo로 할 것인가? (§7)
+1. ~~adsmt-lean-binding을 별도 repo로 할 것인가?~~ — **별도 repo 결정**
+   (옵션 A 채택 + adsmt-contrib과 동일 패턴 + 별도 채널 적용 시점에
+   확정됨).
 2. `AbductiveCandidate`의 IDL shape — record, variant, resource 중 어떤 것?
-3. OxiLean 대상 binding을 first-class로 둘 것인가, Lean 4 binding의
-   conditional fallback으로 둘 것인가? (musl/wasm 분기 정책과 연결 — §9.)
-4. Lean → Rust callback (reverse direction)을 abductive workflow에 활용할
-   시나리오가 있는가? (§4-D) — 있다면 oracle hypothesis, 사용자 정의
-   cost function 등이 후보. **Phase 10-B1.x P0c IO walker가 사실상
-   완성되어 (OxiLean 경로) 이제 결정만 남았음** — 시나리오가 있다면
-   adsmt v1.1.x에 §4-A/B와 동시 도입 가능.
+   *(미정)*
+3. ~~OxiLean 대상 binding을 first-class로 둘 것인가?~~ — **first-class
+   결정** (옵션 A 일정상 OxiLean 경로 §4-D가 mainline Lean 경로보다
+   먼저 land; first-class라야 일관됨).
+4. ~~Lean → Rust callback 시나리오~~ — **scope에 포함 확정**
+   (L3 + L4, 옵션 A). 구체적 use case (oracle / cost function /
+   사용자 정의 heuristic) 후속 설계는 별도 brainstorm.
 5. wasm target 우선순위 — leo4가 wasmtime Component Model 지원
    (Phase 10-C4). browser-side `smt_decide`가 use case로 가치 있나?
+   *(미정 — wasm은 후속 cycle 검토.)*
 6. Lean source-level *transpile* 시나리오를 도입할 의도가 있는가?
-   (OX6 의존 여부 결정)
-7. adsmt v1.0.0 stable cut에 leo4 v0.2.0 출시 시점을 맞출 것인가, 아니면
-   adsmt v1.1.x로 미룰 것인가? (adsmt cycle vs leo4 cycle 동기 정책)
+   (OX6 의존 여부 결정) *(미정 — 도입 안 하면 OX6 무관.)*
+7. ~~adsmt v1.0.0 stable cut 시점 동기 정책~~ — **adsmt v1.0.0 = leo4
+   mslean4 LECQ/LECR 완료 후 cut** (옵션 A).
 
 ## 11. adsmt-contrib과의 대비
 

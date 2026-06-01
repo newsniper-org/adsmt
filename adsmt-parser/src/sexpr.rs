@@ -24,7 +24,7 @@ pub enum Token {
 }
 
 /// 1-based line / column source position. Parser-native type; the
-/// CLI converts to [`adsmt_cert::SourceLoc`] at the boundary.
+/// CLI converts to `adsmt_cert::SourceLoc` at the boundary.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Position {
     pub line: u32,

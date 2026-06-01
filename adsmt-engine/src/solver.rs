@@ -121,7 +121,7 @@ impl Solver {
         self.assert_with_polarity_at(t, true, Some(loc));
     }
 
-    /// Like [`assert_negated`] but with a source position.
+    /// Like [`Self::assert_negated`] but with a source position.
     pub fn assert_negated_at(&mut self, t: Term, loc: adsmt_cert::SourceLoc) {
         self.assert_with_polarity_at(t, false, Some(loc));
     }
@@ -200,8 +200,8 @@ impl Solver {
             .collect()
     }
 
-    /// Like [`all_literals`] but also carries each literal's
-    /// optional [`SourceLoc`]. Abductively-accepted hypotheses have
+    /// Like [`Self::all_literals`] but also carries each literal's
+    /// optional [`SourceLoc`](adsmt_cert::SourceLoc). Abductively-accepted hypotheses have
     /// `None` (no parser source position). Used by the unsat-cert
     /// path so each `Assume` step's `:loc` is set when known.
     pub fn all_literals_with_locs(&self) -> Vec<(Term, bool, Option<adsmt_cert::SourceLoc>)> {

@@ -1,6 +1,3 @@
-#![allow(rustdoc::broken_intra_doc_links)]
-#![allow(rustdoc::private_intra_doc_links)]
-#![allow(rustdoc::redundant_explicit_links)]
 
 //! Runtime audit library for adsmt certificate hygiene checks.
 //!
@@ -10,7 +7,7 @@
 //! (`prover_emit_policy.md` § "Pattern markers (cross-cutting)"),
 //! cert producers can attach [`PatternMarker`]s that apply
 //! classical-axiom markers to any step matching a
-//! [`StepPattern`]. A pattern that matches zero steps in the
+//! [`StepPattern`](adsmt_cert::StepPattern). A pattern that matches zero steps in the
 //! actual cert is a *dead pattern* — almost certainly a producer
 //! mistake (typo, forgotten filter, stale copy-paste) that wants
 //! a warning.

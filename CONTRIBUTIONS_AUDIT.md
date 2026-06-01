@@ -77,3 +77,69 @@ grep -q "FROZEN" contributions/oxiz/bindings/README.md
 grep -q "Freeze status" contributions/oxiz/bindings/README.md
 grep -q "verified against adsmt" contributions/oxiz/abduction/README.md
 ```
+
+## ~/adsmt-contrib/ deep audit — 2026-06-01 (post-D1)
+
+Follow-up to the RC2.7 pass, now that the channel model has
+been introduced (commits `4fbde87` on main / `8c5c1f0` on
+testing) and the v1.0.0 scope has expanded (option A, memory
+`v1_0_0_scope_expansion.md`).
+
+### Status (post-fix)
+
+| Check | main | testing |
+|---|---|---|
+| `cargo check --workspace` | ✓ | ✓ |
+| `cargo test --workspace` | 26 / 26 pass | (same fixture) |
+| `cargo clippy --workspace -- -D warnings` | ✓ (post-fix) | (cherry-pick pending) |
+| `cargo doc --workspace --no-deps` | 0 warnings (post-fix) | (cherry-pick pending) |
+| `cargo publish -p <crate> --dry-run` | ❌ (see F3) | ❌ (same) |
+| Channel-pin discipline | ✓ `branch="main"` | ✓ `branch="testing"` |
+
+### Findings
+
+**F1 — Clippy `if_same_then_else` in
+`adsmt-emit-rocq/src/lib.rs:140-144`.** Both `if` arms
+pushed `'\n'`. Severity: medium. Fix: unconditional
+`out.push('\n')` after the import loop — the intent was
+always to terminate the imports block with a blank line
+regardless of contents. Lands on `main` only; testing
+gets the fix via cherry-pick when ready.
+
+**F2 — Rustdoc `redundant_explicit_links` in
+`adsmt-emit-{rocq,isabelle}/src/lib.rs:4`.** The
+`[`Certificate`](adsmt_cert::Certificate)` form was redundant
+because the label alone resolves through the workspace dep.
+Fix: drop the explicit target. Both crates updated.
+
+**F3 — `cargo publish --dry-run` fails identically to adsmt
+main `PUBLISH_AUDIT.md` issue 1.** `adsmt-cert` /
+`adsmt-core` are declared as `git = "..."` with no
+`version` field, so cargo refuses to verify the manifest
+for publication. **Not a blocker until adsmt main publishes
+v1.0.0 to crates.io**; the fix at that point is shaped as:
+
+```toml
+adsmt-cert = { git = "...", branch = "main", version = "=1.0.0" }
+```
+
+This needs to land on BOTH branches with the appropriate
+channel-pin discipline preserved (`branch="main"` on main,
+`branch="testing"` on testing).
+
+### Resolution
+
+F1 + F2 fixed at adsmt-contrib `main` HEAD by a single
+combined commit. Testing branch receives the cherry-pick
+when we're ready to promote. F3 stays deferred until adsmt
+main's v1.0.0 crates.io push.
+
+### Re-verification (post-fix)
+
+```bash
+cd ~/adsmt-contrib
+cargo check --workspace
+cargo clippy --workspace -- -D warnings    # expect: clean
+cargo doc --workspace --no-deps 2>&1 | grep -c "^warning"  # expect: 0
+cargo test --workspace                     # expect: 26 / 26
+```

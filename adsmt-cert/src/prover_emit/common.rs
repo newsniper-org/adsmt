@@ -23,13 +23,13 @@
 //!    cert must distinguish that at the type-level with a new sort.
 //!
 //! 2. **Theory steps are axiomatized.** Each
-//!    [`StepBody::Theory`](crate::canonical::StepBody::Theory) becomes
+//!    [`StepBody::Theory`] becomes
 //!    an axiom whose statement is the step's sequent conclusion. The
 //!    witness summary is included as a structured comment so a future
 //!    reflective checker can recover it. Same in Lean and Rocq.
 //!
 //! 3. **Abductive markers become explicit holes.**
-//!    [`StepBody::Assumed`](crate::canonical::StepBody::Assumed)
+//!    [`StepBody::Assumed`]
 //!    emits a `sorry` / `Admitted.` declaration so the prover sees
 //!    a typed hole, with the human explain string carried as a
 //!    comment for tactic-side consumption.
@@ -239,7 +239,7 @@ pub fn populate_direct_required(cert: &mut Certificate) {
     }
 }
 
-/// Return the list of parent [`StepId`]s a step references.
+/// Return the list of parent [`StepId`](crate::canonical::StepId)s a step references.
 ///
 /// Eight `StepBody` variants carry parent references:
 /// `Trans / EqMp / Deduct / Abs / Inst / InstType / Theory /

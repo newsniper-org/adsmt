@@ -8,7 +8,7 @@
 //! Mapping highlights (v0.15 scope):
 //! - Free term variables of type `Bool` → `axiom <name> : Bool`
 //! - [`StepBody::Assume`] / hypothesis-shaped steps → `axiom s<i> : φ`
-//! - [`StepBody::Refl(t)`] → `theorem s<i> : t = t := rfl`
+//! - [`StepBody::Refl`] carrying a term `t` → `theorem s<i> : t = t := rfl`
 //! - [`StepBody::Assumed`] (abductive marker) →
 //!   `theorem s<i> : φ := sorry  -- abductive: <explain>` so Lean's
 //!   `smt_abduce` tactic (planned v0.16+) can target the holes

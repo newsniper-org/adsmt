@@ -1,6 +1,3 @@
-#![allow(rustdoc::broken_intra_doc_links)]
-#![allow(rustdoc::private_intra_doc_links)]
-#![allow(rustdoc::redundant_explicit_links)]
 
 //! DPLL(T) engine and the public `Solver` API.
 //!

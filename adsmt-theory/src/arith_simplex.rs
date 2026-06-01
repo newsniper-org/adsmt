@@ -1,7 +1,7 @@
 //! `oxiz-math` Simplex-based LIA/LRA backend (Path A+B, P2).
 //!
-//! Behind the `oxiz-math` feature flag. Provides [`SimplexBackend`]
-//! that converts our hand-rolled `(var, op, k)` bounds and
+//! Behind the `oxiz-math` feature flag. Provides a Simplex-based
+//! check pipeline that converts our hand-rolled `(var, op, k)` bounds and
 //! `x + y op k` sum constraints into `oxiz-math::simplex` tableau
 //! operations.
 //!

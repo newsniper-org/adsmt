@@ -4,12 +4,12 @@
 //! *literal* is an atom term paired with a polarity, so the engine
 //! can route `¬p` to theories distinctly from `p`. Pop restores
 //! literals verbatim; theories handle their own undo via the
-//! [`Theory`] trait's `push`/`pop` hooks.
+//! [`Theory`](adsmt_theory::trait_::Theory) trait's `push`/`pop` hooks.
 //!
 //! A parallel `source_locs` vector tracks the originating
 //! [`SourceLoc`] for each literal when the caller supplies one
-//! (CLI/parser path uses [`assert_at`]; the bare [`assert`] entry
-//! pushes `None`). The locs ride along into the unsat-cert
+//! (CLI/parser path uses [`Scope::assert_at`]; the bare [`Scope::assert`]
+//! entry pushes `None`). The locs ride along into the unsat-cert
 //! recorder so each `Assume` step can be annotated with `:loc`.
 
 use adsmt_cert::SourceLoc;
@@ -19,7 +19,7 @@ use adsmt_core::Term;
 pub struct Scope {
     pub literals: Vec<(Term, bool)>,
     /// Parallel to `literals`. `source_locs[i]` is `Some(loc)` iff
-    /// the matching `literals[i]` was asserted via [`assert_at`].
+    /// the matching `literals[i]` was asserted via [`Scope::assert_at`].
     pub source_locs: Vec<Option<SourceLoc>>,
 }
 

@@ -3,7 +3,8 @@
 //! A [`HornRule`] is the v0.17 surface for a deductive rule
 //! `head :- body₁, body₂, …, bodyₙ`. The body atoms must each be
 //! resolved (either via further rule firing or by abducing them
-//! from the [`AbducibleSet`]) for the rule's head to be derivable.
+//! from the [`AbducibleSet`](crate::abducible::AbducibleSet))
+//! for the rule's head to be derivable.
 //!
 //! Matching is currently propositional — heads and goals match by
 //! α-equivalence, with no first-order unification. The
@@ -49,10 +50,10 @@ impl HornRule {
     ///
     /// v0.17 used α-equivalence; v0.19 keeps that as the default
     /// — variables in the head are treated as **atomic** unless
-    /// the rule was constructed via [`Self::with_schematic`].
-    /// This preserves backward compatibility: propositional
-    /// rules like `fact p ⟸ q` match goal `p` only when the
-    /// rule head is α-equivalent.
+    /// a future `with_schematic` constructor introduces real
+    /// first-order schemas. This preserves backward compatibility:
+    /// propositional rules like `fact p ⟸ q` match goal `p` only
+    /// when the rule head is α-equivalent.
     pub fn head_matches(&self, goal: &Term) -> bool {
         self.head.alpha_eq(goal)
     }
