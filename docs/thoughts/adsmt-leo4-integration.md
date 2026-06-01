@@ -16,6 +16,12 @@
 >             없음을 user가 확정; "v0.2.0 cuttable state"는 "v1.0 RC
 >             pre-release window"로 완전히 대체됨. §1/§4-A/§7/§8 게이트 1
 >             구조 통합, §10 결정 7번 다시 표기, §12 표현 갱신.)
+> **개정 5**: 2026-06-01 (leo4 v1.0.0-rc.1 출시 — tag `v1.0.0-rc.1`,
+>             commit `0901e04`, https://github.com/newsniper-org/leo4/tree/v1.0.0-rc.1.
+>             §8 게이트 충족 + L1/L2/L3 unblock 표기.
+>             L4 (mslean4 LECQ/LECR)는 leo4 측 `feat/mslean4-lecq-lecr-ipcs`
+>             브랜치 작업으로 명시적 post-RC1 deferred 확인됨 — 옵션 A
+>             scope 변경 없음, L4만 추가 대기. §12 leo4 snapshot 갱신.)
 >
 > **관련 메모리**:
 > - `feedback_oxiz_bindings_split.md` — bindings/는 leo4 v1.0까지 freeze
@@ -345,9 +351,9 @@ track (`1.0.0`). leo4 binding 패턴은 다음과 같이 대응:
 ### Phase 진행
 
 - **Phase 0-9**: DONE (Phase 9 reverse-direction landed 2026-05-23).
-- **Phase 10** (DX consolidation + callback ABI): PLAN LOCKED 2026-05-21,
-  진행 중. **v1.0 RC pre-release window 목표** (leo4 memory `project_phase10_plan.md`
-  기준 — 2026-06-01 user 확인).
+- **Phase 10** (DX consolidation + callback ABI): **DONE** —
+  leo4 v1.0.0-rc.1 출시로 cuttable 도달 (2026-06-01, tag
+  `v1.0.0-rc.1`, commit `0901e04`).
 - **Phase 10-B1.x** (callback ABI runtime — adsmt flagship 의존):
   - #75 P0b 3 steps **DONE** (`a2c21d9`/`32f26a7`/`521979e`, 2026-05-28).
   - #76 P0c IO walker **사실상 완성** (2026-05-31 저녁):
@@ -368,8 +374,10 @@ track (`1.0.0`). leo4 binding 패턴은 다음과 같이 대응:
       open NotYetImplemented' entries"*.
     - **잔여**: leo4 ROADMAP / CHANGELOG의 *partial (2026-05-29 update)*
       라벨이 doc sweep commit으로 곧 정정될 예정.
-  - mslean4 LECQ/LECR forward+callback runtime: **post-RC** sub-phase
-    (oxilean 경로와 별개).
+  - mslean4 LECQ/LECR forward+callback runtime: **post-RC1 sub-phase**
+    — leo4 측 `feat/mslean4-lecq-lecr-ipcs` 브랜치 작업으로 명시적
+    deferred (v1.0.0-rc.1 출시 노트에 C1/C5/G2/A1과 함께 post-RC1
+    윈도우로 push). oxilean 경로와 별개.
 
 ### cool-japan/oxilean#2 (driver API coordination)
 
@@ -379,25 +387,33 @@ track (`1.0.0`). leo4 binding 패턴은 다음과 같이 대응:
   shape이 §12 위의 3-batch finisher로 더 자람. 즉 draft가 이미 한
   단계 outdate된 상태. 다음 doc sweep에서 함께 refresh 예상.
 
-### v1.0 RC 별도 blocker
+### v1.0 RC1 별도 blocker — 모두 post-RC1로 push됨
 
-- **OX6** PEG-based Lean 4 parser — full Lean 4 corpus 처리해야 v1.0 RC.
-  *transpile path* 한정 blocker; forward + callback path는 무관 (§8 게이트 2).
+leo4 v1.0.0-rc.1 출시 노트에 명시적으로 RC1 이후 윈도우로 push된 항목:
+
 - **C1** Windows runtime CI.
 - **C5** musl 정책 (§9).
 - **G2** crates.io publish.
+- **`feat/mslean4-lecq-lecr-ipcs` 브랜치 작업** — adsmt 측 §4-D mainline
+  Lean 4 경로 (L4)의 외부 의존.
+- **A1** cool-japan 측 upstream PR.
+
+OX6 PEG-based Lean 4 parser는 RC1 시점에 v1.0 RC corpus 처리 도달 —
+*transpile path* 한정 항목이지만 RC1에 포함된 것으로 추정 (별도 deferred
+명시 없음).
 
 ### 통합 시작 시그널
 
-다음 두 조건 모두 만족 시 adsmt-lean-binding 시작:
+~~다음 두 조건 모두 만족 시 adsmt-lean-binding 시작~~ — **둘 다 충족됨
+(2026-06-01)**:
 
 1. ~~leo4 Phase 10-B1.x P0c IO walker 잔여 케이스 마무리~~ —
    **충족 2026-05-31 저녁** (`322ea64` finisher).
-2. leo4 v1.0 RC 출시 (또는 매우 임박한 RC).
+2. ~~leo4 v1.0 RC 출시~~ — **충족 2026-06-01** (v1.0.0-rc.1 tag).
 
-남은 게이트는 v1.0 RC 도달 자체뿐. 그 외 Phase 10 substep
-(10-D1/D2/F1/B5/A4/A5/C4/Docs) 진행 상태도 leo4 ROADMAP에서 직접
-추적 가능 — 별도 신호 불필요.
+**adsmt-lean-binding 시작 가능 상태**. L4 (mslean4 LECQ/LECR 경로)는
+별도 시그널 (`feat/mslean4-lecq-lecr-ipcs` 브랜치 완료 + leo4-side
+release)을 추가로 기다림.
 
 ---
 
