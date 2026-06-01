@@ -1,0 +1,121 @@
+.TH LU\-SMT 1 "2026-06-01" "adsmt 1.0.0" "User Commands"
+.SH NAME
+lu\-smt \- abductive\-deductive HOL+HKT SMT solver
+.SH SYNOPSIS
+.B lu\-smt
+[\fIOPTIONS\fR] [\fIFILE\fR]
+.br
+.B lu\-smt
+[\fIOPTIONS\fR] \fB\-\fR
+.SH DESCRIPTION
+.B lu\-smt
+is the command\-line entry point for the
+.B adsmt
+solver. It accepts an SMT\-LIB v2 script or an
+.B lu\-kb
+knowledge base, runs the abductive\-deductive engine, and prints
+the verdict on standard output.
+
+The verdict family is
+.RB ( sat ", " unsat ", " unknown ", " abductive ).
+The fourth verdict
+.RB ( abductive )
+is adsmt\-specific: when ground reasoning gets stuck,
+.B lu\-smt
+returns a ranked list of candidate hypotheses that would discharge
+the goal. The list is queryable via
+.BR get\-abductive\-candidates .
+
+.SH INPUT FORMATS
+File extension drives parser selection:
+.TP
+.B .smt2
+SMT\-LIB v2 script.
+.TP
+.B .kb
+lu\-kb knowledge base (see
+.BR lu\-kb (5)).
+.PP
+Reading from standard input is selected with a single hyphen as the
+file argument:
+.B lu\-smt \-
+will treat stdin as an SMT\-LIB v2 script by default; pass
+.B \-\-dialect=lu-kb
+to interpret it as lu\-kb instead.
+
+.SH OPTIONS
+.TP
+.BR \-v ", " \-\-verbose
+Verbose mode \(em prints solver progress and engine diagnostics on
+standard error.
+.TP
+.B \-\-emit\-cert \fIFILE\fR
+Write the proof certificate (S\-expression format) to
+.IR FILE .
+.TP
+.B \-\-check\-cert \fIFILE\fR
+Re\-verify a previously emitted certificate without re\-running the
+solver. Exits 0 if the certificate is valid, non\-zero otherwise.
+.TP
+.B \-\-audit\-json
+Emit audit diagnostics on standard error as a JSON stream (for
+editor / CI consumption).
+.TP
+.B \-\-abductive\-tier \fIN\fR
+Set the maximum abductive escalation tier
+.RB ( 0
+disables abduction;
+.B 4
+is the default and most aggressive).
+.TP
+.B \-\-trigger\-mode \fImiller\fR | \fIfree\fR
+Restrict quantifier triggers to Miller patterns
+.RB ( miller ,
+default) or allow non\-Miller patterns
+.RB ( free ).
+.TP
+.B \-\-timeout \fIMS\fR
+Hard wall\-clock timeout in milliseconds.
+.TP
+.B \-\-seed \fIN\fR
+Set the random seed for reproducibility.
+.TP
+.BR \-h ", " \-\-help
+Print full usage and exit.
+
+.SH ENVIRONMENT
+.TP
+.B ADSMT_LOG
+Log level: one of
+.BR error ", " warn ", " info ", " debug ", " trace .
+.TP
+.B ADSMT_BACKEND
+Override the SAT backend. One of
+.BR oxiz ", " cadical ", " builtin .
+.TP
+.B ADSMT_THREADS
+Override the engine thread count.
+
+.SH EXIT STATUS
+.TP
+.B 0
+.BR sat " or " unsat
+verdict.
+.TP
+.B 1
+.B unknown
+verdict.
+.TP
+.B 2
+.B abductive
+verdict (candidates may be queried with
+.BR get\-abductive\-candidates ).
+.TP
+.B 3
+Parse error or invalid input.
+
+.SH SEE ALSO
+.BR adsmt\-lsp (1),
+.BR lu\-kb (5)
+.SH AUTHOR
+NEWSNIPER.

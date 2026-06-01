@@ -1,0 +1,207 @@
+# Maintainer: BYUNG-IK YEUN <yeun0908@gmail.com>
+#
+# adsmt unstable channel — default features variant.
+# Tracks adsmt main's `main` branch (active development; new commits
+# land here first).
+#
+# pkgver is git-rev-count based: 1.0.0.dev.r<count>.<short-sha>
+# against the main branch.
+#
+# Produces six split packages:
+#   - logicutils-git, adsmt-cli-git, adsmt-lsp-git, adsmt-ffi-git,
+#     adsmt-src-git, adsmt-meta-git
+
+pkgbase=adsmt-meta-git
+pkgname=('logicutils-git' 'adsmt-cli-git' 'adsmt-lsp-git' 'adsmt-ffi-git' 'adsmt-src-git' 'adsmt-meta-git')
+pkgver=1.0.0.dev.r0.0000000
+pkgrel=1
+arch=('x86_64' 'aarch64')
+url="https://github.com/newsniper-org/adsmt"
+license=('BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later')
+makedepends=('rust' 'cargo' 'git')
+options=('!lto')
+source=("git+${url}.git#branch=main")
+sha256sums=('SKIP')
+
+_repo='adsmt'
+
+pkgver() {
+    cd "${srcdir}/${_repo}"
+    printf "1.0.0.dev.r%s.%s" \
+        "$(git rev-list --count HEAD)" \
+        "$(git rev-parse --short=8 HEAD)"
+}
+
+prepare() {
+    cd "${srcdir}/${_repo}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "${srcdir}/${_repo}"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --release --frozen --workspace
+}
+
+check() {
+    cd "${srcdir}/${_repo}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --release --frozen --workspace
+}
+
+# ----------------------------------------------------------------- logicutils-git
+
+package_logicutils-git() {
+    pkgdesc='Composable Unix-style utilities for logic-enhanced builds (unstable / main-branch git build, default features)'
+    depends=('gcc-libs')
+    optdepends=(
+        'slurm-llnl: SLURM cluster backend (build logicutils-hpc-git instead)'
+        'gridengine: SGE cluster backend (build logicutils-hpc-git instead)'
+        'openpbs:    PBS cluster backend (build logicutils-hpc-git instead)'
+    )
+    provides=(
+        'freshcheck' 'stamp'
+        'lu-match' 'lu-expand'
+        'lu-query'  'lu-rule'
+        'lu-queue'  'lu-par' 'lu-deps'
+        'lu-multi'
+    )
+    conflicts=(
+        'logicutils' 'logicutils-hpc' 'logicutils-multi'
+        'logicutils-testing' 'logicutils-hpc-testing' 'logicutils-multi-testing'
+        'logicutils-hpc-git' 'logicutils-multi-git'
+    )
+
+    cd "${srcdir}/${_repo}"
+    local bins=(
+        freshcheck stamp
+        lu-match lu-expand
+        lu-query lu-rule
+        lu-queue lu-par lu-deps
+        lu-multi
+    )
+    for bin in "${bins[@]}"; do
+        install -Dm755 "target/release/${bin}" "${pkgdir}/usr/bin/${bin}"
+    done
+
+    local man_dir="${pkgdir}/usr/share/man"
+    local mansrc="state/logicutils-frozen/docs/man"
+    for m1 in freshcheck stamp lu-match lu-expand lu-query lu-rule lu-queue lu-par lu-deps lu-multi; do
+        install -Dm644 "${mansrc}/${m1}.1" "${man_dir}/man1/${m1}.1"
+    done
+    install -Dm644 "${mansrc}/lu-kb.5" "${man_dir}/man5/lu-kb.5"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ------------------------------------------------------------------ adsmt-cli-git
+
+package_adsmt-cli-git() {
+    pkgdesc='lu-smt — adsmt SMT solver CLI (unstable / main-branch git build, default features)'
+    depends=('gcc-libs')
+    provides=('lu-smt')
+    conflicts=(
+        'adsmt-cli' 'adsmt-cli-hpc' 'adsmt-cli-multi'
+        'adsmt-cli-testing' 'adsmt-cli-hpc-testing' 'adsmt-cli-multi-testing'
+        'adsmt-cli-hpc-git' 'adsmt-cli-multi-git'
+    )
+
+    cd "${srcdir}/${_repo}"
+    install -Dm755 target/release/lu-smt "${pkgdir}/usr/bin/lu-smt"
+    install -Dm644 docs/man/lu-smt.1 "${pkgdir}/usr/share/man/man1/lu-smt.1"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ------------------------------------------------------------------ adsmt-lsp-git
+
+package_adsmt-lsp-git() {
+    pkgdesc='adsmt-lsp — LSP server for SMT-LIB v2 / lu-kb (unstable / main-branch git build)'
+    depends=('gcc-libs')
+    conflicts=(
+        'adsmt-lsp'
+        'adsmt-lsp-testing'
+    )
+
+    cd "${srcdir}/${_repo}"
+    install -Dm755 target/release/adsmt-lsp "${pkgdir}/usr/bin/adsmt-lsp"
+    install -Dm644 docs/man/adsmt-lsp.1 "${pkgdir}/usr/share/man/man1/adsmt-lsp.1"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ------------------------------------------------------------------ adsmt-ffi-git
+
+package_adsmt-ffi-git() {
+    pkgdesc='adsmt C ABI (unstable / main-branch git build) — libadsmt_ffi.{so,a} + include/adsmt.h'
+    depends=('gcc-libs')
+    conflicts=(
+        'adsmt-ffi'
+        'adsmt-ffi-testing'
+    )
+
+    cd "${srcdir}/${_repo}"
+    install -Dm755 target/release/libadsmt_ffi.so "${pkgdir}/usr/lib/libadsmt_ffi.so"
+    install -Dm644 target/release/libadsmt_ffi.a  "${pkgdir}/usr/lib/libadsmt_ffi.a"
+    install -Dm644 adsmt-ffi/include/adsmt.h "${pkgdir}/usr/include/adsmt.h"
+    install -Dm644 adsmt-ffi/ABI_POLICY.md "${pkgdir}/usr/share/doc/${pkgname}/ABI_POLICY.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ------------------------------------------------------------------ adsmt-src-git
+
+package_adsmt-src-git() {
+    pkgdesc='adsmt workspace source tree (unstable / main-branch; cargo feature flags chosen by the rebuilder)'
+    depends=()
+    conflicts=(
+        'adsmt-src'
+        'adsmt-src-testing'
+    )
+
+    cd "${srcdir}/${_repo}"
+    local destdir="${pkgdir}/usr/src/adsmt"
+    install -dm755 "${destdir}"
+
+    local exclude_args=(
+        --exclude=target
+        --exclude=node_modules
+        --exclude=.git
+    )
+    tar -cf - "${exclude_args[@]}" --exclude="${destdir}" . | tar -xf - -C "${destdir}"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ----------------------------------------------------------------- adsmt-meta-git
+
+package_adsmt-meta-git() {
+    pkgdesc='Meta-package: full adsmt unstable-channel install (logicutils + adsmt-cli + adsmt-lsp + adsmt-ffi, all git)'
+    depends=('logicutils-git' 'adsmt-cli-git' 'adsmt-lsp-git' 'adsmt-ffi-git')
+    conflicts=(
+        'adsmt-meta' 'adsmt-hpc-meta' 'adsmt-multi-meta'
+        'adsmt-meta-testing' 'adsmt-hpc-meta-testing' 'adsmt-multi-meta-testing'
+        'adsmt-hpc-meta-git' 'adsmt-multi-meta-git'
+    )
+
+    cd "${srcdir}/${_repo}"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
