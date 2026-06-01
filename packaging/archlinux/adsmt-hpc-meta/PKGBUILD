@@ -28,6 +28,8 @@ _features='lu-common/sha3,lu-queue/slurm,lu-queue/sge,lu-queue/pbs'
 
 prepare() {
     cd "${_srcdir}"
+    git submodule init
+    git submodule update
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
