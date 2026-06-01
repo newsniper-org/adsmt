@@ -22,6 +22,15 @@
 >             L4 (mslean4 LECQ/LECR)는 leo4 측 `feat/mslean4-lecq-lecr-ipcs`
 >             브랜치 작업으로 명시적 post-RC1 deferred 확인됨 — 옵션 A
 >             scope 변경 없음, L4만 추가 대기. §12 leo4 snapshot 갱신.)
+> **개정 6**: 2026-06-01 (leo4 v1.0.0-rc.2/rc.3/rc.4 hot patch chain —
+>             RC.1의 strict `rust_type_to_idl`이 user-defined enum/struct를
+>             reject한 문제를 RC.2 (output side `mangle → Lean type` +
+>             `USER_TYPES` schema, `b260ed8`+`cfda354`), RC.3 (input side
+>             forward-direction multi-candidate, `29a941f`), RC.4 (input
+>             side reverse-direction lift, `5d786f0`)로 단계적 close.
+>             결과: `~/adsmt-lean-binding`의 `#[leo4::export]
+>             pub fn run_check_sat(...) -> AdsmtVerdict`이 우회 없이 통과.
+>             §12 snapshot에 rc.2-4 chain 추가.)
 >
 > **관련 메모리**:
 > - `feedback_oxiz_bindings_split.md` — bindings/는 leo4 v1.0까지 freeze
@@ -353,7 +362,11 @@ track (`1.0.0`). leo4 binding 패턴은 다음과 같이 대응:
 - **Phase 0-9**: DONE (Phase 9 reverse-direction landed 2026-05-23).
 - **Phase 10** (DX consolidation + callback ABI): **DONE** —
   leo4 v1.0.0-rc.1 출시로 cuttable 도달 (2026-06-01, tag
-  `v1.0.0-rc.1`, commit `0901e04`).
+  `v1.0.0-rc.1`, commit `0901e04`). 같은 날 typed-enum lowering
+  hot patch chain (rc.2 `b260ed8`+`cfda354`, rc.3 `29a941f`,
+  rc.4 `5d786f0`) 발표 — `#[leo4::export]`이 user-defined
+  enum/struct를 param/return 위치에서 우회 없이 받게 됨.
+  `adsmt-lean-binding` 측은 rc.4를 git pin으로 사용.
 - **Phase 10-B1.x** (callback ABI runtime — adsmt flagship 의존):
   - #75 P0b 3 steps **DONE** (`a2c21d9`/`32f26a7`/`521979e`, 2026-05-28).
   - #76 P0c IO walker **사실상 완성** (2026-05-31 저녁):
@@ -410,9 +423,15 @@ OX6 PEG-based Lean 4 parser는 RC1 시점에 v1.0 RC corpus 처리 도달 —
 1. ~~leo4 Phase 10-B1.x P0c IO walker 잔여 케이스 마무리~~ —
    **충족 2026-05-31 저녁** (`322ea64` finisher).
 2. ~~leo4 v1.0 RC 출시~~ — **충족 2026-06-01** (v1.0.0-rc.1 tag).
+3. typed-enum lowering이 reverse direction에서 동작 — **충족
+   2026-06-01** (v1.0.0-rc.4 hot patch chain: rc.2 `b260ed8`
+   + `cfda354`, rc.3 `29a941f`, rc.4 `5d786f0`). 우회 없이
+   `#[leo4::export] -> AdsmtVerdict` 통과 확인.
 
-**adsmt-lean-binding 시작 가능 상태**. L4 (mslean4 LECQ/LECR 경로)는
-별도 시그널 (`feat/mslean4-lecq-lecr-ipcs` 브랜치 완료 + leo4-side
+**adsmt-lean-binding 시작**: `~/adsmt-lean-binding/` v0.1
+skeleton 신설 완료 (commits `bf9ee7f` / `1bc6733` / `8bd2821`
+/ `4a8fc4e`). L4 (mslean4 LECQ/LECR 경로)는 별도 시그널
+(`feat/mslean4-lecq-lecr-ipcs` 브랜치 완료 + leo4-side
 release)을 추가로 기다림.
 
 ---
