@@ -1,0 +1,219 @@
+# Maintainer: BYUNG-IK YEUN <yeun0908@gmail.com>
+#
+# adsmt v1.0.0 stable cut — default features variant.
+# Produces five split packages:
+#   - logicutils   (lu-* + freshcheck + stamp utilities; absorbed from logicutils v0.x)
+#   - adsmt-cli    (lu-smt SMT solver CLI)
+#   - adsmt-lsp    (tower-lsp server for editor integration)
+#   - adsmt-ffi    (C ABI: libadsmt_ffi.{so,a} + include/adsmt.h)
+#   - adsmt-meta   (empty meta package; depends on all of the above)
+#
+# Sibling pkgbases under packaging/archlinux/:
+#   adsmt-{hpc,multi}-meta            — same source, different cargo features
+#   adsmt-meta-{testing,git}          — testing-branch / main-branch sources
+#
+# See packaging/archlinux/README.md for the full channel x variant matrix.
+
+pkgbase=adsmt-meta
+pkgname=('logicutils' 'adsmt-cli' 'adsmt-lsp' 'adsmt-ffi' 'adsmt-src' 'adsmt-meta')
+pkgver=1.0.0
+pkgrel=1
+arch=('x86_64' 'aarch64')
+url="https://github.com/newsniper-org/adsmt"
+license=('BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later')
+makedepends=('rust' 'cargo')
+options=('!lto')
+source=("adsmt-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+_srcdir="adsmt-${pkgver}"
+
+prepare() {
+    cd "${_srcdir}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "${_srcdir}"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --release --frozen --workspace
+}
+
+check() {
+    cd "${_srcdir}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --release --frozen --workspace
+}
+
+# ---------------------------------------------------------------- logicutils
+# Inheritor of the logicutils v0.x default package. Ships the
+# 10 lu-* / freshcheck / stamp utilities as individual binaries.
+
+package_logicutils() {
+    pkgdesc='Composable Unix-style utilities for logic-enhanced builds (lu-* / freshcheck / stamp; default features, individual binaries)'
+    depends=('gcc-libs')
+    optdepends=(
+        'slurm-llnl: SLURM cluster backend for lu-queue (build logicutils-hpc instead)'
+        'gridengine: SGE cluster backend for lu-queue (build logicutils-hpc instead)'
+        'openpbs:    PBS cluster backend for lu-queue (build logicutils-hpc instead)'
+    )
+    provides=(
+        'freshcheck' 'stamp'
+        'lu-match' 'lu-expand'
+        'lu-query'  'lu-rule'
+        'lu-queue'  'lu-par' 'lu-deps'
+        'lu-multi'
+    )
+    conflicts=(
+        'logicutils-hpc' 'logicutils-multi'
+        'logicutils-testing' 'logicutils-hpc-testing' 'logicutils-multi-testing'
+        'logicutils-git' 'logicutils-hpc-git' 'logicutils-multi-git'
+    )
+
+    cd "${_srcdir}"
+    local bins=(
+        freshcheck stamp
+        lu-match lu-expand
+        lu-query lu-rule
+        lu-queue lu-par lu-deps
+        lu-multi
+    )
+    for bin in "${bins[@]}"; do
+        install -Dm755 "target/release/${bin}" "${pkgdir}/usr/bin/${bin}"
+    done
+
+    # Inherit man pages from the absorbed v0.x docs/man tree.
+    # Unconditional install — fail the build loudly if any are missing.
+    local man_dir="${pkgdir}/usr/share/man"
+    local mansrc="state/logicutils-frozen/docs/man"
+    for m1 in freshcheck stamp lu-match lu-expand lu-query lu-rule lu-queue lu-par lu-deps lu-multi; do
+        install -Dm644 "${mansrc}/${m1}.1" "${man_dir}/man1/${m1}.1"
+    done
+    install -Dm644 "${mansrc}/lu-kb.5" "${man_dir}/man5/lu-kb.5"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ---------------------------------------------------------------- adsmt-cli
+# The lu-smt SMT solver binary.
+
+package_adsmt-cli() {
+    pkgdesc='lu-smt — abductive-deductive HOL+HKT SMT solver CLI (adsmt v1.0.0 default features)'
+    depends=('gcc-libs')
+    provides=('lu-smt')
+    conflicts=(
+        'adsmt-cli-hpc' 'adsmt-cli-multi'
+        'adsmt-cli-testing' 'adsmt-cli-hpc-testing' 'adsmt-cli-multi-testing'
+        'adsmt-cli-git' 'adsmt-cli-hpc-git' 'adsmt-cli-multi-git'
+    )
+
+    cd "${_srcdir}"
+    install -Dm755 target/release/lu-smt "${pkgdir}/usr/bin/lu-smt"
+    install -Dm644 docs/man/lu-smt.1 "${pkgdir}/usr/share/man/man1/lu-smt.1"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ---------------------------------------------------------------- adsmt-lsp
+# The tower-lsp server (no variant; multicall / HPC features don't apply).
+
+package_adsmt-lsp() {
+    pkgdesc='adsmt-lsp — LSP server for SMT-LIB v2 and lu-kb input surfaces (6 capabilities)'
+    depends=('gcc-libs')
+    conflicts=(
+        'adsmt-lsp-testing'
+        'adsmt-lsp-git'
+    )
+
+    cd "${_srcdir}"
+    install -Dm755 target/release/adsmt-lsp "${pkgdir}/usr/bin/adsmt-lsp"
+    install -Dm644 docs/man/adsmt-lsp.1 "${pkgdir}/usr/share/man/man1/adsmt-lsp.1"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ---------------------------------------------------------------- adsmt-ffi
+# The C ABI surface: cdylib + staticlib + header (no variant).
+
+package_adsmt-ffi() {
+    pkgdesc='adsmt C ABI — libadsmt_ffi (cdylib + staticlib) + include/adsmt.h (frozen at v1.0.0)'
+    depends=('gcc-libs')
+    conflicts=(
+        'adsmt-ffi-testing'
+        'adsmt-ffi-git'
+    )
+
+    cd "${_srcdir}"
+    # cdylib + staticlib (per adsmt-ffi/Cargo.toml [lib] crate-type)
+    install -Dm755 target/release/libadsmt_ffi.so "${pkgdir}/usr/lib/libadsmt_ffi.so"
+    install -Dm644 target/release/libadsmt_ffi.a  "${pkgdir}/usr/lib/libadsmt_ffi.a"
+    # C header
+    install -Dm644 adsmt-ffi/include/adsmt.h "${pkgdir}/usr/include/adsmt.h"
+
+    # ABI freeze policy doc
+    install -Dm644 adsmt-ffi/ABI_POLICY.md "${pkgdir}/usr/share/doc/${pkgname}/ABI_POLICY.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ---------------------------------------------------------------- adsmt-src
+# Source tree. Channel-scoped (no variant) per design.
+
+package_adsmt-src() {
+    pkgdesc='adsmt v1.0.0 workspace source tree (channel-scoped; cargo feature flags chosen by the rebuilder)'
+    depends=()
+    conflicts=(
+        'adsmt-src-testing'
+        'adsmt-src-git'
+    )
+
+    cd "${_srcdir}"
+    local destdir="${pkgdir}/usr/src/adsmt"
+    install -dm755 "${destdir}"
+
+    # Copy the workspace tree, excluding build artefacts.
+    local exclude_args=(
+        --exclude=target
+        --exclude=node_modules
+        --exclude=.git
+    )
+    tar -cf - "${exclude_args[@]}" --exclude="${destdir}" . | tar -xf - -C "${destdir}"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ---------------------------------------------------------------- adsmt-meta
+# Empty meta package. Pulls in the default flavor of every CLI split
+# plus the non-variant lsp + ffi splits. adsmt-src is intentionally
+# NOT a dependency — install it explicitly if source is wanted.
+
+package_adsmt-meta() {
+    pkgdesc='Meta-package: full adsmt v1.0.0 default install (logicutils + adsmt-cli + adsmt-lsp + adsmt-ffi)'
+    depends=('logicutils' 'adsmt-cli' 'adsmt-lsp' 'adsmt-ffi')
+    conflicts=(
+        'adsmt-hpc-meta' 'adsmt-multi-meta'
+        'adsmt-meta-testing' 'adsmt-hpc-meta-testing' 'adsmt-multi-meta-testing'
+        'adsmt-meta-git' 'adsmt-hpc-meta-git' 'adsmt-multi-meta-git'
+    )
+
+    cd "${_srcdir}"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}

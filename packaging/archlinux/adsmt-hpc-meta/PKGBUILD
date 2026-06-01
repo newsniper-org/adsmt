@@ -1,0 +1,151 @@
+# Maintainer: BYUNG-IK YEUN <yeun0908@gmail.com>
+#
+# adsmt v1.0.0 stable cut — HPC features variant.
+# Enables SLURM/SGE/PBS queue backends and SHA3 hashing on top of the
+# default feature set. Use this on cluster head/login nodes where
+# lu-queue must dispatch jobs to a real workload manager.
+#
+# Produces three split packages (lsp + ffi + src come from adsmt-meta):
+#   - logicutils-hpc     (lu-* + freshcheck + stamp with HPC features)
+#   - adsmt-cli-hpc      (lu-smt with HPC features)
+#   - adsmt-hpc-meta     (depends on the two above + adsmt-lsp + adsmt-ffi)
+
+pkgbase=adsmt-hpc-meta
+pkgname=('logicutils-hpc' 'adsmt-cli-hpc' 'adsmt-hpc-meta')
+pkgver=1.0.0
+pkgrel=1
+arch=('x86_64' 'aarch64')
+url="https://github.com/newsniper-org/adsmt"
+license=('BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later')
+makedepends=('rust' 'cargo')
+options=('!lto')
+source=("adsmt-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+_srcdir="adsmt-${pkgver}"
+# Cargo features compiled in for this variant.
+_features='lu-common/sha3,lu-queue/slurm,lu-queue/sge,lu-queue/pbs'
+
+prepare() {
+    cd "${_srcdir}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "${_srcdir}"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --release --frozen --features "${_features}" \
+        -p freshcheck -p stamp \
+        -p lu-match -p lu-expand \
+        -p lu-query -p lu-rule \
+        -p lu-queue -p lu-par -p lu-deps \
+        -p lu-multi \
+        -p adsmt-cli
+}
+
+check() {
+    cd "${_srcdir}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --release --frozen --features "${_features}" \
+        -p freshcheck -p stamp \
+        -p lu-match -p lu-expand \
+        -p lu-query -p lu-rule \
+        -p lu-queue -p lu-par -p lu-deps \
+        -p lu-multi \
+        -p adsmt-cli
+}
+
+# ------------------------------------------------------------ logicutils-hpc
+
+package_logicutils-hpc() {
+    pkgdesc='Composable Unix-style utilities for logic-enhanced builds (HPC variant: SLURM/SGE/PBS + SHA3)'
+    depends=('gcc-libs')
+    optdepends=(
+        'slurm-llnl: SLURM workload manager client (sbatch, squeue, scancel)'
+        'gridengine: SGE workload manager client (qsub, qstat, qdel)'
+        'openpbs:    PBS workload manager client (qsub, qstat, qdel)'
+    )
+    provides=(
+        'freshcheck' 'stamp'
+        'lu-match' 'lu-expand'
+        'lu-query'  'lu-rule'
+        'lu-queue'  'lu-par' 'lu-deps'
+        'lu-multi'
+    )
+    conflicts=(
+        'logicutils' 'logicutils-multi'
+        'logicutils-testing' 'logicutils-hpc-testing' 'logicutils-multi-testing'
+        'logicutils-git' 'logicutils-hpc-git' 'logicutils-multi-git'
+    )
+
+    cd "${_srcdir}"
+    local bins=(
+        freshcheck stamp
+        lu-match lu-expand
+        lu-query lu-rule
+        lu-queue lu-par lu-deps
+        lu-multi
+    )
+    for bin in "${bins[@]}"; do
+        install -Dm755 "target/release/${bin}" "${pkgdir}/usr/bin/${bin}"
+    done
+
+    local man_dir="${pkgdir}/usr/share/man"
+    local mansrc="state/logicutils-frozen/docs/man"
+    for m1 in freshcheck stamp lu-match lu-expand lu-query lu-rule lu-queue lu-par lu-deps lu-multi; do
+        install -Dm644 "${mansrc}/${m1}.1" "${man_dir}/man1/${m1}.1"
+    done
+    install -Dm644 "${mansrc}/lu-kb.5" "${man_dir}/man5/lu-kb.5"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ------------------------------------------------------------ adsmt-cli-hpc
+
+package_adsmt-cli-hpc() {
+    pkgdesc='lu-smt — abductive-deductive HOL+HKT SMT solver CLI (HPC variant: SLURM/SGE/PBS + SHA3)'
+    depends=('gcc-libs')
+    optdepends=(
+        'slurm-llnl: SLURM workload manager client'
+        'gridengine: SGE workload manager client'
+        'openpbs:    PBS workload manager client'
+    )
+    provides=('lu-smt')
+    conflicts=(
+        'adsmt-cli' 'adsmt-cli-multi'
+        'adsmt-cli-testing' 'adsmt-cli-hpc-testing' 'adsmt-cli-multi-testing'
+        'adsmt-cli-git' 'adsmt-cli-hpc-git' 'adsmt-cli-multi-git'
+    )
+
+    cd "${_srcdir}"
+    install -Dm755 target/release/lu-smt "${pkgdir}/usr/bin/lu-smt"
+    install -Dm644 docs/man/lu-smt.1 "${pkgdir}/usr/share/man/man1/lu-smt.1"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ------------------------------------------------------------ adsmt-hpc-meta
+
+package_adsmt-hpc-meta() {
+    pkgdesc='Meta-package: full adsmt v1.0.0 HPC install (logicutils-hpc + adsmt-cli-hpc + adsmt-lsp + adsmt-ffi)'
+    depends=('logicutils-hpc' 'adsmt-cli-hpc' 'adsmt-lsp' 'adsmt-ffi')
+    conflicts=(
+        'adsmt-meta' 'adsmt-multi-meta'
+        'adsmt-meta-testing' 'adsmt-hpc-meta-testing' 'adsmt-multi-meta-testing'
+        'adsmt-meta-git' 'adsmt-hpc-meta-git' 'adsmt-multi-meta-git'
+    )
+
+    cd "${_srcdir}"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}

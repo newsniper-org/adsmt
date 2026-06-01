@@ -1,0 +1,138 @@
+# Maintainer: BYUNG-IK YEUN <yeun0908@gmail.com>
+#
+# adsmt v1.0.0 stable cut — slim multicall variant.
+# Two separate `--no-default-features` builds:
+#   - lu-multi (multicall): the 9 lu-* / freshcheck / stamp utilities
+#     install as symlinks to /usr/bin/lu-multi (busybox-style).
+#   - adsmt-cli: lu-smt builds as a separate slim binary (no default
+#     features). Per design option B, lu-smt is NOT absorbed into the
+#     multicall — kept as its own binary for clarity.
+#
+# Intended for resource-constrained environments (containers, CI
+# runners, embedded targets) — drops cryptographic hashing and
+# cluster backends.
+#
+# Produces three split packages (lsp + ffi + src come from adsmt-meta):
+#   - logicutils-multi   (lu-multi multicall + 9 symlinks)
+#   - adsmt-cli-multi    (slim lu-smt)
+#   - adsmt-multi-meta   (depends on the two above + adsmt-lsp + adsmt-ffi)
+
+pkgbase=adsmt-multi-meta
+pkgname=('logicutils-multi' 'adsmt-cli-multi' 'adsmt-multi-meta')
+pkgver=1.0.0
+pkgrel=1
+arch=('x86_64' 'aarch64')
+url="https://github.com/newsniper-org/adsmt"
+license=('BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later')
+makedepends=('rust' 'cargo')
+options=('!lto')
+source=("adsmt-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+_srcdir="adsmt-${pkgver}"
+
+prepare() {
+    cd "${_srcdir}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "${_srcdir}"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    # 1. multicall binary (lu-multi)
+    cargo build --release --frozen --no-default-features -p lu-multi
+    # 2. slim lu-smt (option B: separate binary, not absorbed into multicall)
+    cargo build --release --frozen --no-default-features -p adsmt-cli
+}
+
+check() {
+    cd "${_srcdir}"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --release --frozen --no-default-features -p lu-multi -p adsmt-cli
+}
+
+# ------------------------------------------------------------ logicutils-multi
+
+package_logicutils-multi() {
+    pkgdesc='logicutils as a single multicall binary with symlinks (Tier 1, no crypto/cluster features)'
+    depends=('gcc-libs')
+    provides=(
+        'freshcheck' 'stamp'
+        'lu-match' 'lu-expand'
+        'lu-query'  'lu-rule'
+        'lu-queue'  'lu-par' 'lu-deps'
+        'lu-multi'
+    )
+    conflicts=(
+        'logicutils' 'logicutils-hpc'
+        'logicutils-testing' 'logicutils-hpc-testing' 'logicutils-multi-testing'
+        'logicutils-git' 'logicutils-hpc-git' 'logicutils-multi-git'
+    )
+
+    cd "${_srcdir}"
+    install -Dm755 target/release/lu-multi "${pkgdir}/usr/bin/lu-multi"
+
+    local utils=(
+        freshcheck stamp
+        lu-match lu-expand
+        lu-query lu-rule
+        lu-queue lu-par lu-deps
+    )
+    for u in "${utils[@]}"; do
+        ln -s lu-multi "${pkgdir}/usr/bin/${u}"
+    done
+
+    local man_dir="${pkgdir}/usr/share/man"
+    local mansrc="state/logicutils-frozen/docs/man"
+    for m1 in freshcheck stamp lu-match lu-expand lu-query lu-rule lu-queue lu-par lu-deps lu-multi; do
+        install -Dm644 "${mansrc}/${m1}.1" "${man_dir}/man1/${m1}.1"
+    done
+    install -Dm644 "${mansrc}/lu-kb.5" "${man_dir}/man5/lu-kb.5"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ------------------------------------------------------------ adsmt-cli-multi
+
+package_adsmt-cli-multi() {
+    pkgdesc='lu-smt — slim build of adsmt SMT solver CLI (multi variant: --no-default-features)'
+    depends=('gcc-libs')
+    provides=('lu-smt')
+    conflicts=(
+        'adsmt-cli' 'adsmt-cli-hpc'
+        'adsmt-cli-testing' 'adsmt-cli-hpc-testing' 'adsmt-cli-multi-testing'
+        'adsmt-cli-git' 'adsmt-cli-hpc-git' 'adsmt-cli-multi-git'
+    )
+
+    cd "${_srcdir}"
+    install -Dm755 target/release/lu-smt "${pkgdir}/usr/bin/lu-smt"
+    install -Dm644 docs/man/lu-smt.1 "${pkgdir}/usr/share/man/man1/lu-smt.1"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}
+
+# ------------------------------------------------------------ adsmt-multi-meta
+
+package_adsmt-multi-meta() {
+    pkgdesc='Meta-package: full adsmt v1.0.0 slim install (logicutils-multi + adsmt-cli-multi + adsmt-lsp + adsmt-ffi)'
+    depends=('logicutils-multi' 'adsmt-cli-multi' 'adsmt-lsp' 'adsmt-ffi')
+    conflicts=(
+        'adsmt-meta' 'adsmt-hpc-meta'
+        'adsmt-meta-testing' 'adsmt-hpc-meta-testing' 'adsmt-multi-meta-testing'
+        'adsmt-meta-git' 'adsmt-hpc-meta-git' 'adsmt-multi-meta-git'
+    )
+
+    cd "${_srcdir}"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
+    install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"
+    install -Dm644 LICENSE-APACHE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE.txt"
+    install -Dm644 LICENSE-LGPL.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-LGPL.txt"
+}

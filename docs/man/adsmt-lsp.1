@@ -1,0 +1,87 @@
+.TH ADSMT\-LSP 1 "2026-06-01" "adsmt 1.0.0" "User Commands"
+.SH NAME
+adsmt\-lsp \- Language Server Protocol server for SMT\-LIB v2 and lu\-kb
+.SH SYNOPSIS
+.B adsmt\-lsp
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B adsmt\-lsp
+is a tower\-lsp based Language Server Protocol server for the
+.B adsmt
+project. It activates on
+.B .smt2
+(SMT\-LIB v2) and
+.B .kb
+(lu\-kb) files, communicating with editors via stdin/stdout in the
+standard LSP framing.
+
+Six LSP capabilities are exposed (v1.0):
+.IP "\(bu" 2
+.B textDocument/publishDiagnostics
+\(em parser + audit diagnostics
+.IP "\(bu" 2
+.B textDocument/definition
+\(em within\-document symbol resolution
+.IP "\(bu" 2
+.B textDocument/hover
+\(em BV literal annotation, declaration preview, last verdict for
+.B (check\-sat)
+cursors
+.IP "\(bu" 2
+.B textDocument/completion
+\(em 39 static items (SMT\-LIB commands, theory names,
+classical\-axiom families, lu\-kb keywords)
+.IP "\(bu" 2
+.B workspace/symbol
+\(em case\-insensitive substring search across open documents
+.IP "\(bu" 2
+.B textDocument/codeAction
+\(em kb\-file migration placeholder, abductive\-accept code actions
+
+.SH OPTIONS
+The server reads its configuration from the LSP client's
+.B initializationOptions
+block. Recognised keys:
+.TP
+.B abductiveTier
+0\(en4. Default 4.
+.TP
+.B triggerMode
+.BR miller " | " free .
+Default
+.BR miller .
+.TP
+.B classicalAxioms
+Array of strings (e.g.
+.BR ["lem"] ).
+.TP
+.B auditFormat
+.BR json " | " text .
+Default
+.BR json .
+
+No command\-line options apart from
+.BR \-h " / " \-\-help
+(usage summary) and
+.BR \-V " / " \-\-version .
+
+.SH ENVIRONMENT
+.TP
+.B ADSMT_LOG
+Log level: one of
+.BR error ", " warn ", " info ", " debug ", " trace .
+Logs go to standard error so they don't corrupt the LSP message
+stream on standard output.
+
+.SH FILES
+The server has no persistent state files of its own. Audit
+diagnostics, when configured for JSON output, are pushed through
+the LSP
+.B audit/diagnostics
+notification channel; editors may persist them at their discretion.
+
+.SH SEE ALSO
+.BR lu\-smt (1),
+.BR lu\-kb (5)
+.SH AUTHOR
+NEWSNIPER.
