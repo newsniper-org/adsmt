@@ -7,7 +7,7 @@ description = "File freshness checking for logicutils"
 
 [dependencies]
 lu-common = { workspace = true }
-stamp = { version = "=1.0.0-rc.8", path = "../stamp" }
+stamp = { path = "../stamp" }
 clap = { workspace = true }
 thiserror = { workspace = true }
 

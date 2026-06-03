@@ -10,7 +10,7 @@ adsmt-core.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
 oxiz-proof = { version = "0.2", optional = true }
-adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.8", path = "../adsmt-heuristic-checker-macros" }
+adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.8-1", path = "../adsmt-heuristic-checker-macros" }
 
 [features]
 default = []
