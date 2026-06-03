@@ -48,7 +48,6 @@
 //! | 13   | unknown command (Raw) with `--strict-commands` set |
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::process::ExitCode;
 
 use clap::Parser as ClapParser;
@@ -88,70 +87,200 @@ struct Cli {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let source = match read_source(cli.input.as_deref()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("lu-smt: cannot read input: {e}");
-            return ExitCode::from(12);
-        }
-    };
-
-    let commands = match parse_smtlib_positioned(&source) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("lu-smt: parse error: {e}");
-            return ExitCode::from(10);
-        }
-    };
-
     let mut driver = Driver::new(DriverConfig {
         strict_commands: cli.strict_commands,
         no_autodeclare: cli.no_autodeclare,
     });
     let mut last = LastStatus::Sat;
-    for (cmd, pos) in commands {
-        match driver.dispatch(cmd, pos) {
-            DispatchResult::Continue => {}
-            DispatchResult::CheckSat(status) => {
-                last = status.clone();
-                println!("{}", status.label());
-                // Abductive verdicts always emit a single-line JSON
-                // description of the ranked candidates on the line
-                // immediately after the `abductive` label. Front-ends
-                // (Verus jsonl reporter, Lean4 `smt_abduce`) parse it
-                // straight off stdout — no flag gating, since the
-                // verdict itself is non-standard and the caller has
-                // already opted into adsmt's abductive surface.
-                if matches!(status, LastStatus::Abductive) {
-                    if let Some(SatResult::Abductive { candidates }) =
-                        driver.last_result.as_ref()
-                    {
-                        println!("{}", abductive_candidates_json(candidates));
-                    }
+
+    match cli.input.as_deref() {
+        Some(path) => {
+            // File-driven path: read the script in one shot and dispatch
+            // every command in order.  Suits batch consumers (test
+            // fixtures, IDE round-trips) where the input is bounded.
+            let source = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("lu-smt: cannot read input: {e}");
+                    return ExitCode::from(12);
                 }
-                if cli.audit_json {
-                    if let Some(cert) = driver.last_cert.as_ref() {
-                        match adsmt_lints::audit_to_json(cert) {
-                            Ok(json) => eprintln!("{json}"),
-                            Err(e) => eprintln!(
-                                "lu-smt: dead-pattern audit serialisation error: {e}"
-                            ),
-                        }
-                    } else {
-                        eprintln!(
-                            "lu-smt: --audit-json requested but the last verdict produced no cert"
-                        );
-                    }
+            };
+            let commands = match parse_smtlib_positioned(&source) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("lu-smt: parse error: {e}");
+                    return ExitCode::from(10);
+                }
+            };
+            for (cmd, pos) in commands {
+                if let Some(code) = dispatch_one(&mut driver, &mut last, &cli, cmd, pos)
+                {
+                    return code;
                 }
             }
-            DispatchResult::Exit => break,
-            DispatchResult::Error(code, msg) => {
-                eprintln!("lu-smt: {msg}");
-                return ExitCode::from(code);
+        }
+        None => {
+            // Streaming path: subprocess consumers (Verus's `SmtProcess`,
+            // Lean4's `smt_abduce`) keep `stdin` open across an entire
+            // session and rely on `(echo "<<DONE>>")` sentinels to delimit
+            // response batches.  Buffering until EOF deadlocks both sides,
+            // so we ship every top-level S-expression to the dispatcher
+            // the moment its parens balance and flush `stdout` after each
+            // dispatch so the parent sees the verdict immediately.
+            if let Some(code) = run_stdin_streaming(&mut driver, &mut last, &cli) {
+                return code;
             }
         }
     }
     ExitCode::from(last.exit_code())
+}
+
+/// Dispatch one already-parsed command and surface verdict output.
+/// Returns `Some(code)` only when the dispatcher signals the program
+/// should terminate (an `Exit` command or an error mapped to a
+/// non-zero exit code); otherwise `None` to let the caller keep
+/// going.  The function also takes care of flushing `stdout` so
+/// streaming consumers don't get stuck behind a write buffer.
+fn dispatch_one(
+    driver: &mut Driver,
+    last: &mut LastStatus,
+    cli: &Cli,
+    cmd: Command,
+    pos: Position,
+) -> Option<ExitCode> {
+    use std::io::Write;
+    let result = driver.dispatch(cmd, pos);
+    let outcome = match result {
+        DispatchResult::Continue => None,
+        DispatchResult::CheckSat(status) => {
+            *last = status.clone();
+            println!("{}", status.label());
+            // Abductive verdicts always emit a single-line JSON
+            // description of the ranked candidates on the line
+            // immediately after the `abductive` label.  Front-ends
+            // (Verus jsonl reporter, Lean4 `smt_abduce`) parse it
+            // straight off stdout — no flag gating, since the
+            // verdict itself is non-standard and the caller has
+            // already opted into adsmt's abductive surface.
+            if matches!(status, LastStatus::Abductive) {
+                if let Some(SatResult::Abductive { candidates }) =
+                    driver.last_result.as_ref()
+                {
+                    println!("{}", abductive_candidates_json(candidates));
+                }
+            }
+            if cli.audit_json {
+                if let Some(cert) = driver.last_cert.as_ref() {
+                    match adsmt_lints::audit_to_json(cert) {
+                        Ok(json) => eprintln!("{json}"),
+                        Err(e) => eprintln!(
+                            "lu-smt: dead-pattern audit serialisation error: {e}"
+                        ),
+                    }
+                } else {
+                    eprintln!(
+                        "lu-smt: --audit-json requested but the last verdict produced no cert"
+                    );
+                }
+            }
+            None
+        }
+        DispatchResult::Exit => Some(ExitCode::from(last.exit_code())),
+        DispatchResult::Error(code, msg) => {
+            eprintln!("lu-smt: {msg}");
+            Some(ExitCode::from(code))
+        }
+    };
+    // Flush after every dispatch so any `(echo)` / verdict output
+    // reaches the parent process before the next command arrives —
+    // critical for the streaming subprocess consumers documented
+    // above.
+    let _ = std::io::stdout().flush();
+    outcome
+}
+
+/// Read `stdin` line by line and dispatch each top-level
+/// S-expression as soon as its parens balance.  Tracks string
+/// literals (`"…"`) and line comments (`;…\n`) so paren counts
+/// inside them don't shift the depth.  Returns `Some(code)` if a
+/// dispatcher result terminates the session early; otherwise `None`
+/// (i.e. EOF reached cleanly).
+fn run_stdin_streaming(
+    driver: &mut Driver,
+    last: &mut LastStatus,
+    cli: &Cli,
+) -> Option<ExitCode> {
+    use std::io::BufRead;
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    let mut accumulator = String::new();
+    let mut line = String::new();
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut in_comment = false;
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                for ch in line.chars() {
+                    if in_comment {
+                        if ch == '\n' {
+                            in_comment = false;
+                        }
+                        continue;
+                    }
+                    if in_string {
+                        if escape_next {
+                            escape_next = false;
+                        } else if ch == '\\' {
+                            escape_next = true;
+                        } else if ch == '"' {
+                            in_string = false;
+                        }
+                        continue;
+                    }
+                    match ch {
+                        ';' => in_comment = true,
+                        '"' => in_string = true,
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth < 0 {
+                                eprintln!("lu-smt: parse error: unbalanced ')'");
+                                return Some(ExitCode::from(10));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                accumulator.push_str(&line);
+                if depth == 0 && !accumulator.trim().is_empty() {
+                    let chunk = std::mem::take(&mut accumulator);
+                    let commands = match parse_smtlib_positioned(&chunk) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("lu-smt: parse error: {e}");
+                            return Some(ExitCode::from(10));
+                        }
+                    };
+                    for (cmd, pos) in commands {
+                        if let Some(code) =
+                            dispatch_one(driver, last, cli, cmd, pos)
+                        {
+                            return Some(code);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("lu-smt: stdin read error: {e}");
+                return Some(ExitCode::from(12));
+            }
+        }
+    }
+    None
 }
 
 /// Render the engine's ranked abductive candidates as a single-line
@@ -203,17 +332,6 @@ fn abductive_candidates_json(ranked: &[RankedCandidate]) -> String {
         })
         .collect();
     serde_json::json!({ "abductive_candidates": items }).to_string()
-}
-
-fn read_source(path: Option<&str>) -> std::io::Result<String> {
-    match path {
-        Some(p) => std::fs::read_to_string(p),
-        None => {
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            Ok(buf)
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
