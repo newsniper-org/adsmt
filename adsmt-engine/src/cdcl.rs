@@ -73,16 +73,28 @@ pub fn cdcl_with_restarts(
     base_conflicts: usize,
     restarts: usize,
 ) -> BoolResult {
+    cdcl_with_restarts_with_model(clauses, base_conflicts, restarts).into()
+}
+
+/// Model-carrying variant of [`cdcl_with_restarts`]. Returns the
+/// raw [`CdclOutcome`] so callers that want the satisfying
+/// assignment (e.g. `Solver::check_sat` populating
+/// `SatResult::Sat::model`) can read it without re-solving.
+pub fn cdcl_with_restarts_with_model(
+    clauses: &[Clause],
+    base_conflicts: usize,
+    restarts: usize,
+) -> CdclOutcome {
     let luby = luby_sequence(restarts);
     for &mult in &luby {
         let budget = base_conflicts.saturating_mul(mult);
-        match cdcl_solve(clauses, budget) {
-            BoolResult::Sat => return BoolResult::Sat,
-            BoolResult::Unsat => return BoolResult::Unsat,
-            BoolResult::Unknown => continue,
+        match cdcl_solve_with_model(clauses, budget) {
+            CdclOutcome::Sat { model } => return CdclOutcome::Sat { model },
+            CdclOutcome::Unsat => return CdclOutcome::Unsat,
+            CdclOutcome::Unknown => continue,
         }
     }
-    BoolResult::Unknown
+    CdclOutcome::Unknown
 }
 
 /// Why a literal sits on the trail.

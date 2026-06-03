@@ -1,5 +1,7 @@
 //! Public `Solver` API.
 
+use std::collections::HashMap;
+
 use adsmt_abduce::abducible::AbducibleSet;
 use adsmt_abduce::sld::SldEngine;
 use adsmt_abduce::workflow::AbductionState;
@@ -243,12 +245,14 @@ impl Solver {
             }
             let outcome = self.check_ground(&combined);
             match outcome {
-                SatResult::Sat => {
+                SatResult::Sat { model: ground_model } => {
                     // Try quantifier instantiation; if no new
                     // instances, we're done at Sat.
                     let (quants, rest) = crate::quant::partition_quantifiers(&combined);
                     if quants.is_empty() {
-                        return SatResult::Sat;
+                        return SatResult::Sat {
+                            model: ground_model,
+                        };
                     }
                     let universe = crate::quant::collect_universe(&rest);
                     let prev = instantiations.len();
@@ -286,7 +290,9 @@ impl Solver {
                         }
                     }
                     if instantiations.len() == prev {
-                        return SatResult::Sat;
+                        return SatResult::Sat {
+                            model: ground_model,
+                        };
                     }
                     // else loop with the extended assertion set
                 }
@@ -392,8 +398,19 @@ impl Solver {
             BoolResult::Sat => {
                 // Propagation found a satisfying assignment; theories
                 // may still reject. Route to theories as a second
-                // opinion.
-                self.check_via_theories(&lits)
+                // opinion. For the model surfaced by Sat, we run the
+                // model-carrying CDCL variant against the same clauses
+                // — backends without model extraction (oxiz, cadical)
+                // would otherwise leave the verdict witness empty.
+                let model = match crate::cdcl::cdcl_with_restarts_with_model(
+                    &clauses,
+                    64,
+                    12,
+                ) {
+                    crate::cdcl::CdclOutcome::Sat { model } => model,
+                    _ => HashMap::new(),
+                };
+                self.check_via_theories_with_model(&lits, model)
             }
             BoolResult::Unsat => {
                 let (encoded, drat) = crate::proof_bridge::extract_drat(&clauses);
@@ -419,7 +436,11 @@ impl Solver {
                 };
                 let lits_with_locs = self.attach_locs(&lits);
                 let cert = self.build_unsat_cert_opt_with_locs(&lits_with_locs, "SAT", witness);
-                SatResult::Unsat { certificate: cert }
+                let core = crate::result::UnsatCore::from_assertions(&self.all_assertions());
+                SatResult::Unsat {
+                    certificate: cert,
+                    core,
+                }
             }
             BoolResult::Unknown => {
                 SatResult::Unknown {
@@ -437,7 +458,7 @@ impl Solver {
     /// can emit incremental deltas (see Q49).
     ///
     /// Returns `None` when [`ProofMode::None`] is set — the engine
-    /// then surfaces `SatResult::Unsat { certificate: None }`,
+    /// then surfaces `SatResult::Unsat { certificate: None, .. }`,
     /// skipping the bookkeeping cost.
     /// Build the unsat certificate with per-literal source locs
     /// attached. Both the SAT-level unsat path
@@ -448,7 +469,7 @@ impl Solver {
     /// a parser-supplied `assert_at` carries a `:loc` annotation.
     ///
     /// Returns `None` when [`ProofMode::None`] is set — the engine
-    /// then surfaces `SatResult::Unsat { certificate: None }`,
+    /// then surfaces `SatResult::Unsat { certificate: None, .. }`,
     /// skipping the bookkeeping cost.
     fn build_unsat_cert_opt_with_locs(
         &mut self,
@@ -499,6 +520,17 @@ impl Solver {
     /// Used as a fallback when the CNF flattener can't decompose a
     /// compound assertion.
     fn check_via_theories(&mut self, lits: &[(Term, bool)]) -> SatResult {
+        self.check_via_theories_with_model(lits, HashMap::new())
+    }
+
+    /// Variant of [`Self::check_via_theories`] that threads the
+    /// boolean assignment from the SAT layer through to the
+    /// verdict's `SatResult::Sat::model`.
+    fn check_via_theories_with_model(
+        &mut self,
+        lits: &[(Term, bool)],
+        bool_assignment: HashMap<String, bool>,
+    ) -> SatResult {
         self.theories.reset();
         // Strip compound asserts — only send shape-recognizable
         // literals (atom or `(not atom)`) to theories. Anything more
@@ -515,7 +547,9 @@ impl Solver {
             }
         }
         match dpllt::run_once(&mut self.theories, &routable) {
-            LoopOutcome::Sat => SatResult::Sat,
+            LoopOutcome::Sat => SatResult::Sat {
+                model: crate::result::Model::from_assignment(bool_assignment),
+            },
             LoopOutcome::Unsat { theory, witness } => {
                 // Cross-reference each `lits` entry against the
                 // solver-state literal table to recover the
@@ -529,7 +563,11 @@ impl Solver {
                     &theory,
                     witness,
                 );
-                SatResult::Unsat { certificate: cert }
+                let core = crate::result::UnsatCore::from_assertions(&self.all_assertions());
+                SatResult::Unsat {
+                    certificate: cert,
+                    core,
+                }
             }
             LoopOutcome::Unknown { theory, reason } => SatResult::Unknown {
                 reason: format!("{theory}: {reason}"),
@@ -585,7 +623,7 @@ mod tests {
     #[test]
     fn empty_state_is_sat() {
         let mut s = Solver::new();
-        assert!(matches!(s.check_sat(), SatResult::Sat));
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
     }
 
     #[test]
@@ -604,7 +642,7 @@ mod tests {
         let q = Term::var("q", Type::bool_());
         s.assert(p);
         s.assert(q);
-        assert!(matches!(s.check_sat(), SatResult::Sat));
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
     }
 
     #[test]
@@ -616,7 +654,7 @@ mod tests {
         s.assert_negated(p);
         assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
         s.pop(1);
-        assert!(matches!(s.check_sat(), SatResult::Sat));
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
     }
 
     #[test]
@@ -673,7 +711,7 @@ mod tests {
         let p = Term::var("p", Type::bool_());
         let q = Term::var("q", Type::bool_());
         s.assert(Term::mk_and(p, q).unwrap());
-        assert!(matches!(s.check_sat(), SatResult::Sat));
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
     }
 
     #[test]
@@ -693,7 +731,7 @@ mod tests {
         let q = Term::var("q", Type::bool_());
         s.assert(p.clone());
         s.assert(Term::mk_imp(p, q).unwrap());
-        assert!(matches!(s.check_sat(), SatResult::Sat));
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
     }
 
     #[test]
@@ -715,7 +753,7 @@ mod tests {
         let p = Term::var("p", Type::bool_());
         let q = Term::var("q", Type::bool_());
         s.assert(Term::mk_or(p, q).unwrap());
-        assert!(matches!(s.check_sat(), SatResult::Sat));
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
     }
 
     #[test]
@@ -739,7 +777,7 @@ mod tests {
         let q = Term::var("q", Type::bool_());
         s.assert(p.clone());
         s.assert(Term::mk_or(p, q).unwrap());
-        assert!(matches!(s.check_sat(), SatResult::Sat));
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
     }
 
     #[test]
@@ -803,7 +841,7 @@ mod tests {
         s.assert(p.clone());
         s.assert(Term::mk_not(p).unwrap());
         match s.check_sat() {
-            SatResult::Unsat { certificate: Some(c) } => {
+            SatResult::Unsat { certificate: Some(c), .. } => {
                 // Should have at least the two Assume steps + the
                 // Theory closing step.
                 assert!(
@@ -826,7 +864,7 @@ mod tests {
         s.assert(p.clone());
         s.assert(Term::mk_not(p).unwrap());
         match s.check_sat() {
-            SatResult::Unsat { certificate: None } => {} // expected
+            SatResult::Unsat { certificate: None, .. } => {} // expected
             other => panic!("expected Unsat with None cert, got {other:?}"),
         }
     }
@@ -838,7 +876,7 @@ mod tests {
         s.assert(p.clone());
         s.assert(Term::mk_not(p).unwrap());
         match s.check_sat() {
-            SatResult::Unsat { certificate: Some(_) } => {} // expected
+            SatResult::Unsat { certificate: Some(_), .. } => {} // expected
             other => panic!("expected Unsat with Some cert, got {other:?}"),
         }
     }
@@ -850,7 +888,7 @@ mod tests {
         s.assert(p.clone());
         s.assert(Term::mk_not(p).unwrap());
         match s.check_sat() {
-            SatResult::Unsat { certificate: Some(cert) } => {
+            SatResult::Unsat { certificate: Some(cert), .. } => {
                 let final_step = &cert.steps[cert.conclusion.0 as usize];
                 match &final_step.body {
                     adsmt_cert::StepBody::Theory { name, witness, .. } => {
@@ -922,7 +960,7 @@ mod tests {
         s.assert(p.clone());
         s.assert(Term::mk_not(p).unwrap());
         match s.check_sat() {
-            SatResult::Unsat { certificate: Some(cert) } => {
+            SatResult::Unsat { certificate: Some(cert), .. } => {
                 let out = adsmt_cert::emit_certificate(&cert);
                 assert!(out.starts_with("(proof"));
                 assert!(out.contains("(assume "));
@@ -940,9 +978,7 @@ mod tests {
         let p = Term::var("p", Type::bool_());
         s.assert_at(p.clone(), SourceLoc::new(3, 8));
         s.assert_negated_at(p, SourceLoc::new(4, 12));
-        let SatResult::Unsat {
-            certificate: Some(cert),
-        } = s.check_sat()
+        let SatResult::Unsat { certificate: Some(cert), .. } = s.check_sat()
         else {
             panic!("expected Unsat with cert");
         };
@@ -971,9 +1007,7 @@ mod tests {
         let p = Term::var("p", Type::bool_());
         s.assert(p.clone());
         s.assert(Term::mk_not(p).unwrap());
-        let SatResult::Unsat {
-            certificate: Some(cert),
-        } = s.check_sat()
+        let SatResult::Unsat { certificate: Some(cert), .. } = s.check_sat()
         else {
             panic!("expected Unsat with cert");
         };
@@ -997,7 +1031,7 @@ mod tests {
         s.assert(Term::mk_eq(b, c.clone()).unwrap());
         s.assert(Term::mk_not(Term::mk_eq(a, c).unwrap()).unwrap());
         match s.check_sat() {
-            SatResult::Unsat { certificate: Some(cert) } => {
+            SatResult::Unsat { certificate: Some(cert), .. } => {
                 // Find the final Theory step and check its name.
                 let last = &cert.steps[cert.conclusion.0 as usize];
                 match &last.body {
@@ -1041,9 +1075,7 @@ mod tests {
             Term::mk_eq(a, c).unwrap(),
             SourceLoc::new(12, 1),
         );
-        let SatResult::Unsat {
-            certificate: Some(cert),
-        } = s.check_sat()
+        let SatResult::Unsat { certificate: Some(cert), .. } = s.check_sat()
         else {
             panic!("expected Unsat with cert");
         };
@@ -1093,7 +1125,7 @@ mod tests {
         let mut s = Solver::new();
         s.assert(forall);
         s.assert(Term::app(p, a).unwrap());
-        assert!(matches!(s.check_sat(), SatResult::Sat));
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
     }
 
     #[test]

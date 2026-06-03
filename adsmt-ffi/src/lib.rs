@@ -147,7 +147,7 @@ pub unsafe extern "C" fn adsmt_solver_check_sat(h: SolverHandle) -> i32 {
         None => return ADSMT_ERR_NULL,
     };
     match s.0.check_sat() {
-        SatResult::Sat => ADSMT_SAT,
+        SatResult::Sat { .. } => ADSMT_SAT,
         SatResult::Unsat { .. } => ADSMT_UNSAT,
         SatResult::Unknown { .. } => ADSMT_UNKNOWN,
         SatResult::Abductive { .. } => ADSMT_ABDUCTIVE,

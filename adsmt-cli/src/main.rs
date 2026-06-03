@@ -487,8 +487,8 @@ impl Driver {
 
     fn record_result(&mut self, r: SatResult) -> LastStatus {
         let status = match &r {
-            SatResult::Sat => LastStatus::Sat,
-            SatResult::Unsat { certificate } => {
+            SatResult::Sat { .. } => LastStatus::Sat,
+            SatResult::Unsat { certificate, .. } => {
                 self.last_cert = certificate.clone();
                 LastStatus::Unsat
             }
@@ -557,30 +557,22 @@ impl Driver {
         //    `Bool false`). This is the conservative truth a `sat`
         //    verdict implies for top-level literals.
         match &self.last_result {
-            Some(SatResult::Sat) => {
+            Some(SatResult::Sat { model }) => {
                 println!("(");
                 // Defined symbols first.
                 for (name, sig) in &self.registry.funs {
                     if let Some(body) = &sig.body {
                         if sig.params.is_empty() {
-                            println!(
-                                "  (define-fun {name} () {} {})",
-                                sig.result, body
-                            );
+                            println!("  (define-fun {name} () {} {})", sig.result, body);
                         }
                     }
                 }
-                // Free Bool atoms inferred from top-level assertions.
-                for term in &self.assertions {
-                    match top_level_bool_polarity(term) {
-                        Some((name, true)) => {
-                            println!("  (define-fun {name} () Bool true)");
-                        }
-                        Some((name, false)) => {
-                            println!("  (define-fun {name} () Bool false)");
-                        }
-                        None => {}
-                    }
+                // Engine-witnessed atom assignments.
+                for (name, polarity) in &model.bool_assignments {
+                    println!(
+                        "  (define-fun {name} () Bool {})",
+                        if *polarity { "true" } else { "false" }
+                    );
                 }
                 println!(")");
             }
@@ -592,17 +584,23 @@ impl Driver {
 
     fn emit_get_unsat_core(&self) {
         match &self.last_result {
-            Some(SatResult::Unsat { .. }) => {
+            Some(SatResult::Unsat { core, .. }) => {
                 // SMT-LIB v2.6: `(<symbol>*)` — the labelled subset of
                 // assertions that participate. lu-smt's assertion
                 // ledger is unlabelled (no `(! ... :named X)` parse),
-                // so the conservative core is the full assertion list
-                // — sound but not minimal. Producers that need
-                // minimality should set `:produce-unsat-cores true`
-                // and use named assertions.
+                // so the labels are positional (`a0`, `a1`, …) and the
+                // engine's UnsatCore tells us which positions
+                // participate. An empty `participants` list means the
+                // engine couldn't narrow below the full assertion set
+                // — we conservatively emit every assertion's label.
+                let indices: Vec<usize> = if core.participants.is_empty() {
+                    (0..self.assertions.len()).collect()
+                } else {
+                    core.participants.clone()
+                };
                 print!("(");
                 let mut first = true;
-                for (i, _) in self.assertions.iter().enumerate() {
+                for i in indices {
                     if !first {
                         print!(" ");
                     }
