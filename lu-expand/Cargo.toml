@@ -7,6 +7,6 @@ description = "Combinatorial pattern expansion for logicutils"
 
 [dependencies]
 lu-common = { workspace = true }
-lu-match = { version = "=1.0.0-rc.8", path = "../lu-match" }
+lu-match = { path = "../lu-match" }
 clap = { workspace = true }
 thiserror = { workspace = true }
