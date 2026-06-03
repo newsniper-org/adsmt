@@ -49,6 +49,13 @@ pub enum Command {
     Reset,
     ResetAssertions,
     Exit,
+    /// `(echo "string")` — SMT-LIB v2.6 § 4.2.4. The solver echoes
+    /// the verbatim string on its own line to stdout. Front-ends
+    /// (Verus's `SmtProcess`, Lean4's `smt_abduce`, the cvc5/Z3
+    /// reference drivers) lean on it as a sentinel that delimits
+    /// response batches when several commands flush through a
+    /// single pipe `read`.
+    Echo(String),
     /// adsmt-specific dialect commands and any unrecognized standard
     /// commands are kept as raw forms.
     Raw(SExpr),
@@ -222,6 +229,16 @@ fn parse_command(s: SExpr) -> Result<Command, SmtLibError> {
         "reset" => Ok(Command::Reset),
         "reset-assertions" => Ok(Command::ResetAssertions),
         "exit" => Ok(Command::Exit),
+        "echo" => {
+            let msg = match list.get(1) {
+                Some(SExpr::String(s)) => s.clone(),
+                _ => return Err(SmtLibError::Malformed {
+                    cmd: head.clone(),
+                    message: "expected a string literal argument".into(),
+                }),
+            };
+            Ok(Command::Echo(msg))
+        }
         _ => Ok(Command::Raw(s)),
     }
 }

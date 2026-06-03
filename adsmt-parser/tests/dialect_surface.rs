@@ -30,14 +30,18 @@ const FROZEN_VARIANTS: &[&str] = &[
     "Reset",
     "ResetAssertions",
     "Exit",
+    "Echo",
     "Raw",
 ];
 
 #[test]
 fn command_variant_count_is_frozen() {
-    // The freeze pins the count at 20; new additive variants
-    // in v1.x require updating both this test and DIALECT_POLICY.md.
-    assert_eq!(FROZEN_VARIANTS.len(), 20);
+    // v1.0.0-rc.7 → -rc.8 (additive): `Echo` joins the recognised
+    // command set so front-ends (Verus's `SmtProcess`) can use
+    // `(echo "<<DONE>>")` as a response-batch sentinel per SMT-LIB
+    // v2.6 § 4.2.4. Count bumps to 21; future additive variants
+    // require updating this assertion and DIALECT_POLICY.md.
+    assert_eq!(FROZEN_VARIANTS.len(), 21);
 }
 
 fn variant_name(c: &Command) -> &'static str {
@@ -61,6 +65,7 @@ fn variant_name(c: &Command) -> &'static str {
         Command::Reset => "Reset",
         Command::ResetAssertions => "ResetAssertions",
         Command::Exit => "Exit",
+        Command::Echo(_) => "Echo",
         Command::Raw(_) => "Raw",
     }
 }
@@ -90,6 +95,7 @@ fn canonical_command_corpus_parses_to_recognised_variants() {
         ("(reset)", "Reset"),
         ("(reset-assertions)", "ResetAssertions"),
         ("(exit)", "Exit"),
+        ("(echo \"hello\")", "Echo"),
     ];
 
     for (src, expected) in corpus {

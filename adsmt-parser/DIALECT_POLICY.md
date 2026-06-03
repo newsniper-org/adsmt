@@ -14,7 +14,7 @@ The parser entry points are:
 - `parse_smtlib(&str) -> Result<Vec<Command>, SmtLibError>`
 - `parse_smtlib_positioned(&str) -> Result<Vec<(Command, Position)>, SmtLibError>`
 
-`Command` enum (`src/smtlib.rs`) — 20 frozen variants. Adding
+`Command` enum (`src/smtlib.rs`) — 21 frozen variants. Adding
 new variants in v1.x minor bumps is allowed; removing or
 renaming variants requires a major bump.
 
@@ -39,6 +39,7 @@ renaming variants requires a major bump.
 | `Reset` | `(reset)` |
 | `ResetAssertions` | `(reset-assertions)` |
 | `Exit` | `(exit)` |
+| `Echo` | `(echo "<string>")` — SMT-LIB v2.6 § 4.2.4; verbatim line to stdout |
 | `Raw` | escape hatch for adsmt-specific dialect + unrecognised standard commands |
 
 ### Error surface
@@ -98,7 +99,7 @@ Phase 1 (v0.23) freeze candidate sign-off status:
 1. **Command variant audit** — ✅ enforced by
    `tests/dialect_surface.rs::command_variant_set_is_frozen`.
 2. **Round-trip smoke** — ✅ existing parser tests cover the
-   20 variants over ~50 SMT-LIB snippets.
+   21 variants over ~50 SMT-LIB snippets.
 3. **lu-kb AST audit** — pending. The audit cross-walks
    `lu-common/src/kb/ast.rs` enum cardinalities against this
    document.

@@ -524,6 +524,15 @@ impl Driver {
                 DispatchResult::Continue
             }
             Command::Exit => DispatchResult::Exit,
+            Command::Echo(msg) => {
+                // SMT-LIB v2.6 § 4.2.4 — print the literal verbatim
+                // on its own line. The string we received from the
+                // parser has already been unquoted; front-ends that
+                // use this as a sentinel (Verus's `SmtProcess`)
+                // expect the raw payload, not a re-quoted form.
+                println!("{}", msg);
+                DispatchResult::Continue
+            }
             Command::Raw(s) => {
                 if self.cfg.strict_commands {
                     DispatchResult::Error(13, format!("unknown command: {s}"))
