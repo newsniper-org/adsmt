@@ -35,6 +35,19 @@ pub enum Command {
     /// `(declare-datatype Name ((Ctor1) (Ctor2) ...))` — v0.3 minimal
     /// form supporting only nullary (enum) constructors.
     DeclareDatatype { name: String, constructors: Vec<String> },
+    /// `(declare-datatypes ((Name1 0) (Name2 0) …)
+    ///                     (((Ctor1a) (Ctor1b) …)
+    ///                      ((Ctor2a) …) …))`
+    /// — SMT-LIB v2.6 § 4.2.3 parallel form.  v0.x minimal
+    /// supports nullary constructors and arity-0 sorts only; the
+    /// two lists must have equal length (one constructor group
+    /// per declared sort).  Front-ends like Verus's prelude emit
+    /// this form for every Z3-style enum (`fndef`, sub-mode tags
+    /// etc.).
+    DeclareDatatypes {
+        sorts: Vec<(String, u32)>,
+        groups: Vec<Vec<String>>,
+    },
     DeclareConst { name: String, sort: SExpr },
     DeclareFun { name: String, params: Vec<SExpr>, result: SExpr },
     DefineFun { name: String, params: Vec<SExpr>, result: SExpr, body: SExpr },
@@ -160,6 +173,104 @@ fn parse_command(s: SExpr) -> Result<Command, SmtLibError> {
                 constructors.push(cname);
             }
             Ok(Command::DeclareDatatype { name, constructors })
+        }
+        "declare-datatypes" => {
+            // SMT-LIB v2.6 § 4.2.3 parallel form:
+            //   (declare-datatypes ((Name1 0) ...) ((<ctors1>) ...))
+            // The two outer lists must have equal length; we
+            // validate the v0.x minimal shape (arity-0 sorts +
+            // nullary constructors) and bundle them as a single
+            // command so the dispatcher can register the sorts and
+            // their constructors as one atomic step.
+            let sorts_sexpr = list.get(1).ok_or_else(|| SmtLibError::Malformed {
+                cmd: head.clone(),
+                message: "missing sort declaration list".into(),
+            })?;
+            let sort_list = sorts_sexpr.as_list().ok_or_else(|| SmtLibError::Malformed {
+                cmd: head.clone(),
+                message: "expected sort declaration list".into(),
+            })?;
+            let groups_sexpr = list.get(2).ok_or_else(|| SmtLibError::Malformed {
+                cmd: head.clone(),
+                message: "missing datatype declaration list".into(),
+            })?;
+            let group_list = groups_sexpr.as_list().ok_or_else(|| SmtLibError::Malformed {
+                cmd: head.clone(),
+                message: "expected datatype declaration list".into(),
+            })?;
+            if sort_list.len() != group_list.len() {
+                return Err(SmtLibError::Malformed {
+                    cmd: head.clone(),
+                    message: format!(
+                        "sort list ({}) and datatype list ({}) must have equal length",
+                        sort_list.len(),
+                        group_list.len(),
+                    ),
+                });
+            }
+            let mut sorts = Vec::with_capacity(sort_list.len());
+            for sd in sort_list {
+                let sd_inner = sd.as_list().ok_or_else(|| SmtLibError::Malformed {
+                    cmd: head.clone(),
+                    message: "expected `(Name Arity)` sort declaration".into(),
+                })?;
+                if sd_inner.len() != 2 {
+                    return Err(SmtLibError::Malformed {
+                        cmd: head.clone(),
+                        message: "sort declaration must have two elements".into(),
+                    });
+                }
+                let sname = sd_inner[0].as_symbol().map(str::to_string).ok_or_else(|| {
+                    SmtLibError::Malformed {
+                        cmd: head.clone(),
+                        message: "sort name must be a symbol".into(),
+                    }
+                })?;
+                let arity = match &sd_inner[1] {
+                    SExpr::Numeric(n) => n.parse::<u32>().map_err(|_| {
+                        SmtLibError::Malformed {
+                            cmd: head.clone(),
+                            message: "sort arity must be a numeric literal".into(),
+                        }
+                    })?,
+                    _ => {
+                        return Err(SmtLibError::Malformed {
+                            cmd: head.clone(),
+                            message: "sort arity must be a numeric literal".into(),
+                        });
+                    }
+                };
+                sorts.push((sname, arity));
+            }
+            let mut groups: Vec<Vec<String>> = Vec::with_capacity(group_list.len());
+            for g in group_list {
+                let g_inner = g.as_list().ok_or_else(|| SmtLibError::Malformed {
+                    cmd: head.clone(),
+                    message: "expected constructor list per datatype".into(),
+                })?;
+                let mut ctors = Vec::with_capacity(g_inner.len());
+                for c in g_inner {
+                    let cname = match c {
+                        SExpr::Symbol(s) => s.clone(),
+                        SExpr::List(inner) if inner.len() == 1 => inner[0]
+                            .as_symbol()
+                            .map(str::to_string)
+                            .ok_or_else(|| SmtLibError::Malformed {
+                                cmd: head.clone(),
+                                message: "constructor must be a symbol".into(),
+                            })?,
+                        _ => {
+                            return Err(SmtLibError::Malformed {
+                                cmd: head.clone(),
+                                message: "v0.x only supports nullary constructors".into(),
+                            });
+                        }
+                    };
+                    ctors.push(cname);
+                }
+                groups.push(ctors);
+            }
+            Ok(Command::DeclareDatatypes { sorts, groups })
         }
         "declare-const" => {
             let name = expect_symbol(list.get(1), "declare-const")?;

@@ -550,6 +550,25 @@ impl Driver {
                     .declare_datatype(DatatypeDecl::finite_enum(name, constructors));
                 DispatchResult::Continue
             }
+            Command::DeclareDatatypes { sorts, groups } => {
+                use adsmt_theory::datatypes::DatatypeDecl;
+                // Parser already enforced `sorts.len() == groups.len()`
+                // and rejected non-arity-0 sorts / non-nullary ctors,
+                // so this loop is just the per-sort version of the
+                // singular `DeclareDatatype` arm above.
+                for ((name, _arity), constructors) in sorts.into_iter().zip(groups.into_iter())
+                {
+                    let sort = Type::const_(&name, adsmt_core::Kind::Type);
+                    for ctor in &constructors {
+                        self.symbols.declare_constructor(ctor.clone(), sort.clone());
+                    }
+                    self.symbols.declare_sort(name.clone(), sort);
+                    self.registry.sorts.insert(name.clone(), 0);
+                    self.solver
+                        .declare_datatype(DatatypeDecl::finite_enum(name, constructors));
+                }
+                DispatchResult::Continue
+            }
             Command::Assert(expr) => match self.assert_expr(&expr, pos) {
                 Ok(()) => DispatchResult::Continue,
                 Err(msg) => DispatchResult::Error(11, msg),

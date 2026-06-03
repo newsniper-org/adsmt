@@ -91,6 +91,15 @@ pub fn convert_expr(e: &SExpr, table: &SymbolTable) -> Result<Term, ConvertError
     match e {
         SExpr::Symbol(s) => convert_symbol(s, table),
         SExpr::List(items) => convert_list(items, table),
+        SExpr::Numeric(n) => {
+            // SMT-LIB v2 § 3.6 — bare integer literal at sort Int.
+            // The engine treats it as an opaque Int constant
+            // (engine-side arithmetic decides equality between
+            // literals).  Front-ends that emit Z3-style preludes
+            // (Verus's machine-int bounds, sub-mode size tables)
+            // pass through here.
+            Ok(Term::const_(n, Type::const_("Int", adsmt_core::Kind::Type)))
+        }
         other => Err(ConvertError::Malformed(format!("expected expression, got literal {other}"))),
     }
 }
@@ -146,8 +155,221 @@ fn convert_list(items: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertErr
         }
         "forall" => convert_quantifier("forall", args, table),
         "exists" => convert_quantifier("exists", args, table),
+        "!" => convert_annotation(args, table),
+        // SMT-LIB v2 § 3.6 linear-arithmetic builtins.  The engine
+        // already routes `(+ x y)` etc. through `adsmt-theory::arith`
+        // once the term reaches the solver — we only need to build
+        // the curried application form here.  `+` / `*` are n-ary in
+        // the spec but the engine consumes left-folded binary form.
+        // `-` is overloaded (unary negation when called with one
+        // argument).
+        "+" => convert_arith_binop("+", args, table),
+        "*" => convert_arith_binop("*", args, table),
+        "-" => convert_arith_minus(args, table),
+        "<" => convert_arith_compare("<", args, table),
+        "<=" => convert_arith_compare("<=", args, table),
+        ">" => convert_arith_compare(">", args, table),
+        ">=" => convert_arith_compare(">=", args, table),
+        "div" => convert_arith_binop("div", args, table),
+        "mod" => convert_arith_binop("mod", args, table),
+        // SMT-LIB `/` is Real division.  Routes through the LRA
+        // theory once the term reaches the solver; treated as
+        // sort-polymorphic here so Verus's Int-quotient prelude
+        // also flows through.
+        "/" => convert_arith_binop("/", args, table),
+        "abs" => convert_arith_unary("abs", args, table),
+        // SMT-LIB v2 § 3.7.1 — `(distinct e1 e2 ... en)` is
+        // pairwise disequality.  Expand to `(and (not (= ei ej))
+        // | i<j)` so the engine handles it through the existing
+        // `=` / `and` / `not` arms.
+        "distinct" => convert_distinct(args, table),
         _ => convert_application(head, args, table),
     }
+}
+
+/// Build the left-folded binary application form for an n-ary
+/// arithmetic operator whose signature is `Int -> Int -> Int`
+/// (or `Real -> Real -> Real`; the engine resolves the actual
+/// theory at solve time).  Single-argument calls (`(+ x)`) return
+/// the operand unchanged — that's the SMT-LIB identity for `+` /
+/// `*` and matches what every reference solver does.
+fn convert_arith_binop(
+    op: &str,
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    if args.is_empty() {
+        return Err(ConvertError::Arity { op: op.into(), expected: 2, got: 0 });
+    }
+    if args.len() == 1 {
+        return convert_expr(&args[0], table);
+    }
+    let mut iter = args.iter();
+    let mut acc = convert_expr(iter.next().expect("non-empty"), table)?;
+    // SMT-LIB v2 § 3.6 — `+`/`-`/`*`/`div`/`mod` are
+    // sort-polymorphic between Int and Real.  Resolve the operand
+    // type from the first argument and reuse it for the curried
+    // application.
+    let elem_ty = acc.type_of();
+    let op_ty = Type::fun(
+        elem_ty.clone(),
+        Type::fun(elem_ty.clone(), elem_ty.clone())
+            .map_err(|e| ConvertError::Malformed(format!("{e:?}")))?,
+    )
+    .map_err(|e| ConvertError::Malformed(format!("{e:?}")))?;
+    for a in iter {
+        let rhs = convert_expr(a, table)?;
+        let head = Term::const_(op, op_ty.clone());
+        let partial =
+            Term::app(head, acc).map_err(|e| ConvertError::Malformed(e.to_string()))?;
+        acc = Term::app(partial, rhs).map_err(|e| ConvertError::Malformed(e.to_string()))?;
+    }
+    Ok(acc)
+}
+
+/// SMT-LIB v2 § 3.6 binary comparison `Int -> Int -> Bool`.  The
+/// spec also allows the n-ary chain form `(< a b c)` = `(and (< a
+/// b) (< b c))` but Verus / Z3 emit pairwise so we keep the v0.x
+/// surface tight at exactly two operands.
+fn convert_arith_compare(
+    op: &str,
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    if args.len() != 2 {
+        return Err(ConvertError::Arity { op: op.into(), expected: 2, got: args.len() });
+    }
+    let a = convert_expr(&args[0], table)?;
+    let b = convert_expr(&args[1], table)?;
+    // Sort-polymorphic comparison: take the operand type off the
+    // left side and reuse it for both arguments and the operator's
+    // signature.  The Int / Real choice routes to the right
+    // arith-theory solver downstream.
+    let elem_ty = a.type_of();
+    let op_ty = Type::fun(
+        elem_ty.clone(),
+        Type::fun(elem_ty, Type::bool_())
+            .map_err(|e| ConvertError::Malformed(format!("{e:?}")))?,
+    )
+    .map_err(|e| ConvertError::Malformed(format!("{e:?}")))?;
+    let head = Term::const_(op, op_ty);
+    let partial = Term::app(head, a).map_err(|e| ConvertError::Malformed(e.to_string()))?;
+    Term::app(partial, b).map_err(|e| ConvertError::Malformed(e.to_string()))
+}
+
+/// `(- x)` is unary negation; `(- x y …)` is left-folded
+/// subtraction.  The engine routes both through
+/// `adsmt-theory::arith` once the term lands.
+/// `(distinct e1 e2 ... en)` (SMT-LIB v2 § 3.7.1) → conjunction
+/// of pairwise disequalities.  Two-argument call shortcuts to
+/// `(not (= e1 e2))`; larger ones build the explicit `(and ...)`
+/// tree so every existing `=` and `not` arm carries it.
+fn convert_distinct(args: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertError> {
+    if args.len() < 2 {
+        return Err(ConvertError::Arity {
+            op: "distinct".into(),
+            expected: 2,
+            got: args.len(),
+        });
+    }
+    let mut converted = Vec::with_capacity(args.len());
+    for a in args {
+        converted.push(convert_expr(a, table)?);
+    }
+    let mut pairs: Vec<Term> = Vec::new();
+    for i in 0..converted.len() {
+        for j in (i + 1)..converted.len() {
+            let eq = Term::mk_eq(converted[i].clone(), converted[j].clone())
+                .map_err(|e| ConvertError::Malformed(e.to_string()))?;
+            let neq =
+                Term::mk_not(eq).map_err(|e| ConvertError::Malformed(e.to_string()))?;
+            pairs.push(neq);
+        }
+    }
+    let mut iter = pairs.into_iter();
+    let first = iter.next().expect("at least one pair");
+    iter.try_fold(first, |acc, p| {
+        Term::mk_and(acc, p).map_err(|e| ConvertError::Malformed(e.to_string()))
+    })
+}
+
+/// Sort-polymorphic unary arithmetic operator (`abs`, `to_int`,
+/// `to_real`).  Built as `Term::const_(op, T -> T)` curried
+/// against the operand sort.
+fn convert_arith_unary(
+    op: &str,
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    if args.len() != 1 {
+        return Err(ConvertError::Arity { op: op.into(), expected: 1, got: args.len() });
+    }
+    let body = convert_expr(&args[0], table)?;
+    let elem_ty = body.type_of();
+    let op_ty = Type::fun(elem_ty.clone(), elem_ty)
+        .map_err(|e| ConvertError::Malformed(format!("{e:?}")))?;
+    let head = Term::const_(op, op_ty);
+    Term::app(head, body).map_err(|e| ConvertError::Malformed(e.to_string()))
+}
+
+fn convert_arith_minus(args: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertError> {
+    if args.is_empty() {
+        return Err(ConvertError::Arity { op: "-".into(), expected: 1, got: 0 });
+    }
+    if args.len() == 1 {
+        // Unary negation: `(- x)` is represented as the curried
+        // `(- 0 x)` so the engine's binary-subtraction handler can
+        // accept it uniformly with the n-ary path.  Pick the zero
+        // literal at the operand's sort so Int / Real flow through
+        // identically.
+        let body = convert_expr(&args[0], table)?;
+        let elem_ty = body.type_of();
+        let op_ty = Type::fun(
+            elem_ty.clone(),
+            Type::fun(elem_ty.clone(), elem_ty.clone())
+                .map_err(|e| ConvertError::Malformed(format!("{e:?}")))?,
+        )
+        .map_err(|e| ConvertError::Malformed(format!("{e:?}")))?;
+        let zero = Term::const_("0", elem_ty);
+        let head = Term::const_("-", op_ty);
+        let partial =
+            Term::app(head, zero).map_err(|e| ConvertError::Malformed(e.to_string()))?;
+        return Term::app(partial, body).map_err(|e| ConvertError::Malformed(e.to_string()));
+    }
+    convert_arith_binop("-", args, table)
+}
+
+/// SMT-LIB v2 § 3.3 — attributed expression `(! <expr>
+/// <attribute>+)`.  Common attributes (`:pattern`, `:qid`,
+/// `:skolemid`, `:named`, `:weight`) carry solver-side hint
+/// metadata that downstream engines may consult for trigger
+/// selection or proof printing.  The v0.x adsmt engine doesn't
+/// consume any of them, so we forward the wrapped expression
+/// unchanged and drop every attribute on the floor.  Front-ends
+/// that emit `!` (Verus's prelude, every Z3 `:pattern`-tagged
+/// forall) round-trip without losing the body.
+fn convert_annotation(
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    if args.is_empty() {
+        return Err(ConvertError::Arity {
+            op: "!".into(),
+            expected: 1,
+            got: 0,
+        });
+    }
+    // `args[0]` is the wrapped expression; everything after it is
+    // an attribute (`:keyword <value>` or a bare keyword).  We
+    // don't recurse into the attribute values: they may reference
+    // bound variables (`:pattern ((fuel_bool id))` inside a
+    // quantifier body) whose types are only meaningful to the
+    // binder, and forcing them through `convert_expr` would
+    // pull those names through the symbol table at the wrong
+    // depth.  Silently dropping them is the closest we get to
+    // the SMT-LIB v2 spec letter for an engine that doesn't
+    // act on the hints.
+    convert_expr(&args[0], table)
 }
 
 /// Fallback for non-builtin heads: `(F a₁ … aₙ)` is the curried
@@ -381,6 +603,45 @@ mod tests {
         let table = SymbolTable::new();
         assert!(convert_expr(&parse_sexpr("true").unwrap(), &table).unwrap().is_true_const());
         assert!(convert_expr(&parse_sexpr("false").unwrap(), &table).unwrap().is_false_const());
+    }
+
+    /// `(! <expr> :keyword …)` is an SMT-LIB v2 § 3.3 attributed
+    /// expression — the body is the value, every attribute is
+    /// metadata that the engine drops on the floor.
+    #[test]
+    fn bang_annotation_returns_wrapped_body() {
+        let table = table_with_bools(&["p"]);
+        let s = parse_sexpr("(! p :named tag)").unwrap();
+        let t = convert_expr(&s, &table).unwrap();
+        assert_eq!(t, Term::var("p", Type::bool_()));
+    }
+
+    /// The canonical Verus prelude shape: a quantifier body wrapped
+    /// in `(! ... :pattern ((fuel_bool id)) :qid prelude_fuel_defaults
+    /// :skolemid skolem_prelude_fuel_defaults)`.  The annotation
+    /// arm must let the wrapper through without recursing into
+    /// the pattern list (the variables bound by the surrounding
+    /// quantifier aren't in scope here, since the symbol-table
+    /// view doesn't push the binder).
+    #[test]
+    fn bang_annotation_ignores_pattern_qid_skolemid() {
+        let table = table_with_bools(&["p"]);
+        let src = "(! p :pattern ((p)) :qid q_id :skolemid sk_id)";
+        let s = parse_sexpr(src).unwrap();
+        let t = convert_expr(&s, &table).unwrap();
+        assert_eq!(t, Term::var("p", Type::bool_()));
+    }
+
+    /// Empty `(!)` is malformed — every attributed expression
+    /// must wrap at least one body term.
+    #[test]
+    fn bang_annotation_requires_body() {
+        let table = SymbolTable::new();
+        let s = parse_sexpr("(!)").unwrap();
+        assert!(matches!(
+            convert_expr(&s, &table),
+            Err(ConvertError::Arity { .. })
+        ));
     }
 
     #[test]

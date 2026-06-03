@@ -16,6 +16,7 @@ const FROZEN_VARIANTS: &[&str] = &[
     "SetInfo",
     "DeclareSort",
     "DeclareDatatype",
+    "DeclareDatatypes",
     "DeclareConst",
     "DeclareFun",
     "DefineFun",
@@ -36,12 +37,15 @@ const FROZEN_VARIANTS: &[&str] = &[
 
 #[test]
 fn command_variant_count_is_frozen() {
-    // v1.0.0-rc.7 → -rc.8+ (additive): `Echo` joins the recognised
-    // command set so front-ends (Verus's `SmtProcess`) can use
-    // `(echo "<<DONE>>")` as a response-batch sentinel per SMT-LIB
-    // v2.6 § 4.2.4. Count bumps to 21; future additive variants
-    // require updating this assertion and DIALECT_POLICY.md.
-    assert_eq!(FROZEN_VARIANTS.len(), 21);
+    // v1.0.0-rc.8+ additive set:
+    // - `Echo` (SMT-LIB v2.6 § 4.2.4) — response-batch sentinel
+    //   used by Verus's `SmtProcess`
+    // - `DeclareDatatypes` (§ 4.2.3 parallel form) — Verus
+    //   prelude declares `fndef` and similar enum-shaped tags
+    //   through this multi-sort variant
+    // Count bumps to 22; future additive variants require
+    // updating this assertion and DIALECT_POLICY.md together.
+    assert_eq!(FROZEN_VARIANTS.len(), 22);
 }
 
 fn variant_name(c: &Command) -> &'static str {
@@ -51,6 +55,7 @@ fn variant_name(c: &Command) -> &'static str {
         Command::SetInfo { .. } => "SetInfo",
         Command::DeclareSort { .. } => "DeclareSort",
         Command::DeclareDatatype { .. } => "DeclareDatatype",
+        Command::DeclareDatatypes { .. } => "DeclareDatatypes",
         Command::DeclareConst { .. } => "DeclareConst",
         Command::DeclareFun { .. } => "DeclareFun",
         Command::DefineFun { .. } => "DefineFun",
@@ -81,6 +86,10 @@ fn canonical_command_corpus_parses_to_recognised_variants() {
         ("(set-info :source \"test\")", "SetInfo"),
         ("(declare-sort Color 0)", "DeclareSort"),
         ("(declare-datatype Light ((red) (green)))", "DeclareDatatype"),
+        (
+            "(declare-datatypes ((Color 0) (Light 0)) (((red) (green)) ((on) (off))))",
+            "DeclareDatatypes",
+        ),
         ("(declare-const x Int)", "DeclareConst"),
         ("(declare-fun f (Int Int) Int)", "DeclareFun"),
         ("(define-fun pred ((x Int)) Bool true)", "DefineFun"),
