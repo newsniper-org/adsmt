@@ -326,9 +326,7 @@ impl Solver {
             }
             let minimized = minimize(candidates, MinimizePolicy::Standard);
             let ranked = rank_candidates(minimized);
-            let ordered: Vec<adsmt_abduce::sld::Candidate> =
-                ranked.into_iter().map(|r| r.candidate).collect();
-            return SatResult::Abductive { candidates: ordered };
+            return SatResult::Abductive { candidates: ranked };
         }
         SatResult::Unknown {
             reason: format!("quantifier instantiation budget ({QUANTIFIER_ROUNDS} rounds) exhausted"),
@@ -599,8 +597,7 @@ impl Solver {
         let filtered = self.abduction_state.filter_non_rejected(raw);
         let minimized = minimize(filtered, MinimizePolicy::Standard);
         let ranked = rank_candidates(minimized);
-        let candidates = ranked.into_iter().map(|r| r.candidate).collect();
-        Abductive { candidates }
+        Abductive { candidates: ranked }
     }
 
     pub fn promote(&mut self, candidate: &adsmt_abduce::sld::Candidate) {
@@ -686,7 +683,7 @@ mod tests {
         s.register_abducible(Abducible::new(p.clone(), "x"));
         s.push();
         let candidates = s.abduce(&p).candidates;
-        s.promote(&candidates[0]);
+        s.promote(&candidates[0].candidate);
         s.pop(1);
         let after = s.all_literals();
         assert!(after.iter().any(|(t, polarity)| t.alpha_eq(&p) && *polarity));
@@ -698,7 +695,7 @@ mod tests {
         let p = Term::var("p", Type::bool_());
         s.register_abducible(Abducible::new(p.clone(), "x"));
         let cands = s.abduce(&p).candidates;
-        s.reject(&cands[0]);
+        s.reject(&cands[0].candidate);
         let again = s.abduce(&p).candidates;
         assert!(again.is_empty());
     }

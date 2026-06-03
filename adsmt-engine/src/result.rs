@@ -1,6 +1,6 @@
 //! Result types returned by [`crate::Solver::check_sat`] and [`crate::Solver::abduce`].
 
-use adsmt_abduce::sld::Candidate;
+use adsmt_abduce::rank::RankedCandidate;
 use adsmt_cert::Certificate;
 use adsmt_core::Term;
 
@@ -24,13 +24,22 @@ pub enum SatResult {
     /// Proof requires accepting one of the listed hypothesis sets
     /// (sec 20 / Q19 / Q73). The CLI maps this to exit code 3 and
     /// Lean4's `smt_abduce` tactic synthesizes matching `sorry` holes.
-    Abductive { candidates: Vec<Candidate> },
+    ///
+    /// Candidates carry the `adsmt-abduce::rank::RankedCandidate`
+    /// (candidate + score) shape directly — `score` is preserved
+    /// through the engine boundary so downstream emitters (lu-smt
+    /// JSON, Verus jsonl reporter) can surface the ranking without
+    /// re-computing it.
+    Abductive { candidates: Vec<RankedCandidate> },
 }
 
 /// Bundle of abductive output from [`crate::Solver::abduce`].
+///
+/// `candidates` are ranked by `adsmt-abduce::rank::rank_candidates`
+/// (smaller score = stronger; see `adsmt-abduce/src/rank.rs`).
 #[derive(Clone, Debug)]
 pub struct Abductive {
-    pub candidates: Vec<Candidate>,
+    pub candidates: Vec<RankedCandidate>,
 }
 
 /// Satisfying assignment for a `Sat` verdict.

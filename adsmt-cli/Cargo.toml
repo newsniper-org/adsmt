@@ -15,7 +15,14 @@ adsmt-cert.workspace = true
 adsmt-engine.workspace = true
 adsmt-parser.workspace = true
 adsmt-theory.workspace = true
+# Re-exported through adsmt-engine's SatResult::Abductive payload
+# (Vec<RankedCandidate>). Listed explicitly so the CLI can call the
+# ranking type's fields by name without going through engine privacy.
+adsmt-abduce.workspace = true
 # dead-pattern audit JSON for --audit-json.
 adsmt-lints = { version = "=1.0.0-rc.7", path = "../adsmt-lints" }
 clap.workspace = true
+# Serialises ranked abductive candidates to stdout — one single-line
+# JSON object per check-sat that returned `Abductive`.
+serde_json.workspace = true
 thiserror.workspace = true

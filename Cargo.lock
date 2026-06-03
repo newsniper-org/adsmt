@@ -40,6 +40,7 @@ dependencies = [
 name = "adsmt-cli"
 version = "1.0.0-rc.7"
 dependencies = [
+ "adsmt-abduce",
  "adsmt-cert",
  "adsmt-core",
  "adsmt-engine",
@@ -47,6 +48,7 @@ dependencies = [
  "adsmt-parser",
  "adsmt-theory",
  "clap",
+ "serde_json",
  "thiserror",
 ]
 

@@ -53,6 +53,7 @@ use std::process::ExitCode;
 
 use clap::Parser as ClapParser;
 
+use adsmt_abduce::rank::RankedCandidate;
 use adsmt_core::{Term, Type};
 use adsmt_engine::{SatResult, Solver};
 use adsmt_parser::sexpr::{Position, SExpr};
@@ -114,6 +115,20 @@ fn main() -> ExitCode {
             DispatchResult::CheckSat(status) => {
                 last = status.clone();
                 println!("{}", status.label());
+                // Abductive verdicts always emit a single-line JSON
+                // description of the ranked candidates on the line
+                // immediately after the `abductive` label. Front-ends
+                // (Verus jsonl reporter, Lean4 `smt_abduce`) parse it
+                // straight off stdout — no flag gating, since the
+                // verdict itself is non-standard and the caller has
+                // already opted into adsmt's abductive surface.
+                if matches!(status, LastStatus::Abductive) {
+                    if let Some(SatResult::Abductive { candidates }) =
+                        driver.last_result.as_ref()
+                    {
+                        println!("{}", abductive_candidates_json(candidates));
+                    }
+                }
                 if cli.audit_json {
                     if let Some(cert) = driver.last_cert.as_ref() {
                         match adsmt_lints::audit_to_json(cert) {
@@ -137,6 +152,57 @@ fn main() -> ExitCode {
         }
     }
     ExitCode::from(last.exit_code())
+}
+
+/// Render the engine's ranked abductive candidates as a single-line
+/// JSON object. Field shape matches Y4's
+/// `smt-cross-validation-tracker.md` §9 normative schema:
+///
+/// ```text
+/// {"abductive_candidates":[
+///   {"rank":1,"score":1.025,
+///    "hypotheses":["…"],"explanations":[null],"sources":["…"]},
+///   …
+/// ]}
+/// ```
+///
+/// `rank` is the 1-based position in the input vector (the engine
+/// already returns candidates sorted ascending by score — see
+/// `adsmt-abduce::rank::rank_candidates`). `score` is the raw
+/// adsmt-abduce score (smaller = stronger). `hypotheses`,
+/// `explanations`, `sources` mirror the lock-step lists on
+/// [`adsmt_abduce::sld::Candidate`] one-to-one.
+fn abductive_candidates_json(ranked: &[RankedCandidate]) -> String {
+    let items: Vec<serde_json::Value> = ranked
+        .iter()
+        .enumerate()
+        .map(|(idx, rc)| {
+            let hypotheses: Vec<String> = rc
+                .candidate
+                .hypotheses
+                .iter()
+                .map(|t| format!("{}", t))
+                .collect();
+            let explanations: Vec<serde_json::Value> = rc
+                .candidate
+                .explanations
+                .iter()
+                .map(|e| match e {
+                    Some(s) => serde_json::Value::String(s.clone()),
+                    None => serde_json::Value::Null,
+                })
+                .collect();
+            let sources: Vec<String> = rc.candidate.sources.clone();
+            serde_json::json!({
+                "rank":         (idx as u64) + 1,
+                "score":        rc.score,
+                "hypotheses":   hypotheses,
+                "explanations": explanations,
+                "sources":      sources,
+            })
+        })
+        .collect();
+    serde_json::json!({ "abductive_candidates": items }).to_string()
 }
 
 fn read_source(path: Option<&str>) -> std::io::Result<String> {
