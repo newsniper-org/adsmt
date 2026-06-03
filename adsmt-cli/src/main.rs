@@ -361,6 +361,8 @@ impl Driver {
             }
             Command::SetInfo { .. } => DispatchResult::Continue,
             Command::DeclareSort { name, arity } => {
+                let ty = Type::const_(&name, adsmt_core::Kind::Type);
+                self.symbols.declare_sort(name.clone(), ty);
                 self.registry.sorts.insert(name, arity);
                 DispatchResult::Continue
             }
@@ -376,10 +378,10 @@ impl Driver {
                 params,
                 result,
             } => {
-                if let Err(msg) = self.validate_sort_refs(&params, &result) {
+                if let Err(msg) = self.validate_sort_only_refs(&params, &result) {
                     return DispatchResult::Error(11, msg);
                 }
-                let fn_ty = match self.fn_type(&params, &result) {
+                let fn_ty = match self.declare_fn_type(&params, &result) {
                     Ok(ty) => ty,
                     Err(msg) => return DispatchResult::Error(11, msg),
                 };
@@ -400,10 +402,10 @@ impl Driver {
                 result,
                 body,
             } => {
-                if let Err(msg) = self.validate_sort_refs(&params, &result) {
+                if let Err(msg) = self.validate_binder_refs(&params, &result) {
                     return DispatchResult::Error(11, msg);
                 }
-                let fn_ty = match self.fn_type(&params, &result) {
+                let fn_ty = match self.define_fn_type(&params, &result) {
                     Ok(ty) => ty,
                     Err(msg) => return DispatchResult::Error(11, msg),
                 };
@@ -424,6 +426,7 @@ impl Driver {
                 for ctor in &constructors {
                     self.symbols.declare_constructor(ctor.clone(), sort.clone());
                 }
+                self.symbols.declare_sort(name.clone(), sort);
                 self.registry.sorts.insert(name.clone(), 0);
                 self.solver
                     .declare_datatype(DatatypeDecl::finite_enum(name, constructors));
@@ -578,22 +581,48 @@ impl Driver {
         sort_from_sexpr(sort, &self.registry)
     }
 
-    fn validate_sort_refs(&self, params: &[SExpr], result: &SExpr) -> Result<(), String> {
+    /// Validate that every `(name sort)` binder in `params` and the
+    /// `result` sort resolve to something `sort_from_sexpr` knows.
+    /// Used by `define-fun`.
+    fn validate_binder_refs(&self, params: &[SExpr], result: &SExpr) -> Result<(), String> {
         for p in params {
             param_sort(p, &self.registry)?;
         }
         sort_from_sexpr(result, &self.registry).map(|_| ())
     }
 
+    /// Validate that every bare sort in a `declare-fun` parameter list
+    /// resolves, plus the result sort.
+    fn validate_sort_only_refs(&self, params: &[SExpr], result: &SExpr) -> Result<(), String> {
+        for p in params {
+            sort_from_sexpr(p, &self.registry)?;
+        }
+        sort_from_sexpr(result, &self.registry).map(|_| ())
+    }
+
     /// Build the curried `Type::fun(p1, fun(p2, fun(..., result)))`
-    /// type from an SMT-LIB-style `declare-fun` / `define-fun`
-    /// signature. Nullary inputs degenerate to the result type
-    /// directly.
-    fn fn_type(&self, params: &[SExpr], result: &SExpr) -> Result<Type, String> {
+    /// type from a `define-fun` signature whose `params` are
+    /// `(name sort)` binders. Nullary inputs degenerate to the result
+    /// type directly.
+    fn define_fn_type(&self, params: &[SExpr], result: &SExpr) -> Result<Type, String> {
         let result_ty = sort_from_sexpr(result, &self.registry)?;
         let mut acc = result_ty;
         for p in params.iter().rev() {
             let p_ty = param_sort(p, &self.registry)?;
+            acc = Type::fun(p_ty, acc)
+                .map_err(|e| format!("function-type construction failed: {e:?}"))?;
+        }
+        Ok(acc)
+    }
+
+    /// Build the curried function type from a `declare-fun` signature
+    /// whose `params` are *bare sorts* (`(declare-fun NAME (S1 S2)
+    /// R)`). Nullary inputs degenerate to the result type directly.
+    fn declare_fn_type(&self, params: &[SExpr], result: &SExpr) -> Result<Type, String> {
+        let result_ty = sort_from_sexpr(result, &self.registry)?;
+        let mut acc = result_ty;
+        for p in params.iter().rev() {
+            let p_ty = sort_from_sexpr(p, &self.registry)?;
             acc = Type::fun(p_ty, acc)
                 .map_err(|e| format!("function-type construction failed: {e:?}"))?;
         }

@@ -19,10 +19,22 @@ use crate::sexpr::SExpr;
 pub struct SymbolTable {
     consts: HashMap<String, Type>,
     constructors: std::collections::HashSet<String>,
+    sorts: HashMap<String, Type>,
 }
 
 impl SymbolTable {
-    pub fn new() -> Self { Self::default() }
+    /// Build a table pre-loaded with the SMT-LIB primitive sorts
+    /// (`Bool` / `Int` / `Real`) so quantifier-binder resolution can
+    /// look them up without the CLI mirroring them in by hand.
+    pub fn new() -> Self {
+        let mut s = Self::default();
+        s.sorts.insert("Bool".into(), Type::bool_());
+        s.sorts
+            .insert("Int".into(), Type::const_("Int", adsmt_core::Kind::Type));
+        s.sorts
+            .insert("Real".into(), Type::const_("Real", adsmt_core::Kind::Type));
+        s
+    }
 
     /// Declare a free variable / constant (Term::Var on use).
     pub fn declare(&mut self, name: impl Into<String>, ty: Type) {
@@ -37,12 +49,23 @@ impl SymbolTable {
         self.constructors.insert(n);
     }
 
+    /// Register a user-declared sort (`declare-sort` /
+    /// `declare-datatype`) so quantifier binders that reference it by
+    /// name resolve to the right `Type`.
+    pub fn declare_sort(&mut self, name: impl Into<String>, ty: Type) {
+        self.sorts.insert(name.into(), ty);
+    }
+
     pub fn is_constructor(&self, name: &str) -> bool {
         self.constructors.contains(name)
     }
 
     pub fn lookup(&self, name: &str) -> Option<&Type> {
         self.consts.get(name)
+    }
+
+    pub fn lookup_sort(&self, name: &str) -> Option<&Type> {
+        self.sorts.get(name)
     }
 
     pub fn names(&self) -> impl Iterator<Item = &String> {
@@ -121,8 +144,135 @@ fn convert_list(items: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertErr
             let b = convert_expr(&args[1], table)?;
             Term::mk_eq(a, b).map_err(|e| ConvertError::Malformed(e.to_string()))
         }
-        _ => Err(ConvertError::UnknownOperator(head.into())),
+        "forall" => convert_quantifier("forall", args, table),
+        "exists" => convert_quantifier("exists", args, table),
+        _ => convert_application(head, args, table),
     }
+}
+
+/// Fallback for non-builtin heads: `(F a₁ … aₙ)` is the curried
+/// application of a declared function symbol. We resolve `F` against
+/// the symbol table; if `F` has function type and the argument count
+/// matches the arrow depth we build `Term::app` left-to-right.
+fn convert_application(
+    head: &str,
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    let head_ty = table
+        .lookup(head)
+        .ok_or_else(|| ConvertError::UnknownOperator(head.into()))?
+        .clone();
+    if !head_ty.is_fun() {
+        return Err(ConvertError::TypeMismatch {
+            expected: "function type".into(),
+            found: head_ty.to_string(),
+        });
+    }
+    let mut acc = if table.is_constructor(head) {
+        Term::const_(head, head_ty)
+    } else {
+        Term::var(head, head_ty)
+    };
+    for a in args {
+        let arg = convert_expr(a, table)?;
+        acc = Term::app(acc, arg).map_err(|e| ConvertError::Malformed(e.to_string()))?;
+    }
+    Ok(acc)
+}
+
+/// Resolve a sort `SExpr` — either a primitive (`Bool`/`Int`/`Real`)
+/// or a user-declared sort registered via [`SymbolTable::declare_sort`].
+fn resolve_sort(s: &SExpr, table: &SymbolTable) -> Result<Type, ConvertError> {
+    let name = s.to_string();
+    table.lookup_sort(&name).cloned().ok_or_else(|| {
+        ConvertError::Malformed(format!(
+            "unknown sort `{name}` — declare it via declare-sort / declare-datatype first"
+        ))
+    })
+}
+
+/// Parse a quantifier binder list `((x σ₁) (y σ₂) …)` into typed
+/// [`Var`]s in source order.
+fn parse_binders(
+    binders: &SExpr,
+    table: &SymbolTable,
+) -> Result<Vec<adsmt_core::Var>, ConvertError> {
+    let items = match binders {
+        SExpr::List(items) => items,
+        _ => {
+            return Err(ConvertError::Malformed(
+                "quantifier binder list must be a list of `(name sort)` pairs".into(),
+            ))
+        }
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for b in items {
+        let pair = match b {
+            SExpr::List(p) if p.len() == 2 => p,
+            _ => {
+                return Err(ConvertError::Malformed(format!(
+                    "quantifier binder must be `(name sort)`, got `{b}`"
+                )))
+            }
+        };
+        let name = pair[0]
+            .as_symbol()
+            .ok_or_else(|| {
+                ConvertError::Malformed(format!(
+                    "quantifier binder name must be a symbol, got `{}`",
+                    pair[0]
+                ))
+            })?
+            .to_string();
+        let ty = resolve_sort(&pair[1], table)?;
+        out.push(adsmt_core::Var { name, ty });
+    }
+    Ok(out)
+}
+
+/// Handle `(forall ((x σ) …) body)` / `(exists ((x σ) …) body)`.
+/// Each bound variable is pushed onto a scoped clone of `table`
+/// before the body is converted; the resulting `Term` is the curried
+/// right-fold over [`Term::mk_forall`] / [`Term::mk_exists`].
+fn convert_quantifier(
+    kind: &str,
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    if args.len() != 2 {
+        return Err(ConvertError::Arity {
+            op: kind.into(),
+            expected: 2,
+            got: args.len(),
+        });
+    }
+    let vars = parse_binders(&args[0], table)?;
+    if vars.is_empty() {
+        return Err(ConvertError::Malformed(format!(
+            "{kind} must bind at least one variable"
+        )));
+    }
+    let mut inner_table = table.clone();
+    for v in &vars {
+        inner_table.declare(v.name.clone(), v.ty.clone());
+    }
+    let mut body = convert_expr(&args[1], &inner_table)?;
+    if body.type_of() != Type::bool_() {
+        return Err(ConvertError::TypeMismatch {
+            expected: "Bool".into(),
+            found: body.type_of().to_string(),
+        });
+    }
+    for v in vars.into_iter().rev() {
+        body = match kind {
+            "forall" => Term::mk_forall(v, body),
+            "exists" => Term::mk_exists(v, body),
+            _ => unreachable!("convert_quantifier only dispatches forall/exists"),
+        }
+        .map_err(|e| ConvertError::Malformed(e.to_string()))?;
+    }
+    Ok(body)
 }
 
 fn fold_right(
@@ -241,5 +391,77 @@ mod tests {
         let (lhs, rhs) = t.dest_imp().unwrap();
         assert!(lhs.dest_and().is_some());
         assert!(rhs.dest_or().is_some());
+    }
+
+    fn table_with_sort_and_pred() -> SymbolTable {
+        let mut t = SymbolTable::new();
+        let a_sort = Type::const_("A", adsmt_core::Kind::Type);
+        t.declare_sort("A", a_sort.clone());
+        let pred_ty = Type::fun(a_sort, Type::bool_()).unwrap();
+        t.declare("P", pred_ty);
+        t
+    }
+
+    #[test]
+    fn forall_single_binder_round_trips_via_dest_forall() {
+        let table = table_with_sort_and_pred();
+        let s = parse_sexpr("(forall ((x A)) (P x))").unwrap();
+        let t = convert_expr(&s, &table).unwrap();
+        let (v, _body) = t.dest_forall().unwrap();
+        assert_eq!(v.name, "x");
+    }
+
+    #[test]
+    fn exists_single_binder_round_trips_via_dest_exists() {
+        let table = table_with_sort_and_pred();
+        let s = parse_sexpr("(exists ((x A)) (P x))").unwrap();
+        let t = convert_expr(&s, &table).unwrap();
+        let (v, _body) = t.dest_exists().unwrap();
+        assert_eq!(v.name, "x");
+    }
+
+    #[test]
+    fn forall_two_binders_curried_outermost_first() {
+        let table = table_with_sort_and_pred();
+        let s = parse_sexpr("(forall ((x A) (y A)) (= (P x) (P y)))").unwrap();
+        let t = convert_expr(&s, &table).unwrap();
+        let (outer, inner) = t.dest_forall().unwrap();
+        assert_eq!(outer.name, "x");
+        let (innery, _body) = inner.dest_forall().unwrap();
+        assert_eq!(innery.name, "y");
+    }
+
+    #[test]
+    fn forall_unknown_sort_errors() {
+        let mut table = SymbolTable::new();
+        table.declare("P", Type::fun(
+            Type::const_("Missing", adsmt_core::Kind::Type),
+            Type::bool_(),
+        ).unwrap());
+        let s = parse_sexpr("(forall ((x Missing)) (P x))").unwrap();
+        assert!(matches!(
+            convert_expr(&s, &table),
+            Err(ConvertError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn forall_empty_binder_list_errors() {
+        let table = table_with_sort_and_pred();
+        let s = parse_sexpr("(forall () true)").unwrap();
+        assert!(matches!(
+            convert_expr(&s, &table),
+            Err(ConvertError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn application_of_declared_function_is_curried() {
+        let table = table_with_sort_and_pred();
+        let mut t = table.clone();
+        t.declare("a", Type::const_("A", adsmt_core::Kind::Type));
+        let s = parse_sexpr("(P a)").unwrap();
+        let term = convert_expr(&s, &t).unwrap();
+        assert_eq!(term.type_of(), Type::bool_());
     }
 }

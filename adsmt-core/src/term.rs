@@ -409,12 +409,27 @@ impl Term {
         Ok(Term::const_("forall", forall_ty))
     }
 
+    /// Built-in `exists : (α -> Bool) -> Bool`, monomorphized at `arg_ty`.
+    pub fn exists_const(arg_ty: Type) -> KernelResult<Term> {
+        let pred_ty = Type::fun(arg_ty, Type::bool_())?;
+        let exists_ty = Type::fun(pred_ty, Type::bool_())?;
+        Ok(Term::const_("exists", exists_ty))
+    }
+
     /// Build `∀v. body` from a bound variable and a Bool body.
     pub fn mk_forall(v: Var, body: Term) -> KernelResult<Term> {
         Self::require_bool(&body)?;
         let arg_ty = v.ty.clone();
         let lam = Term::lam(v, body);
         Term::app(Term::forall_const(arg_ty)?, lam)
+    }
+
+    /// Build `∃v. body` from a bound variable and a Bool body.
+    pub fn mk_exists(v: Var, body: Term) -> KernelResult<Term> {
+        Self::require_bool(&body)?;
+        let arg_ty = v.ty.clone();
+        let lam = Term::lam(v, body);
+        Term::app(Term::exists_const(arg_ty)?, lam)
     }
 
     // === Bit-vector built-ins (v0.5) ===
@@ -551,6 +566,17 @@ impl Term {
         if let Term::App(f, lam) = self
             && let Term::Const(c) = &**f
                 && c.name == "forall"
+                    && let Term::Lam(v, body) = &**lam {
+                        return Some(((**v).clone(), (**body).clone()));
+                    }
+        None
+    }
+
+    /// Destructure `∃v. body`, returning the binder and body.
+    pub fn dest_exists(&self) -> Option<(Var, Term)> {
+        if let Term::App(f, lam) = self
+            && let Term::Const(c) = &**f
+                && c.name == "exists"
                     && let Term::Lam(v, body) = &**lam {
                         return Some(((**v).clone(), (**body).clone()));
                     }
