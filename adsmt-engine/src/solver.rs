@@ -110,9 +110,12 @@ impl Solver {
         self.assert_with_polarity(t, false);
     }
 
-    /// Assert `t` with explicit polarity.
+    /// Assert `t` with explicit polarity. Routes through
+    /// [`Self::assert_with_polarity_at`] so the NNF + Skolemization
+    /// pre-pass fires for quantified asserts regardless of whether
+    /// the caller supplied a source location.
     pub fn assert_with_polarity(&mut self, t: Term, polarity: bool) {
-        self.scopes.last_mut().expect("base scope").assert(t, polarity);
+        self.assert_with_polarity_at(t, polarity, None);
     }
 
     /// Assert `t` as a positive literal with a source position
@@ -129,16 +132,37 @@ impl Solver {
     }
 
     /// Full-control variant: pick polarity and optionally attach a loc.
+    ///
+    /// Quantified asserts are first oriented (the polarity is folded
+    /// into the term via `not`) and then passed through
+    /// [`adsmt_quant::normalize_for_engine`] for NNF + Skolemization,
+    /// so the rest of the pipeline (`partition_quantifiers`,
+    /// E-matching, theory layer) only ever sees positive
+    /// `forall`s and ground formulas. Pure-propositional asserts
+    /// short-circuit the rewrite and keep their original Term shape
+    /// — useful for the cert and for tests that pattern-match the
+    /// asserted form.
     pub fn assert_with_polarity_at(
         &mut self,
         t: Term,
         polarity: bool,
         loc: Option<adsmt_cert::SourceLoc>,
     ) {
+        let (final_term, final_polarity) =
+            if adsmt_quant::skolemize::contains_quantifier(&t) {
+                let oriented = if polarity {
+                    t
+                } else {
+                    Term::mk_not(t).expect("Bool")
+                };
+                (adsmt_quant::normalize_for_engine(&oriented), true)
+            } else {
+                (t, polarity)
+            };
         self.scopes
             .last_mut()
             .expect("base scope")
-            .assert_at(t, polarity, loc);
+            .assert_at(final_term, final_polarity, loc);
     }
 
     pub fn push(&mut self) {
@@ -1164,6 +1188,65 @@ mod tests {
         let mut s = Solver::new();
         s.assert(forall);
         s.assert(Term::mk_not(Term::app(p, a).unwrap()).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    // === NNF + Skolemization pre-assert pipeline ===
+
+    fn unary_pred(name: &str, dom: Type) -> Term {
+        // Mirror the lu-smt CLI convention: declared predicates are
+        // `Term::var` (so congruence closure can carry their
+        // equalities), not `Term::const_`.
+        Term::var(name, Type::fun(dom, Type::bool_()).unwrap())
+    }
+
+    #[test]
+    fn negated_exists_via_nnf_is_unsat() {
+        // P a  ∧  ¬∃x:Int. P x   normalises to
+        // P a  ∧   ∀x:Int. ¬P x  which instantiates at a → ⊥.
+        use adsmt_core::Kind;
+        let int_ = Type::const_("Int", Kind::Type);
+        let p = unary_pred("P", int_.clone());
+        let a = Term::var("a", int_.clone());
+        let x = adsmt_core::Var { name: "x".into(), ty: int_ };
+        let body = Term::app(p.clone(), Term::Var(std::sync::Arc::new(x.clone()))).unwrap();
+        let exists = Term::mk_exists(x, body).unwrap();
+        let mut s = Solver::new();
+        s.assert(Term::app(p, a).unwrap());
+        s.assert(Term::mk_not(exists).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn top_level_existential_is_skolemized_to_sat() {
+        // ∃x:Int. P x  on its own is satisfiable — Skolemization
+        // replaces x with a fresh constant and the engine accepts the
+        // resulting ground assertion.
+        use adsmt_core::Kind;
+        let int_ = Type::const_("Int", Kind::Type);
+        let p = unary_pred("P", int_.clone());
+        let x = adsmt_core::Var { name: "x".into(), ty: int_ };
+        let body = Term::app(p, Term::Var(std::sync::Arc::new(x.clone()))).unwrap();
+        let exists = Term::mk_exists(x, body).unwrap();
+        let mut s = Solver::new();
+        s.assert(exists);
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
+    }
+
+    #[test]
+    fn negated_forall_via_skolem_is_unsat() {
+        // ∀x:Int. P x   ∧   ¬∀x:Int. P x    — the negated forall
+        // becomes ∃x. ¬P x, which Skolemizes to ¬P(c) for a fresh c,
+        // and the universal instantiates at c → contradiction.
+        use adsmt_core::Kind;
+        let int_ = Type::const_("Int", Kind::Type);
+        let p = unary_pred("P", int_.clone());
+        let x = adsmt_core::Var { name: "x".into(), ty: int_ };
+        let body = Term::app(p, Term::Var(std::sync::Arc::new(x.clone()))).unwrap();
+        let forall = Term::mk_forall(x, body).unwrap();
+        let mut s = Solver::new();
+        s.assert(forall.clone());
+        s.assert(Term::mk_not(forall).unwrap());
         assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
     }
 

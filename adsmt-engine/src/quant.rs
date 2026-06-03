@@ -112,30 +112,84 @@ pub fn instantiate_one(
     universe: &TermUniverse,
 ) -> Vec<Term> {
     let v_arc = Arc::new(var.clone());
-    // The trigger is the body itself, with `var` as the sole flex.
-    let trig = Trigger::single(body.clone(), vec![v_arc.clone()]);
-    let matcher = EMatcher::new(universe);
+    // Trigger pattern: positive sub-terms of `body` that mention
+    // `var`. The NNF + Skolemization pre-pass wraps negated atoms in
+    // `not`, but the universe (collected from ground assertions)
+    // stores both polarities, so matching against the positive
+    // form lifts existing trigger machinery to handle `∀x. ¬φ(x)`.
     let mut seen = HashSet::new();
     let mut out = Vec::new();
+    let matcher = EMatcher::new(universe);
+    for pattern in collect_trigger_patterns(body, &v_arc) {
+        let trig = Trigger::single(pattern, vec![v_arc.clone()]);
+        for instantiation in matcher.match_trigger(&trig) {
+            for (sub_v, sub_t) in &instantiation.subst {
+                if **sub_v != *var {
+                    continue;
+                }
+                let key = sub_t.to_string();
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.insert(key);
 
-    // Strategy: try to match `body` directly against ground sub-terms.
-    // For each successful match σ = {var ↦ t}, apply σ to body.
-    for instantiation in matcher.match_trigger(&trig) {
-        for (sub_v, sub_t) in &instantiation.subst {
-            if **sub_v != *var { continue; }
-            let key = sub_t.to_string();
-            if seen.contains(&key) { continue; }
-            seen.insert(key);
-
-            // Build σ = {var ↦ sub_t} and apply to body.
-            let mut sigma: IndexMap<Arc<Var>, Term> = IndexMap::new();
-            sigma.insert(v_arc.clone(), sub_t.clone());
-            if let Ok(instantiated) = body.subst(&sigma) {
-                out.push(instantiated);
+                // Always instantiate the *full* body (not the trigger
+                // sub-pattern) so the resulting assertion carries the
+                // negation / disjunction / conjunction structure of
+                // the original quantifier.
+                let mut sigma: IndexMap<Arc<Var>, Term> = IndexMap::new();
+                sigma.insert(v_arc.clone(), sub_t.clone());
+                if let Ok(instantiated) = body.subst(&sigma) {
+                    out.push(instantiated);
+                }
             }
         }
     }
+    out
+}
 
+/// Collect positive sub-terms of `body` that mention the bound
+/// variable `v`. Walks through `not / and / or / =>` connectives so
+/// e.g. `¬P(x)` yields the pattern `P(x)` and `(or P(x) Q(x))`
+/// yields both `P(x)` and `Q(x)`. Bottoms out at the first
+/// non-connective sub-term — those are the actual trigger
+/// candidates the E-matcher can match against the universe.
+fn collect_trigger_patterns(body: &Term, v: &Arc<Var>) -> Vec<Term> {
+    fn walk(t: &Term, v: &Arc<Var>, out: &mut Vec<Term>) {
+        if !mentions(t, v) {
+            return;
+        }
+        if let Some(inner) = t.dest_not() {
+            walk(&inner, v, out);
+            return;
+        }
+        if let Some((a, b)) = t.dest_and() {
+            walk(&a, v, out);
+            walk(&b, v, out);
+            return;
+        }
+        if let Some((a, b)) = t.dest_or() {
+            walk(&a, v, out);
+            walk(&b, v, out);
+            return;
+        }
+        if let Some((a, b)) = t.dest_imp() {
+            walk(&a, v, out);
+            walk(&b, v, out);
+            return;
+        }
+        out.push(t.clone());
+    }
+    fn mentions(t: &Term, v: &Arc<Var>) -> bool {
+        t.free_vars().iter().any(|fv| **fv == **v)
+    }
+    let mut out = Vec::new();
+    walk(body, v, &mut out);
+    if out.is_empty() {
+        // Fall back to whole-body matching for atoms that don't go
+        // through any connective — keeps the v0.3 behaviour intact.
+        out.push(body.clone());
+    }
     out
 }
 
