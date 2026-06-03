@@ -34,11 +34,12 @@
 //!    a typed hole, with the human explain string carried as a
 //!    comment for tactic-side consumption.
 //!
-//! 4. **Compound kernel rules (`Trans`, `EqMp`, `Deduct`, `Abs`,
-//!    `Beta`, `Inst`, `InstType`) emit *correct statement types*
-//!    with proof-side stub** (`:= sorry` in Lean, `Admitted.` in
-//!    Rocq). The kernel's type still checks. Real proof-term
-//!    reconstruction is the v0.17 deepening work.
+//! 4. **Compound kernel rules emit real proof terms.** Since the
+//!    v0.19 K-full upgrade, `Trans`/`EqMp`/`Deduct`/`Abs`/`Beta`/
+//!    `Inst`/`InstType` lower to the prover's native combinators
+//!    (`Eq.trans`, `.mp`, `fun _h => …`, `funext`, `rfl`, identity
+//!    reuse). The kernel's type checks *and* the proof body is
+//!    machine-checkable end-to-end.
 //!
 //! 5. **Free variables become axioms / parameters of `Prop`.**
 //!    Each variable appearing in any sequent gets one decl at the

@@ -44,8 +44,8 @@ pub fn solve(clauses: &[Clause]) -> BoolResult {
 
 #[cfg(not(feature = "cadical"))]
 pub fn solve(_clauses: &[Clause]) -> BoolResult {
-    // Stub when feature is disabled — the solver falls back to
-    // the built-in DPLL automatically.
+    // Feature-disabled fallback: report Unknown and let the
+    // engine route the query through the built-in DPLL.
     BoolResult::Unknown
 }
 

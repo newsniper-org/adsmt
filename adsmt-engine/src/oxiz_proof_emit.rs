@@ -75,11 +75,30 @@ pub fn emit_coq_via_oxiz(clauses: &[Vec<i32>], proof: &adsmt_cert::drat::DratPro
 
 #[cfg(feature = "oxiz-proof")]
 pub fn emit_lfsc_via_oxiz(clauses: &[Vec<i32>]) -> Vec<u8> {
-    use oxiz_proof::{LfscProof, LfscSort, LfscTerm};
+    use oxiz_proof::conversion::FormatConverter;
+    use oxiz_proof::{AletheProof, AletheRule, LfscDecl, LfscProof, LfscSort, LfscTerm};
+
+    // Build the same SAT-level Alethe skeleton as
+    // `emit_alethe_via_oxiz`: each input clause is an `assume`,
+    // and a single resolution step concludes the empty clause.
+    let mut alethe = AletheProof::new();
+    let mut premises = Vec::with_capacity(clauses.len());
+    for clause in clauses {
+        premises.push(alethe.assume(render_clause_as_sexp(clause)));
+    }
+    let final_step_idx = alethe.step(
+        Vec::new(),
+        AletheRule::Resolution,
+        premises,
+        Vec::new(),
+    );
 
     let mut proof = LfscProof::new();
 
-    // Declare each variable encountered as a Bool constant.
+    // Preserve the per-variable Bool declarations the original
+    // skeleton emitted — downstream tooling (and the unit tests)
+    // expect `(declare v_i bool)` lines for each propositional
+    // variable that occurs in the input clauses.
     let mut max_var: u32 = 0;
     for c in clauses {
         for &l in c {
@@ -90,13 +109,40 @@ pub fn emit_lfsc_via_oxiz(clauses: &[Vec<i32>]) -> Vec<u8> {
         proof.declare_const(format!("v{v}"), LfscSort::Bool);
     }
 
-    // Encode the unsat claim as a `check` of `false`. The byte
-    // stream is a parseable LFSC document; the proof body is a
-    // minimal stub. Reconstructing a fully checkable LFSC proof
-    // term from our DRAT-style steps is tracked alongside the
-    // Lean reflection deepening (see lean_emit's compound-rule
-    // notes) — both target the v0.17 cycle.
-    proof.check(LfscTerm::False);
+    // Convert the Alethe skeleton to a real LFSC proof body.
+    // The converter emits the standard boolean signature plus a
+    // `(declare t_i proof)` for each assume and a
+    // `(define t_N+1 (: <resolution-term> proof))` for the
+    // concluding resolution. If conversion fails we still emit a
+    // parseable document — the `check` line below ensures the
+    // skeleton remains well-formed.
+    let mut check_target = LfscTerm::False;
+    if let Ok(converted) = FormatConverter::new().alethe_to_lfsc(&alethe) {
+        for decl in converted.decls() {
+            match decl.clone() {
+                LfscDecl::DeclareSort { name, arity } => {
+                    proof.declare_sort(name, arity);
+                }
+                LfscDecl::DeclareConst { name, sort } => {
+                    proof.declare_const(name, sort);
+                }
+                LfscDecl::Define { name, sort, value } => {
+                    proof.define(name, sort, value);
+                }
+                LfscDecl::DeclareRule { name, params, conclusion } => {
+                    proof.declare_rule(name, params, conclusion);
+                }
+                LfscDecl::SideCondition { name, params, return_sort, body } => {
+                    proof.side_condition(name, params, return_sort, body);
+                }
+                // The converter does not emit Check; we add the
+                // final `check` ourselves once the loop ends.
+                LfscDecl::Check(_) => {}
+            }
+        }
+        check_target = LfscTerm::Var(format!("t{}", final_step_idx));
+    }
+    proof.check(check_target);
 
     let mut buf = Vec::new();
     proof

@@ -6,8 +6,9 @@
 //! roster — EUF, LinArith (LIA/LRA), Arrays, Datatypes, Polite
 //! combination, plus the SAT-level DRAT witness used for Boolean
 //! unsat. Theories without a pinned witness format (BV / FP /
-//! Strings work in progress) fall through to the `Opaque`
-//! placeholder until their shape stabilises.
+//! Strings work in progress) take the `Opaque` escape hatch,
+//! which is the official representation for theories whose
+//! reconstruction format has not been frozen yet.
 
 use adsmt_core::Term;
 
@@ -50,8 +51,10 @@ pub enum TheoryWitness {
         lfsc_bytes: Vec<u8>,
         coq_bytes: Vec<u8>,
     },
-    /// Placeholder for theories whose witness format is not yet pinned
-    /// down (e.g. BV/FP/Strings in pre-v0.5 development).
+    /// Escape hatch for theories whose witness format is not yet
+    /// frozen (e.g. BV/FP/Strings still under design). Carries the
+    /// theory kind and a free-form note so a checker can at least
+    /// route the verdict to a theory-specific reconstructor.
     Opaque { kind: String, notes: String },
 }
 

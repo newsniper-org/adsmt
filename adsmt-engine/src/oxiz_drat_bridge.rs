@@ -101,9 +101,7 @@ mod tests {
         let p = Term::var("p", Type::bool_());
         s.assert(p.clone());
         s.assert(Term::mk_not(p).unwrap());
-        let SatResult::Unsat {
-            certificate: Some(cert),
-        } = s.check_sat()
+        let SatResult::Unsat { certificate: Some(cert), .. } = s.check_sat()
         else {
             panic!("expected Unsat with cert");
         };
@@ -118,9 +116,7 @@ mod tests {
         s.assert(Term::mk_or(p.clone(), q.clone()).unwrap());
         s.assert(Term::mk_not(p).unwrap());
         s.assert(Term::mk_not(q).unwrap());
-        let SatResult::Unsat {
-            certificate: Some(cert),
-        } = s.check_sat()
+        let SatResult::Unsat { certificate: Some(cert), .. } = s.check_sat()
         else {
             panic!("expected Unsat with cert");
         };

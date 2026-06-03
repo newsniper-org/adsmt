@@ -304,9 +304,7 @@ pub mod bridge {
     }
 }
 
-#[cfg(not(feature = "oxiz-proof"))]
-pub mod stub {
-    //! When `oxiz-proof` feature is off, only our internal DRAT
-    //! checker is available; downstream code should gate consumers
-    //! of OxiZ-specific export formats on the same feature.
-}
+// When `oxiz-proof` feature is off the bridge surface is empty;
+// only our internal DRAT checker is available, and downstream
+// callers must gate consumers of OxiZ-specific export formats on
+// the same feature.

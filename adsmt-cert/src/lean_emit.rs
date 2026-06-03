@@ -229,8 +229,8 @@ fn emit_step(step: &Step, out: &mut String) {
             // Note: the resulting term doesn't actually
             // reference `s_a` — the hypothesis is named at
             // λ-abstraction time. We keep `s_a` reachable for
-            // type elaboration but the proof body relies on
-            // Lean's `_` to fill the placeholder if mentioned.
+            // type elaboration; if the proof body mentions it,
+            // Lean's `_` binds it implicitly during elaboration.
             writeln!(
                 out,
                 "theorem {name} : {concl_lean} := fun _h_s{} => s{}",

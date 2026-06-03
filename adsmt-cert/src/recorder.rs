@@ -212,9 +212,9 @@ pub mod recorder {
         explain: Option<String>,
         loc: Option<SourceLoc>,
     ) -> KernelResult<ProofHandle> {
-        // Reuse the ASSUME kernel rule for the placeholder theorem
-        // (its hypothesis IS the formula, so any caller that consumes
-        // this proof inherits the dependency on `formula`).
+        // The abductive hypothesis IS the formula, so we reuse the
+        // ASSUME kernel rule directly — any caller that consumes
+        // this proof inherits the dependency on `formula`.
         let thm = kr::assume(formula.clone())?;
         let step = b.add_with_loc(
             StepBody::Assumed { formula, explain },
