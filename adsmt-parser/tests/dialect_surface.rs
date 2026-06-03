@@ -36,7 +36,7 @@ const FROZEN_VARIANTS: &[&str] = &[
 
 #[test]
 fn command_variant_count_is_frozen() {
-    // v1.0.0-rc.7 → -rc.8 (additive): `Echo` joins the recognised
+    // v1.0.0-rc.7 → -rc.8+ (additive): `Echo` joins the recognised
     // command set so front-ends (Verus's `SmtProcess`) can use
     // `(echo "<<DONE>>")` as a response-batch sentinel per SMT-LIB
     // v2.6 § 4.2.4. Count bumps to 21; future additive variants

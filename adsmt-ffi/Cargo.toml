@@ -12,4 +12,4 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 adsmt-core.workspace = true
 adsmt-engine.workspace = true
 adsmt-parser.workspace = true
-adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.7-1", path = "../adsmt-heuristic-checker-macros" }
+adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.8", path = "../adsmt-heuristic-checker-macros" }
