@@ -61,24 +61,24 @@ exclude = ["external/oxiz"]
 #     definition over stdin/stdout, verify responses.
 #   * RC2.H.1 mid-cycle audit + RC2.H.2 final stable sign-off
 #     (gates v1.0.0 bump).
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.7-1"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 rust-version = "1.96"
 
 [workspace.dependencies]
-adsmt-core = { version = "=1.0.0-rc.7", path = "adsmt-core" }
-adsmt-cert = { version = "=1.0.0-rc.7", path = "adsmt-cert" }
-adsmt-theory = { version = "=1.0.0-rc.7", path = "adsmt-theory" }
-adsmt-class = { version = "=1.0.0-rc.7", path = "adsmt-class" }
-adsmt-quant = { version = "=1.0.0-rc.7", path = "adsmt-quant" }
-adsmt-abduce = { version = "=1.0.0-rc.7", path = "adsmt-abduce" }
-adsmt-engine = { version = "=1.0.0-rc.7", path = "adsmt-engine" }
-adsmt-parser = { version = "=1.0.0-rc.7", path = "adsmt-parser" }
+adsmt-core = { path = "adsmt-core" }
+adsmt-cert = { path = "adsmt-cert" }
+adsmt-theory = { path = "adsmt-theory" }
+adsmt-class = { path = "adsmt-class" }
+adsmt-quant = { path = "adsmt-quant" }
+adsmt-abduce = { path = "adsmt-abduce" }
+adsmt-engine = { path = "adsmt-engine" }
+adsmt-parser = { path = "adsmt-parser" }
 # v1.0.0-rc.1 RC1.4.A — absorbed lu-* path entries. lu-common
 # is the most-shared; the rest are consumed by the lu-* CLI
 # binary surface preserved under option 2-A'.
-lu-common = { version = "=1.0.0-rc.7", path = "lu-common" }
+lu-common = { path = "lu-common" }
 
 thiserror = "2.0"
 serde = { version = "1.0.228", features = ["derive"] }

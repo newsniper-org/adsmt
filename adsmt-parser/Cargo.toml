@@ -11,5 +11,5 @@ thiserror.workspace = true
 indexmap.workspace = true
 # Path dependency on the workspace-excluded logicutils submodule.
 # `lu-common::kb` provides the authoritative lu-kb parser.
-lu-common = { version = "=1.0.0-rc.7", path = "../lu-common", default-features = false }
-adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.7", path = "../adsmt-heuristic-checker-macros" }
+lu-common = { version = "=1.0.0-rc.7-1", path = "../lu-common", default-features = false }
+adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.7-1", path = "../adsmt-heuristic-checker-macros" }
