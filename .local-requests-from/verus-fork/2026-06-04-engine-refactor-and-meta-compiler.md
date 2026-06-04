@@ -190,26 +190,52 @@ to the interpreter.
 
 For an SMT engine, "value" is rarely interesting — the literals
 are symbolic.  What is interesting are **algebraic invariants**:
-properties that hold under the *theory's* algebra (LIA, LRA, BV,
-UF, datatypes).  A meta-tracing trace then guards on
+when the JIT compiler records a trace, it observes a set of
+**`GF(2)` polynomial relations** and **equivalence relations**
+holding between the Boolean variables touched by that trace; the
+emitted machine-code fragment is then guarded on the *survival*
+of those relations rather than on the survival of any single
+variable's concrete truth value.  As long as the polynomial
+relations stay in the trace's ideal — and the equivalence classes
+keep their members — the same machine-code trace is reused, even
+if individual variables flip across queries.  Mismatches send
+the runtime back to the interpreter exactly the same way a
+classical value-guard miss would.
 
-- "this `Term::App` head is `+` with both children of sort `Int`,"
-- "this assertion's depth ≤ 3,"
-- "this quantifier's body is a Horn clause modulo `α`-renaming,"
-- "all Skolem constants in this scope come from the same
-  congruence class,"
+The contract, in one sentence: **the trace's correctness is
+witnessed by an algebraic certificate, not by a value
+fingerprint.**
 
-i.e. *structural* invariants that are stable across many queries
-sharing the same prelude.  When the guard holds, the trace
-applies a specialised propagation kernel (e.g. a hardcoded
+Concrete instances of the algebraic relations a guard can pin:
+
+- "this `Term::App` head is `+` with both children of sort `Int`"
+  (a polynomial identity in the trace's variable ring),
+- "atoms `x`, `y`, `z` satisfy `x + y + z = 0` mod 2" (a single
+  `GF(2)` polynomial relation; the trace stays valid for every
+  assignment that respects it),
+- "atoms `a` and `b` sit in the same congruence class modulo the
+  UF theory" (an equivalence relation; the trace doesn't care
+  which representative is "true" so long as the class stays
+  intact),
+- "this assertion's `(and|or|=>|not)` skeleton matches the
+  recorded depth-≤-3 shape modulo `α`-renaming,"
+
+i.e. *theory-level* invariants that are stable across many
+queries sharing the same prelude.  When the guard holds, the
+trace applies a specialised propagation kernel (e.g. a hardcoded
 Simplex tableau update for the LIA fragment that the trace saw);
 when it fails the runtime falls back to the generic
 interpretation loop.
 
 The combination is reminiscent of partial evaluation but
-specialised on *theory-level* invariants rather than data-level
-ones.  The guards are cheap because the (R3) hash-cons makes
-structural equality identity-on-`Arc`.
+specialised on *algebraic* invariants rather than data-level
+ones.  The guards are cheap because (a) the (R3) hash-cons
+makes structural equality identity-on-`Arc`, and (b) the
+`GF(2)`-relation half of the guard shares its mathematical
+machinery with §3.4 below — the same Gröbner-basis kernel
+that certifies UNSAT in the theory layer also serves the JIT
+when it needs to check that a recorded polynomial relation
+still lives in the current query's ideal.
 
 ### 3.3 Stålmarck's algorithm — propositional dilemma reasoning
 
@@ -236,36 +262,72 @@ A practical mix:
   conflicts, quantifier instantiations) route to the existing
   DPLL(T) layer.
 
-### 3.4 Finite-field algebraic completeness — arithmetic backbone
+### 3.4 Finite-field algebraic completeness — `GF(2)` Gröbner basis as the certifying backbone
 
-The fourth ingredient is the most speculative.  Recent
-verified-cryptography work uses finite-field algebraic
-completeness (the `Q_p` / `F_p[x]` style of completeness, not the
-real-closed-field one) to drive proof search for nonlinear
-integer / bit-vector queries.  The idea: lift integer literals
-into `F_p` for a sufficiently large prime `p`, run a Gröbner-basis-
-style normal form there, and surface theory unsat as the
-emptiness of the resulting ideal.
+The fourth ingredient.  The operating principle is **exact and
+decidable** (no heuristic component, no probabilistic gap):
 
-The completeness payoff is that some classes of Verus's bit-
-vector verification queries (mask invariants, arithmetic
-overflow guards) become decidable in `F_p` even when our LIA /
-NIA reasoning falls back to incomplete heuristics.
+1. Encode the SAT problem as a system of polynomial equations
+   over `GF(2)[x₁, …, xₙ]` — every Boolean atom `xᵢ` becomes a
+   ring variable, every clause becomes a polynomial (e.g.
+   `(x ∨ ¬y ∨ z)` ↦ `(1 − x)·y·(1 − z) = 0`), and every variable
+   carries the field equation `xᵢ² − xᵢ = 0` so the only
+   solutions in the algebraic closure are still the Boolean
+   values `{0, 1}`.
+2. Compute the **reduced Gröbner basis** of the resulting ideal
+   `I = ⟨clauses ∪ field equations⟩` (Buchberger / F4 / F5; the
+   choice is engineering).
+3. Decide:
+
+   - the basis contains the constant **`1`** ⇔ `I` is the whole
+     ring ⇔ the variety `V(I) = ∅` ⇔ **UNSAT**, certifiable;
+   - otherwise — **SAT**, with concrete witnesses recoverable
+     from the basis.
+
+The equivalence chain is **mathematically watertight** — it is
+the form of Hilbert's Weak Nullstellensatz that survives over
+the finite field `GF(2)` once the field equations pin every
+variable to `{0, 1}`.  No false positives, no false negatives;
+no completeness gap to apologise for.
+
+The cost is Gröbner-basis computation itself (Buchberger is
+worst-case doubly exponential; F4/F5 cut that materially on
+structured inputs), but the *answer*, once you have the basis,
+is a constant-1 check.
+
+Engineering payoff for adsmt + verus:
+
+- Many of Verus's bit-vector verification queries (mask
+  invariants, arithmetic overflow guards, witnessed-encoded
+  AEAD lemmas) reduce to `GF(2)` ideals small enough that an
+  F4-style basis lands inside any wall-clock budget verus would
+  set — and once it lands, you get a *certificate*, not a
+  heuristic verdict, in time for the existing
+  `adsmt-cert::Certificate` infrastructure to emit it.
+- The same Gröbner kernel powers the §3.2 JIT guard above —
+  re-checking that a recorded polynomial relation still belongs
+  to the current query's ideal is a single normal-form reduction
+  against the cached basis, which is fast in the common case.
+- Some `(check-sat)` queries that fall out of LIA / NIA's
+  heuristics decide cleanly here, exactly because the
+  completeness is decidable rather than incomplete-but-fast.
 
 For lu-smt this slots in as a **theory** rather than a backend
 replacement: the existing `adsmt-theory::arith` /
 `arith_simplex` paths stay; a new `adsmt-theory::finite_field`
 sibling registers via `Combination::register` and gets a chance
-to certify unsat before the surface engine escalates to Tier-4
+to certify unsat (with the constant-1 witness as the
+`TheoryWitness`) before the surface engine escalates to Tier-4
 abductive.
 
 ### 3.5 Layering
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ (3.4)  finite-field algebraic backbone (theory sibling)     │
+│ (3.4)  GF(2) Gröbner-basis theory sibling (constant-1 cert) │
 │ (3.3)  Stålmarck pre-saturation (AOT-baked into artifact)   │
-│ (3.2)  meta-tracing JIT with algebraic-invariant guards     │
+│ (3.2)  meta-tracing JIT — GF(2)-relation + equivalence-     │
+│        class semantic guards (shared kernel with 3.4)       │
 │ (3.1)  AOT prelude hash-cons + frozen atom bank             │
 │        ----------------------------------------------       │
 │ (3.0)  existing CDCL(T) engine, post (refactor) §2          │
