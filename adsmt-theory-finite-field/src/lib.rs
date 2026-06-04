@@ -23,8 +23,13 @@ pub mod buchberger;
 pub mod monomial;
 pub mod polynomial;
 pub mod reduction;
+pub mod sat_encoder;
 
 pub use buchberger::{buchberger, contains_one};
 pub use monomial::{Monomial, MonomialOrder};
 pub use polynomial::Polynomial;
 pub use reduction::{monomials_coprime, reduce, s_polynomial};
+pub use sat_encoder::{
+    cnf_to_generators, clause_to_polynomial, decide_sat_via_grobner,
+    GroebnerSatVerdict,
+};
