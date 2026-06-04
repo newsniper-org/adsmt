@@ -1012,7 +1012,7 @@ pub enum AnalyzeOutcome {
 /// Deadline-aware variant of [`analyze_conflict_1uip`] — T0′.1
 /// per the verus-fork §3.5 counter-ack.  Identical resolution
 /// shape; the only difference is that the trail-walk inner loop
-/// checks `deadline` every [`DEADLINE_CHECK_INTERVAL`] iterations
+/// checks `deadline` every `DEADLINE_CHECK_INTERVAL` iterations
 /// so a prelude-sized conflict analysis can yield to the budget
 /// instead of running unmodulated to completion.
 ///

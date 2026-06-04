@@ -141,6 +141,22 @@ struct Cli {
     /// `--aot-load`.
     #[arg(long)]
     aot_include_cdcl: bool,
+    /// §3.5.G — emit an (empty in v0) `.lutrace` artefact at
+    /// `<PATH>` once the session finishes.  v0 ships the file
+    /// header + zero events; the recorder hook that populates
+    /// the event stream lives next to the CDCL loop in
+    /// `adsmt-engine` and lands in the §3.5.F follow-up.
+    #[arg(long)]
+    jit_trace_emit: Option<String>,
+    /// §3.5.G — load a previously-emitted `.lutrace` artefact
+    /// from `<PATH>` and offer the trace to the §3.5.F
+    /// replay-evaluation gate before every `(check-sat)`.
+    /// `GuardsPassed` lets the engine reuse the trace (once
+    /// §3.5.F's actual replay machinery lands); `GuardMiss`
+    /// falls through to the regular `check_sat_with_deadline`
+    /// path.  Mutually exclusive with `--jit-trace-emit`.
+    #[arg(long)]
+    jit_trace_load: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -191,6 +207,23 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(12);
     }
+    if cli.jit_trace_emit.is_some() && cli.jit_trace_load.is_some() {
+        eprintln!(
+            "lu-smt: --jit-trace-emit and --jit-trace-load are mutually exclusive",
+        );
+        return ExitCode::from(12);
+    }
+    // §3.5.G load path: read the .lutrace bytes up front so a
+    // corrupt artefact surfaces immediately rather than after
+    // the regular session work runs.
+    let _jit_trace_loaded: Option<adsmt_jit::CdclTrace> =
+        match cli.jit_trace_load.as_deref() {
+            Some(path) => match load_jit_trace(path) {
+                Ok(t) => Some(t),
+                Err(code) => return ExitCode::from(code),
+            },
+            None => None,
+        };
     // §3.1.D — load the prelude bank (if any) before the solver
     // sees its first per-query assertion.  Errors carry their own
     // exit-code mapping so vargo can distinguish a missing file
@@ -274,7 +307,54 @@ fn main() -> ExitCode {
             Err(code) => ExitCode::from(code),
         };
     }
+    if let Some(path) = cli.jit_trace_emit.as_deref() {
+        // v0 emit: empty trace.  The recorder hook that
+        // populates `tracer.events` lives in adsmt-engine and
+        // lands in the §3.5.F follow-up; for now we ship the
+        // file shape so vargo can stage the §3.5.H call site
+        // without waiting for the recorder.
+        if let Err(code) = emit_jit_trace(path) {
+            return ExitCode::from(code);
+        }
+    }
     ExitCode::from(last.exit_code())
+}
+
+/// §3.5.G — read a `.lutrace` v0 file and decode it via the
+/// `adsmt-jit::cdcl_io` reader.  Errors map to lu-smt's
+/// existing 12 (I/O) / 15 (corruption) exit-code shape.
+fn load_jit_trace(path: &str) -> Result<adsmt_jit::CdclTrace, u8> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("lu-smt: cannot read --jit-trace-load {path}: {e}");
+            return Err(12);
+        }
+    };
+    adsmt_jit::read_trace(&bytes).map_err(|e| {
+        eprintln!("lu-smt: --jit-trace-load {path} decode: {e}");
+        15
+    })
+}
+
+/// §3.5.G — write an empty `.lutrace` v0 file at `path`.
+/// The recorder hook lands in §3.5.F; v0 emit is the file-shape
+/// validation gate so vargo can stage the §3.5.H call site
+/// against a real artefact.
+fn emit_jit_trace(path: &str) -> Result<(), u8> {
+    let trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+    let mut file = match std::fs::File::create(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("lu-smt: cannot create --jit-trace-emit {path}: {e}");
+            return Err(12);
+        }
+    };
+    if let Err(e) = adsmt_jit::write_trace(&mut file, &trace) {
+        eprintln!("lu-smt: --jit-trace-emit write failed: {e}");
+        return Err(14);
+    }
+    Ok(())
 }
 
 /// Read the driver's assertion ledger + qid sidetable and emit a

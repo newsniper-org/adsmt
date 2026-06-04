@@ -203,7 +203,7 @@ impl Solver {
 
     /// §3.5.F replay dispatcher (v0 skeleton).  Evaluates every
     /// guard in `trace.guards` + the end-of-trace
-    /// [`GF2Snapshot`]-derived basis against the current
+    /// `GF2Snapshot`-derived basis against the current
     /// engine state.  Returns [`ReplayOutcome::GuardMiss`] on
     /// the first guard failure (matching the v0 "full discard
     /// on miss" semantics agreed in the §3.5 counter-ack §5.4 —

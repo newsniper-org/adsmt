@@ -59,12 +59,16 @@
 
 pub mod cache;
 pub mod cdcl;
+pub mod cdcl_io;
 pub mod guard;
 pub mod trace;
 
 pub use cache::JitCache;
 pub use cdcl::{
     CdclCheckpoint, CdclTrace, CdclTraceEvent, CdclTracer, GF2Snapshot,
+};
+pub use cdcl_io::{
+    read_trace, write_trace, TraceIoError, LUTRACE_MAGIC, LUTRACE_VERSION,
 };
 pub use guard::{check_guard, GuardResult, JitGuard};
 pub use trace::{SkeletonShape, Trace, TraceKey};

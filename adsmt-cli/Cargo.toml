@@ -26,6 +26,9 @@ adsmt-theory-finite-field.workspace = true
 # artifact and `--aot-load` reads it back into the solver as a
 # pre-asserted prelude (§3.1.B / §3.1.C / §3.1.D).
 adsmt-aot.workspace = true
+# §3.5.G — `--jit-trace-emit` / `--jit-trace-load` consume the
+# `adsmt-jit::CdclTrace` + cdcl_io reader/writer.
+adsmt-jit.workspace = true
 # Re-exported through adsmt-engine's SatResult::Abductive payload
 # (Vec<RankedCandidate>). Listed explicitly so the CLI can call the
 # ranking type's fields by name without going through engine privacy.
