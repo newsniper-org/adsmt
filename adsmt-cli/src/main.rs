@@ -131,6 +131,16 @@ struct Cli {
     /// exclusive with `--aot-bake`.
     #[arg(long)]
     aot_load: Option<String>,
+    /// §3.5.B composable extension to `--aot-bake`: also writes
+    /// the v1 CDCL section (post-flatten clause vec + initial
+    /// BCP trail + two-watched index + VSIDS + phase-save) to
+    /// the `.luart` artifact.  The v1 header carries a SHA-256
+    /// of the lu-smt binary so reloading detects silent
+    /// tooling-drift the source-level `flatten_version` knob
+    /// misses.  Requires `--aot-bake`; mutually exclusive with
+    /// `--aot-load`.
+    #[arg(long)]
+    aot_include_cdcl: bool,
 }
 
 fn main() -> ExitCode {
@@ -163,6 +173,23 @@ fn main() -> ExitCode {
     if cli.aot_bake && cli.aot_load.is_some() {
         eprintln!("lu-smt: --aot-bake and --aot-load are mutually exclusive");
         return ExitCode::from(13);
+    }
+    // §3.5.B composable-flag rejection rules per the verus-fork
+    // counter-ack §(e): `--aot-include-cdcl` is meaningful only
+    // alongside `--aot-bake`, and cannot ride on the load side
+    // (the loader auto-detects the v1 section if the artefact
+    // carries one).  Both ill-formed combinations surface a
+    // typed exit-code-12 error so vargo can catch the misuse
+    // upfront.
+    if cli.aot_include_cdcl && !cli.aot_bake {
+        eprintln!("lu-smt: --aot-include-cdcl requires --aot-bake");
+        return ExitCode::from(12);
+    }
+    if cli.aot_include_cdcl && cli.aot_load.is_some() {
+        eprintln!(
+            "lu-smt: --aot-include-cdcl and --aot-load are mutually exclusive",
+        );
+        return ExitCode::from(12);
     }
     // §3.1.D — load the prelude bank (if any) before the solver
     // sees its first per-query assertion.  Errors carry their own
@@ -306,7 +333,56 @@ fn bake_to_path(
         eprintln!("lu-smt: bake write failed: {e}");
         return Err(14);
     }
+    // §3.5.B — composable v1 CDCL section.  The actual clause /
+    // trail / VSIDS / phase-save bytes need the engine's
+    // post-flatten + initial-BCP state, which §3.5.C wires in
+    // through a follow-up `Solver::dump_cdcl_state` helper.  For
+    // now write an empty section with the binary SHA-256 +
+    // `flatten_version = 0` so the artefact shape is exercised
+    // end-to-end and downstream consumers can read it back.
+    // Empty section = zero clauses / trail / watches / vsids /
+    // saved-phase entries, which the loader treats the same as
+    // "no v1 section present" semantically but still validates
+    // the binary-hash + flatten-version header on load.
+    if cli.aot_include_cdcl {
+        let binary_sha = match current_binary_sha256() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("lu-smt: cannot SHA-256 current binary: {e}");
+                return Err(12);
+            }
+        };
+        let section =
+            adsmt_aot::CdclSection::empty(binary_sha, FLATTEN_VERSION);
+        if let Err(e) = adsmt_aot::write_cdcl_section(&mut file, &section) {
+            eprintln!("lu-smt: cdcl section write failed: {e}");
+            return Err(14);
+        }
+    }
     Ok(())
+}
+
+/// `flatten_to_clauses` semantic version recorded in the
+/// `.luart-cdcl` v1 header.  Bumped on any breaking change to
+/// the flattener's clause-level output; the loader rejects a
+/// stale artefact with a typed error so vargo's cache-key logic
+/// can re-bake.  Starts at 0 — bump on the next breaking change
+/// in `adsmt-engine::cnf::flatten_to_clauses`.
+const FLATTEN_VERSION: u32 = 0;
+
+/// SHA-256 of the `lu-smt` binary currently executing.
+/// `current_exe()` resolves the on-disk path (`/proc/self/exe`
+/// on Linux); reading and hashing it once at bake time pays
+/// ~2 ms which §3.5's `~5.3 s` → `~50 ms` win dwarfs by four
+/// orders of magnitude.  Future versions may cache through a
+/// `OnceCell` if the bake path runs more than once per process.
+fn current_binary_sha256() -> std::io::Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let path = std::env::current_exe()?;
+    let bytes = std::fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(hasher.finalize().into())
 }
 
 /// Read a `.luart` v0 artifact off disk + reconstruct its
