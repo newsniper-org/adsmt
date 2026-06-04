@@ -212,6 +212,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-stalmarck"
+version = "1.0.0-rc.15"
+
+[[package]]
 name = "adsmt-theory"
 version = "1.0.0-rc.15"
 dependencies = [

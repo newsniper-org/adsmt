@@ -1,0 +1,8 @@
+[package]
+name = "adsmt-stalmarck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stålmarck-style propositional pre-saturation (§3.3 of the verus-fork engine-refactor + meta-compiler proposal)"
+
+[dependencies]
