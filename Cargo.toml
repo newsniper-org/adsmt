@@ -13,6 +13,13 @@ members = [
     # adsmt-theory::Combination::register.  ZDD (v2) is the
     # next follow-up if a Verus prelude needs ~1k variables.
     "adsmt-theory-finite-field",
+    # §3.1 AOT prelude bank — `.luart` v0 binary writer per
+    # the verus-fork ack at
+    # `.local-replies-from/verus-fork/2026-06-04-3.1-aot-prelude-bank-ack.md`.
+    # The writer + topo-sort validator live here at §3.1.A;
+    # the lu-smt `--aot-bake` / `--aot-load` CLI surface
+    # (§3.1.B + §3.1.D) and the reader (§3.1.C) follow.
+    "adsmt-aot",
     "adsmt-class",
     "adsmt-quant",
     "adsmt-abduce",
@@ -80,6 +87,7 @@ adsmt-core = { path = "adsmt-core" }
 adsmt-cert = { path = "adsmt-cert" }
 adsmt-theory = { path = "adsmt-theory" }
 adsmt-theory-finite-field = { path = "adsmt-theory-finite-field" }
+adsmt-aot = { path = "adsmt-aot" }
 adsmt-class = { path = "adsmt-class" }
 adsmt-quant = { path = "adsmt-quant" }
 adsmt-abduce = { path = "adsmt-abduce" }

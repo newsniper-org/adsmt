@@ -1,0 +1,9 @@
+[package]
+name = "adsmt-aot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AOT prelude bank for lu-smt — `.luart` v0 binary format writer + (later) reader per the verus-fork §3.1 ack"
+
+[dependencies]
+adsmt-core.workspace = true

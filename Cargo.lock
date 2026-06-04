@@ -15,6 +15,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-aot"
+version = "1.0.0-rc.14"
+dependencies = [
+ "adsmt-core",
+]
+
+[[package]]
 name = "adsmt-cert"
 version = "1.0.0-rc.14"
 dependencies = [
