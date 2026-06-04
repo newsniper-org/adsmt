@@ -1,37 +1,57 @@
 # adsmt
 
-**Abductive-deductive HOL+HKT SMT solver, built on OxiZ + a
-Lean4-first reflection layer.**
+**Abductive-deductive HOL+HKT SMT solver with a GF(2)
+Gröbner-basis theory sibling and a 12-rule certified kernel.**
+
+A guided tour of the distinctive features lives in
+[`PORTFOLIO.md`](PORTFOLIO.md); this README is the operational
+reference (build, run, license, contribute).
 
 | What | Where |
 |---|---|
-| Project version | `1.0.0-rc.2` (testing channel) |
+| Project version | `1.0.0-rc.14` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (triple) |
-| Crate roster | 14 `adsmt-*` + 12 absorbed `lu-*` + `adsmt-meta` umbrella |
+| Crate roster | 15 `adsmt-*` + 11 absorbed `lu-*` + `adsmt-meta` umbrella (25 total) |
+| Tests | **855** passing across the workspace; 0 `cargo doc` / `cargo build` warnings |
 | ITP targets | Lean4 (in-tree reference), Rocq + Isabelle (out-of-tree via `~/adsmt-contrib/`) |
 | SAT backend | `oxiz-sat` (Path A+B default), `cadical` (feature flag), built-in CDCL fallback |
-| Engine | DPLL(T) loop with two-watched-literals CDCL, VSIDS, Luby restarts, LBD-aware learnt-clause retention |
+| Engine | DPLL(T) with 1-UIP CDCL, two-watched literals, VSIDS, Luby restarts, LBD-aware learnt-clause retention, deadline-aware end-to-end |
 
 ## What this is
 
-adsmt is an SMT solver with three differentiating attributes:
+adsmt is an SMT solver with five differentiating attributes
+(see `PORTFOLIO.md` for the showcase form):
 
-1. **Abductive engine** — when ground reasoning gets stuck,
-   adsmt's abductive layer (`adsmt-abduce`) finds minimal
-   hypothesis sets that would discharge the goal. Tier-4
-   escalation surfaces these as `SatResult::Abductive`
-   candidates so caller tooling (`smt_abduce` in the Lean4
-   tactic harness, the LSP code-action menu, …) can render
-   them as `sorry`-shaped holes.
+1. **Abductive verdict as a first-class result** — when ground
+   reasoning gets stuck, adsmt's Tier-4 escalation surfaces
+   ranked hypothesis sets that would discharge the goal as
+   `SatResult::Abductive { candidates: Vec<RankedCandidate> }`.
+   Caller tooling (`smt_abduce` in the Lean4 tactic harness,
+   the Verus fork's `-V adsmt` backend, the LSP code-action
+   menu, …) renders them as `sorry`-shaped holes.
 
-2. **HOL + HKT kernel** — `adsmt-core` ships a higher-order
-   logic kernel with higher-kinded types and 12 inference
-   rules. The certificate format (`adsmt-cert`) records every
-   kernel rule application, theory witness, and abductive
-   marker so downstream consumers (Lean4 / Rocq / Isabelle
-   reflection) can re-verify under their own kernel.
+2. **HOL + HKT kernel with `Arc::ptr_eq` identity** —
+   `adsmt-core` ships a higher-order logic kernel with
+   higher-kinded types and 12 inference rules.  Every `Term`
+   allocation goes through a process-global `scc::HashIndex`
+   hash-cons cache, so structurally equal terms share one
+   `Arc<TermInner>` and `==` / `Hash` are O(1) regardless of
+   tree depth.
 
-3. **Pure-Rust solver layer via OxiZ.** adsmt delegates the
+3. **GF(2) Gröbner-basis theory sibling** —
+   `adsmt-theory-finite-field` ships both Buchberger (dense,
+   v0) and F4 (bit-packed, v1) Gröbner-basis backends.  An
+   `1 ∈ basis` outcome certifies UNSAT under Hilbert's Weak
+   Nullstellensatz — *no completeness gap*.  Engine
+   integration via `Solver::with_finite_field(config)`.
+
+4. **Multi-prover certificate export** — `adsmt-cert` records
+   every kernel rule application, theory witness, and
+   abductive marker, then re-emits to Lean4 (in-tree
+   reference), Rocq, Isabelle, LFSC, Alethe, and DRAT.
+   Classical-axiom imports are opt-in per step.
+
+5. **Pure-Rust solver layer via OxiZ.** adsmt delegates the
    SAT loop and the classical SMT theory stack to
    [OxiZ](https://github.com/cool-japan/oxiz) (a Pure-Rust
    Z3 reimplementation with 100% logic parity), and contributes
@@ -41,24 +61,28 @@ adsmt is an SMT solver with three differentiating attributes:
    surfaces (`oxiz-contrib-abduction`, future binding paths)
    flow upstream as Apache-2 contributions.
 
-## Workspace topology (v1.0.0-rc.2)
+## Workspace topology (v1.0.0-rc.14)
 
 ```
 ~/AD1/
 ├── adsmt-core/                    HOL+HKT kernel, 12 inference rules (TCB)
+│                                  + scc::HashIndex hash-cons cache
 ├── adsmt-cert/                    S-expr cert + Lean4 reflection + classical-axiom markers
 ├── adsmt-theory/                  Theory trait + UF/LIA/LRA/BV/Arrays/Datatypes/Polite
 │                                  + EgraphTheory wrapper
+├── adsmt-theory-finite-field/     §3.4 GF(2) Gröbner sibling: Buchberger (dense, v0)
+│                                  + F4 (bit-packed, v1) + FiniteFieldTheory plugin
 ├── adsmt-class/                   T_class + dictionary passing
-├── adsmt-quant/                   Miller E-matching, prenex, Tier-3 enumeration,
-│                                  learn_triggers, EUF-tracked EGraph
+├── adsmt-quant/                   Miller E-matching, prenex, NNF + Skolemization,
+│                                  Tier-3 enumeration, learn_triggers, EUF-tracked EGraph
 ├── adsmt-abduce/                  SLD chain + minimize + rank + workflow
-├── adsmt-engine/                  DPLL(T) + bool_solver + CDCL + bv_blast
-├── adsmt-parser/                  SMT-LIB v2 + lu-kb parser
+├── adsmt-engine/                  DPLL(T) + bool_solver + 1-UIP CDCL + bv_blast
+│                                  + deadline-aware end-to-end + FiniteField hooks
+├── adsmt-parser/                  SMT-LIB v2.6 + Z3-style extensions + lu-kb parser
 ├── adsmt-heuristic-checker/       8-layer offline safeguard for breaking-versions
 ├── adsmt-heuristic-checker-macros/ Inert proc-macros + breaking_changes_semver
 ├── adsmt-lints/                   Runtime audit library (JSON for editor consumption)
-├── adsmt-cli/                     `lu-smt` binary, including --audit-json
+├── adsmt-cli/                     `lu-smt` binary, including --audit-json + --strict-commands
 ├── adsmt-ffi/                     C ABI (frozen surface; see include/adsmt.h)
 ├── adsmt-lsp/                     tower-lsp server (6 capabilities)
 ├── adsmt-meta/                    Umbrella crate for distro packaging (Arch/Debian/…)
@@ -98,6 +122,9 @@ cargo build --workspace
 # Run the CLI on an SMT-LIB script
 cargo run -p adsmt-cli --release -- examples/qf_uf.smt2
 
+# Stream stdin (drop-in for Verus / Lean4 SmtProcess consumers)
+cargo run -p adsmt-cli --release < transcript.smt2
+
 # Start the LSP server (for editor integration)
 cargo run -p adsmt-lsp --release
 
@@ -110,6 +137,70 @@ cargo build -p adsmt-meta --features full
 
 # Library-only build (skips lu-* CLIs)
 cargo build -p adsmt-meta --no-default-features --features no-cli
+```
+
+### Programmatic use (Rust)
+
+```rust
+use adsmt_engine::{Solver, SatResult};
+use adsmt_theory_finite_field::FiniteFieldConfig;
+
+// Default theory roster: UF / Datatypes / Arrays / BV / LIA / LRA.
+let mut solver = Solver::default()
+    // Optional: register the §3.4 GF(2) Gröbner-basis sibling.
+    .with_finite_field(FiniteFieldConfig {
+        // Run F4 every 32 theory-check rounds; 0 disables.
+        periodic_interval: 32,
+        // One last F4 pass before declaring Unknown.
+        try_at_budget_exhaustion: true,
+    });
+
+solver.assert(/* Term */);
+match solver.check_sat() {
+    SatResult::Sat { model } => { /* model assignment */ }
+    SatResult::Unsat { certificate, core } => {
+        // cert can be emitted to Lean4 / Rocq / Isabelle / LFSC / Alethe
+    }
+    SatResult::Unknown { reason } => { /* reason string */ }
+    SatResult::Abductive { candidates } => {
+        for rc in candidates {
+            // rc.score (f64; smaller = stronger)
+            // rc.candidate.hypotheses : Vec<Term>
+        }
+    }
+}
+```
+
+### Z3-style protocol support
+
+`lu-smt` speaks the SMT-LIB v2.6 surface plus the Z3-style
+extensions Verus / cvc5 / OxiZ depend on.  Highlights:
+
+```text
+(set-option :rlimit 30000000)            ; absolute wall-clock deadline (~30 s)
+(set-option :timeout 5000)               ; SMT-LIB hint (ms)
+(set-option :produce-models)             ; cf. § 3.9.1
+(set-option :produce-proofs)
+(set-option :produce-unsat-cores)
+
+(echo "<<DONE>>")                        ; § 4.2.4 response-batch sentinel
+(get-info :reason-unknown)               ; Z3-canonical "canceled" / "timeout" / "incomplete"
+
+(forall ((x σ)) body)                    ; full quantifier surface with NNF + Skolem
+(exists ((x σ)) body)
+(! body :pattern p :qid q :skolemid s)   ; § 3.3 attributed expressions (Verus prelude)
+
+(declare-datatype A ((Ca …) (Cb …)))     ; § 3.7 finite-enum datatypes
+(check-sat-assuming (l₁ … lₙ))           ; push-pop-style hypothetical check
+```
+
+Abductive verdicts emit a single JSON line on stdout right
+after the `abductive` label so subprocess consumers parse it
+inline:
+
+```text
+abductive
+{"abductive_candidates":[{"rank":1,"score":1.025,"hypotheses":["…"], …}]}
 ```
 
 ## Editor integration
@@ -166,6 +257,20 @@ adsmt uses a Debian-style channel model:
 | `unstable` (sid) | `main` | Active development; new commits land here first |
 | `testing` | `testing` | Stabilisation candidates promoted from `main` |
 | `stable` | `v1.0.0` (tag) | Released versions (the v1.0.0 tag is the first cut) |
+
+The rc.7 → rc.14 arc has been driven by the verus-fork
+engine-refactor request (see
+`.local-requests-from/verus-fork/` for the joint working
+surface).  Highlights landed since rc.2:
+
+| Cycle | Landed |
+|---|---|
+| rc.7  | placeholder sweep (CLI / engine / cert), abductive ranked JSON, `(echo "msg")`, quantifier surface (`forall` / `exists` / `declare-fun N`), NNF + Skolemization |
+| rc.8–rc.9 | stdin streaming, Verus prelude surface (`(! …)` attributed exprs, numeric literals, arith builtins) |
+| rc.10 | `(set-option :rlimit / :timeout)`, deadline-aware `check_sat`, **hash-cons via `scc::HashIndex`** (Term equality is now `Arc::ptr_eq` + O(1) Hash) |
+| rc.12 | `(get-info :reason-unknown)` Z3-canonical mapping, T0 deadline cascade inside `propagate_two_watched` |
+| rc.13 | **§3.4 Buchberger v0** — dense Gröbner-basis decider (`adsmt-theory-finite-field`) |
+| rc.14 | **§3.4 F4 v1** — bit-packed Gröbner + `FiniteFieldTheory` plugin + `Solver::with_finite_field` builder |
 
 The 8-layer offline safeguard (`adsmt-heuristic-checker`)
 tracks every breaking-version bump under semver from v1.0.0
