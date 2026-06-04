@@ -144,6 +144,33 @@ impl Solver {
         self
     }
 
+    /// §3.5.C entry point — consume a
+    /// [`adsmt_aot::ReconstructedCdclPrelude`] (Term-DAG +
+    /// optional CDCL scope-0 snapshot from the v1 `.luart-cdcl`
+    /// artefact).
+    ///
+    /// v0 semantics: the prelude assertions thread through
+    /// [`Self::with_aot_prelude`] exactly as before; the CDCL
+    /// section is stashed away for the §3.5.F replay-or-fallback
+    /// dispatcher (which lands in a follow-up patch on the
+    /// `check_sat_with_deadline` path).  The skeleton currently
+    /// drops the section because the engine's CDCL state is not
+    /// yet exposed for external restoration — once §3.5.F wires
+    /// `restore_cdcl_state(...)`, the bytes recovered here become
+    /// the head-start the per-query solve inherits.
+    ///
+    /// Surfacing the builder now (v0 = behaves like
+    /// `with_aot_prelude`) lets `lu-smt --aot-load` exercise the
+    /// new artefact shape end-to-end without coupling the CLI
+    /// landing to the engine-side state-restoration work.
+    pub fn with_aot_cdcl(
+        self,
+        prelude: adsmt_aot::ReconstructedCdclPrelude,
+    ) -> Self {
+        let _cdcl_section_for_3_5_f = prelude.cdcl_section;
+        self.with_aot_prelude(prelude.prelude)
+    }
+
     /// `true` iff the GF(2) Gröbner theory plugin has been
     /// registered via [`Self::with_finite_field`].  Internal
     /// helper for the engine hooks below; downstream code that

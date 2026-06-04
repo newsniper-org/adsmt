@@ -44,6 +44,22 @@ pub struct ReconstructedPrelude {
     pub assertions: Vec<(Term, Option<String>)>,
 }
 
+/// Reconstructed prelude with an optional CDCL state snapshot —
+/// the §3.5.C consumer shape.  Returns the v0
+/// `ReconstructedPrelude` (Term-DAG + assertion list with qids)
+/// alongside the optional v1 [`crate::cdcl::CdclSection`] when
+/// the artefact carried one.
+///
+/// `Solver::with_aot_cdcl` consumes this directly.  For
+/// artefacts produced by the v0-only `--aot-bake` path,
+/// `cdcl_section` is `None` and the builder falls back to the
+/// regular `with_aot_prelude` behaviour.
+#[derive(Clone, Debug)]
+pub struct ReconstructedCdclPrelude {
+    pub prelude: ReconstructedPrelude,
+    pub cdcl_section: Option<crate::cdcl::CdclSection>,
+}
+
 /// Errors the reader can surface.  Distinguishes layout-level
 /// corruption (wrong magic, truncated bytes) from semantic-level
 /// inconsistencies (pool index out of range, type-string
@@ -606,6 +622,26 @@ fn parse_atom(tokens: &mut Vec<TyTok>) -> Option<Type> {
         }
         _ => None,
     }
+}
+
+/// Convenience: read a `.luart` v0-or-v1 artefact from disk
+/// bytes, reconstruct the prelude Term-DAG, and pair it with the
+/// optional CDCL section.  The §3.5.C `Solver::with_aot_cdcl`
+/// builder consumes the result directly.
+///
+/// Errors flow through the regular [`ReadError`] surface; the
+/// caller maps each variant to its own exit-code shape (12 for
+/// I/O, 15 for `.luart` corruption per the lu-smt CLI
+/// convention).
+pub fn reconstruct_with_cdcl(
+    buf: &[u8],
+) -> Result<ReconstructedCdclPrelude, ReadError> {
+    let (file, cdcl_section) = read_luart_with_cdcl(buf)?;
+    let prelude = reconstruct(&file)?;
+    Ok(ReconstructedCdclPrelude {
+        prelude,
+        cdcl_section,
+    })
 }
 
 /// Re-intern an externally-built `Term` through the hash-cons

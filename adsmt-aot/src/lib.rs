@@ -74,7 +74,8 @@ pub use pool::{
     AssertionEntry, PoolBuilder, PoolEntry,
 };
 pub use reader::{
-    intern_external, parse_type, read_luart, read_luart_with_cdcl, reconstruct,
-    LuartFile, ReadError, ReconstructedPrelude,
+    intern_external, parse_type, read_luart, read_luart_with_cdcl,
+    reconstruct, reconstruct_with_cdcl, LuartFile, ReadError,
+    ReconstructedCdclPrelude, ReconstructedPrelude,
 };
 pub use writer::{topo_check, write_header, WriteError};

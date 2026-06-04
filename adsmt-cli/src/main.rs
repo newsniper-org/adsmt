@@ -385,14 +385,15 @@ fn current_binary_sha256() -> std::io::Result<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
-/// Read a `.luart` v0 artifact off disk + reconstruct its
-/// prelude DAG.  v0 uses the simple `fs::read` path; mmap is a
-/// v1 optimisation (the bake-side cost is what currently
+/// Read a `.luart` v0-or-v1 artefact off disk + reconstruct its
+/// prelude DAG, pairing it with the optional v1 CDCL section
+/// when present.  v0 uses the simple `fs::read` path; mmap is
+/// a v1 optimisation (the bake-side cost is what currently
 /// dominates).  Returns the exit code shape lu-smt uses
 /// elsewhere — 12 for I/O failures, 15 for `.luart` corruption.
 fn load_aot_prelude(
     path: &str,
-) -> Result<adsmt_aot::ReconstructedPrelude, u8> {
+) -> Result<adsmt_aot::ReconstructedCdclPrelude, u8> {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -400,15 +401,8 @@ fn load_aot_prelude(
             return Err(12);
         }
     };
-    let file = match adsmt_aot::read_luart(&bytes) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("lu-smt: --aot-load {path} decode: {e}");
-            return Err(15);
-        }
-    };
-    adsmt_aot::reconstruct(&file).map_err(|e| {
-        eprintln!("lu-smt: --aot-load {path} reconstruct: {e}");
+    adsmt_aot::reconstruct_with_cdcl(&bytes).map_err(|e| {
+        eprintln!("lu-smt: --aot-load {path} decode/reconstruct: {e}");
         15
     })
 }
@@ -804,11 +798,12 @@ struct Driver {
 impl Driver {
     fn new(
         cfg: DriverConfig,
-        aot_prelude: Option<adsmt_aot::ReconstructedPrelude>,
+        aot_prelude: Option<adsmt_aot::ReconstructedCdclPrelude>,
     ) -> Self {
         // Builder-style construction so the optional §3.4 plugin
-        // registration + the §3.1.D AOT prelude both compose with
-        // the default theory roster before the first command runs.
+        // registration + the §3.1.D / §3.5.C AOT prelude both
+        // compose with the default theory roster before the
+        // first command runs.
         let mut solver = Solver::new();
         if let Some(ff_cfg) = cfg.finite_field.clone() {
             solver = solver.with_finite_field(ff_cfg);
@@ -820,12 +815,12 @@ impl Driver {
         let mut assertions: Vec<Term> = Vec::new();
         let mut assertion_qids: Vec<Option<String>> = Vec::new();
         if let Some(prelude) = aot_prelude {
-            for (term, qid) in &prelude.assertions {
+            for (term, qid) in &prelude.prelude.assertions {
                 let canonical = adsmt_aot::intern_external(term);
                 assertions.push(canonical);
                 assertion_qids.push(qid.clone());
             }
-            solver = solver.with_aot_prelude(prelude);
+            solver = solver.with_aot_cdcl(prelude);
         }
         Self {
             solver,
