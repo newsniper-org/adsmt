@@ -57,6 +57,15 @@ pub enum Command {
     GetModel,
     GetUnsatCore,
     GetProof,
+    /// `(get-info :<keyword>)` — SMT-LIB v2.6 § 4.1.7.  The CLI
+    /// answers a small subset of standard keywords (`:name`,
+    /// `:version`, `:reason-unknown`, `:status`) verbatim per
+    /// spec; anything else is forwarded to the engine as a Raw
+    /// payload so future theories can hook into it.  Front-ends
+    /// (Verus's `SmtProcess`, cvc5/Z3 reference drivers) rely on
+    /// `(:reason-unknown <name>)` arriving on stdout after every
+    /// `(check-sat)` that returned `unknown`.
+    GetInfo(String),
     Push(u32),
     Pop(u32),
     Reset,
@@ -317,6 +326,14 @@ fn parse_command(s: SExpr) -> Result<Command, SmtLibError> {
         "get-model" => Ok(Command::GetModel),
         "get-unsat-core" => Ok(Command::GetUnsatCore),
         "get-proof" => Ok(Command::GetProof),
+        "get-info" => {
+            // SMT-LIB v2.6 § 4.1.7 — `(get-info :keyword)`.  The
+            // keyword arrives sans leading `:` from the lexer
+            // (see `sexpr.rs:131`), matching the rest of the
+            // keyword-bearing commands (`set-option`, `set-info`).
+            let kw = expect_keyword(list.get(1), "get-info")?;
+            Ok(Command::GetInfo(kw))
+        }
         "push" => {
             let n = list
                 .get(1)

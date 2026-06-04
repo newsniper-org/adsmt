@@ -674,6 +674,10 @@ impl Driver {
                 self.emit_get_unsat_core();
                 DispatchResult::Continue
             }
+            Command::GetInfo(keyword) => {
+                self.emit_get_info(&keyword);
+                DispatchResult::Continue
+            }
             Command::Push(n) => {
                 for _ in 0..n {
                     self.solver.push();
@@ -919,6 +923,80 @@ impl Driver {
             }
             Some(_) | None => println!(
                 "(error \"get-unsat-core: the last verdict was not 'unsat'; no core available\")"
+            ),
+        }
+    }
+
+    /// `(get-info :<keyword>)` — SMT-LIB v2.6 § 4.1.7.  The four
+    /// standard solver-identity / verdict-introspection keys are
+    /// answered per spec; unknown keys produce the spec-shaped
+    /// `(error "...")` reply so callers can branch on it.
+    ///
+    /// `:reason-unknown` is the load-bearing one for subprocess
+    /// front-ends — Verus's `SmtProcess` waits for it on every
+    /// `(check-sat)` that returned `unknown`, and panics with
+    /// "expected :reason-unknown" if the line never arrives.
+    fn emit_get_info(&self, keyword: &str) {
+        match keyword {
+            "name" => println!("(:name \"lu-smt\")"),
+            "version" => println!("(:version \"{}\")", env!("CARGO_PKG_VERSION")),
+            "authors" => println!("(:authors \"adsmt contributors\")"),
+            "reason-unknown" => {
+                // SMT-LIB v2.6 § 4.1.7 — `(:reason-unknown
+                // <reason>)`.  We translate the engine's internal
+                // reason strings into the Z3-style canonical
+                // names downstream parsers expect; verus's
+                // `air::smt_verify` routes:
+                //
+                //   - `(:reason-unknown "canceled")`  → Canceled
+                //   - `(:reason-unknown "(incomplete …")` (prefix)
+                //                                    → Incomplete
+                //
+                // Anything else is treated as "unexpected output"
+                // and aborts the verification, so it's important
+                // to land in one of those two buckets when an
+                // engine-side rlimit or quantifier limit fires.
+                let reason = match &self.last_result {
+                    Some(SatResult::Unknown { reason }) => {
+                        let r = reason.as_str();
+                        if r.contains("rlimit")
+                            || r.contains("deadline")
+                            || r.contains("timeout")
+                            || r.contains("canceled")
+                        {
+                            "canceled".to_string()
+                        } else if r.contains("quantifier")
+                            || r.contains("instantiation")
+                            || r.contains("budget")
+                            || r.contains("incomplete")
+                        {
+                            "(incomplete quantifiers)".to_string()
+                        } else {
+                            r.to_string()
+                        }
+                    }
+                    _ => "unknown".to_string(),
+                };
+                println!("(:reason-unknown \"{}\")", reason.replace('"', "\\\""));
+            }
+            "status" => {
+                let status = match &self.last_result {
+                    Some(SatResult::Sat { .. }) => "sat",
+                    Some(SatResult::Unsat { .. }) => "unsat",
+                    Some(SatResult::Unknown { .. }) => "unknown",
+                    Some(SatResult::Abductive { .. }) => "abductive",
+                    None => "unknown",
+                };
+                println!("(:status {})", status);
+            }
+            // SMT-LIB v2.6 § 4.1.7: "If the keyword is not
+            // recognized by the solver, an `error` response is
+            // expected."  We pick the shape Z3 uses so consumers
+            // that branch on it (Verus's
+            // `ignore_unexpected_smt` warning path) keep working.
+            other => println!(
+                "(error \"unsupported info keyword: :{}\")",
+                other.replace('"', "\\\"")
             ),
         }
     }

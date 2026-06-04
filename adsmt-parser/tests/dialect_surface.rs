@@ -26,6 +26,7 @@ const FROZEN_VARIANTS: &[&str] = &[
     "GetModel",
     "GetUnsatCore",
     "GetProof",
+    "GetInfo",
     "Push",
     "Pop",
     "Reset",
@@ -45,7 +46,7 @@ fn command_variant_count_is_frozen() {
     //   through this multi-sort variant
     // Count bumps to 22; future additive variants require
     // updating this assertion and DIALECT_POLICY.md together.
-    assert_eq!(FROZEN_VARIANTS.len(), 22);
+    assert_eq!(FROZEN_VARIANTS.len(), 23);
 }
 
 fn variant_name(c: &Command) -> &'static str {
@@ -65,6 +66,7 @@ fn variant_name(c: &Command) -> &'static str {
         Command::GetModel => "GetModel",
         Command::GetUnsatCore => "GetUnsatCore",
         Command::GetProof => "GetProof",
+        Command::GetInfo(_) => "GetInfo",
         Command::Push(_) => "Push",
         Command::Pop(_) => "Pop",
         Command::Reset => "Reset",
@@ -99,6 +101,7 @@ fn canonical_command_corpus_parses_to_recognised_variants() {
         ("(get-model)", "GetModel"),
         ("(get-unsat-core)", "GetUnsatCore"),
         ("(get-proof)", "GetProof"),
+        ("(get-info :reason-unknown)", "GetInfo"),
         ("(push 1)", "Push"),
         ("(pop 2)", "Pop"),
         ("(reset)", "Reset"),
