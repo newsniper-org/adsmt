@@ -119,6 +119,11 @@ crc = "3"
 toml = "1.1"
 csv = "1.4"
 glob = "0.3.3"
+# SHA-256 of the AOT prelude text.  Per the verus-fork ack §8.3
+# of the §3.1 prelude bank counter-proposal, the `.luart` v0
+# header records the SHA-256 of the prelude text the artifact
+# was baked from; the reader cross-checks on `--aot-load`.
+sha2 = "0.10"
 
 [profile.release]
 lto = "thin"

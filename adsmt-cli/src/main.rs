@@ -96,6 +96,32 @@ struct Cli {
     /// start of the session.  Disabled by default.
     #[arg(long)]
     finite_field_budget_exhaustion: bool,
+    /// §3.1.B AOT bake mode.  When set, lu-smt parses the input
+    /// SMT-LIB script for `(assert …)` records (and their optional
+    /// `(! body :qid …)` annotations), writes the result as a
+    /// `.luart` v0 artifact to the path given by `--aot-output`, and
+    /// exits without running `(check-sat)`.  Other commands
+    /// (`set-logic`, `declare-*`, `define-*`, `push` / `pop`) are
+    /// honoured for their side effects on the symbol table but
+    /// produce no verdict output.
+    #[arg(long)]
+    aot_bake: bool,
+    /// `--aot-bake` output path.  Required when `--aot-bake` is set;
+    /// rejected otherwise.  Per the verus-fork ack §8.2 of the
+    /// `§3.1` counter-proposal, the vargo-side cache location is
+    /// `target-verus/{debug,release}/aot/prelude-<sha>-<lu_smt_version>.luart`,
+    /// but lu-smt itself does not impose any naming convention —
+    /// any writable path works.
+    #[arg(long)]
+    aot_output: Option<String>,
+    /// Optional SHA-256 of the prelude text to record in the
+    /// `.luart` header, hex-encoded.  Defaults to a SHA-256 computed
+    /// from the actual input bytes lu-smt parsed.  Use the override
+    /// when the caller (e.g. vargo) has the prelude text in memory
+    /// and wants to commit to a specific hash before staging the
+    /// bake input.
+    #[arg(long)]
+    aot_sha: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -110,12 +136,33 @@ fn main() -> ExitCode {
     } else {
         None
     };
+    // `--aot-output` / `--aot-sha` are bake-only knobs.  Surfacing
+    // the misuse here (rather than at bake-time) keeps the error
+    // shape close to the user's input.
+    if cli.aot_output.is_some() && !cli.aot_bake {
+        eprintln!("lu-smt: --aot-output requires --aot-bake");
+        return ExitCode::from(13);
+    }
+    if cli.aot_sha.is_some() && !cli.aot_bake {
+        eprintln!("lu-smt: --aot-sha requires --aot-bake");
+        return ExitCode::from(13);
+    }
+    if cli.aot_bake && cli.aot_output.is_none() {
+        eprintln!("lu-smt: --aot-bake requires --aot-output <PATH>");
+        return ExitCode::from(13);
+    }
     let mut driver = Driver::new(DriverConfig {
         strict_commands: cli.strict_commands,
         no_autodeclare: cli.no_autodeclare,
         finite_field,
+        aot_bake: cli.aot_bake,
     });
     let mut last = LastStatus::Sat;
+    // Stash the input bytes for the bake-side SHA-256 computation
+    // when `--aot-bake` was requested without an explicit `--aot-sha`
+    // override.  In stdin mode we accumulate the bytes alongside
+    // the streaming dispatcher (see `run_stdin_streaming`).
+    let mut bake_input_source: Option<String> = None;
 
     match cli.input.as_deref() {
         Some(path) => {
@@ -136,6 +183,9 @@ fn main() -> ExitCode {
                     return ExitCode::from(10);
                 }
             };
+            if cli.aot_bake {
+                bake_input_source = Some(source);
+            }
             for (cmd, pos) in commands {
                 if let Some(code) = dispatch_one(&mut driver, &mut last, &cli, cmd, pos)
                 {
@@ -151,12 +201,98 @@ fn main() -> ExitCode {
             // so we ship every top-level S-expression to the dispatcher
             // the moment its parens balance and flush `stdout` after each
             // dispatch so the parent sees the verdict immediately.
-            if let Some(code) = run_stdin_streaming(&mut driver, &mut last, &cli) {
-                return code;
+            match run_stdin_streaming(&mut driver, &mut last, &cli) {
+                Ok(maybe_source) => {
+                    if cli.aot_bake {
+                        bake_input_source = maybe_source;
+                    }
+                }
+                Err(code) => return code,
             }
         }
     }
+    if cli.aot_bake {
+        let output = cli.aot_output.as_deref().expect(
+            "--aot-output presence was validated before dispatch",
+        );
+        return match bake_to_path(&driver, &cli, output, bake_input_source.as_deref()) {
+            Ok(()) => ExitCode::from(0),
+            Err(code) => ExitCode::from(code),
+        };
+    }
     ExitCode::from(last.exit_code())
+}
+
+/// Read the driver's assertion ledger + qid sidetable and emit a
+/// `.luart` v0 artifact at `output`.  SHA-256 is the
+/// `--aot-sha` override when supplied, otherwise the digest of the
+/// concrete bytes lu-smt parsed (`input_source`).  In streaming
+/// mode without a recorded source, lu-smt falls back to the empty
+/// digest — callers that rely on the digest should supply it
+/// explicitly via `--aot-sha`.
+fn bake_to_path(
+    driver: &Driver,
+    cli: &Cli,
+    output: &str,
+    input_source: Option<&str>,
+) -> Result<(), u8> {
+    use sha2::{Digest, Sha256};
+
+    let sha: [u8; 32] = match &cli.aot_sha {
+        Some(hex) => match decode_sha_hex(hex) {
+            Some(bytes) => bytes,
+            None => {
+                eprintln!(
+                    "lu-smt: --aot-sha must be 64 hex characters (SHA-256)",
+                );
+                return Err(13);
+            }
+        },
+        None => {
+            let mut hasher = Sha256::new();
+            if let Some(src) = input_source {
+                hasher.update(src.as_bytes());
+            }
+            hasher.finalize().into()
+        }
+    };
+    let assertions: Vec<adsmt_aot::Assertion> = driver
+        .assertions
+        .iter()
+        .zip(driver.assertion_qids.iter())
+        .map(|(t, q)| adsmt_aot::Assertion {
+            term: t.clone(),
+            qid: q.clone(),
+        })
+        .collect();
+    let mut file = match std::fs::File::create(output) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("lu-smt: cannot create {output}: {e}");
+            return Err(12);
+        }
+    };
+    let version = env!("CARGO_PKG_VERSION");
+    if let Err(e) =
+        adsmt_aot::write_luart(&mut file, sha, version, &assertions)
+    {
+        eprintln!("lu-smt: bake write failed: {e}");
+        return Err(14);
+    }
+    Ok(())
+}
+
+fn decode_sha_hex(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let hi = u8::from_str_radix(&hex[2 * i..2 * i + 1], 16).ok()?;
+        let lo = u8::from_str_radix(&hex[2 * i + 1..2 * i + 2], 16).ok()?;
+        *byte = (hi << 4) | lo;
+    }
+    Some(out)
 }
 
 /// Dispatch one already-parsed command and surface verdict output.
@@ -233,7 +369,7 @@ fn run_stdin_streaming(
     driver: &mut Driver,
     last: &mut LastStatus,
     cli: &Cli,
-) -> Option<ExitCode> {
+) -> Result<Option<String>, ExitCode> {
     use std::io::BufRead;
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
@@ -243,6 +379,12 @@ fn run_stdin_streaming(
     let mut in_string = false;
     let mut escape_next = false;
     let mut in_comment = false;
+    // When bake mode is on, retain the full stdin transcript so the
+    // bake-side SHA-256 over the prelude text can be computed
+    // post-EOF (matching the `--aot-sha` semantics the file-input
+    // path uses).
+    let mut bake_source: Option<String> =
+        if cli.aot_bake { Some(String::new()) } else { None };
     loop {
         line.clear();
         match reader.read_line(&mut line) {
@@ -273,11 +415,14 @@ fn run_stdin_streaming(
                             depth -= 1;
                             if depth < 0 {
                                 eprintln!("lu-smt: parse error: unbalanced ')'");
-                                return Some(ExitCode::from(10));
+                                return Err(ExitCode::from(10));
                             }
                         }
                         _ => {}
                     }
+                }
+                if let Some(buf) = bake_source.as_mut() {
+                    buf.push_str(&line);
                 }
                 accumulator.push_str(&line);
                 if depth == 0 && !accumulator.trim().is_empty() {
@@ -286,25 +431,25 @@ fn run_stdin_streaming(
                         Ok(c) => c,
                         Err(e) => {
                             eprintln!("lu-smt: parse error: {e}");
-                            return Some(ExitCode::from(10));
+                            return Err(ExitCode::from(10));
                         }
                     };
                     for (cmd, pos) in commands {
                         if let Some(code) =
                             dispatch_one(driver, last, cli, cmd, pos)
                         {
-                            return Some(code);
+                            return Err(code);
                         }
                     }
                 }
             }
             Err(e) => {
                 eprintln!("lu-smt: stdin read error: {e}");
-                return Some(ExitCode::from(12));
+                return Err(ExitCode::from(12));
             }
         }
     }
-    None
+    Ok(bake_source)
 }
 
 /// Render the engine's ranked abductive candidates as a single-line
@@ -421,6 +566,13 @@ struct DriverConfig {
     /// registered at startup, the first such option auto-registers
     /// it with default knobs (see `ensure_finite_field_registered`).
     finite_field: Option<adsmt_theory_finite_field::FiniteFieldConfig>,
+    /// §3.1.B AOT bake mode.  When `true`, the driver records every
+    /// `(assert …)` into its `assertions` ledger as usual but
+    /// `(check-sat)` (and `(check-sat-assuming …)`) becomes a no-op
+    /// that does not run the engine.  The caller (CLI main) reads
+    /// the resulting ledger after EOF and emits the `.luart`
+    /// artifact via `bake_to_path`.
+    aot_bake: bool,
 }
 
 /// Recognised `set-option` keys. The presence of a key in this map
@@ -509,6 +661,13 @@ struct Driver {
     /// `(get-unsat-core)` can format the participants and
     /// `(get-model)` has the free-variable set to enumerate over.
     assertions: Vec<Term>,
+    /// `:qid` attribute lifted from the assertion's `(! body :qid
+    /// …)` annotation, parallel-indexed with `assertions`.  Plain
+    /// `(assert body)` forms (no annotation) store `None`.  Consumed
+    /// by the `--aot-bake` path so the `.luart` v0 artifact can
+    /// preserve the per-axiom `qid` per the verus-fork ack §8.4 of
+    /// the §3.1 counter-proposal.
+    assertion_qids: Vec<Option<String>>,
 }
 
 impl Driver {
@@ -529,6 +688,7 @@ impl Driver {
             last_cert: None,
             last_result: None,
             assertions: Vec::new(),
+            assertion_qids: Vec::new(),
         }
     }
 
@@ -644,6 +804,13 @@ impl Driver {
                 Err(msg) => DispatchResult::Error(11, msg),
             },
             Command::CheckSat => {
+                // §3.1.B AOT bake mode: skip the engine entirely so
+                // baking a prelude doesn't pay solve time and doesn't
+                // print a verdict to stdout that downstream tooling
+                // (vargo) would have to filter out.
+                if self.cfg.aot_bake {
+                    return DispatchResult::Continue;
+                }
                 // Map the configured `:rlimit` / `:timeout` budget
                 // (if any) to an absolute wall-clock deadline.  The
                 // solver short-circuits the instantiation loop as
@@ -679,6 +846,7 @@ impl Driver {
                             }
                             self.solver.assert(term.clone());
                             self.assertions.push(term);
+                            self.assertion_qids.push(None);
                         }
                         Err(e) => {
                             convert_err = Some(e.to_string());
@@ -689,12 +857,20 @@ impl Driver {
                 if let Some(msg) = convert_err {
                     self.solver.pop(1);
                     self.assertions.truncate(snapshot);
+                    self.assertion_qids.truncate(snapshot);
                     return DispatchResult::Error(11, msg);
+                }
+                if self.cfg.aot_bake {
+                    self.solver.pop(1);
+                    self.assertions.truncate(snapshot);
+                    self.assertion_qids.truncate(snapshot);
+                    return DispatchResult::Continue;
                 }
                 let r = self.solver.check_sat();
                 let status = self.record_result(r);
                 self.solver.pop(1);
                 self.assertions.truncate(snapshot);
+                self.assertion_qids.truncate(snapshot);
                 DispatchResult::CheckSat(status)
             }
             Command::GetProof => {
@@ -736,6 +912,7 @@ impl Driver {
                 self.last_cert = None;
                 self.last_result = None;
                 self.assertions.clear();
+                self.assertion_qids.clear();
                 DispatchResult::Continue
             }
             Command::ResetAssertions => {
@@ -743,6 +920,7 @@ impl Driver {
                 self.last_cert = None;
                 self.last_result = None;
                 self.assertions.clear();
+                self.assertion_qids.clear();
                 DispatchResult::Continue
             }
             Command::Exit => DispatchResult::Exit,
@@ -917,6 +1095,7 @@ impl Driver {
     }
 
     fn assert_expr(&mut self, e: &SExpr, pos: Position) -> Result<(), String> {
+        let qid = extract_qid(e);
         let expanded = inline_defines(e, &self.registry);
         if !self.cfg.no_autodeclare {
             autodeclare_bools(&expanded, &mut self.symbols);
@@ -932,6 +1111,7 @@ impl Driver {
         let loc = adsmt_cert::SourceLoc::new(pos.line, pos.column);
         self.solver.assert_at(term.clone(), loc);
         self.assertions.push(term);
+        self.assertion_qids.push(qid);
         Ok(())
     }
 
@@ -1138,6 +1318,36 @@ fn top_level_bool_polarity(term: &Term) -> Option<(String, bool)> {
         && v.ty == Type::bool_()
     {
         return Some((v.name.clone(), false));
+    }
+    None
+}
+
+/// Pull a `:qid` attribute out of a `(! body :qid <name> …)` form
+/// so the bake path (`--aot-bake`) can preserve it in the `.luart`
+/// per-axiom metadata.  Returns `None` for plain `(assert body)`,
+/// `(assert (and …))`, or any annotation that doesn't carry a
+/// `:qid` attribute.  Verus's prelude tags every emitted axiom
+/// with `(! body :qid prelude_<name>)`, so the common bake input
+/// will surface the `qid` here uniformly.
+fn extract_qid(e: &SExpr) -> Option<String> {
+    let xs = e.as_list()?;
+    if xs.first().and_then(SExpr::as_symbol) != Some("!") {
+        return None;
+    }
+    // Layout: `! body :attr value :attr value …`.  Step through
+    // pairs starting at index 2; the first `:qid` slot's value
+    // (next element, a `Symbol` per SMT-LIB v2 `:qid` syntax) is
+    // the qid.
+    let mut i = 2;
+    while i + 1 < xs.len() {
+        if let SExpr::Keyword(k) = &xs[i] {
+            if k == "qid" {
+                if let SExpr::Symbol(name) = &xs[i + 1] {
+                    return Some(name.clone());
+                }
+            }
+        }
+        i += 2;
     }
     None
 }
