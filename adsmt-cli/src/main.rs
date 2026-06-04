@@ -53,7 +53,7 @@ use std::process::ExitCode;
 use clap::Parser as ClapParser;
 
 use adsmt_abduce::rank::RankedCandidate;
-use adsmt_core::{Term, Type};
+use adsmt_core::{Term, TermInner, Type};
 use adsmt_engine::{SatResult, Solver};
 use adsmt_parser::sexpr::{Position, SExpr};
 use adsmt_parser::smtlib::Command;
@@ -961,21 +961,18 @@ fn sort_from_sexpr(sort: &SExpr, registry: &SymbolRegistry) -> Result<Type, Stri
 /// a bare Bool variable (positive) or `(not VAR)` (negative).
 /// Returns `None` for compound expressions.
 fn top_level_bool_polarity(term: &Term) -> Option<(String, bool)> {
-    if let Term::Var(v) = term {
-        if v.ty == Type::bool_() {
-            return Some((v.name.clone(), true));
-        }
+    if let TermInner::Var(v) = term.kind()
+        && v.ty == Type::bool_()
+    {
+        return Some((v.name.clone(), true));
     }
-    if let Term::App(head, arg) = term {
-        if let Term::Const(c) = head.as_ref() {
-            if c.name == "not" {
-                if let Term::Var(v) = arg.as_ref() {
-                    if v.ty == Type::bool_() {
-                        return Some((v.name.clone(), false));
-                    }
-                }
-            }
-        }
+    if let TermInner::App(head, arg) = term.kind()
+        && let TermInner::Const(c) = head.kind()
+        && c.name == "not"
+        && let TermInner::Var(v) = arg.kind()
+        && v.ty == Type::bool_()
+    {
+        return Some((v.name.clone(), false));
     }
     None
 }
