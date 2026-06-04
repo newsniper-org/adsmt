@@ -378,12 +378,18 @@ pub fn cdcl_solve_with_model_deadline(
         if deadline_tick.is_multiple_of(DEADLINE_CHECK_INTERVAL) && expired(deadline) {
             return CdclOutcome::Unknown;
         }
-        let conflict_idx = propagate_two_watched(
+        let prop_outcome = propagate_two_watched(
             &owned,
             &mut state,
             input_len,
             clause_bump,
+            deadline,
         );
+        let conflict_idx = match prop_outcome {
+            PropagateOutcome::Expired => return CdclOutcome::Unknown,
+            PropagateOutcome::Conflict(idx) => Some(idx),
+            PropagateOutcome::Fixpoint => None,
+        };
         if let Some(idx) = conflict_idx {
             conflicts += 1;
             if conflicts > max_conflicts { return CdclOutcome::Unknown; }
@@ -606,13 +612,47 @@ pub fn register_clause_watches(
 ///   - if both watchers are false, reports the conflicting
 ///     clause index.
 ///
-/// Returns `Some(clause_idx)` on conflict, `None` on fixpoint.
+/// Result of one round of two-watched-literal propagation.
+///
+/// `Expired` is the T0 (rc.13) deadline-cascade extension that
+/// closes the gap surfaced by the verus-fork rc.12 smoke retry:
+/// `propagate_two_watched` is the last engine layer that, on a
+/// prelude-sized clause set, can spin uninterrupted for seconds
+/// even when the outer loop's `cdcl_solve_with_model_deadline`
+/// deadline tick is set to 256-iter cadence.  Threading the
+/// deadline into the per-watcher inner loop yields control back
+/// to the caller within the same cadence regardless of how big
+/// the watcher lists got.
+#[derive(Clone, Copy, Debug)]
+enum PropagateOutcome {
+    /// Two-watched propagation reached fixpoint with no conflict.
+    Fixpoint,
+    /// A clause's two watchers both became false; reports the
+    /// conflicting clause index.
+    Conflict(usize),
+    /// `deadline` elapsed mid-propagation; caller should surface
+    /// the current verdict as `Unknown`.
+    Expired,
+}
+
+/// Returns `Conflict(clause_idx)` on conflict, `Fixpoint` on
+/// quiescence, or `Expired` if the deadline elapsed mid-loop.
 fn propagate_two_watched(
     clauses: &[Clause],
     state: &mut CdclState,
     input_len: usize,
     clause_bump: f64,
-) -> Option<usize> {
+    deadline: Option<std::time::Instant>,
+) -> PropagateOutcome {
+    let expired = |d: Option<std::time::Instant>| -> bool {
+        d.is_some_and(|dl| std::time::Instant::now() >= dl)
+    };
+    // Match the outer loop's cadence so the deadline is honoured
+    // uniformly regardless of whether the busy work sits in the
+    // outer `loop`, the propagation queue's outer `while`, or the
+    // per-atom `for clause_idx in watched_clauses` inner loop.
+    const PROP_DEADLINE_INTERVAL: usize = 256;
+    let mut prop_steps: usize = 0;
     while state.prop_head < state.trail.len() {
         let entry = state.trail[state.prop_head].clone();
         state.prop_head += 1;
@@ -626,6 +666,12 @@ fn propagate_two_watched(
             .cloned()
             .unwrap_or_default();
         for clause_idx in watched_clauses {
+            prop_steps = prop_steps.wrapping_add(1);
+            if prop_steps.is_multiple_of(PROP_DEADLINE_INTERVAL)
+                && expired(deadline)
+            {
+                return PropagateOutcome::Expired;
+            }
             let clause = &clauses[clause_idx];
             let [w0, w1] = state.clause_watches[clause_idx];
             // Identify which slot the now-falsified literal
@@ -679,12 +725,12 @@ fn propagate_two_watched(
             // No replacement — the other watcher is either
             // unassigned (propagate) or false (conflict).
             let Some(other_lit) = clause.get(other_slot) else {
-                return Some(clause_idx);
+                return PropagateOutcome::Conflict(clause_idx);
             };
             let other_key = atom_key(other_lit);
             match state.assign.get(&other_key).copied() {
                 Some(v) if v != other_lit.polarity => {
-                    return Some(clause_idx);
+                    return PropagateOutcome::Conflict(clause_idx);
                 }
                 Some(_) => {
                     // already satisfied — should have been
@@ -707,7 +753,7 @@ fn propagate_two_watched(
             }
         }
     }
-    None
+    PropagateOutcome::Fixpoint
 }
 
 #[derive(Debug)]
@@ -1368,6 +1414,40 @@ mod tests {
         // Sanity: just assert the verdict.
         let _ = &mut state;
         assert_eq!(cdcl_solve(&cs, 4), BoolResult::Sat);
+    }
+
+    // === T0 (rc.13) — deadline cascade inside propagate ===
+
+    #[test]
+    fn cdcl_deadline_expired_at_call_returns_unknown() {
+        // Minimal Unsat instance: the engine picks `p`, pushes
+        // at level 1, propagation detects the conflict against
+        // `[¬p]`, and the post-conflict expired-check fires →
+        // `Unknown`.  Without the deadline this same instance
+        // returns `Unsat`, so the discrimination is meaningful.
+        let p = Term::var("propdead_p", Type::bool_());
+        let cs = vec![
+            vec![Lit::pos(p.clone())],
+            vec![Lit::neg(p)],
+        ];
+        let deadline = std::time::Instant::now()
+            - std::time::Duration::from_millis(1);
+        let outcome =
+            cdcl_solve_with_model_deadline(&cs, usize::MAX, Some(deadline));
+        assert!(matches!(outcome, CdclOutcome::Unknown));
+    }
+
+    #[test]
+    fn cdcl_no_deadline_still_decides_simple_instance() {
+        // Regression guard: the new `PropagateOutcome` enum routing
+        // must still report Sat / Unsat for the no-deadline case.
+        let p = Term::var("propdead_no_p", Type::bool_());
+        let cs = vec![
+            vec![Lit::pos(p.clone())],
+            vec![Lit::neg(p)],
+        ];
+        let outcome = cdcl_solve_with_model_deadline(&cs, usize::MAX, None);
+        assert!(matches!(outcome, CdclOutcome::Unsat));
     }
 
     #[test]
