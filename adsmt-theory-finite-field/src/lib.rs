@@ -21,6 +21,7 @@
 
 pub mod bitpacked;
 pub mod bp_polynomial;
+pub mod bp_sat_encoder;
 pub mod buchberger;
 pub mod f4;
 pub mod f4_symbolic;
@@ -31,6 +32,9 @@ pub mod sat_encoder;
 
 pub use bitpacked::BPMonomial;
 pub use bp_polynomial::BPPolynomial;
+pub use bp_sat_encoder::{
+    clause_to_bp_polynomial, cnf_to_bp_generators, decide_sat_via_f4,
+};
 pub use buchberger::{buchberger, contains_one};
 pub use f4::{contains_one_bp, f4, f4_round, gauss_reduce_gf2, BitRow};
 pub use f4_symbolic::{
