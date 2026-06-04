@@ -9,3 +9,4 @@ description = "HOL+HKT kernel: terms, types, kinds, and the 12 inference rules"
 thiserror.workspace = true
 smallvec.workspace = true
 indexmap.workspace = true
+scc.workspace = true

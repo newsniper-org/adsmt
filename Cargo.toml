@@ -86,6 +86,12 @@ serde_json = "1.0.149"
 clap = { version = "4.6", features = ["derive"] }
 smallvec = "1.13"
 indexmap = "2.6"
+# Hash-consing cache backbone (lock-free read-optimised HashIndex
+# + EBR weak-ref reclamation).  Used by adsmt-core::term to give
+# `Term` the identity-on-Arc property required by the verus-fork
+# refactor §2.3 follow-up and by the GF(2) meta-tracing JIT
+# (§3.2) guard machinery.
+scc = "3"
 # v1.0.0-rc.1 RC1.4.A — workspace deps inherited from the
 # logicutils sub-workspace so absorbed crates can keep
 # `workspace = true` references.

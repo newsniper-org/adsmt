@@ -1,8 +1,10 @@
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Weak};
 
 use indexmap::IndexMap;
+use scc::HashIndex;
 
 use crate::error::{KernelError, KernelResult};
 use crate::ty::{TyVar, Type};
@@ -38,13 +40,104 @@ pub enum TermInner {
 
 /// A term in HOL+HKT.
 ///
-/// Cloning a `Term` is one `Arc::clone` (a single refcount bump);
-/// the term tree itself is structurally shared between clones.
-/// Structural `PartialEq` / `Eq` / `Hash` are derived through the
-/// underlying [`TermInner`]; α-equivalence is a separate method
-/// ([`Term::alpha_eq`]) used by the kernel where appropriate.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Every `Term` allocation goes through a global hash-cons cache
+/// (see [`intern`]).  Structurally equal `Term`s therefore share
+/// the *same* underlying `Arc<TermInner>` — i.e. `==` is pointer
+/// equality (`Arc::ptr_eq`), and `Hash` hashes that pointer.  Both
+/// are O(1) regardless of tree depth; this is what closes the
+/// `gather_subterms` O(N²) hotspot the verus-fork
+/// `2026-06-04-engine-refactor-and-meta-compiler.md` request §1
+/// localised.  α-equivalence is a separate method
+/// ([`Term::alpha_eq`]) — `==` does NOT see through bound-variable
+/// renaming.
+///
+/// Cloning a `Term` is one `Arc::clone` (a single atomic refcount
+/// bump); the term tree itself is structurally shared between
+/// clones AND between independently constructed structurally-equal
+/// terms.
+#[derive(Clone, Debug)]
 pub struct Term(pub(crate) Arc<TermInner>);
+
+// ── Hash-cons cache ─────────────────────────────────────────────
+//
+// `scc::HashIndex` is the read-optimised lock-free hashmap from
+// the `sdd` epoch-reclamation library; `update` clones the value
+// under the hood so old readers keep a consistent view while we
+// install a new `Weak`.  The cache stores `Weak<TermInner>` so an
+// otherwise unreferenced sub-term gets reclaimed by Rust's normal
+// `Arc` lifetime — the dead entry is replaced lazily on the next
+// `intern` of the same structure.
+
+static TERM_CACHE: LazyLock<HashIndex<TermInner, Weak<TermInner>>> =
+    LazyLock::new(HashIndex::new);
+
+/// Canonicalise `inner` against the global hash-cons cache and
+/// return the shared [`Arc<TermInner>`].  Re-running `intern` with
+/// a structurally equal `TermInner` returns the exact same `Arc`
+/// (`Arc::ptr_eq` holds), so downstream `Term` equality and
+/// hashing collapse to constant-time pointer ops.
+fn intern(inner: TermInner) -> Arc<TermInner> {
+    use scc::hash_index::Entry;
+    // Fast path: lock-free `peek_with` upgrades the live Weak
+    // without acquiring the bucket's writer lock.  Covers the
+    // common case where the structurally equal Term is already
+    // interned.
+    if let Some(live) = TERM_CACHE
+        .peek_with(&inner, |_, weak: &Weak<TermInner>| weak.upgrade())
+        .and_then(|opt| opt)
+    {
+        return live;
+    }
+    // Slow path: acquire the bucket's writer lock via `entry_sync`
+    // to atomically either (a) read the live entry someone else
+    // installed since the `peek_with`, (b) replace a dead Weak with
+    // a freshly allocated Arc, or (c) insert a brand-new entry.
+    match TERM_CACHE.entry_sync(inner) {
+        Entry::Occupied(mut occupied) => {
+            if let Some(live) = occupied.get().upgrade() {
+                live
+            } else {
+                let new_arc = Arc::new(occupied.key().clone());
+                occupied.update(Arc::downgrade(&new_arc));
+                new_arc
+            }
+        }
+        Entry::Vacant(vacant) => {
+            let new_arc = Arc::new(vacant.key().clone());
+            vacant.insert_entry(Arc::downgrade(&new_arc));
+            new_arc
+        }
+    }
+}
+
+/// Total number of cache entries (live or dead-weak).  Test-only
+/// observability hook; not part of the public surface.
+#[doc(hidden)]
+pub fn __cache_len() -> usize {
+    TERM_CACHE.len()
+}
+
+// ── Identity equality / pointer hash ────────────────────────────
+
+impl PartialEq for Term {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Term {}
+
+impl Hash for Term {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash the canonical Arc pointer; structurally equal Terms
+        // share one Arc thanks to interning, so the pointer hash
+        // *is* the structural hash.
+        let ptr = Arc::as_ptr(&self.0) as usize;
+        ptr.hash(state);
+    }
+}
 
 impl Term {
     /// Return the underlying [`TermInner`] for pattern matching.
@@ -73,16 +166,16 @@ impl Deref for Term {
 #[allow(non_snake_case)]
 impl Term {
     pub fn Var(v: Arc<Var>) -> Term {
-        Term(Arc::new(TermInner::Var(v)))
+        Term(intern(TermInner::Var(v)))
     }
     pub fn Const(c: Arc<Const>) -> Term {
-        Term(Arc::new(TermInner::Const(c)))
+        Term(intern(TermInner::Const(c)))
     }
     pub fn App(f: Term, x: Term) -> Term {
-        Term(Arc::new(TermInner::App(f, x)))
+        Term(intern(TermInner::App(f, x)))
     }
     pub fn Lam(v: Arc<Var>, body: Term) -> Term {
-        Term(Arc::new(TermInner::Lam(v, body)))
+        Term(intern(TermInner::Lam(v, body)))
     }
 }
 
@@ -885,5 +978,67 @@ mod tests {
         assert!(Term::mk_not(x.clone()).is_err());
         assert!(Term::mk_and(x.clone(), p.clone()).is_err());
         assert!(Term::mk_and(p.clone(), x).is_err());
+    }
+
+    // === Hash-cons (scc::HashIndex) interning ===
+
+    #[test]
+    fn hashcons_var_shares_arc_across_independent_constructions() {
+        let x1 = Term::var("hashcons_x", int_());
+        let x2 = Term::var("hashcons_x", int_());
+        assert!(Arc::ptr_eq(&x1.0, &x2.0));
+        // `==` is now pointer equality and must agree with `ptr_eq`.
+        assert_eq!(x1, x2);
+    }
+
+    #[test]
+    fn hashcons_distinct_vars_have_distinct_arcs() {
+        let x = Term::var("hashcons_distinct_x", int_());
+        let y = Term::var("hashcons_distinct_y", int_());
+        assert!(!Arc::ptr_eq(&x.0, &y.0));
+        assert_ne!(x, y);
+    }
+
+    #[test]
+    fn hashcons_app_canonicalises_through_children() {
+        let f1 = Term::var("hashcons_app_f", Type::fun(int_(), int_()).unwrap());
+        let a1 = Term::var("hashcons_app_a", int_());
+        let app1 = Term::app(f1, a1).unwrap();
+        let f2 = Term::var("hashcons_app_f", Type::fun(int_(), int_()).unwrap());
+        let a2 = Term::var("hashcons_app_a", int_());
+        let app2 = Term::app(f2, a2).unwrap();
+        assert!(Arc::ptr_eq(&app1.0, &app2.0));
+    }
+
+    #[test]
+    fn hashcons_hash_matches_ptr_for_equal_terms() {
+        use std::collections::hash_map::DefaultHasher;
+        let x1 = Term::var("hashcons_hash_x", int_());
+        let x2 = Term::var("hashcons_hash_x", int_());
+        let mut h1 = DefaultHasher::new();
+        x1.hash(&mut h1);
+        let mut h2 = DefaultHasher::new();
+        x2.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+    }
+
+    #[test]
+    fn hashcons_clone_is_arc_clone() {
+        let x = Term::var("hashcons_clone_x", int_());
+        let y = x.clone();
+        assert!(Arc::ptr_eq(&x.0, &y.0));
+    }
+
+    #[test]
+    fn hashcons_subst_result_canonicalises() {
+        // Substituting `x ↦ y` into the term `x` should produce the
+        // canonical `Term::var("y", Int)` Arc — same as constructing
+        // it fresh.
+        let x = Arc::new(Var { name: "hashcons_subst_x".into(), ty: int_() });
+        let y_fresh = Term::var("hashcons_subst_y", int_());
+        let mut sigma = IndexMap::new();
+        sigma.insert(x.clone(), y_fresh.clone());
+        let result = Term::Var(x).subst(&sigma).unwrap();
+        assert!(Arc::ptr_eq(&result.0, &y_fresh.0));
     }
 }
