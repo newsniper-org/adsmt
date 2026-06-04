@@ -1,6 +1,6 @@
 ---
 name: verus-fork integration as lu-smt's primary downstream
-description: Verus fork (~/verus-fork) consumes lu-smt as an SMT backend via `verus -V adsmt`; rc.7–rc.10 driven by closing the gap so a full Verus session ingests end-to-end. 2026-06-04 engine-refactor request landed in full (R1+R2+R3+§2.3 hash-cons via scc::HashIndex 3.7.1) — `Term` now hash-consed with `Arc::ptr_eq` identity and O(1) Hash. §3 meta-compiler 4-layer (shared GF(2) Gröbner kernel between §3.2 JIT guards and §3.4 decidable theory sibling) acknowledged; uncommitted. Awaiting verus-fork P-vb.8.A smoke retry.
+description: Verus fork (~/verus-fork) consumes lu-smt as an SMT backend via `verus -V adsmt`; the rc.7→rc.15 arc has been driven by closing the gap end-to-end. rc.10 landed R1+R2+R3+§2.3 hash-cons; rc.12 landed T0 deadline cascade; rc.13/14 landed §3.4 Buchberger+F4 + FiniteFieldTheory plugin; rc.15 closed §3.1.A→§3.1.D AOT prelude bank end-to-end + §3.2/§3.3 skeletons + CLI surface for §3.4. rc.15 5-mode smoke matrix retry localised the `~5.3 s` floor *inside `(check-sat)` itself* (Mode C `--aot-load` invariance vs Mode A baseline = strongest possible signal). 2026-06-04 verus-fork filed §3.5 JIT-on-AOT-prelude design (`.luart-cdcl` v1 + CdclTracer + GF(2) algebraic-guard replay); adsmt-side §3.5 ack mirrored 2026-06-04 (commit `b484369`). Pending — both sides: T0' finer-grained deadline cascade inside CDCL inner work between `propagate_two_watched` calls.
 type: project
 originSessionId: 32a1dc0d-7730-4862-8df4-6958199ce84f
 ---
@@ -203,3 +203,136 @@ pointer identity makes guards like "this App head is `+`" or
 (canonical-structure half already exists post hash-cons; the
 missing piece is the `prelude-<sha>.luart` mmap surface).
 **Nothing in §3 gates v1.0.0 stable** per our reply.
+
+## rc.11 → rc.15 cycle (2026-06-04 → 2026-06-05) — what landed
+
+| RC | what | commit(s) |
+|---|---|---|
+| rc.11 | bump + memory sync | `d146a82` + `545a547` |
+| rc.12 | (get-info :reason-unknown) Z3-canonical mapping + T0 deadline cascade inside `propagate_two_watched` inner loop | `05a3214` (parser+dispatcher), `a3aa4e4` (bump), `c5964db` (T0) |
+| rc.13 | §3.4 Buchberger v0 (dense Gröbner-basis decider in `adsmt-theory-finite-field`) | `bde2f8c` → `98159c1` + `db05c14` (bump) |
+| rc.14 | §3.4 F4 v1 (bit-packed Gröbner) + `FiniteFieldTheory` plugin via `Combination::register` + `Solver::with_finite_field` builder + budget-exhaustion `force_check` hook + §3.1 AOT prelude bank counter-proposal filed | `3ecf7eb` → `cada5a3`, `5ca3de7`, `8ba77e1`, `af04b6e` (bump) |
+| rc.15 | T1.1/T1.2 §3.4 CLI surface + §3.1.A→§3.1.D end-to-end + §3.2 + §3.3 skeletons + docs + §3.5 ack | see breakdown below |
+
+### rc.15 commit breakdown
+
+| sub-cycle | commit | scope |
+|---|---|---|
+| T1.1 | `e0e3f77` | `--finite-field-periodic <N>` + `--finite-field-budget-exhaustion` CLI flags |
+| T1.2 | `50931f2` | `(set-option :finite-field-…)` mid-session SMT-LIB handler with auto-register on first call |
+| §3.1.A | `a547a5b` + `0eebf57` | `adsmt-aot` scaffold + `.luart` v0 writer (header + topo-sorted Term pool + assertion list with per-axiom `qid: Option<String>`) |
+| §3.1.B | `699bd5b` | `lu-smt --aot-bake / --aot-output / --aot-sha` CLI |
+| §3.1.C | `941163d` | `.luart` v0 reader + Term-DAG reconstruction (hash-cons re-intern) + minimal `Type::Display` inverse parser |
+| §3.1.D | `38fd8ee` | `Solver::with_aot_prelude(ReconstructedPrelude)` builder + `intern_external(&Term) -> Term` adsmt-aot helper + `lu-smt --aot-load` CLI (mutually exclusive with `--aot-bake`); driver mirrors prelude into `assertions` ledger so `(get-unsat-core)` / `--audit-json` see prelude axioms |
+| §3.2 | `d11aafb` | `adsmt-jit` crate skeleton: `JitGuard` (PolyInvariant via shared GF(2) `reduce` / EquivClass / SkeletonShape depth-3) + `JitCache::lookup` + `Trace { key, guards, kernel_id }`. Recorder + dynasm-rs compiled-kernel emit deferred to follow-up |
+| §3.3 | `52efc77` | `adsmt-stalmarck` crate skeleton: `Lit` + `ImplicationGraph` (BTreeMap adjacency for deterministic iteration) + `Saturator::saturate_simple` transitive closure + `detect_contradiction` BFS witness. n-saturation dilemma rule deferred |
+| rc.15 bump | `c53ec60` | workspace + 7 path-dep manifests + Cargo.lock |
+| docs | `2b4d2da`, `34dba51` | README + PORTFOLIO + 4-lang CLI cheatsheet + doc-link fixes |
+
+### rc.15 5-mode smoke matrix retry (verus-fork side, 2026-06-04)
+
+verus-fork ran a 5-mode matrix on the rc.15 build against
+`verus_smoke.rs` (`verus! { fn main() {} }`):
+
+| mode | `--finite-field-budget-exhaustion` | `--finite-field-periodic` | `--aot-load` | rlimit 1 s | rlimit 5 s | rlimit 7 s |
+|---|---|---|---|---|---|---|
+| **A** baseline           | ✗ | 0 | ✗ | 5 221 ms / unknown | 5 352 ms / unknown | 60 002 ms / timeout |
+| **B** F4 budget hook     | ✓ | 0 | ✗ | 5 249 ms / unknown | 5 451 ms / unknown | 60 002 ms / timeout |
+| **C** AOT-loaded prelude | ✗ | 0 | ✓ | 5 807 ms / unknown | 5 950 ms / unknown | 60 002 ms / timeout |
+| **D** AOT + F4 hook      | ✓ | 0 | ✓ | 5 854 ms / unknown | 5 937 ms / unknown | 60 002 ms / timeout |
+| **E** F4 periodic 16     | ✗ | 16 | ✗ | 5 208 ms / unknown | 5 407 ms / unknown | 60 002 ms / timeout |
+
+**Diagnostic — load-bearing**: Mode C (`--aot-load`,
+5-line per-query trailer) lands on the *same* `~5.3-5.9 s` floor
+as Mode A's full 1071-line transcript replay.  This is the
+**strongest possible signal** that the floor lives *inside
+`(check-sat)` itself* — not in parser / declare / assert /
+CNF-flatten / theory-init.  Bake itself is cheap (19 ms for the
+verus_smoke prelude).
+
+§3.1 AOT bank works as designed but does not lift the floor;
+§3.4 F4 plugin via CLI works as designed but the deadline cascade
+catches before the budget-exhaustion hook gets to run.  The
+remaining hot path is *inside CDCL between deadline checks*:
+T0 (rc.12) added a check inside `propagate_two_watched` but the
+work *between* two consecutive calls (conflict analysis,
+clause-learning insertion, VSIDS bumps, restart housekeeping,
+post-backjump unit-prop) runs unmodulated on prelude-sized clause
+sets.
+
+### §3.5 JIT-on-AOT-prelude request (2026-06-04, status: adsmt-side ack mirrored)
+
+Request file:
+`.local-requests-from/verus-fork/2026-06-04-3.5-jit-on-aot-prelude.md`.
+
+Reply filed: `.local-replies-to/verus-fork/2026-06-04-3.5-jit-on-aot-prelude-ack.md`
+(commit `b484369`), mirrored via `just mirror-local-replies-to
+verus-fork ~/verus-fork/.local-replies-from/adsmt/`.
+
+§3.5 = **combination sub-cycle** between §3.1 v0 (Term-DAG bake)
+and §3.2 skeleton's eventual fully-traced CDCL.  Three layers:
+
+1. **`.luart-cdcl` v1 format** — extends v0 `.luart` with a CDCL
+   section: `flatten_version` + post-flatten clause vec + initial
+   BCP trail + two-watched index + VSIDS activity + phase-save
+   polarities.  Atom references stay v0 pool indices.  v0 readers
+   ignore trailing v1 bytes (additive shape).
+2. **`adsmt-jit::CdclTracer`** — hooks `propagate_two_watched` /
+   `analyze_conflict_1uip` / `cdcl_solve_with_model`'s decision
+   branch.  Records event stream `Propagate / Conflict / Backjump
+   / Decide / Restart` (Restart load-bearing — Luby-restart
+   without it breaks soundness).
+3. **Trace replay at `(check-sat)`** — validates the trace's GF(2)
+   algebraic signature against the per-query basis delta; if all
+   relations + equivalence classes survive, replay events
+   wholesale, else fall back to full CDCL.
+
+### §3.5 ack key decisions (our reply)
+
+- **`.luart-cdcl` header**: recommend adding `lu_smt_binary_sha256:
+  [u8; 32]` next to `flatten_version` — catches Rust-toolchain /
+  compile-flag drift the source-level knob misses.  Computed via
+  `current_exe()` + SHA-256, cached in `OnceCell`.
+- **`watch_count`**: u64 (matches v0 `pool_len` / `assert_len`),
+  inner `watching_clauses: Vec<u32>` element type.  Optional
+  future-proofing gate: `0x00`/`0x01` element-type discriminator
+  byte for v2 expansion.
+- **Trace event vocabulary**: `Propagate / Conflict / Backjump /
+  Decide / Restart` = 5 events.  Restart added (Luby soundness).
+  `Learn` implicit in `Conflict { learnt }`; `Forget` =
+  cache-management, not soundness, so v0 ships without.
+- **GF(2) signature timing**: hybrid — end-of-trace **mandatory**
+  + checkpoint at **phase transitions** (Restart, high-LBD
+  Conflict, scope-0 Backjump).  v0 ships end-only; checkpoints
+  unlock partial-replay fallback in v1.E.  Snapshots reuse
+  `FiniteFieldTheory::force_check`'s existing basis output, no
+  new GF(2) cost.
+- **Vocabulary reuse**: share *guard* surface (`JitGuard` /
+  `GuardResult` / `check_guard` / `JitCache`); split *event*
+  surface — new `adsmt-jit::cdcl` submodule with
+  `CdclTraceEvent` / `CdclTrace` / `CdclCheckpoint` /
+  `GF2Snapshot`.  Bytecode-trace and CDCL-trace have different
+  replay semantics.
+- **§3.5.A**: lives in `adsmt-aot` next to existing v0 sections
+  (no new crate — cache-key / SHA computation stays in one place).
+- **§3.5.B**: `--aot-bake --aot-include-cdcl` composable flag
+  rather than a new `--aot-bake-with-cdcl` mode.
+- **T0' counter-ask**: adsmt-side will land T0'.1 (deadline check
+  inside `analyze_conflict_1uip`) + T0'.2 (inside learnt-clause
+  insertion + activity bookkeeping) + T0'.3 (inside post-backjump
+  unit-prop) **in parallel** with §3.5.A — independent value,
+  shrinks the silent-CDCL-give-up window even without JIT replay.
+
+### Updated §6 ledger (rc.15 cycle)
+
+| date | side | event |
+|---|---|---|
+| 2026-06-04 | adsmt | T1.1 (`e0e3f77`) + T1.2 (`50931f2`) §3.4 CLI surface |
+| 2026-06-04 | adsmt | §3.1.A→§3.1.D end-to-end (`a547a5b` + `0eebf57` + `699bd5b` + `941163d` + `38fd8ee`) — bake/load round-trip works, smoke confirmed (prelude UNSAT and SAT cases) |
+| 2026-06-04 | adsmt | §3.2 skeleton (`d11aafb`) + §3.3 skeleton (`52efc77`) |
+| 2026-06-04 | adsmt | workspace bump to testing `1.0.0-rc.15` (`c53ec60`) + docs refresh (`2b4d2da`, `34dba51`) |
+| 2026-06-04 | verus-fork | `EXPECTED_ADSMT_VERSION` rc.14 → rc.15 + 5-mode smoke matrix retry — all 5 modes hit the same `~5.3 s` floor; Mode C invariance localises floor inside `(check-sat)` |
+| 2026-06-04 | verus-fork | §3.5 JIT-on-AOT-prelude design filed at `.local-requests-to/adsmt/2026-06-04-3.5-jit-on-aot-prelude.md` |
+| 2026-06-04 | adsmt | §3.5 ack at `.local-replies-to/verus-fork/2026-06-04-3.5-jit-on-aot-prelude-ack.md` (commit `b484369`); recommends binary-SHA in `.luart-cdcl` header, Restart added to event vocab, hybrid signature timing, vocabulary reuse split |
+| (pending) | both | T0' deadline-cascade refinement (analyze_conflict_1uip + learnt-clause insertion + post-backjump unit-prop) — adsmt side will land in parallel with §3.5.A |
+| (pending) | verus-fork | §3.5 ack response — confirm parallel T0' + §3.5.A sequencing, ack `.luart-cdcl` header extension, ack new `adsmt-jit::cdcl` submodule split |
