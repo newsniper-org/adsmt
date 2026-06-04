@@ -20,5 +20,7 @@
 //! upgrade is additive.
 
 pub mod monomial;
+pub mod polynomial;
 
 pub use monomial::{Monomial, MonomialOrder};
+pub use polynomial::Polynomial;
