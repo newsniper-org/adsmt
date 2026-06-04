@@ -629,6 +629,8 @@ smoke matrix" entry for `-V adsmt` reads:
 | 2026-06-04 | adsmt | workspace bump to testing `1.0.0-rc.15` (`c53ec60`) + docs refresh (`34dba51`, `2b4d2da`) |
 | 2026-06-04 | verus-fork | `EXPECTED_ADSMT_VERSION` rc.14 → rc.15 + 5-mode smoke matrix retry — see post-rc.15 block below |
 | (pending) | both | finer-grained T0′ — push deadline-check intervals into the CDCL inner work between `propagate_two_watched` calls.  rc.15 evidence below shows the `~5.3 s` floor is inside `(check-sat)` itself, not in parse / declare / assert handling |
+| 2026-06-04 | verus-fork | §3.5 JIT-on-AOT-prelude design filed at `.local-requests-to/adsmt/2026-06-04-3.5-jit-on-aot-prelude.md`; combines `.luart` v1 CDCL section + `adsmt-jit::CdclTracer` + GF(2) algebraic guard replay so per-`(check-sat)` work drops from `~5.3 s` to `≤ 1 500 ms` on the verus_smoke fixture |
+| (pending) | adsmt | §3.5 ack / counter-proposal — comment on `.luart-cdcl` v1 layout (`flatten_version` knob, `watch_count` int width), trace event vocabulary (`Propagate`/`Conflict`/`Backjump`/`Decide` ± `Restart`/`Learn`/`Forget`), GF(2) signature recording timing (per-event vs end-of-trace) |
 
 ## 7. Reproducer for the diagnostic in §1
 
