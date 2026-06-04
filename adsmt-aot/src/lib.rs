@@ -60,11 +60,16 @@
 
 pub mod format;
 pub mod pool;
+pub mod reader;
 pub mod writer;
 
 pub use format::{LuartHeader, Tag, LUART_MAGIC, LUART_VERSION};
 pub use pool::{
     write_assertion, write_luart, write_pool_entry, Assertion,
     AssertionEntry, PoolBuilder, PoolEntry,
+};
+pub use reader::{
+    parse_type, read_luart, reconstruct, LuartFile, ReadError,
+    ReconstructedPrelude,
 };
 pub use writer::{topo_check, write_header, WriteError};
