@@ -20,7 +20,7 @@ adsmt-theory.workspace = true
 # ranking type's fields by name without going through engine privacy.
 adsmt-abduce.workspace = true
 # dead-pattern audit JSON for --audit-json.
-adsmt-lints = { version = "=1.0.0-rc.10", path = "../adsmt-lints" }
+adsmt-lints = { version = "=1.0.0-rc.11", path = "../adsmt-lints" }
 clap.workspace = true
 # Serialises ranked abductive candidates to stdout — one single-line
 # JSON object per check-sat that returned `Abductive`.
