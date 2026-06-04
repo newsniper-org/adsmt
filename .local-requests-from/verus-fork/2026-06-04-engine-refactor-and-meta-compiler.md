@@ -512,6 +512,81 @@ the CLI surface landing.  §3.1 AOT prelude bank is the highest-
 leverage next step — `~5.3 s` per-query setup cost is exactly
 the per-`(check-sat)` cost the prelude bank eliminates.
 
+### Smoke matrix retry (2026-06-04, rc.15, five modes)
+
+`rc.15` ships:
+
+- T1.1 — `--finite-field-periodic <N>` / `--finite-field-budget-exhaustion` CLI flags (commit `e0e3f77`).
+- T1.2 — `(set-option :finite-field-…)` mid-session SMT-LIB handler (commit `50931f2`).
+- §3.1.A → §3.1.D — full AOT prelude bank stack: `adsmt-aot` crate (scaffold + writer + reader) + `lu-smt --aot-bake` / `--aot-output` / `--aot-sha` / `--aot-load` CLI surface + `Solver::with_aot_prelude` + `intern_external` adsmt-core API (`a547a5b` / `0eebf57` / `699bd5b` / `941163d` / `38fd8ee`).
+- §3.2 — `adsmt-jit` meta-tracing skeleton with algebraic guards (`d11aafb`).
+- §3.3 — `adsmt-stalmarck` simple-rule pre-saturation skeleton (`52efc77`).
+
+The §3.1.A → §3.1.D CLI surface matches verus-fork's
+`§3.1` ack to the letter: `--aot-output <PATH>` accepts any
+writable path (no fixed naming convention), `--aot-sha` defaults
+to SHA-256 of the input bytes, `--aot-bake` and `--aot-load` are
+mutually exclusive, and the v0 `.luart` payload preserves
+`qid: Option<String>` per axiom.  Bake on the verus_smoke
+prelude (1060 lines) → `66 161` bytes `.luart` in **19 ms** —
+the AOT artifact itself is cheap.
+
+All five modes hit the **same 5–7 s threshold** the rc.14 retry
+identified.  The threshold has not moved — but the spread across
+modes localises *why*.
+
+| mode | `--finite-field-budget-exhaustion` | `--finite-field-periodic` | `--aot-load` | rlimit 1 s | rlimit 5 s | rlimit 7 s |
+|---|---|---|---|---|---|---|
+| **A** baseline           | ✗ | 0 | ✗ | 5 221 ms / unknown / canceled | 5 352 ms / unknown / canceled | 60 002 ms / `timeout(1)` |
+| **B** F4 budget hook     | ✓ | 0 | ✗ | 5 249 ms / unknown / canceled | 5 451 ms / unknown / canceled | 60 002 ms / `timeout(1)` |
+| **C** AOT-loaded prelude | ✗ | 0 | ✓ | 5 807 ms / unknown / canceled | 5 950 ms / unknown / canceled | 60 002 ms / `timeout(1)` |
+| **D** AOT + F4 hook      | ✓ | 0 | ✓ | 5 854 ms / unknown / canceled | 5 937 ms / unknown / canceled | 60 002 ms / `timeout(1)` |
+| **E** F4 periodic 16     | ✗ | 16 | ✗ | 5 208 ms / unknown / canceled | 5 407 ms / unknown / canceled | 60 002 ms / `timeout(1)` |
+
+Driver-level (`./source/target-verus/release/verus -V adsmt`
+with `VERUS_ADSMT_PATH=~/AD1/target/release/lu-smt`) at rc.15:
+1 s → 5 522 ms / clean `Resource limit (rlimit) exceeded`; 5 s
+→ 60 010 ms / `timeout(1)`.
+
+### Diagnostic read-out (rc.15)
+
+- **§3.1 AOT bank works as designed but does not lift the
+  floor**.  Mode C (AOT-loaded prelude, per-query input is the
+  5-line trailer `(get-info :version) / (set-option :rlimit) /
+  (check-sat) / (set-option :rlimit 0) / (get-info :reason-unknown)`)
+  produces the same `~5.3-5.9 s` wall as Mode A's full 1071-line
+  transcript replay.  This is the **strongest possible signal**
+  that the `~5.3 s` floor is *inside* `(check-sat)` itself — not
+  in parser / declare / assert / CNF-flatten / theory-init.
+- **§3.4 F4 plugin via CLI works as designed but cannot help
+  this fixture**.  Mode B's budget-exhaustion hook fires *after*
+  the deadline cascade — but the deadline cascade is what gets
+  stuck inside the CDCL inner loop at rlimit ≥ 7 s, so the hook
+  never gets a chance to run a final F4 pass.  Mode E's periodic
+  pass runs on the theory-check schedule, which the CDCL inner
+  loop doesn't reach either.  Both observations are consistent
+  with the rc.14 read-out: the work is genuinely CPU-bound
+  inside the CDCL inner work between `propagate_two_watched`
+  deadline checks.
+- **The remaining hot path is inside CDCL between deadline
+  checks** — the T0 commit (`c5964db`) at rc.12 added a check
+  inside `propagate_two_watched`, but the work *between* two
+  consecutive `propagate_two_watched` calls (conflict analysis,
+  clause-learning insertion, VSIDS bumps, restart housekeeping,
+  unit propagation on the just-learnt clause) runs unmodulated
+  on prelude-sized clause sets.  At rlimit = 5 s the deadline
+  expires before that block starts (catching at `~5.3 s` wall);
+  at rlimit = 7 s the deadline expires *during* that block
+  (after the first `propagate_two_watched` returns) and the next
+  deadline check doesn't fire until the next iteration of the
+  outer CDCL loop reaches `propagate_two_watched` again.
+
+The next high-leverage step is a **finer-grained T0′** —
+deadline-check intervals threaded through `analyze_conflict_1uip`,
+`learnt_clauses.push` + activity bookkeeping, and the
+post-backjump unit-propagation kick.  This is what the §6 ledger
+row marks "pending — both".
+
 ### Hand-off to the § 3 sub-cycles
 
 The smoke retry has surfaced everything it was going to.  The
@@ -543,7 +618,17 @@ smoke matrix" entry for `-V adsmt` reads:
 | 2026-06-04 | adsmt | §3.1 AOT prelude bank counter-proposal filed at `.local-replies-to/verus-fork/2026-06-04-3.1-aot-prelude-bank-self-initiate.md` — proposes `lu-smt --aot-bake` / `--aot-load` + `.luart` v0 binary layout; asks verus-fork to ack CLI shape + build-cache convention + SHA scheme |
 | 2026-06-04 | verus-fork | `EXPECTED_ADSMT_VERSION` rc.12 → rc.14 + smoke matrix retry — results below |
 | 2026-06-04 | verus-fork | §3.1 counter-proposal ack at `.local-replies-to/adsmt/2026-06-04-3.1-aot-prelude-bank-ack.md` — ack CLI shape, build-cache `target-verus/{debug,release}/aot/prelude-<sha>-<lu_smt_version>.luart`, SHA-256 of prelude text, reserve `qid: Option<String>` per axiom in `.luart` v0 |
-| (pending) | adsmt | open §3.1.A → §3.1.E sub-cycle per the ack; cross-link with that cycle's tracking file |
+| 2026-06-04 | adsmt | T1.1 — `--finite-field-periodic` / `--finite-field-budget-exhaustion` CLI flags (AD1 commit `e0e3f77`) |
+| 2026-06-04 | adsmt | T1.2 — `(set-option :finite-field-…)` SMT-LIB handler (AD1 commit `50931f2`) |
+| 2026-06-04 | adsmt | §3.1.A — `adsmt-aot` scaffold + `.luart` v0 header writer + topo-sort guard (`a547a5b`) + pool builder + entry writer + `write_luart` (`0eebf57`) |
+| 2026-06-04 | adsmt | §3.1.B — `lu-smt --aot-bake / --aot-output / --aot-sha` CLI surface (`699bd5b`) — quote: "Per the verus-fork ack §8.2: callers are free to encode the build-cache filename convention on their side — lu-smt itself accepts any writable path" |
+| 2026-06-04 | adsmt | §3.1.C — `.luart` v0 reader + Term-DAG reconstruction (`941163d`) |
+| 2026-06-04 | adsmt | §3.1.D — `Solver::with_aot_prelude` + `intern_external` adsmt-core API + `lu-smt --aot-load` (`38fd8ee`) |
+| 2026-06-04 | adsmt | §3.2 — `adsmt-jit` meta-tracing JIT skeleton with algebraic guards (`d11aafb`) |
+| 2026-06-04 | adsmt | §3.3 — `adsmt-stalmarck` simple-rule pre-saturation skeleton (`52efc77`) |
+| 2026-06-04 | adsmt | workspace bump to testing `1.0.0-rc.15` (`c53ec60`) + docs refresh (`34dba51`, `2b4d2da`) |
+| 2026-06-04 | verus-fork | `EXPECTED_ADSMT_VERSION` rc.14 → rc.15 + 5-mode smoke matrix retry — see post-rc.15 block below |
+| (pending) | both | finer-grained T0′ — push deadline-check intervals into the CDCL inner work between `propagate_two_watched` calls.  rc.15 evidence below shows the `~5.3 s` floor is inside `(check-sat)` itself, not in parse / declare / assert handling |
 
 ## 7. Reproducer for the diagnostic in §1
 
