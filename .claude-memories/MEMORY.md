@@ -4,10 +4,14 @@
 - [Design conversation pointer](design_conversation.md) — full design decisions live in .claude-conversations/
 - [Ask before writing copyright notices](feedback_copyright_holder.md) — never invent / guess copyright holder names; ask first
 - [Split oxiz bindings by surface](feedback_oxiz_bindings_split.md) — language bindings split into core (oxiz proper) vs contrib-* (our contribution crates)
-- [adsmt cycle vs Cargo version](project_cycle_versioning.md) — code-comment "vX.Y" markers are Cargo minor versions; current is 0.21 (opened 2026-05-29; all autonomous tasks landed; v1.0 transition decisions all made by 2026-05-30)
+- [adsmt cycle vs Cargo version](project_cycle_versioning.md) — code-comment "vX.Y" markers are Cargo minor versions; current is 1.0.0-rc.10 (2026-06-04); rc.7–rc.10 = Verus-driven surface widening + lu-smt placeholder sweep + NNF/Skolem engine pipeline
 - [OxiLean ↔ Lean4 syntax investigation](oxilean_syntax_investigation.md) — 2026-05-28T06:33:48Z snapshot; single `prover_emit::lean` covers both ITPs
 - [prover_emit output policy](prover_emit_policy.md) — Lean = reference; Rocq + Isabelle mirror exactly; Ltac1 fully excluded for Rocq (Ltac2 only); on-demand classical-axiom imports with offline-first hard check
 - [adsmt-contrib out-of-tree workspace](adsmt_contrib_repo.md) — ~/adsmt-contrib hosts adsmt-emit-rocq + adsmt-emit-isabelle; initial commit b8c80ef on 2026-05-29
 - [LSP roadmap + vscode-extension split](lsp_roadmap.md) — 21F.3 = option 4: stabilize → LSP+split → v1.0 RC bump (three-phase sequence)
 - [Stable sign-off requires explicit user approval](feedback_stable_signoff_user_approval.md) — never autonomously bump N.0.0-rc.M → N.0.0; ask first
 - [Cross-project local request inbox](local_requests_inbox.md) — poll `.local-requests-from/<sender>/` for asks from other local projects
+- [v1.0.0 scope expansion](v1_0_0_scope_expansion.md) — 2026-05-31 option A: bundle D1+L1+L2+L3+L4 into v1.0.0 cut; release timeline now leo4-gated; testing channel is consumer line until cut
+- [adsmt-lean-binding out-of-tree workspace](adsmt_lean_binding_repo.md) — ~/adsmt-lean-binding hosts L1/L2/L3 implementation slot; v0.1 skeleton + JSON wire format landed 2026-06-01
+- [L3 callback minimum set](l3_callback_minimum_set.md) — 2026-06-01 user-confirmed union of hints 1+2+3+3-1: AcceptanceFilter (Bool) + Labeller (Option<String>) + CostFunction (u32). Three callbacks, opt-in. Implementation = task 2 after L1 polish + tactic 실장.
+- [verus-fork integration as lu-smt's primary downstream](verus_fork_integration.md) — 2026-06-04 engine-refactor request landed in full at 1.0.0-rc.10: R1+R2+R3 (855c01a/231777a/322308d) + §2.3 hash-cons via scc::HashIndex 3.7.1 (2b765d2); `Term` now has `Arc::ptr_eq` identity + O(1) Hash. Reply mirrored (7b26047). §3 meta-compiler acknowledged but uncommitted. Awaiting verus-fork P-vb.8.A smoke retry.

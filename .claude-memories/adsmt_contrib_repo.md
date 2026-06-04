@@ -47,3 +47,23 @@ mapping. The full policy lives in `prover_emit_policy.md`.
 cd ~/adsmt-contrib && cargo test
 # expect 13 passing across the two crates
 ```
+
+## Channel model (introduced 2026-05-31)
+
+Mirrors adsmt main's Debian-style channels in lockstep:
+
+| Channel | Branch (this repo) | Aligned with adsmt main |
+|---|---|---|
+| `unstable` (sid) | `main` | `main` |
+| `testing` | `testing` (fork point `774edcf`, 2026-05-31) | `testing` (fork point `450b986`) |
+| `stable` | `v1.0.0` tag (cut *after* adsmt main `v1.0.0`) | `v1.0.0` tag |
+
+The `testing` branch was forked from `main` HEAD `774edcf` on
+2026-05-31 per user instruction. Both branches received the
+channel docs commit (`4fbde87` on main; `8c5c1f0` on testing
+— same content, separate hashes from cherry-pick).
+
+Stable cut policy: this repo's `v1.0.0` tag is placed on a
+commit whose `adsmt-cert` / `adsmt-core` git-pin references
+adsmt main's `v1.0.0` tag — i.e., adsmt-contrib's stable
+cut *follows* adsmt main's.
