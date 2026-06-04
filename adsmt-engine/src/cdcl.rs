@@ -52,6 +52,28 @@ use std::collections::HashMap;
 use crate::bool_solver::{luby_sequence, BoolResult};
 use crate::cnf::{Clause, Lit};
 
+/// How often the engine-level deadline is rechecked inside the
+/// CDCL inner work.  Querying `Instant::now` is cheap (a vDSO
+/// syscall on Linux) but compounding it on every single
+/// propagation / resolution step still costs ~50 ns/iter, which
+/// is measurable on the small workspace benchmarks.  256 is the
+/// smallest power of two large enough to disappear into the
+/// bench noise while still being responsive to a 1 ms budget on
+/// a hot host.  Shared by every `*_deadline` function below so
+/// the entire cascade — outer CDCL loop / `propagate_two_watched`
+/// / `analyze_conflict_1uip_deadline` (T0′.1) / learnt-clause
+/// insertion + activity bookkeeping (T0′.2) / post-backjump
+/// unit-prop (T0′.3) — yields on the same cadence.
+const DEADLINE_CHECK_INTERVAL: usize = 256;
+
+/// Returns `true` when the optional deadline has elapsed; the
+/// `None` branch costs zero `Instant::now()` calls so unbudgeted
+/// callers pay nothing for the added arm.  Shared helper for
+/// every `*_deadline` function in this module.
+fn expired(deadline: Option<std::time::Instant>) -> bool {
+    deadline.is_some_and(|dl| std::time::Instant::now() >= dl)
+}
+
 /// v0.21 B.1 stage 4 entry point — layer the canonical Luby
 /// restart schedule on top of [`cdcl_solve`]. Each epoch runs
 /// `cdcl_solve(clauses, base_conflicts * luby_i)` and returns
@@ -119,9 +141,6 @@ pub fn cdcl_with_restarts_with_model_deadline(
     restarts: usize,
     deadline: Option<std::time::Instant>,
 ) -> CdclOutcome {
-    let expired = |d: Option<std::time::Instant>| -> bool {
-        d.is_some_and(|dl| std::time::Instant::now() >= dl)
-    };
     let luby = luby_sequence(restarts);
     for &mult in &luby {
         if expired(deadline) {
@@ -341,17 +360,6 @@ pub fn cdcl_solve_with_model_deadline(
     max_conflicts: usize,
     deadline: Option<std::time::Instant>,
 ) -> CdclOutcome {
-    let expired = |d: Option<std::time::Instant>| -> bool {
-        d.is_some_and(|dl| std::time::Instant::now() >= dl)
-    };
-    // How often the deadline is rechecked.  Querying `Instant::now`
-    // is cheap (a vDSO syscall on Linux) but compounding it on every
-    // single propagation step still costs ~50 ns/iter, which is
-    // measurable on the small workspace benchmarks.  256 is the
-    // smallest power of two large enough to disappear into the
-    // bench noise while still being responsive to a 1 ms budget on
-    // a hot host.
-    const DEADLINE_CHECK_INTERVAL: usize = 256;
     let mut deadline_tick: usize = 0;
 
     let mut state = CdclState::new();
@@ -395,8 +403,18 @@ pub fn cdcl_solve_with_model_deadline(
             if conflicts > max_conflicts { return CdclOutcome::Unknown; }
             if expired(deadline) { return CdclOutcome::Unknown; }
             if state.decision_level == 0 { return CdclOutcome::Unsat; }
+            // T0′.1 — deadline check inside conflict-analysis
+            // resolution loop (verus-fork §3.5 counter-ack,
+            // 2026-06-05).  The pre-T0′ analyzer ran unmodulated
+            // for the duration of a single conflict, which on a
+            // verus-prelude-sized clause set could exceed the
+            // budget without yielding.
             let (learnt, bj_level) =
-                analyze_conflict_1uip(&owned, &state, idx);
+                match analyze_conflict_1uip_deadline(&owned, &state, idx, deadline) {
+                    AnalyzeOutcome::Done { learnt, backjump_level } =>
+                        (learnt, backjump_level),
+                    AnalyzeOutcome::Expired => return CdclOutcome::Unknown,
+                };
             if learnt.is_empty() { return CdclOutcome::Unsat; }
             state.bump_activity(&learnt, vsids_bump);
             state.decay_activity(vsids_decay);
@@ -644,14 +662,11 @@ fn propagate_two_watched(
     clause_bump: f64,
     deadline: Option<std::time::Instant>,
 ) -> PropagateOutcome {
-    let expired = |d: Option<std::time::Instant>| -> bool {
-        d.is_some_and(|dl| std::time::Instant::now() >= dl)
-    };
-    // Match the outer loop's cadence so the deadline is honoured
-    // uniformly regardless of whether the busy work sits in the
-    // outer `loop`, the propagation queue's outer `while`, or the
-    // per-atom `for clause_idx in watched_clauses` inner loop.
-    const PROP_DEADLINE_INTERVAL: usize = 256;
+    // Match the outer loop's cadence (DEADLINE_CHECK_INTERVAL) so
+    // the deadline is honoured uniformly regardless of whether the
+    // busy work sits in the outer `loop`, the propagation queue's
+    // outer `while`, or the per-atom `for clause_idx in
+    // watched_clauses` inner loop.
     let mut prop_steps: usize = 0;
     while state.prop_head < state.trail.len() {
         let entry = state.trail[state.prop_head].clone();
@@ -667,7 +682,7 @@ fn propagate_two_watched(
             .unwrap_or_default();
         for clause_idx in watched_clauses {
             prop_steps = prop_steps.wrapping_add(1);
-            if prop_steps.is_multiple_of(PROP_DEADLINE_INTERVAL)
+            if prop_steps.is_multiple_of(DEADLINE_CHECK_INTERVAL)
                 && expired(deadline)
             {
                 return PropagateOutcome::Expired;
@@ -941,6 +956,143 @@ pub fn analyze_conflict_1uip(
         .unwrap_or(0);
 
     (learnt, backjump_level)
+}
+
+/// Outcome of [`analyze_conflict_1uip_deadline`] — the T0′.1 hook
+/// (verus-fork §3.5 counter-ack, 2026-06-05) that lets the
+/// conflict-analysis inner loop yield control as soon as the
+/// engine-level deadline elapses.  The non-deadline-aware
+/// [`analyze_conflict_1uip`] keeps its existing
+/// `(Vec<Lit>, u32)` return for callers that don't want the
+/// extra cancellation arm.
+#[derive(Debug)]
+pub enum AnalyzeOutcome {
+    /// Conflict analysis finished normally; the caller proceeds
+    /// with `learnt` + `backjump_level` exactly as the pre-T0′
+    /// path did.
+    Done { learnt: Vec<Lit>, backjump_level: u32 },
+    /// `deadline` elapsed during the trail walk; the caller
+    /// should surface `CdclOutcome::Unknown` and exit the CDCL
+    /// loop the same way an outer-loop deadline tick would.
+    Expired,
+}
+
+/// Deadline-aware variant of [`analyze_conflict_1uip`] — T0′.1
+/// per the verus-fork §3.5 counter-ack.  Identical resolution
+/// shape; the only difference is that the trail-walk inner loop
+/// checks `deadline` every [`DEADLINE_CHECK_INTERVAL`] iterations
+/// so a prelude-sized conflict analysis can yield to the budget
+/// instead of running unmodulated to completion.
+///
+/// `deadline = None` short-circuits the cost: no `Instant::now()`
+/// calls at all, so unrestricted callers pay nothing for the
+/// added arm.
+pub fn analyze_conflict_1uip_deadline(
+    clauses: &[Clause],
+    state: &CdclState,
+    conflict_idx: usize,
+    deadline: Option<std::time::Instant>,
+) -> AnalyzeOutcome {
+    use std::collections::HashSet;
+    let current_level = state.decision_level;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut learnt: Vec<Lit> = Vec::new();
+    let mut count_current_level: usize = 0;
+
+    let process_lit = |lit: &Lit, seen: &mut HashSet<String>,
+                           learnt: &mut Vec<Lit>,
+                           count_current_level: &mut usize| {
+        let key = atom_key(lit);
+        if seen.contains(&key) { return; }
+        seen.insert(key.clone());
+        let level = state
+            .trail
+            .iter()
+            .find(|e| e.atom_key == key)
+            .map(|e| e.decision_level)
+            .unwrap_or(0);
+        if level == current_level {
+            *count_current_level += 1;
+        } else if level > 0 {
+            learnt.push(lit.clone());
+        }
+    };
+
+    for lit in &clauses[conflict_idx] {
+        process_lit(lit, &mut seen, &mut learnt, &mut count_current_level);
+    }
+
+    let mut trail_idx = state.trail.len();
+    let mut uip_lit: Option<Lit> = None;
+    let mut deadline_tick: usize = 0;
+    while count_current_level > 1 {
+        deadline_tick = deadline_tick.wrapping_add(1);
+        if deadline_tick.is_multiple_of(DEADLINE_CHECK_INTERVAL)
+            && expired(deadline)
+        {
+            return AnalyzeOutcome::Expired;
+        }
+        if trail_idx == 0 { break; }
+        trail_idx -= 1;
+        let entry = &state.trail[trail_idx];
+        if !seen.contains(&entry.atom_key) { continue; }
+        if entry.decision_level != current_level { continue; }
+        count_current_level -= 1;
+        match entry.reason {
+            Reason::Decision => {
+                uip_lit = Some(Lit::new(
+                    entry_to_atom_term(clauses, entry).unwrap_or_else(
+                        || Lit::pos(any_atom_of_clause(&clauses[conflict_idx])).atom,
+                    ),
+                    !entry.polarity,
+                ));
+                break;
+            }
+            Reason::Propagated { clause_idx } => {
+                let antecedent = &clauses[clause_idx];
+                for lit in antecedent {
+                    if atom_key(lit) == entry.atom_key { continue; }
+                    process_lit(
+                        lit,
+                        &mut seen,
+                        &mut learnt,
+                        &mut count_current_level,
+                    );
+                }
+            }
+        }
+    }
+
+    if uip_lit.is_none() {
+        for entry in state.trail.iter().rev() {
+            if entry.decision_level != current_level { continue; }
+            if !seen.contains(&entry.atom_key) { continue; }
+            uip_lit = Some(Lit::new(
+                term_for_atom_key(clauses, &entry.atom_key)
+                    .expect("atom key must originate in some clause literal"),
+                !entry.polarity,
+            ));
+            break;
+        }
+    }
+
+    if let Some(uip) = uip_lit {
+        learnt.push(uip);
+    }
+
+    let backjump_level = learnt
+        .iter()
+        .filter_map(|l| {
+            state
+                .trail
+                .iter()
+                .find(|e| e.atom_key == atom_key(l))
+                .map(|e| e.decision_level)
+        })
+        .filter(|&lvl| lvl < current_level)
+        .max()
+        .unwrap_or(0);
+    AnalyzeOutcome::Done { learnt, backjump_level }
 }
 
 /// v0.21 B.1 follow-up — compute the Literal Block Distance of
