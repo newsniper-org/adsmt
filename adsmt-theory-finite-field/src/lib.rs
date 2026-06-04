@@ -20,6 +20,7 @@
 //! upgrade is additive.
 
 pub mod bitpacked;
+pub mod bp_polynomial;
 pub mod buchberger;
 pub mod monomial;
 pub mod polynomial;
@@ -27,6 +28,7 @@ pub mod reduction;
 pub mod sat_encoder;
 
 pub use bitpacked::BPMonomial;
+pub use bp_polynomial::BPPolynomial;
 pub use buchberger::{buchberger, contains_one};
 pub use monomial::{Monomial, MonomialOrder};
 pub use polynomial::Polynomial;
