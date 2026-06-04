@@ -443,6 +443,75 @@ fix landed the asymptote it promised; the absolute throughput
 just hasn't crossed the threshold where a trivial `fn main()` 's
 ~10⁵-clause prelude can be discharged inside Verus's defaults.
 
+### Smoke matrix retry (2026-06-04, rc.14, same `verus_smoke.rs`)
+
+`rc.14` ships:
+
+- T0 — `propagate_two_watched` inner-loop deadline cascade
+  (AD1 commit `c5964db`).
+- §3.4 F4 v1 — `adsmt-theory-finite-field` standalone decider +
+  `Combination::register` integration (commits `3ecf7eb` →
+  `af04b6e` on the workspace bump trail).
+
+The F4 plugin is opt-in through `Solver::with_finite_field` and
+is **not** exposed via lu-smt's CLI in rc.14, so the smoke matrix
+exercises only the T0 deadline-cascade extension.
+
+| Verus `--rlimit` (s) | engine `:rlimit` (µs) | wall-clock | exit | verdict on stdout |
+|---|---|---|---|---|
+| 1   | 1 × 10⁶   | **5.29 s** | 2   | `unknown` (`(:reason-unknown "canceled")`) |
+| 2   | 2 × 10⁶   | **5.41 s** | 2   | `unknown` (`(:reason-unknown "canceled")`) |
+| 3   | 3 × 10⁶   | **5.42 s** | 2   | `unknown` (`(:reason-unknown "canceled")`) |
+| 5   | 5 × 10⁶   | **5.21 s** | 2   | `unknown` (`(:reason-unknown "canceled")`) |
+| 7   | 7 × 10⁶   | 30 s (`timeout` killed it) | 124 | — |
+| 10  | 10 × 10⁶  | 60 s (`timeout` killed it) | 124 | — |
+| 60  | 60 × 10⁶  | 60 s (`timeout` killed it) | 124 | — |
+| 300 | 300 × 10⁶ | 60 s (`timeout` killed it) | 124 | — |
+
+Driver-level (`./source/target-verus/release/verus -V adsmt
+--rlimit N` with `VERUS_ADSMT_PATH=~/AD1/target/release/lu-smt`):
+
+| Verus `--rlimit` (s) | wall-clock | exit | front-end message |
+|---|---|---|---|
+| 1   | **5.46 s**  | 1 (verifier error) | `error: function body check: Resource limit (rlimit) exceeded; consider rerunning with --profile for more details` |
+| 5   | 70 s (`timeout`) | 124 | — |
+| 10  | 70 s (`timeout`) | 124 | — |
+| 60  | 70 s (`timeout`) | 124 | — |
+
+### Diagnostic read-out (rc.14)
+
+- **Threshold-bound deadline cascade** — every budget `≤ 5 s`
+  catches the deadline at the same `~5.3 s` wall clock and
+  surfaces `unknown` → Z3-canonical `"canceled"` → Verus
+  `ValidityResult::Canceled` → `Resource limit (rlimit) exceeded`.
+  The `~5.3 s` floor is the per-query setup cost (parser +
+  declaration handling + CNF flatten + theory init) — the
+  deadline check fires immediately at the first CDCL boundary
+  after that setup completes.
+- **The 5 s — 7 s threshold** is the new shape we have evidence
+  for at rc.14.  Budgets `≥ 7 s` slip past the first
+  deadline-check boundary because the CDCL inner work between
+  checks runs long enough to consume the remaining `(budget −
+  5.3 s)` ≥ `1.7 s` without yielding.
+- **Userspace CPU-bound, not syscall-bound** — at the hang point
+  `strace -c` records ~8 syscalls/s (mostly `brk` from the
+  Rust allocator's heap-tip moves) and `/proc/<pid>/wchan` reads
+  `__se_sys_rt_sigsuspend` when a tracer attaches.  There is no
+  blocking IO, no contended lock — the work is genuinely
+  CPU-bound inside the engine's instantiation / theory loop.
+- **§3.4 F4 plugin is opt-in only** — `lu-smt --aot-bake` /
+  `--aot-load` and a corresponding `(set-option :finite-field
+  …)` are both unimplemented at rc.14, so the smoke matrix
+  cannot exercise the F4 path even with the plugin code present.
+  Bringing the plugin online for this fixture requires a CLI
+  surface follow-up (see §3.1 ack reply for the proposed shape).
+
+This narrows the §3 sub-cycle prioritisation: §3.4 F4's
+implementation is in place but its *productive* path is gated on
+the CLI surface landing.  §3.1 AOT prelude bank is the highest-
+leverage next step — `~5.3 s` per-query setup cost is exactly
+the per-`(check-sat)` cost the prelude bank eliminates.
+
 ### Hand-off to the § 3 sub-cycles
 
 The smoke retry has surfaced everything it was going to.  The
@@ -466,7 +535,15 @@ smoke matrix" entry for `-V adsmt` reads:
 > bookkeeping); functional success deferred to § 3 sub-cycle
 > completion.
 
-| (pending) | adsmt | open whichever § 3 sub-cycle is first on the joint roadmap; cross-link this row with that cycle's tracking file |
+| 2026-06-04 | adsmt | T0 — `propagate_two_watched` inner-loop deadline cascade landed (AD1 commit `c5964db` on top of rc.12) |
+| 2026-06-04 | adsmt | §3.4 F4 v1 cascade — bit-packed monomial / polynomial / Gauss reduction / SAT encoder + standalone decider (AD1 commits `3ecf7eb` → `2f3edc6` → `546d674` → `4c2f28f` → `cada5a3`) |
+| 2026-06-04 | adsmt | workspace bump to testing `1.0.0-rc.13` (AD1 commit `db05c14`) |
+| 2026-06-04 | adsmt | §3.4 `Combination::register` integration — `FiniteFieldTheory` plugin (`adsmt-theory-finite-field/src/theory_plugin.rs`) + `Solver::with_finite_field` builder + budget-exhaustion `force_check` hook (AD1 commit `5ca3de7`); 94 plugin tests pass |
+| 2026-06-04 | adsmt | workspace bump to testing `1.0.0-rc.14` (AD1 commit `af04b6e`) |
+| 2026-06-04 | adsmt | §3.1 AOT prelude bank counter-proposal filed at `.local-replies-to/verus-fork/2026-06-04-3.1-aot-prelude-bank-self-initiate.md` — proposes `lu-smt --aot-bake` / `--aot-load` + `.luart` v0 binary layout; asks verus-fork to ack CLI shape + build-cache convention + SHA scheme |
+| 2026-06-04 | verus-fork | `EXPECTED_ADSMT_VERSION` rc.12 → rc.14 + smoke matrix retry — results below |
+| 2026-06-04 | verus-fork | §3.1 counter-proposal ack at `.local-replies-to/adsmt/2026-06-04-3.1-aot-prelude-bank-ack.md` — ack CLI shape, build-cache `target-verus/{debug,release}/aot/prelude-<sha>-<lu_smt_version>.luart`, SHA-256 of prelude text, reserve `qid: Option<String>` per axiom in `.luart` v0 |
+| (pending) | adsmt | open §3.1.A → §3.1.E sub-cycle per the ack; cross-link with that cycle's tracking file |
 
 ## 7. Reproducer for the diagnostic in §1
 
