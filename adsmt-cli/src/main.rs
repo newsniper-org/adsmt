@@ -83,13 +83,37 @@ struct Cli {
     /// with the v0.x convenience.
     #[arg(long)]
     no_autodeclare: bool,
+    /// §3.4 GF(2) Gröbner-basis plugin: run one F4 pass every `N`-th
+    /// theory-check round.  `0` (the default) disables the periodic
+    /// pass.  Equivalent to `(set-option :finite-field-periodic N)`
+    /// at the start of the session.
+    #[arg(long, default_value_t = 0)]
+    finite_field_periodic: usize,
+    /// §3.4 GF(2) Gröbner-basis plugin: run one final F4 pass before
+    /// returning `Unknown` so an `1 ∈ basis` certificate replaces the
+    /// CDCL deadline-cancel verdict with a real Unsat.  Equivalent
+    /// to `(set-option :finite-field-budget-exhaustion true)` at the
+    /// start of the session.  Disabled by default.
+    #[arg(long)]
+    finite_field_budget_exhaustion: bool,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let finite_field = if cli.finite_field_periodic > 0
+        || cli.finite_field_budget_exhaustion
+    {
+        Some(adsmt_theory_finite_field::FiniteFieldConfig {
+            periodic_interval: cli.finite_field_periodic,
+            try_at_budget_exhaustion: cli.finite_field_budget_exhaustion,
+        })
+    } else {
+        None
+    };
     let mut driver = Driver::new(DriverConfig {
         strict_commands: cli.strict_commands,
         no_autodeclare: cli.no_autodeclare,
+        finite_field,
     });
     let mut last = LastStatus::Sat;
 
@@ -388,6 +412,15 @@ enum DispatchResult {
 struct DriverConfig {
     strict_commands: bool,
     no_autodeclare: bool,
+    /// §3.4 GF(2) Gröbner-basis plugin config supplied at CLI
+    /// startup.  `None` leaves the plugin unregistered; `Some(cfg)`
+    /// routes through `Solver::with_finite_field` so the plugin is
+    /// live before the first SMT-LIB command runs.  Mid-session
+    /// `(set-option :finite-field-* ...)` updates the same plugin
+    /// instance via `Solver::finite_field_mut`; if no plugin was
+    /// registered at startup, the first such option auto-registers
+    /// it with default knobs (see `ensure_finite_field_registered`).
+    finite_field: Option<adsmt_theory_finite_field::FiniteFieldConfig>,
 }
 
 /// Recognised `set-option` keys. The presence of a key in this map
@@ -480,8 +513,15 @@ struct Driver {
 
 impl Driver {
     fn new(cfg: DriverConfig) -> Self {
+        // Builder-style construction so the optional §3.4 plugin
+        // registration composes with the default theory roster
+        // before the first command runs.
+        let mut solver = Solver::new();
+        if let Some(ff_cfg) = cfg.finite_field.clone() {
+            solver = solver.with_finite_field(ff_cfg);
+        }
         Self {
-            solver: Solver::new(),
+            solver,
             symbols: SymbolTable::new(),
             options: Options::default(),
             registry: SymbolRegistry::new(),

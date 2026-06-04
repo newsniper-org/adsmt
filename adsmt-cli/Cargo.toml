@@ -15,6 +15,13 @@ adsmt-cert.workspace = true
 adsmt-engine.workspace = true
 adsmt-parser.workspace = true
 adsmt-theory.workspace = true
+# §3.4 GF(2) Gröbner-basis theory sibling — opt-in via
+# `--finite-field-periodic N` / `--finite-field-budget-exhaustion`
+# CLI flags or `(set-option :finite-field-periodic N)` /
+# `(set-option :finite-field-budget-exhaustion true)` SMT-LIB
+# options.  Both routes wire the plugin into the engine via
+# `Solver::with_finite_field` / `Solver::register_theory`.
+adsmt-theory-finite-field.workspace = true
 # Re-exported through adsmt-engine's SatResult::Abductive payload
 # (Vec<RankedCandidate>). Listed explicitly so the CLI can call the
 # ranking type's fields by name without going through engine privacy.

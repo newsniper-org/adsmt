@@ -47,6 +47,7 @@ dependencies = [
  "adsmt-lints",
  "adsmt-parser",
  "adsmt-theory",
+ "adsmt-theory-finite-field",
  "clap",
  "serde_json",
  "thiserror",
