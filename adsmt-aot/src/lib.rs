@@ -58,18 +58,23 @@
 //! §3.1.C; the lu-smt `--aot-bake` CLI surface lands in
 //! §3.1.B, and `Solver::with_aot_prelude(...)` in §3.1.D.
 
+pub mod cdcl;
 pub mod format;
 pub mod pool;
 pub mod reader;
 pub mod writer;
 
+pub use cdcl::{
+    write_cdcl_section, CdclClause, CdclSection, SavedPhaseEntry,
+    TrailEntry, VsidsEntry, WatchEntry, LUART_CDCL_VERSION,
+};
 pub use format::{LuartHeader, Tag, LUART_MAGIC, LUART_VERSION};
 pub use pool::{
     write_assertion, write_luart, write_pool_entry, Assertion,
     AssertionEntry, PoolBuilder, PoolEntry,
 };
 pub use reader::{
-    intern_external, parse_type, read_luart, reconstruct, LuartFile,
-    ReadError, ReconstructedPrelude,
+    intern_external, parse_type, read_luart, read_luart_with_cdcl, reconstruct,
+    LuartFile, ReadError, ReconstructedPrelude,
 };
 pub use writer::{topo_check, write_header, WriteError};

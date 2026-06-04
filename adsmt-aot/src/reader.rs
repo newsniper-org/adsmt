@@ -147,6 +147,16 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(s.try_into().unwrap()))
     }
 
+    fn i64(&mut self) -> Result<i64, ReadError> {
+        let s = self.take(8)?;
+        Ok(i64::from_le_bytes(s.try_into().unwrap()))
+    }
+
+    fn f64(&mut self) -> Result<f64, ReadError> {
+        let s = self.take(8)?;
+        Ok(f64::from_le_bytes(s.try_into().unwrap()))
+    }
+
     fn fixed32(&mut self) -> Result<[u8; 32], ReadError> {
         let s = self.take(32)?;
         Ok(s.try_into().unwrap())
@@ -173,6 +183,32 @@ impl<'a> Cursor<'a> {
 /// but Type-string re-parsing is deferred to [`reconstruct`].
 pub fn read_luart(buf: &[u8]) -> Result<LuartFile, ReadError> {
     let mut c = Cursor::new(buf);
+    read_luart_inner(&mut c)
+}
+
+/// Like [`read_luart`] but also decodes the optional v1 CDCL
+/// section that immediately follows the v0 assertion list — see
+/// [`crate::cdcl`].  Returns `(file, None)` when the v0 sections
+/// consume the whole buffer; returns `(file, Some(section))`
+/// when v1 bytes remain.  Truncation inside the v1 section
+/// surfaces as the regular [`ReadError::Truncated`] shape.
+/// `flatten_version` is round-tripped verbatim and validated by
+/// the caller — the reader does not impose a specific version
+/// here so `vargo` can stage the version-rejection logic at the
+/// engine boundary instead.
+pub fn read_luart_with_cdcl(
+    buf: &[u8],
+) -> Result<(LuartFile, Option<crate::cdcl::CdclSection>), ReadError> {
+    let mut c = Cursor::new(buf);
+    let file = read_luart_inner(&mut c)?;
+    if c.offset == buf.len() {
+        return Ok((file, None));
+    }
+    let section = read_cdcl_section_inner(&mut c, file.pool.len())?;
+    Ok((file, Some(section)))
+}
+
+fn read_luart_inner<'a>(c: &mut Cursor<'a>) -> Result<LuartFile, ReadError> {
     let magic = c.fixed8()?;
     if magic != LUART_MAGIC {
         return Err(ReadError::BadMagic);
@@ -272,6 +308,116 @@ pub fn read_luart(buf: &[u8]) -> Result<LuartFile, ReadError> {
         },
         pool,
         assertions,
+    })
+}
+
+fn read_cdcl_section_inner<'a>(
+    c: &mut Cursor<'a>,
+    pool_len: usize,
+) -> Result<crate::cdcl::CdclSection, ReadError> {
+    use crate::cdcl::{
+        CdclClause, CdclSection, SavedPhaseEntry, TrailEntry, VsidsEntry, WatchEntry,
+    };
+    let binary_sha256 = c.fixed32()?;
+    let flatten_version = c.u32()?;
+    let clauses_len = c.u64()? as usize;
+    let mut clauses = Vec::with_capacity(clauses_len);
+    for _ in 0..clauses_len {
+        let lit_count = c.u32()? as usize;
+        let mut lits = Vec::with_capacity(lit_count);
+        for _ in 0..lit_count {
+            let atom = c.u32()?;
+            if (atom as usize) >= pool_len {
+                return Err(ReadError::PoolIndexOutOfRange {
+                    entry_index: pool_len,
+                    child: atom,
+                });
+            }
+            let polarity = c.u8()? != 0;
+            lits.push((atom, polarity));
+        }
+        clauses.push(CdclClause { lits });
+    }
+    let trail_len = c.u64()? as usize;
+    let mut trail = Vec::with_capacity(trail_len);
+    for _ in 0..trail_len {
+        let atom_pool_idx = c.u32()?;
+        if (atom_pool_idx as usize) >= pool_len {
+            return Err(ReadError::PoolIndexOutOfRange {
+                entry_index: pool_len,
+                child: atom_pool_idx,
+            });
+        }
+        let polarity = c.u8()? != 0;
+        let reason_clause_idx = c.i64()?;
+        trail.push(TrailEntry {
+            atom_pool_idx,
+            polarity,
+            reason_clause_idx,
+        });
+    }
+    let watch_count = c.u64()? as usize;
+    let mut watches = Vec::with_capacity(watch_count);
+    for _ in 0..watch_count {
+        let atom_pool_idx = c.u32()?;
+        if (atom_pool_idx as usize) >= pool_len {
+            return Err(ReadError::PoolIndexOutOfRange {
+                entry_index: pool_len,
+                child: atom_pool_idx,
+            });
+        }
+        let polarity = c.u8()? != 0;
+        let wlen = c.u32()? as usize;
+        let mut watching_clauses = Vec::with_capacity(wlen);
+        for _ in 0..wlen {
+            watching_clauses.push(c.u32()?);
+        }
+        watches.push(WatchEntry {
+            atom_pool_idx,
+            polarity,
+            watching_clauses,
+        });
+    }
+    let vsids_count = c.u64()? as usize;
+    let mut vsids = Vec::with_capacity(vsids_count);
+    for _ in 0..vsids_count {
+        let atom_pool_idx = c.u32()?;
+        if (atom_pool_idx as usize) >= pool_len {
+            return Err(ReadError::PoolIndexOutOfRange {
+                entry_index: pool_len,
+                child: atom_pool_idx,
+            });
+        }
+        let activity = c.f64()?;
+        vsids.push(VsidsEntry {
+            atom_pool_idx,
+            activity,
+        });
+    }
+    let saved_phase_count = c.u64()? as usize;
+    let mut saved_phase = Vec::with_capacity(saved_phase_count);
+    for _ in 0..saved_phase_count {
+        let atom_pool_idx = c.u32()?;
+        if (atom_pool_idx as usize) >= pool_len {
+            return Err(ReadError::PoolIndexOutOfRange {
+                entry_index: pool_len,
+                child: atom_pool_idx,
+            });
+        }
+        let polarity = c.u8()? != 0;
+        saved_phase.push(SavedPhaseEntry {
+            atom_pool_idx,
+            polarity,
+        });
+    }
+    Ok(CdclSection {
+        binary_sha256,
+        flatten_version,
+        clauses,
+        trail,
+        watches,
+        vsids,
+        saved_phase,
     })
 }
 
@@ -622,6 +768,82 @@ mod tests {
         match read_luart(&buf) {
             Err(ReadError::PoolIndexOutOfRange { entry_index, child }) => {
                 assert_eq!(entry_index, 0);
+                assert_eq!(child, 5);
+            }
+            other => panic!("expected PoolIndexOutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_luart_with_cdcl_returns_none_on_v0_only_artefact() {
+        // Pure v0 artefact — no v1 section appended.
+        let p = Term::var("p", bool_());
+        let assertions = vec![Assertion {
+            term: p,
+            qid: None,
+        }];
+        let mut buf: Vec<u8> = Vec::new();
+        write_luart(&mut buf, [0u8; 32], "1.0.0-rc.15", &assertions).unwrap();
+        let (file, section) = read_luart_with_cdcl(&buf).unwrap();
+        assert_eq!(file.pool.len(), 1);
+        assert!(section.is_none());
+    }
+
+    #[test]
+    fn read_luart_with_cdcl_round_trips_appended_v1_section() {
+        // Build a v0 artefact + append a non-empty v1 CDCL section.
+        let p = Term::var("p", bool_());
+        let assertions = vec![Assertion {
+            term: p,
+            qid: None,
+        }];
+        let mut buf: Vec<u8> = Vec::new();
+        write_luart(&mut buf, [9u8; 32], "1.0.0-rc.15", &assertions).unwrap();
+        let mut s = crate::cdcl::CdclSection::empty([3u8; 32], 42);
+        s.clauses.push(crate::cdcl::CdclClause {
+            lits: vec![(0, true)],
+        });
+        s.trail.push(crate::cdcl::TrailEntry {
+            atom_pool_idx: 0,
+            polarity: true,
+            reason_clause_idx: -1,
+        });
+        s.vsids.push(crate::cdcl::VsidsEntry {
+            atom_pool_idx: 0,
+            activity: 0.5_f64,
+        });
+        crate::cdcl::write_cdcl_section(&mut buf, &s).unwrap();
+        let (file, section) = read_luart_with_cdcl(&buf).unwrap();
+        let section = section.expect("v1 section should round-trip");
+        assert_eq!(file.pool.len(), 1);
+        assert_eq!(section.binary_sha256, [3u8; 32]);
+        assert_eq!(section.flatten_version, 42);
+        assert_eq!(section.clauses.len(), 1);
+        assert_eq!(section.clauses[0].lits, vec![(0, true)]);
+        assert_eq!(section.trail.len(), 1);
+        assert_eq!(section.trail[0].reason_clause_idx, -1);
+        assert_eq!(section.vsids.len(), 1);
+        assert_eq!(section.vsids[0].activity, 0.5_f64);
+    }
+
+    #[test]
+    fn read_luart_with_cdcl_rejects_out_of_range_atom_idx() {
+        // v0 artefact has 1 pool entry (idx 0).  v1 section
+        // references atom idx 5 → out-of-range.
+        let p = Term::var("p", bool_());
+        let assertions = vec![Assertion {
+            term: p,
+            qid: None,
+        }];
+        let mut buf: Vec<u8> = Vec::new();
+        write_luart(&mut buf, [0u8; 32], "1.0.0-rc.15", &assertions).unwrap();
+        let mut s = crate::cdcl::CdclSection::empty([0u8; 32], 0);
+        s.clauses.push(crate::cdcl::CdclClause {
+            lits: vec![(5, true)],
+        });
+        crate::cdcl::write_cdcl_section(&mut buf, &s).unwrap();
+        match read_luart_with_cdcl(&buf) {
+            Err(ReadError::PoolIndexOutOfRange { child, .. }) => {
                 assert_eq!(child, 5);
             }
             other => panic!("expected PoolIndexOutOfRange, got {other:?}"),
