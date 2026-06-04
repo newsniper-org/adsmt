@@ -59,7 +59,12 @@
 //! §3.1.B, and `Solver::with_aot_prelude(...)` in §3.1.D.
 
 pub mod format;
+pub mod pool;
 pub mod writer;
 
 pub use format::{LuartHeader, Tag, LUART_MAGIC, LUART_VERSION};
+pub use pool::{
+    write_assertion, write_luart, write_pool_entry, Assertion,
+    AssertionEntry, PoolBuilder, PoolEntry,
+};
 pub use writer::{topo_check, write_header, WriteError};
