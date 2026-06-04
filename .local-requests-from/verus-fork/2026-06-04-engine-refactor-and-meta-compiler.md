@@ -377,9 +377,96 @@ In priority order:
 | date | side | event |
 |---|---|---|
 | **2026-06-04** | verus-fork | this document filed at `.local-requests-to/adsmt/2026-06-04-engine-refactor-and-meta-compiler.md`, mirrored to `~/AD1/.local-requests-from/verus-fork/` |
-| (pending) | adsmt | acknowledgement reply in the mirror directory; updates this row |
-| (pending) | adsmt | R1 (Term → Arc) commit hash + version tag |
-| (pending) | verus-fork | re-run `-V adsmt` smoke against R1 build, append result row to `.claude-notes/trackers/pr-verus-backend-tracker.md` §5 |
+| **2026-06-04** | verus-fork | § 3.2 / § 3.4 sharpening (Y4 commit `6498c358`, AD1 mirror `b778351`) — `GF(2)` polynomial relations as JIT semantic guards + Hilbert's Weak Nullstellensatz over `GF(2)` for § 3.4's decidability |
+| **2026-06-04** | adsmt | acknowledgement reply at `.local-replies-to/verus-fork/2026-06-04-engine-refactor-r1-through-hashcons-status-update.md` (AD1 commit `7b26047`); diagnostic clarification — `Term::clone` was already `O(1)` pre-R1, the actual `O(N²)` hotspot was `gather_subterms`'s structural `Hash` / `Eq` |
+| **2026-06-04** | adsmt | R1 — `Term(Arc<TermInner>)` shape (AD1 commit `855c01a`); cargo test -p adsmt-core 38 pass |
+| **2026-06-04** | adsmt | R2 — engine + theory + cert + quant + abduce migration to `TermInner` pattern positions (AD1 commit `231777a`); 437 pass |
+| **2026-06-04** | adsmt | R3 — lu-smt + ffi + lints + parser cascade (AD1 commit `322308d`); 748 pass |
+| **2026-06-04** | adsmt | § 2.3 hash-cons via `scc::HashIndex` 3.7.1 (AD1 commit `2b765d2`) — pointer-identity `Hash` / `Eq` on interned `Arc<TermInner>`; 754 pass.  Workspace at `1.0.0-rc.10` |
+| **2026-06-04** | adsmt | bump to `1.0.0-rc.11` (AD1 commit `d146a82` + memories sync `545a547`) |
+| **2026-06-04** | verus-fork | answered `(get-info :reason-unknown)` protocol gap surfaced by the rc.11 retry (AD1 commit `05a3214` adds parser + dispatcher coverage with Z3-canonical reason mapping); structural verdict path closes end-to-end |
+| **2026-06-04** | adsmt | bump to testing `1.0.0-rc.12` (AD1 commit `a3aa4e4`) |
+| **2026-06-04** | verus-fork | `EXPECTED_ADSMT_VERSION` rc.11 → rc.12 (Y4 commit `3b1d2745`) |
+| **2026-06-04** | verus-fork | smoke matrix retry against rc.12 — results below.  **Structural verdict path ✅**, **functional success ❌** until the § 3 sub-cycles land |
+
+### Smoke matrix retry (2026-06-04, rc.12, `verus_smoke.rs` = `verus! { fn main() {} }`)
+
+Captured Verus stdin replayed into a fresh `lu-smt` for each
+budget; wall clock measured between `lu-smt` start and exit.
+`verus_smoke.rs`'s prelude is 1071 lines / ~85 quantifiers / 26
+ground literals.
+
+| Verus `--rlimit` (s) | engine `:rlimit` (µs) | wall-clock | exit | verdict on stdout |
+|---|---|---|---|---|
+| 1   | 1 × 10⁶   | **5.32 s** | 2   | `unknown` (rlimit-canceled, mapped to Z3 `"canceled"`) |
+| 10  | 10 × 10⁶  | 60 s (`timeout` killed it) | 124 | — |
+| 60  | 60 × 10⁶  | 60 s (`timeout` killed it) | 124 | — |
+| 300 | 300 × 10⁶ | 60 s (`timeout` killed it) | 124 | — |
+
+Same matrix at the `verus` driver level (with `--rlimit N` set
+on the CLI directly, not via the captured transcript): identical
+shape — the 1-second budget surfaces as a clean
+`Resource limit (rlimit) exceeded` error on the verifier side;
+every wider budget hangs into the safety-net `timeout(1)`.
+
+### Diagnostic read-out
+
+- **structural verdict path** — `lu-smt → unknown → (get-info
+  :reason-unknown) → (:reason-unknown "canceled") → Verus
+  matcher → ValidityResult::Canceled → user-facing rlimit
+  error` — works exactly as the rc.7 → rc.12 protocol surface
+  intends it to.  `P-vb.8.A`'s "4-backend smoke matrix" column
+  for `-V adsmt` reads "structurally sound" without further
+  caveat.
+- **5.3 s wall on a 1 s budget** — the deadline cascade
+  (`check_sat_with_deadline` / `check_ground_with_deadline` /
+  `cdcl_*_deadline` / `flatten_to_clauses_with_deadline`)
+  catches at every layer it sees, but a single
+  `propagate_two_watched` walk inside `cdcl_solve_with_model` can
+  still run uninterrupted for several seconds on a prelude-
+  sized clause set.  Finer-grained deadline plumbing inside the
+  CDCL inner loop (or the AOT prelude bank from § 3.1 letting
+  the per-query SAT input start much smaller) is what closes
+  the gap.
+- **budget > 1 s hangs to `timeout`** — every wider budget
+  exposes that the engine has not yet reached a *productive*
+  Tier-4 escalation either.  The quantifier-instantiation loop
+  doesn't fixpoint, but it also doesn't reach the abductive
+  escalation point inside the wall-clock window, so the wider
+  budget just buys more time inside the same inner loop.
+
+The shape is exactly the one the original § 1 diagnostic
+predicted would show up once the `gather_subterms` `O(N²)` was
+gone: the *engine* is still spending its budget on the
+instantiation loop, not on memory allocation.  The hash-cons
+fix landed the asymptote it promised; the absolute throughput
+just hasn't crossed the threshold where a trivial `fn main()` 's
+~10⁵-clause prelude can be discharged inside Verus's defaults.
+
+### Hand-off to the § 3 sub-cycles
+
+The smoke retry has surfaced everything it was going to.  The
+follow-up tracking moves to the four § 3 sub-cycles, with this
+ledger row as the entry point for whichever opens first:
+
+| § 3 sub-cycle | per-cycle ack ledger | gates the verus-fork retry on… |
+|---|---|---|
+| § 3.1 AOT prelude hash-cons + frozen `prelude-<sha>.luart` atom bank | `.local-requests-to/adsmt/2026-06-04-3.1-aot-prelude-bank.md` (to be filed) | the per-query input size dropping by 10²–10³ |
+| § 3.2 meta-tracing JIT — `GF(2)` polynomial-relation + equivalence-class semantic guards (shared kernel with § 3.4) | `.local-requests-to/adsmt/2026-06-04-3.2-meta-tracing-jit.md` (to be filed) | a working § 3.4 Gröbner kernel |
+| § 3.3 Stålmarck pre-saturation (AOT-baked, feeds CDCL a saturated clause set) | `.local-requests-to/adsmt/2026-06-04-3.3-stalmarck.md` (to be filed) | § 3.1 landing first so there's a stable artefact to bake into |
+| § 3.4 `GF(2)` Gröbner-basis theory sibling (`adsmt-theory::finite_field`, constant-1 certificate) | `.local-requests-to/adsmt/2026-06-04-3.4-finite-field-grobner.md` (to be filed) | nothing — slots into the existing `Combination::register` interface |
+
+`P-vb.8.A` on the verus-fork side closes here.  `P-vb.9`
+(upstream PR to verus-lang/verus) remains deferred to
+post-Y4-cycle independent of how § 3 sequences.  The "4-backend
+smoke matrix" entry for `-V adsmt` reads:
+
+> Structural verdict path complete (rc.12, `(get-info
+> :reason-unknown)` answered, `unknown` routes through Canceled
+> bookkeeping); functional success deferred to § 3 sub-cycle
+> completion.
+
+| (pending) | adsmt | open whichever § 3 sub-cycle is first on the joint roadmap; cross-link this row with that cycle's tracking file |
 
 ## 7. Reproducer for the diagnostic in §1
 
