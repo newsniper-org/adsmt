@@ -18,21 +18,24 @@
 //!      it with every existing basis element.
 //! 3. Return `G`.
 //!
-//! In GF(2) the field equation `xᵢ² = xᵢ` is already baked into
-//! the polynomial representation (every monomial is squarefree),
-//! so callers who want to compute the radical ideal closure must
-//! add the field equations `xᵢ² + xᵢ = xᵢ` themselves as
-//! generators.  In the SAT setting that comes for free because
-//! every variable that appears in a clause carries its own field
-//! equation generator added by the encoder.
+//! In GF(2) the field equation `xᵢ² = xᵢ` (equivalently
+//! `xᵢ² + xᵢ = 0` since `−1 ≡ 1` in `GF(2)`) is baked into the
+//! polynomial representation: every monomial that enters a
+//! [`Polynomial`] is squarefree because `Polynomial`'s
+//! pub(crate) `squarefree` helper caps every exponent at 1.
+//! The field equations therefore enter the ideal implicitly —
+//! callers do not need to materialise them as separate
+//! generators in the SAT encoding.
 //!
-//! The output is **not** the reduced Gröbner basis — that's a
-//! follow-up cleanup pass (drop divisible leading monomials,
-//! interreduce).  For the UNSAT-by-constant-`1` decision the
-//! unreduced basis is sufficient: the constant `1` lives in the
-//! ideal iff it shows up as a leading monomial of one of the
-//! generators, and `reduce_basis_to_minimal` (next commit, step
-//! 5/5) handles the cleanup + SAT encoding wiring.
+//! The output is the **unreduced** Gröbner basis — interreduction
+//! (drop divisible leading monomials + reduce each generator
+//! against the rest) is a follow-up cleanup pass that's not
+//! needed for the UNSAT-by-constant-`1` decision.  The constant
+//! `1` lives in the ideal iff [`contains_one`] finds it as a
+//! basis element, and the SAT-encoding entry points
+//! [`crate::sat_encoder::decide_sat_via_grobner`] (dense,
+//! Buchberger) / [`crate::bp_sat_encoder::decide_sat_via_f4`]
+//! (bit-packed, F4) drive both backends to the same verdict.
 
 use crate::polynomial::Polynomial;
 use crate::reduction::{monomials_coprime, reduce, s_polynomial};

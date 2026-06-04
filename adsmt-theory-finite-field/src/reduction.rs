@@ -14,11 +14,16 @@ use crate::monomial::Monomial;
 use crate::polynomial::Polynomial;
 
 /// Build the S-polynomial of `f` and `g` (Cox/Little/O'Shea
-/// §2.6).  Returns the zero polynomial when either input is zero
-/// or when the leading monomials are coprime (the latter is a
-/// Buchberger criterion that's caught here for symmetry, though
-/// the Buchberger main loop normally skips coprime pairs before
-/// even calling this).
+/// §2.6).  Returns `g.clone()` when `f` is zero (and vice
+/// versa) — those are degenerate cases the Buchberger loop
+/// shouldn't normally produce, but the function handles them
+/// for total-input safety.
+///
+/// **Note**: this function does NOT short-circuit on coprime
+/// leading monomials.  Buchberger Criterion 1 is the caller's
+/// responsibility — [`crate::buchberger::buchberger`] skips
+/// coprime pairs *before* it calls `s_polynomial`, and
+/// [`monomials_coprime`] is the predicate it uses.
 ///
 /// Construction:
 ///

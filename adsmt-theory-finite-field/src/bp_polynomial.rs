@@ -9,10 +9,11 @@
 //! primitives instead of an exponent-vector walk.
 //!
 //! F4 builds its sparse matrices directly out of these
-//! polynomials, so keep the public surface tight — `terms()`
+//! polynomials, so the public surface stays tight — `terms()`
 //! returns the canonical sorted list, `add` / `mul_mono` are
-//! the only mutators, and `leading_monomial` / `is_zero` /
-//! `is_one` are the predicates Buchberger / F4 dispatch on.
+//! the only owned-result arithmetic ops, and `leading_monomial`
+//! / `is_zero` / `is_one` are the predicates the F4 driver
+//! dispatches on.
 
 use std::cmp::Ordering;
 use std::fmt;

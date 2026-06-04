@@ -21,13 +21,15 @@
 //! lives in the resulting ideal iff the CNF is UNSAT (Hilbert's
 //! Weak Nullstellensatz over `GF(2)`).
 //!
-//! This module is intentionally **standalone** — it does not yet
-//! plug into `adsmt-theory::Combination::register`.  The
-//! verus-fork §3.4 proposal wants the kernel as a theory sibling;
-//! that wiring lands in a follow-up cycle once we decide how a
-//! Boolean-sort theory should compose with the engine's existing
-//! CDCL.  For v0 we expose the decider as a pure function so the
-//! kernel can be benchmarked + audited independently.
+//! This module is the **standalone** v0 entry point — a pure
+//! function that takes a DIMACS CNF and returns a
+//! [`GroebnerSatVerdict`].  The `adsmt-theory::Combination`
+//! integration of the same kernel lives in
+//! [`crate::theory_plugin`] (registered via
+//! `adsmt_engine::Solver::with_finite_field`); the standalone
+//! API stays exposed because it's the cheapest path for
+//! benchmarking the kernel + auditing the encoding independent
+//! of any Solver state.
 
 use crate::buchberger::{buchberger, contains_one};
 use crate::monomial::{Monomial, MonomialOrder};
@@ -42,9 +44,10 @@ pub enum GroebnerSatVerdict {
     /// element equal to `1` is the certificate.
     Unsat,
     /// The ideal does not contain `1`; at least one satisfying
-    /// assignment exists.  Concrete witness recovery from a
-    /// Gröbner basis is a v1 follow-up (right now we only decide
-    /// the membership question, not the witness).
+    /// assignment exists.  Concrete witness recovery from the
+    /// basis is a follow-up — both the v0 (Buchberger) and v1
+    /// (F4) deciders currently answer the membership question
+    /// only, not the actual satisfying assignment.
     Sat,
 }
 

@@ -37,8 +37,10 @@
 //!     return F, M
 //! ```
 //!
-//! Linear-algebra reduction is step 4/5; this commit only
-//! delivers the preprocessing + matrix-row construction.
+//! Linear-algebra reduction (Gauss elimination over GF(2)) +
+//! the F4 main loop live in the `crate::f4` module; this
+//! module owns the preprocessing + matrix-row construction
+//! half.
 
 use std::collections::{HashMap, HashSet};
 

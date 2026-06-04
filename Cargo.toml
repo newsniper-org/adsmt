@@ -7,8 +7,11 @@ members = [
     # §3.4 GF(2) Gröbner-basis theory sibling per the
     # verus-fork engine-refactor request (§3.4 of
     # `.local-requests-from/verus-fork/2026-06-04-engine-refactor-and-meta-compiler.md`).
-    # Buchberger v0 lands first; F4 + bit-packed (v1) and
-    # ZDD (v2) are follow-up cycles.
+    # Ships both the v0 (Buchberger, dense) and v1 (F4,
+    # bit-packed) backends + the FiniteFieldTheory plugin
+    # that `Solver::with_finite_field` registers via
+    # adsmt-theory::Combination::register.  ZDD (v2) is the
+    # next follow-up if a Verus prelude needs ~1k variables.
     "adsmt-theory-finite-field",
     "adsmt-class",
     "adsmt-quant",

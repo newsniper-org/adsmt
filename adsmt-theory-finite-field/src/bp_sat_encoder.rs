@@ -3,9 +3,10 @@
 //!
 //! Mirrors [`crate::sat_encoder`] but emits the bit-packed
 //! `BPPolynomial` family and routes the Gröbner-basis decision
-//! through [`crate::f4::f4`] instead of [`crate::buchberger`].
-//! Same SAT-to-`GF(2)` encoding rules — the difference is purely
-//! the polynomial backend.
+//! through the F4 driver (`crate::f4::f4`) instead of the
+//! dense Buchberger driver (`crate::buchberger::buchberger`).
+//! Same SAT-to-`GF(2)` encoding rules — the difference is
+//! purely the polynomial backend.
 
 use crate::bitpacked::BPMonomial;
 use crate::bp_polynomial::BPPolynomial;

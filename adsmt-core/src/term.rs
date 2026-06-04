@@ -51,6 +51,12 @@ pub enum TermInner {
 /// ([`Term::alpha_eq`]) — `==` does NOT see through bound-variable
 /// renaming.
 ///
+/// `intern` is `pub(crate)` — the link is intentional to let
+/// `--document-private-items` builds reach it; the
+/// `#[allow(rustdoc::private_intra_doc_links)]` below silences
+/// the default-rustdoc warning.
+#[allow(rustdoc::private_intra_doc_links)]
+///
 /// Cloning a `Term` is one `Arc::clone` (a single atomic refcount
 /// bump); the term tree itself is structurally shared between
 /// clones AND between independently constructed structurally-equal

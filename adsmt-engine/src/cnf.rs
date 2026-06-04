@@ -76,6 +76,12 @@ pub fn flatten_to_clauses(t: &Term) -> Option<Vec<Clause>> {
 /// count times the depth — fine for unbounded `check_sat`, fatal
 /// for any wall-clock budget that doesn't catch the deadline
 /// between recursion levels.
+///
+/// `term_size_bounded` is a `pub(crate)` helper documented in
+/// source — the intra-doc link is intentional even though
+/// rustdoc flags it as a private-item link, hence the
+/// `#[allow(rustdoc::private_intra_doc_links)]` below.
+#[allow(rustdoc::private_intra_doc_links)]
 pub fn flatten_to_clauses_with_deadline(
     t: &Term,
     deadline: Option<std::time::Instant>,

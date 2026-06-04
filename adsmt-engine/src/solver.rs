@@ -84,18 +84,31 @@ impl Solver {
     ///
     /// The plugin sits in `Combination::register` alongside the
     /// other theories.  Its behaviour is governed by the
-    /// [`FiniteFieldConfig`] knobs:
+    /// [`adsmt_theory_finite_field::FiniteFieldConfig`] knobs:
     ///
-    /// - `periodic_interval: usize` (default `0` = disabled) — runs
-    ///   one F4 pass every `N`-th theory check round inside the
-    ///   polite-combination loop; an `1 ∈ basis` verdict
-    ///   short-circuits the rest of the engine with the
-    ///   FiniteField `TheoryWitness`.
-    /// - `try_at_budget_exhaustion: bool` (default `false`) — when
-    ///   `check_sat_with_deadline` is about to return `Unknown`
-    ///   the engine first calls
-    ///   [`FiniteFieldTheory::force_check`]; UNSAT replaces the
-    ///   `Unknown` verdict with a real `Unsat`.
+    /// - `periodic_interval: usize` (default `0` = disabled) —
+    ///   runs one F4 pass every `N`-th call to the theory's
+    ///   `check`; a `1 ∈ basis` verdict surfaces as
+    ///   `CheckResult::Unsat` and the engine short-circuits with
+    ///   the FiniteField `TheoryWitness`.
+    /// - `try_at_budget_exhaustion: bool` (default `false`) —
+    ///   when `check_sat_with_deadline` is about to return
+    ///   `Unknown` the engine first calls
+    ///   `FiniteFieldTheory::force_check`; an UNSAT verdict
+    ///   replaces the `Unknown` with a real `Unsat` carrying an
+    ///   empty `core` (a structured `core` populated from the
+    ///   basis is a v1.x follow-up).
+    ///
+    /// **Scope caveat**: the plugin only sees the CNF flattened
+    /// from the user's top-level assertions, *not* quantifier
+    /// instantiations or learnt clauses produced inside the
+    /// DPLL(T) loop.  If a UNSAT proof requires those, the
+    /// plugin's F4 pass cannot certify it — but it also cannot
+    /// claim a spurious UNSAT.  In practice this is the right
+    /// trade-off for the verus-fork bit-vector queries §3.4
+    /// targets (mask invariants, overflow guards, witnessed AEAD
+    /// lemmas), which reduce to propositional `GF(2)` ideals
+    /// directly from the top-level CNF.
     ///
     /// Builder-pattern style:
     /// `Solver::default().with_finite_field(config)`.
@@ -120,8 +133,9 @@ impl Solver {
             .any(|t| t.name() == "FiniteField")
     }
 
-    /// Mutable handle to the registered [`FiniteFieldTheory`], if
-    /// any.  Used by the budget-exhaustion + clause-install hooks
+    /// Mutable handle to the registered
+    /// [`adsmt_theory_finite_field::FiniteFieldTheory`], if any.
+    /// Used by the budget-exhaustion + clause-install hooks
     /// inside `check_sat_with_deadline` and exposed publicly so
     /// callers can re-tune the configuration mid-session.
     pub fn finite_field_mut(
@@ -553,8 +567,15 @@ impl Solver {
     }
 
     /// Ground (quantifier-free) reasoning over the given literals.
-    /// Internal helper used by both the surface `check_sat` and the
-    /// quantifier-instantiation loop.
+    /// Internal helper kept for symmetry with the deadline-aware
+    /// variant; currently every internal call site already has a
+    /// deadline to thread (the unbounded path simply passes `None`
+    /// to `check_ground_with_deadline` directly), so this thin
+    /// wrapper sees no in-tree use yet.  Kept reachable for
+    /// downstream tests and for future Tier-4 escalation paths
+    /// that may want the unbounded shape; the dead-code lint is
+    /// silenced accordingly.
+    #[allow(dead_code)]
     fn check_ground(&mut self, lits: &[(Term, bool)]) -> SatResult {
         self.check_ground_with_deadline(lits, None)
     }

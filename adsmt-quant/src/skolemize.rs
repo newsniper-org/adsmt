@@ -1,9 +1,12 @@
 //! Negation-normal-form (NNF) + Skolemization.
 //!
-//! [`Solver::assert`] runs [`normalize_for_engine`] on every term it
-//! receives so the rest of the engine only ever sees positive
-//! `forall`s (which `partition_quantifiers` + the E-matching pass can
-//! handle) plus ground formulas. Two passes compose:
+//! `adsmt_engine::Solver::assert` runs [`normalize_for_engine`]
+//! on every term it receives so the rest of the engine only
+//! ever sees positive `forall`s (which `partition_quantifiers`
+//! + the E-matching pass can handle) plus ground formulas.  The
+//! cross-crate reference is intentionally plain text — linking
+//! into `adsmt-engine` from here would require a circular dep.
+//! Two passes compose:
 //!
 //! 1. [`nnf`] — De Morgan / quantifier duality / implication
 //!    expansion. After this, `not` only wraps atoms; `=>` is gone;

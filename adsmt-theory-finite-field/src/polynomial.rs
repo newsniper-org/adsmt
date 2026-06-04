@@ -10,10 +10,12 @@
 //!
 //! Multiplication eagerly applies the GF(2) field equation
 //! `xᵢ² = xᵢ`: any exponent above 1 is capped at 1 during
-//! `mul_mono` / `mul_poly`, so every monomial that ends up in a
-//! `Polynomial<GF2>` is squarefree.  This is what makes Buchberger
-//! halt on Boolean ideals — the field equations enter the ideal
-//! once at construction time and never need to be re-multiplied.
+//! [`Polynomial::mul_mono`] / [`Polynomial::mul`] via the
+//! `squarefree` helper, so every monomial that ends up in a
+//! `Polynomial` is squarefree.  This is what makes Buchberger
+//! halt on Boolean ideals — the field equations enter the
+//! polynomial set implicitly at construction time and never
+//! need to be re-multiplied.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -25,11 +27,12 @@ use crate::monomial::{Monomial, MonomialOrder};
 /// Invariants (preserved by every public constructor / arithmetic
 /// op):
 /// 1. Every monomial is squarefree (every exponent is 0 or 1).
-/// 2. `terms` is sorted **descending** under `order` — terms[0] is
-///    the leading monomial when the polynomial is non-zero.
+/// 2. `terms` is sorted **descending** under `order` —
+///    `terms[0]` is the leading monomial when the polynomial is
+///    non-zero.
 /// 3. No two terms compare equal (no duplicate monomials).
 /// 4. All terms share `n_vars` — the polynomial lives in
-///    `GF(2)[x₀, …, x_{n_vars-1}]`.
+///    `GF(2)[x₀, …, x_{n_vars - 1}]`.
 #[derive(Clone, Debug)]
 pub struct Polynomial {
     pub(crate) terms: Vec<Monomial>,

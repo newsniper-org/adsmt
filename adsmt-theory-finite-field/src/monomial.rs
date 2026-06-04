@@ -3,14 +3,15 @@
 //! v0 representation: `Monomial` is a `SmallVec` of `u8` exponents
 //! indexed by variable id (`0..n_vars`).  In `GF(2)` with the field
 //! equation `xᵢ² = xᵢ` applied eagerly every exponent is squarefree
-//! — i.e. always `0` or `1` — so we could pack into bits later
-//! without an algorithmic change.  Keeping `u8` for v0 makes the
-//! arithmetic and ordering trivial to verify.
+//! — i.e. always `0` or `1` — so we could pack into bits without
+//! an algorithmic change.  Keeping `u8` for v0 makes the
+//! arithmetic and ordering trivial to verify.  The bit-packed
+//! representation now ships as [`crate::bitpacked::BPMonomial`]
+//! for the v1 F4 fastpath; the two backends live in parallel.
 //!
-//! Monomials are produced and consumed by the Polynomial layer
-//! (`crate::polynomial`, lands in the next commit); this file
-//! only owns the *type*, its arithmetic, and the two monomial
-//! orders Buchberger needs.
+//! Monomials are produced and consumed by the [`crate::polynomial`]
+//! layer; this module only owns the *type*, its arithmetic, and
+//! the two monomial orders Buchberger / F4 dispatch on.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -30,8 +31,9 @@ const INLINE_VARS: usize = 16;
 ///
 /// `GF(2)` users construct only squarefree monomials (every
 /// exponent ≤ 1) thanks to the field equation, but the type
-/// stores `u8` for now to keep the v0 arithmetic auditable.  Bit-
-/// packing lands in v1.
+/// stores `u8` to keep the v0 arithmetic auditable.  The
+/// bit-packed alternative for the F4 fastpath lives in
+/// [`crate::bitpacked::BPMonomial`].
 #[derive(Clone, Debug)]
 pub struct Monomial {
     pub(crate) exps: SmallVec<[u8; INLINE_VARS]>,

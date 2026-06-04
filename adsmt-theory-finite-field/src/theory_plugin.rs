@@ -123,9 +123,17 @@ impl FiniteFieldTheory {
     }
 
     /// Install the CNF clause set the engine will see during the
-    /// next `check_sat`.  Called by `adsmt-engine::Solver` at the
-    /// top of each `check_sat`; replaces any previously installed
-    /// clause set wholesale.
+    /// next `check_sat`.  Called from
+    /// `adsmt-engine::Solver::check_sat_with_deadline` at the
+    /// start of every check; replaces any previously installed
+    /// clause set wholesale.  The engine recomputes the full
+    /// flattened CNF on every call, so this method's
+    /// wholesale-replace semantics are intentional — the higher
+    /// scope-version entries (set by intermediate `push()` calls)
+    /// keep their `0` markers, and a subsequent `pop(N)`
+    /// correctly truncates back to an empty clause set, which the
+    /// next `check_sat` will re-install from whatever
+    /// assertions survived the pop.
     pub fn install_dimacs_clauses(
         &mut self,
         clauses: Vec<Vec<i32>>,

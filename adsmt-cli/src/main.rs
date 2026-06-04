@@ -1035,9 +1035,17 @@ fn sort_from_sexpr(sort: &SExpr, registry: &SymbolRegistry) -> Result<Type, Stri
 }
 
 /// Decode a top-level `assert`'s `Term` into the witnessing
-/// `(name, polarity)` pair when the assertion is a literal — either
-/// a bare Bool variable (positive) or `(not VAR)` (negative).
-/// Returns `None` for compound expressions.
+/// `(name, polarity)` pair when the assertion is a literal —
+/// either a bare Bool variable (positive) or `(not VAR)`
+/// (negative).  Returns `None` for compound expressions.
+///
+/// Currently unused in the CLI body (the
+/// abductive-candidate JSON path and `get-model` emitter
+/// went through different code paths in the rc.7 → rc.10
+/// rewrite).  Kept reachable for the next `get-model`
+/// integration cycle; the dead-code lint is silenced
+/// accordingly.
+#[allow(dead_code)]
 fn top_level_bool_polarity(term: &Term) -> Option<(String, bool)> {
     if let TermInner::Var(v) = term.kind()
         && v.ty == Type::bool_()
