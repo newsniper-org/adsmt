@@ -452,11 +452,28 @@ pub fn cdcl_solve_with_model_deadline(
                     .map(|(i, _)| i)
                     .collect();
                 to_drop.sort_by(|a, b| b.cmp(a));
-                for idx in to_drop {
+                // T0′.2 — deadline check inside the learnt-clause
+                // reduction loop (verus-fork §3.5 counter-ack,
+                // 2026-06-05).  Each `Vec::remove` is O(N) and
+                // `to_drop` is `O(learnt_clauses.len() / 2)`, so
+                // a single reduction round on a prelude-sized
+                // clause set can be ~O(N²) work without any
+                // intermediate yield point.  Check every 256-th
+                // iteration so the deadline catches before the
+                // entire reduction completes.
+                for (i, idx) in to_drop.into_iter().enumerate() {
+                    if i.is_multiple_of(DEADLINE_CHECK_INTERVAL)
+                        && expired(deadline)
+                    {
+                        return CdclOutcome::Unknown;
+                    }
                     state.learnt_clauses.remove(idx);
                     state.learnt_activity.remove(idx);
                     state.learnt_lbd.remove(idx);
                     owned.remove(input_len + idx);
+                }
+                if expired(deadline) {
+                    return CdclOutcome::Unknown;
                 }
                 // v1.0.0-rc.1 RC1.2 — rebuild watch metadata
                 // wholesale after a reduction. The indices in
@@ -469,6 +486,21 @@ pub fn cdcl_solve_with_model_deadline(
                 state.prop_head = 0;
                 learnt_limit =
                     ((learnt_limit as f64) * learnt_limit_growth) as usize;
+            }
+            // T0′.3 — deadline check before the post-backjump
+            // unit-propagation kick fires on the next outer
+            // iteration (verus-fork §3.5 counter-ack,
+            // 2026-06-05).  Without this the outer loop's
+            // `deadline_tick.is_multiple_of(...)` check at the
+            // top can skip several iterations after a backjump
+            // before catching a deadline, because the tick
+            // counter rarely lands on a 256-multiple right after
+            // conflict bookkeeping completes.  An unconditional
+            // check here closes the gap between conflict-
+            // analysis exit (T0′.1) and the next
+            // `propagate_two_watched` call.
+            if expired(deadline) {
+                return CdclOutcome::Unknown;
             }
             continue;
         }
