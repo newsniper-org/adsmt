@@ -173,6 +173,25 @@ impl FiniteFieldTheory {
         self.run_f4()
     }
 
+    /// §3.5.E — return the current ideal's generator polynomials
+    /// (one per installed CNF clause, plus the implicit
+    /// `xᵢ² − xᵢ = 0` field equations the F4 / Buchberger
+    /// kernel adds inside).  The §3.5.D `GF2Snapshot::capture`
+    /// helper consumes this directly so the JIT recorder can
+    /// snapshot the prelude's algebraic signature at trace
+    /// boundary without running a fresh Gröbner computation.
+    ///
+    /// Returns an empty `Vec` when no DIMACS clauses have been
+    /// installed yet — the bake-side recorder treats that as a
+    /// degenerate (empty-ideal) signature.
+    pub fn current_generators(&self) -> Vec<crate::polynomial::Polynomial> {
+        crate::sat_encoder::cnf_to_generators(
+            &self.clauses,
+            self.n_vars as usize,
+            crate::monomial::MonomialOrder::Grevlex,
+        )
+    }
+
     fn run_f4(&mut self) -> Option<TheoryWitness> {
         if self.clauses.is_empty() {
             return None;

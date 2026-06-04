@@ -88,18 +88,51 @@ pub enum CdclTraceEvent {
 
 /// GF(2) algebraic signature captured at trace boundary (and,
 /// eventually in v1, at every phase-transition checkpoint).
-/// Reuses `FiniteFieldTheory::force_check`'s existing basis
-/// snapshot so capture is a memcpy, not a fresh Gröbner
-/// computation.
+/// Reuses `FiniteFieldTheory::current_generators`'s ideal
+/// generators so capture is one CNF-to-polynomial pass on the
+/// installed clauses, not a fresh Gröbner computation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GF2Snapshot {
-    /// Current reduced Gröbner basis the FF plugin holds.
+    /// Current ideal generators (one polynomial per installed
+    /// CNF clause).  The replay-time guard check reduces a
+    /// recorded `JitGuard::PolyInvariant` against this basis
+    /// via the shared kernel — the same `reduce` call §3.4 uses
+    /// for UNSAT certification.
     pub basis: Vec<GF2Poly>,
     /// UF equivalence-class membership at snapshot time:
     /// `(atom_name, class_id)`.  Matches
     /// [`crate::guard::ClassesView`]'s shape so the guard layer
     /// consumes the snapshot directly.
     pub classes: Vec<(String, u32)>,
+}
+
+impl GF2Snapshot {
+    /// Empty signature — zero basis, zero classes.  Convenient
+    /// degenerate value for the v0 traces that bake with no
+    /// FiniteField plugin registered.
+    pub fn empty() -> Self {
+        Self {
+            basis: Vec::new(),
+            classes: Vec::new(),
+        }
+    }
+
+    /// §3.5.E entry point — capture the snapshot directly from
+    /// the live FF plugin + the engine's UF equivalence-class
+    /// view.  No new Gröbner computation: `theory
+    /// .current_generators()` re-runs the cheap CNF-to-polynomial
+    /// encoder on whatever clauses are installed, and `classes`
+    /// is borrowed verbatim from the caller (the engine-side
+    /// adapter that walks `Uf::class_of`).
+    pub fn capture(
+        theory: &adsmt_theory_finite_field::FiniteFieldTheory,
+        classes: Vec<(String, u32)>,
+    ) -> Self {
+        Self {
+            basis: theory.current_generators(),
+            classes,
+        }
+    }
 }
 
 /// Mid-trace checkpoint — `(at_event, signature)` pair that the
@@ -309,5 +342,33 @@ mod tests {
         };
         assert_eq!(cp.at_event, 7);
         assert_eq!(cp.signature.classes, vec![("a".to_string(), 1)]);
+    }
+
+    #[test]
+    fn empty_snapshot_constructor_zero_basis_zero_classes() {
+        let s = GF2Snapshot::empty();
+        assert!(s.basis.is_empty());
+        assert!(s.classes.is_empty());
+    }
+
+    #[test]
+    fn capture_pulls_generators_from_ff_plugin() {
+        // Install two clauses on a fresh FF plugin and verify
+        // that `capture` round-trips them as polynomial
+        // generators.  Classes are an empty placeholder for
+        // this v0 test — the UF view is engine-side.
+        let mut theory = adsmt_theory_finite_field::FiniteFieldTheory::new(
+            adsmt_theory_finite_field::FiniteFieldConfig::default(),
+        );
+        // DIMACS-style clauses: (x1) and (x2 ∨ -x3) → 2
+        // generators.  Variable indices are 1-based per DIMACS.
+        theory.install_dimacs_clauses(vec![vec![1], vec![2, -3]], 3);
+        let snap = GF2Snapshot::capture(&theory, vec![]);
+        assert_eq!(
+            snap.basis.len(),
+            2,
+            "snapshot should carry one polynomial per installed clause",
+        );
+        assert!(snap.classes.is_empty());
     }
 }
