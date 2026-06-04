@@ -21,6 +21,8 @@
 
 pub mod monomial;
 pub mod polynomial;
+pub mod reduction;
 
 pub use monomial::{Monomial, MonomialOrder};
 pub use polynomial::Polynomial;
+pub use reduction::{monomials_coprime, reduce, s_polynomial};
