@@ -4,6 +4,12 @@ members = [
     "adsmt-core",
     "adsmt-cert",
     "adsmt-theory",
+    # §3.4 GF(2) Gröbner-basis theory sibling per the
+    # verus-fork engine-refactor request (§3.4 of
+    # `.local-requests-from/verus-fork/2026-06-04-engine-refactor-and-meta-compiler.md`).
+    # Buchberger v0 lands first; F4 + bit-packed (v1) and
+    # ZDD (v2) are follow-up cycles.
+    "adsmt-theory-finite-field",
     "adsmt-class",
     "adsmt-quant",
     "adsmt-abduce",

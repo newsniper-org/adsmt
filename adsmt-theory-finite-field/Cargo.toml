@@ -1,0 +1,9 @@
+[package]
+name = "adsmt-theory-finite-field"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GF(2) Gröbner-basis theory sibling for adsmt — Buchberger v0 + Hilbert Weak Nullstellensatz UNSAT certificate"
+
+[dependencies]
+smallvec.workspace = true
