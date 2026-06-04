@@ -334,6 +334,23 @@ fn abductive_candidates_json(ranked: &[RankedCandidate]) -> String {
     serde_json::json!({ "abductive_candidates": items }).to_string()
 }
 
+/// Parse a numeric `(set-option :key VALUE)` payload into a `u64`.
+/// `VALUE` may arrive as `SExpr::Numeric` (the lexer's normal
+/// classification) or as a plain `SExpr::Symbol` for callers that
+/// don't run through the numeric tokenizer (verus's
+/// `air::emitter` builds the payload as a symbol).  Returns `None`
+/// when the value isn't a non-negative decimal — the caller
+/// silently ignores the option in that case, matching SMT-LIB
+/// v2 § 3.9.1's "unrecognised value" semantics.
+fn parse_numeric_option(value: &SExpr) -> Option<u64> {
+    let raw = match value {
+        SExpr::Numeric(n) => n.as_str(),
+        SExpr::Symbol(s) => s.as_str(),
+        _ => return None,
+    };
+    raw.parse::<u64>().ok()
+}
+
 #[derive(Clone, Debug)]
 enum LastStatus {
     Sat,
@@ -383,6 +400,19 @@ struct Options {
     produce_proofs: bool,
     produce_unsat_cores: bool,
     print_success: bool,
+    /// Per-`(check-sat)` wall-clock budget in microseconds.
+    /// `None` means unlimited (engine runs its full Tier-1/2/3
+    /// instantiation loop until either fixpoint or
+    /// `QUANTIFIER_ROUNDS` exhaustion).
+    ///
+    /// Populated by `(set-option :rlimit N)` (Z3-extension, one
+    /// "Z3-resource unit" ≈ one microsecond on a modern host —
+    /// the same unit verus's `air::context::set_rlimit` calibrates
+    /// against) or by `(set-option :timeout N)` (SMT-LIB hint,
+    /// milliseconds, scaled up to microseconds on intake).
+    /// Whichever option arrives later wins; both reset to `None`
+    /// on `(reset)` / `(reset-assertions)`.
+    rlimit_us: Option<u64>,
 }
 
 /// Sort + function registry for `declare-sort` / `declare-fun` /
@@ -574,7 +604,15 @@ impl Driver {
                 Err(msg) => DispatchResult::Error(11, msg),
             },
             Command::CheckSat => {
-                let r = self.solver.check_sat();
+                // Map the configured `:rlimit` / `:timeout` budget
+                // (if any) to an absolute wall-clock deadline.  The
+                // solver short-circuits the instantiation loop as
+                // soon as the deadline lapses and returns Unknown
+                // with `:reason-unknown "rlimit exceeded"`.
+                let deadline = self.options.rlimit_us.map(|us| {
+                    std::time::Instant::now() + std::time::Duration::from_micros(us)
+                });
+                let r = self.solver.check_sat_with_deadline(deadline);
                 let status = self.record_result(r);
                 DispatchResult::CheckSat(status)
             }
@@ -686,11 +724,40 @@ impl Driver {
 
     fn handle_set_option(&mut self, keyword: &str, value: &SExpr) {
         let truthy = matches!(value, SExpr::Symbol(s) if s == "true");
+        // adsmt-parser's lexer strips the leading `:` from every
+        // keyword before yielding it (sexpr.rs:131 — `':' => { i +=
+        // 1; let start = i; ... }`).  The Display impl re-adds the
+        // colon when printing, which is why source-level dumps
+        // show `:produce-models`, but the runtime string we match
+        // on here is always the bare key.
         match keyword {
-            ":produce-models" => self.options.produce_models = truthy,
-            ":produce-proofs" => self.options.produce_proofs = truthy,
-            ":produce-unsat-cores" => self.options.produce_unsat_cores = truthy,
-            ":print-success" => self.options.print_success = truthy,
+            "produce-models" => self.options.produce_models = truthy,
+            "produce-proofs" => self.options.produce_proofs = truthy,
+            "produce-unsat-cores" => self.options.produce_unsat_cores = truthy,
+            "print-success" => self.options.print_success = truthy,
+            "rlimit" => {
+                // Z3-extension: `(set-option :rlimit N)` where N is
+                // a resource-unit budget; one unit ≈ 1 µs on a
+                // modern host, matching verus's `set_rlimit`
+                // calibration (`rlimit_secs * 1_000_000`).  Zero
+                // clears any prior limit.
+                if let Some(units) = parse_numeric_option(value) {
+                    self.options.rlimit_us =
+                        if units == 0 { None } else { Some(units) };
+                }
+            }
+            "timeout" => {
+                // SMT-LIB hint, milliseconds — scale up to µs to
+                // share the deadline path with `:rlimit`.  Last
+                // option wins; zero clears.
+                if let Some(ms) = parse_numeric_option(value) {
+                    self.options.rlimit_us = if ms == 0 {
+                        None
+                    } else {
+                        Some(ms.saturating_mul(1_000))
+                    };
+                }
+            }
             _ => {
                 // SMT-LIB v2 spec § 3.9.1 — unrecognised options are
                 // silently accepted (callers may consult the `:status`

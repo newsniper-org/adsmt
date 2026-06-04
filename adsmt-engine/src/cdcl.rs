@@ -76,6 +76,19 @@ pub fn cdcl_with_restarts(
     cdcl_with_restarts_with_model(clauses, base_conflicts, restarts).into()
 }
 
+/// Deadline-aware variant of [`cdcl_with_restarts`].  Same shape
+/// as the model-free version but threads `deadline` through to
+/// [`cdcl_with_restarts_with_model_deadline`] so the restart loop
+/// can return `Unknown` the moment the wall-clock budget lapses.
+pub fn cdcl_with_restarts_deadline(
+    clauses: &[Clause],
+    base_conflicts: usize,
+    restarts: usize,
+    deadline: Option<std::time::Instant>,
+) -> BoolResult {
+    cdcl_with_restarts_with_model_deadline(clauses, base_conflicts, restarts, deadline).into()
+}
+
 /// Model-carrying variant of [`cdcl_with_restarts`]. Returns the
 /// raw [`CdclOutcome`] so callers that want the satisfying
 /// assignment (e.g. `Solver::check_sat` populating
@@ -85,10 +98,37 @@ pub fn cdcl_with_restarts_with_model(
     base_conflicts: usize,
     restarts: usize,
 ) -> CdclOutcome {
+    cdcl_with_restarts_with_model_deadline(clauses, base_conflicts, restarts, None)
+}
+
+/// Deadline-aware variant of [`cdcl_with_restarts_with_model`].
+/// Each restart re-checks the supplied wall-clock budget — if it
+/// has lapsed we return [`CdclOutcome::Unknown`] so the caller can
+/// surface a `Solver::check_sat` Unknown verdict with
+/// `:reason-unknown "rlimit exceeded"`.  Passing `None` reverts to
+/// the previous unbounded behaviour.
+///
+/// The check sits at the restart boundary because that's where the
+/// solver naturally tears down its assignment trail and starts a
+/// fresh Luby slot — interrupting mid-slot would leave the trail
+/// in an undefined state and pollute downstream theory propagation
+/// callers that rely on the trail's invariants.
+pub fn cdcl_with_restarts_with_model_deadline(
+    clauses: &[Clause],
+    base_conflicts: usize,
+    restarts: usize,
+    deadline: Option<std::time::Instant>,
+) -> CdclOutcome {
+    let expired = |d: Option<std::time::Instant>| -> bool {
+        d.is_some_and(|dl| std::time::Instant::now() >= dl)
+    };
     let luby = luby_sequence(restarts);
     for &mult in &luby {
+        if expired(deadline) {
+            return CdclOutcome::Unknown;
+        }
         let budget = base_conflicts.saturating_mul(mult);
-        match cdcl_solve_with_model(clauses, budget) {
+        match cdcl_solve_with_model_deadline(clauses, budget, deadline) {
             CdclOutcome::Sat { model } => return CdclOutcome::Sat { model },
             CdclOutcome::Unsat => return CdclOutcome::Unsat,
             CdclOutcome::Unknown => continue,
@@ -284,6 +324,36 @@ pub fn cdcl_solve_with_model(
     clauses: &[Clause],
     max_conflicts: usize,
 ) -> CdclOutcome {
+    cdcl_solve_with_model_deadline(clauses, max_conflicts, None)
+}
+
+/// Deadline-aware variant of [`cdcl_solve_with_model`].  Adds a
+/// wall-clock check at the head of the propagation/decision loop
+/// so a long-running search (large clause set, deep VSIDS pick,
+/// pathological watcher cascades) gives up promptly instead of
+/// running to its conflict budget.  Without this hook the upstream
+/// `cdcl_with_restarts_deadline` could only catch a missed deadline
+/// at the *next* restart boundary — which never lands on
+/// verus-prelude-sized inputs because a single Luby slot's 64
+/// conflicts already takes minutes.
+pub fn cdcl_solve_with_model_deadline(
+    clauses: &[Clause],
+    max_conflicts: usize,
+    deadline: Option<std::time::Instant>,
+) -> CdclOutcome {
+    let expired = |d: Option<std::time::Instant>| -> bool {
+        d.is_some_and(|dl| std::time::Instant::now() >= dl)
+    };
+    // How often the deadline is rechecked.  Querying `Instant::now`
+    // is cheap (a vDSO syscall on Linux) but compounding it on every
+    // single propagation step still costs ~50 ns/iter, which is
+    // measurable on the small workspace benchmarks.  256 is the
+    // smallest power of two large enough to disappear into the
+    // bench noise while still being responsive to a 1 ms budget on
+    // a hot host.
+    const DEADLINE_CHECK_INTERVAL: usize = 256;
+    let mut deadline_tick: usize = 0;
+
     let mut state = CdclState::new();
     let input_len = clauses.len();
     let mut owned: Vec<Clause> = clauses.to_vec();
@@ -304,6 +374,10 @@ pub fn cdcl_solve_with_model(
     let clause_bump: f64 = 1.0;
     let clause_decay: f64 = 0.999;
     loop {
+        deadline_tick = deadline_tick.wrapping_add(1);
+        if deadline_tick.is_multiple_of(DEADLINE_CHECK_INTERVAL) && expired(deadline) {
+            return CdclOutcome::Unknown;
+        }
         let conflict_idx = propagate_two_watched(
             &owned,
             &mut state,
@@ -313,6 +387,7 @@ pub fn cdcl_solve_with_model(
         if let Some(idx) = conflict_idx {
             conflicts += 1;
             if conflicts > max_conflicts { return CdclOutcome::Unknown; }
+            if expired(deadline) { return CdclOutcome::Unknown; }
             if state.decision_level == 0 { return CdclOutcome::Unsat; }
             let (learnt, bj_level) =
                 analyze_conflict_1uip(&owned, &state, idx);

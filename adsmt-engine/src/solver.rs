@@ -254,7 +254,28 @@ impl Solver {
     }
 
     pub fn check_sat(&mut self) -> SatResult {
+        self.check_sat_with_deadline(None)
+    }
+
+    /// `check_sat` with an optional wall-clock deadline.  Callers
+    /// translate `(set-option :rlimit N)` / `(set-option :timeout N)`
+    /// from SMT-LIB into an absolute `Instant` here; the engine
+    /// short-circuits the Tier-1/2/3 instantiation loop the moment
+    /// `Instant::now() >= deadline` and returns Unknown with
+    /// `:reason-unknown "rlimit exceeded"` — the same outcome a Z3
+    /// `:rlimit` exhaustion produces.  `None` reverts to the
+    /// previous unbounded behaviour.
+    pub fn check_sat_with_deadline(
+        &mut self,
+        deadline: Option<std::time::Instant>,
+    ) -> SatResult {
         const QUANTIFIER_ROUNDS: usize = 3;
+
+        // Closure capturing the deadline for compact early-exit
+        // sites inside the instantiation loop.
+        let expired = |d: Option<std::time::Instant>| -> bool {
+            d.is_some_and(|dl| std::time::Instant::now() >= dl)
+        };
 
         // v0.3 quantifier loop: at each round, partition asserted
         // formulas into quantifiers and ground, then run the ground
@@ -263,11 +284,16 @@ impl Solver {
         // until either fixpoint or the round budget is exhausted.
         let mut instantiations: Vec<Term> = Vec::new();
         for _round in 0..QUANTIFIER_ROUNDS {
+            if expired(deadline) {
+                return SatResult::Unknown {
+                    reason: "rlimit exceeded".to_string(),
+                };
+            }
             let mut combined = self.all_literals();
             for inst in &instantiations {
                 combined.push((inst.clone(), true));
             }
-            let outcome = self.check_ground(&combined);
+            let outcome = self.check_ground_with_deadline(&combined, deadline);
             match outcome {
                 SatResult::Sat { model: ground_model } => {
                     // Try quantifier instantiation; if no new
@@ -281,6 +307,11 @@ impl Solver {
                     let universe = crate::quant::collect_universe(&rest);
                     let prev = instantiations.len();
                     for (var, body) in &quants {
+                        if expired(deadline) {
+                            return SatResult::Unknown {
+                                reason: "rlimit exceeded".to_string(),
+                            };
+                        }
                         let before_tier1 = instantiations.len();
                         // Tier 1: Miller-pattern E-matching.
                         for inst in crate::quant::instantiate_one(var, body, &universe) {
@@ -307,6 +338,11 @@ impl Solver {
                                 &universe,
                                 adsmt_quant::enumerate::DEFAULT_TIER3_BUDGET,
                             ) {
+                                if expired(deadline) {
+                                    return SatResult::Unknown {
+                                        reason: "rlimit exceeded".to_string(),
+                                    };
+                                }
                                 if !instantiations.iter().any(|t| t.alpha_eq(&inst)) {
                                     instantiations.push(inst);
                                 }
@@ -361,6 +397,28 @@ impl Solver {
     /// Internal helper used by both the surface `check_sat` and the
     /// quantifier-instantiation loop.
     fn check_ground(&mut self, lits: &[(Term, bool)]) -> SatResult {
+        self.check_ground_with_deadline(lits, None)
+    }
+
+    /// Deadline-aware variant of [`Self::check_ground`].  Threads
+    /// the wall-clock budget into the CDCL restart loop and checks
+    /// it once more before the (potentially expensive) theory-check
+    /// fallback fires.  Returns Unknown with `:reason-unknown
+    /// "rlimit exceeded"` whenever the deadline lapses inside the
+    /// ground path.
+    fn check_ground_with_deadline(
+        &mut self,
+        lits: &[(Term, bool)],
+        deadline: Option<std::time::Instant>,
+    ) -> SatResult {
+        let expired = |d: Option<std::time::Instant>| -> bool {
+            d.is_some_and(|dl| std::time::Instant::now() >= dl)
+        };
+        if expired(deadline) {
+            return SatResult::Unknown {
+                reason: "rlimit exceeded".to_string(),
+            };
+        }
         // Strip quantifier asserts from the ground path — they're
         // handled by the surrounding instantiation loop.
         let (_quants, lits): (Vec<_>, Vec<_>) = lits
@@ -370,6 +428,11 @@ impl Solver {
         // (1) Decompose every asserted (term, polarity) into CNF clauses.
         let mut clauses: Vec<Clause> = Vec::new();
         for (term, polarity) in &lits {
+            if expired(deadline) {
+                return SatResult::Unknown {
+                    reason: "rlimit exceeded".to_string(),
+                };
+            }
             let asserted = if *polarity {
                 term.clone()
             } else {
@@ -385,15 +448,25 @@ impl Solver {
                     }
                 }
             };
-            match flatten_to_clauses(&asserted) {
+            match crate::cnf::flatten_to_clauses_with_deadline(&asserted, deadline) {
                 Some(cs) => clauses.extend(cs),
                 None => {
+                    if expired(deadline) {
+                        return SatResult::Unknown {
+                            reason: "rlimit exceeded".to_string(),
+                        };
+                    }
                     // Compound shape not handled by v0.3 alpha CNF flattener.
                     // Fall back to the theory-routing path below for the
                     // sub-set of literals we can route.
                     return self.check_via_theories(&lits);
                 }
             }
+        }
+        if expired(deadline) {
+            return SatResult::Unknown {
+                reason: "rlimit exceeded".to_string(),
+            };
         }
 
         // (2) Run the configured SAT backend. Priority order:
@@ -415,23 +488,32 @@ impl Solver {
         #[cfg(all(feature = "cadical", not(feature = "oxiz")))]
         let sat_result = crate::cadical_backend::solve(&clauses);
         #[cfg(not(any(feature = "oxiz", feature = "cadical")))]
-        let sat_result = cdcl_with_restarts(&clauses, 64, 12);
+        let sat_result =
+            crate::cdcl::cdcl_with_restarts_deadline(&clauses, 64, 12, deadline);
         match sat_result {
             BoolResult::Sat => {
-                // Propagation found a satisfying assignment; theories
-                // may still reject. Route to theories as a second
-                // opinion. For the model surfaced by Sat, we run the
-                // model-carrying CDCL variant against the same clauses
-                // — backends without model extraction (oxiz, cadical)
-                // would otherwise leave the verdict witness empty.
-                let model = match crate::cdcl::cdcl_with_restarts_with_model(
+                // The model-extracting re-run must carry the same
+                // wall-clock deadline as the first CDCL call.
+                // Otherwise a large prelude (verus emits 1000+
+                // assertions before the first `(check-sat)`) can
+                // burn the entire `:rlimit` budget on the
+                // satisfiability check, leave nothing for the
+                // model-carrying re-run, and then hang forever
+                // here while ostensibly under a tight rlimit.
+                let model = match crate::cdcl::cdcl_with_restarts_with_model_deadline(
                     &clauses,
                     64,
                     12,
+                    deadline,
                 ) {
                     crate::cdcl::CdclOutcome::Sat { model } => model,
                     _ => HashMap::new(),
                 };
+                if expired(deadline) {
+                    return SatResult::Unknown {
+                        reason: "rlimit exceeded".to_string(),
+                    };
+                }
                 self.check_via_theories_with_model(&lits, model)
             }
             BoolResult::Unsat => {

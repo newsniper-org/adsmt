@@ -53,13 +53,95 @@ pub type Clause = Vec<Lit>;
 /// of AND, etc.) return `None` — the engine treats the assertion as
 /// opaque and reports Unknown if it can't be solved otherwise.
 pub fn flatten_to_clauses(t: &Term) -> Option<Vec<Clause>> {
-    flatten(t, true)
+    flatten(t, true, None)
 }
 
-fn flatten(t: &Term, polarity: bool) -> Option<Vec<Clause>> {
+/// Deadline-aware variant of [`flatten_to_clauses`].  Threads the
+/// wall-clock budget into the recursive descent so a single large
+/// term (a Verus prelude assertion can run to hundreds of nested
+/// `and` / `or` / `=>` / `not` nodes) gives up promptly when the
+/// caller's `:rlimit` lapses, instead of blocking the whole
+/// `check_sat` loop on one CNF flattening.  Returning `None` here
+/// would route the assertion through the theory-check fallback
+/// (which itself respects the deadline) and surface Unknown to the
+/// front-end with `:reason-unknown "rlimit exceeded"`.
+///
+/// We also impose a hard size guard via [`term_size_bounded`]: if
+/// the input term already exceeds `MAX_FLATTEN_NODES` boolean-tree
+/// nodes we bail to `None` up front rather than start the
+/// recursion at all.  The destructuring primitives in
+/// `adsmt-core::Term` build new `Box<Term>` clones on every `dest_*`
+/// call, so a 10⁵-node assertion (Verus's `fuel_defaults` axiom
+/// chain is in that range) generates work proportional to the node
+/// count times the depth — fine for unbounded `check_sat`, fatal
+/// for any wall-clock budget that doesn't catch the deadline
+/// between recursion levels.
+pub fn flatten_to_clauses_with_deadline(
+    t: &Term,
+    deadline: Option<std::time::Instant>,
+) -> Option<Vec<Clause>> {
+    // Pre-bound on the input term — a flattening that would touch
+    // more than this many `(and|or|=>|not)` nodes is routed to the
+    // theory-check fallback instead, which itself respects the
+    // deadline and (more importantly) doesn't allocate.
+    const MAX_FLATTEN_NODES: usize = 4096;
+    if !term_size_bounded(t, MAX_FLATTEN_NODES) {
+        return None;
+    }
+    flatten(t, true, deadline)
+}
+
+fn deadline_expired(d: Option<std::time::Instant>) -> bool {
+    d.is_some_and(|dl| std::time::Instant::now() >= dl)
+}
+
+/// `true` when `t`'s boolean-tree node count (counting `and` / `or`
+/// / `=>` / `not` connectives only) stays `≤ limit`.  Walks the
+/// term without allocating — the recursion lives on the Rust call
+/// stack and accumulates a counter.  Stops early as soon as the
+/// limit is busted so wildly large inputs don't blow the stack
+/// either.
+fn term_size_bounded(t: &Term, limit: usize) -> bool {
+    fn walk(t: &Term, budget: &mut usize) -> bool {
+        if *budget == 0 { return false; }
+        *budget -= 1;
+        // We only ever recurse through `(not _)`, `(and _ _)`,
+        // `(or _ _)`, `(=> _ _)` — everything else is an atom from
+        // the flattener's point of view, so the recursion stops
+        // there.
+        if let Some(inner) = t.dest_not() {
+            return walk(&inner, budget);
+        }
+        if let Some((p, q)) = t.dest_and() {
+            return walk(&p, budget) && walk(&q, budget);
+        }
+        if let Some((p, q)) = t.dest_or() {
+            return walk(&p, budget) && walk(&q, budget);
+        }
+        if let Some((p, q)) = t.dest_imp() {
+            return walk(&p, budget) && walk(&q, budget);
+        }
+        true
+    }
+    let mut budget = limit;
+    walk(t, &mut budget)
+}
+
+fn flatten(
+    t: &Term,
+    polarity: bool,
+    deadline: Option<std::time::Instant>,
+) -> Option<Vec<Clause>> {
+    // Bail out as soon as the deadline lapses anywhere in the
+    // recursive descent.  Caller treats `None` as "engine can't
+    // route this assertion" and falls back to the theory path,
+    // which is itself deadline-aware.
+    if deadline_expired(deadline) {
+        return None;
+    }
     // (not P): flip polarity, recurse.
     if let Some(inner) = t.dest_not() {
-        return flatten(&inner, !polarity);
+        return flatten(&inner, !polarity, deadline);
     }
     // true / false handling under polarity.
     if t.is_true_const() {
@@ -70,51 +152,59 @@ fn flatten(t: &Term, polarity: bool) -> Option<Vec<Clause>> {
     }
     // Compound destructuring.
     match polarity {
-        true => flatten_positive(t),
-        false => flatten_negative(t),
+        true => flatten_positive(t, deadline),
+        false => flatten_negative(t, deadline),
     }
 }
 
-fn flatten_positive(t: &Term) -> Option<Vec<Clause>> {
+fn flatten_positive(
+    t: &Term,
+    deadline: Option<std::time::Instant>,
+) -> Option<Vec<Clause>> {
+    if deadline_expired(deadline) { return None; }
     // (and p q): conjunction → both flattened independently.
     if let Some((p, q)) = t.dest_and() {
-        let mut out = flatten(&p, true)?;
-        out.extend(flatten(&q, true)?);
+        let mut out = flatten(&p, true, deadline)?;
+        out.extend(flatten(&q, true, deadline)?);
         return Some(out);
     }
     // (or p q): single clause containing flattened disjuncts as literals.
     if let Some((p, q)) = t.dest_or() {
-        let mut lits = literals_of_disjunct(&p, true)?;
-        lits.extend(literals_of_disjunct(&q, true)?);
+        let mut lits = literals_of_disjunct(&p, true, deadline)?;
+        lits.extend(literals_of_disjunct(&q, true, deadline)?);
         return Some(vec![lits]);
     }
     // (=> p q) === (or (not p) q)
     if let Some((p, q)) = t.dest_imp() {
-        let mut lits = literals_of_disjunct(&p, false)?;
-        lits.extend(literals_of_disjunct(&q, true)?);
+        let mut lits = literals_of_disjunct(&p, false, deadline)?;
+        lits.extend(literals_of_disjunct(&q, true, deadline)?);
         return Some(vec![lits]);
     }
     // Atomic literal.
     Some(vec![vec![Lit::pos(t.clone())]])
 }
 
-fn flatten_negative(t: &Term) -> Option<Vec<Clause>> {
+fn flatten_negative(
+    t: &Term,
+    deadline: Option<std::time::Instant>,
+) -> Option<Vec<Clause>> {
+    if deadline_expired(deadline) { return None; }
     // De Morgan: (not (and p q)) → (or (not p) (not q))
     if let Some((p, q)) = t.dest_and() {
-        let mut lits = literals_of_disjunct(&p, false)?;
-        lits.extend(literals_of_disjunct(&q, false)?);
+        let mut lits = literals_of_disjunct(&p, false, deadline)?;
+        lits.extend(literals_of_disjunct(&q, false, deadline)?);
         return Some(vec![lits]);
     }
     // (not (or p q)) → (and (not p) (not q))
     if let Some((p, q)) = t.dest_or() {
-        let mut out = flatten(&p, false)?;
-        out.extend(flatten(&q, false)?);
+        let mut out = flatten(&p, false, deadline)?;
+        out.extend(flatten(&q, false, deadline)?);
         return Some(out);
     }
     // (not (=> p q)) === (and p (not q))
     if let Some((p, q)) = t.dest_imp() {
-        let mut out = flatten(&p, true)?;
-        out.extend(flatten(&q, false)?);
+        let mut out = flatten(&p, true, deadline)?;
+        out.extend(flatten(&q, false, deadline)?);
         return Some(out);
     }
     // Negative atom — unit clause.
@@ -124,19 +214,24 @@ fn flatten_negative(t: &Term) -> Option<Vec<Clause>> {
 /// Extract a flat list of literals from a disjunct sub-expression.
 /// Only handles `(or ...)`, `(not ...)`, and atoms; conjunctions
 /// inside a disjunct are not decomposable without Tseitin auxiliaries.
-fn literals_of_disjunct(t: &Term, polarity: bool) -> Option<Vec<Lit>> {
+fn literals_of_disjunct(
+    t: &Term,
+    polarity: bool,
+    deadline: Option<std::time::Instant>,
+) -> Option<Vec<Lit>> {
+    if deadline_expired(deadline) { return None; }
     if let Some(inner) = t.dest_not() {
-        return literals_of_disjunct(&inner, !polarity);
+        return literals_of_disjunct(&inner, !polarity, deadline);
     }
     if polarity {
         if let Some((p, q)) = t.dest_or() {
-            let mut out = literals_of_disjunct(&p, true)?;
-            out.extend(literals_of_disjunct(&q, true)?);
+            let mut out = literals_of_disjunct(&p, true, deadline)?;
+            out.extend(literals_of_disjunct(&q, true, deadline)?);
             return Some(out);
         }
         if let Some((p, q)) = t.dest_imp() {
-            let mut out = literals_of_disjunct(&p, false)?;
-            out.extend(literals_of_disjunct(&q, true)?);
+            let mut out = literals_of_disjunct(&p, false, deadline)?;
+            out.extend(literals_of_disjunct(&q, true, deadline)?);
             return Some(out);
         }
         if t.dest_and().is_some() {
@@ -148,8 +243,8 @@ fn literals_of_disjunct(t: &Term, polarity: bool) -> Option<Vec<Lit>> {
         Some(vec![Lit::pos(t.clone())])
     } else {
         if let Some((p, q)) = t.dest_and() {
-            let mut out = literals_of_disjunct(&p, false)?;
-            out.extend(literals_of_disjunct(&q, false)?);
+            let mut out = literals_of_disjunct(&p, false, deadline)?;
+            out.extend(literals_of_disjunct(&q, false, deadline)?);
             return Some(out);
         }
         if t.dest_or().is_some() || t.dest_imp().is_some() {
