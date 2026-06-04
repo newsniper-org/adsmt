@@ -19,10 +19,12 @@
 //! choice and representation are deliberately decoupled so each
 //! upgrade is additive.
 
+pub mod buchberger;
 pub mod monomial;
 pub mod polynomial;
 pub mod reduction;
 
+pub use buchberger::{buchberger, contains_one};
 pub use monomial::{Monomial, MonomialOrder};
 pub use polynomial::Polynomial;
 pub use reduction::{monomials_coprime, reduce, s_polynomial};
