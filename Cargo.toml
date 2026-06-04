@@ -20,6 +20,10 @@ members = [
     # the lu-smt `--aot-bake` / `--aot-load` CLI surface
     # (§3.1.B + §3.1.D) and the reader (§3.1.C) follow.
     "adsmt-aot",
+    # §3.2 meta-tracing JIT with algebraic-invariant guards.
+    # The guard-check kernel shares its `reduce` call with §3.4's
+    # Gröbner certifier — one kernel, two consumers.
+    "adsmt-jit",
     "adsmt-class",
     "adsmt-quant",
     "adsmt-abduce",
@@ -124,6 +128,9 @@ glob = "0.3.3"
 # header records the SHA-256 of the prelude text the artifact
 # was baked from; the reader cross-checks on `--aot-load`.
 sha2 = "0.10"
+# §3.2 meta-tracing JIT crate — algebraic-invariant guards over
+# the shared GF(2) Gröbner kernel.
+adsmt-jit = { path = "adsmt-jit" }
 
 [profile.release]
 lto = "thin"

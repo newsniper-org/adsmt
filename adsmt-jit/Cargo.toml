@@ -1,0 +1,15 @@
+[package]
+name = "adsmt-jit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Meta-tracing JIT with algebraic-invariant guards (§3.2 of the verus-fork engine-refactor + meta-compiler proposal)"
+
+[dependencies]
+adsmt-core.workspace = true
+# Shares the GF(2) Gröbner kernel with §3.4: a recorded
+# polynomial-invariant guard re-uses the same `reduce` /
+# `s_polynomial` machinery that certifies UNSAT in the theory
+# layer.  This sharing is the key engineering claim in §3.5 of
+# the proposal — one kernel, two consumers.
+adsmt-theory-finite-field.workspace = true

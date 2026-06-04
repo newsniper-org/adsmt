@@ -127,6 +127,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-jit"
+version = "1.0.0-rc.15"
+dependencies = [
+ "adsmt-core",
+ "adsmt-theory-finite-field",
+]
+
+[[package]]
 name = "adsmt-lints"
 version = "1.0.0-rc.15"
 dependencies = [
