@@ -72,6 +72,7 @@ dependencies = [
  "adsmt-core",
  "adsmt-quant",
  "adsmt-theory",
+ "adsmt-theory-finite-field",
  "cadical",
  "criterion",
  "indexmap",
@@ -209,6 +210,9 @@ dependencies = [
 name = "adsmt-theory-finite-field"
 version = "1.0.0-rc.14"
 dependencies = [
+ "adsmt-cert",
+ "adsmt-core",
+ "adsmt-theory",
  "smallvec",
 ]
 

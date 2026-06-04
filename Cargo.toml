@@ -76,6 +76,7 @@ rust-version = "1.96"
 adsmt-core = { path = "adsmt-core" }
 adsmt-cert = { path = "adsmt-cert" }
 adsmt-theory = { path = "adsmt-theory" }
+adsmt-theory-finite-field = { path = "adsmt-theory-finite-field" }
 adsmt-class = { path = "adsmt-class" }
 adsmt-quant = { path = "adsmt-quant" }
 adsmt-abduce = { path = "adsmt-abduce" }

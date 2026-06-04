@@ -7,3 +7,11 @@ description = "GF(2) Gröbner-basis theory sibling for adsmt — Buchberger v0 +
 
 [dependencies]
 smallvec.workspace = true
+# Theory trait + Combination polite-combination glue.  Adding
+# the dep here keeps the §3.4 plugin self-contained: the crate
+# both ships the GF(2) Gröbner kernel *and* its Theory impl,
+# so `Solver::with_finite_field(...)` only needs to import from
+# one place.
+adsmt-theory.workspace = true
+adsmt-core.workspace = true
+adsmt-cert.workspace = true

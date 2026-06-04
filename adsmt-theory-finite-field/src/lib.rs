@@ -29,6 +29,7 @@ pub mod monomial;
 pub mod polynomial;
 pub mod reduction;
 pub mod sat_encoder;
+pub mod theory_plugin;
 
 pub use bitpacked::BPMonomial;
 pub use bp_polynomial::BPPolynomial;
@@ -47,3 +48,4 @@ pub use sat_encoder::{
     cnf_to_generators, clause_to_polynomial, decide_sat_via_grobner,
     GroebnerSatVerdict,
 };
+pub use theory_plugin::{FiniteFieldConfig, FiniteFieldTheory};

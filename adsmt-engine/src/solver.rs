@@ -78,6 +78,133 @@ impl Solver {
         self.theories.register(t);
     }
 
+    /// Register the §3.4 GF(2) Gröbner-basis theory plugin per the
+    /// verus-fork engine-refactor request (`§3.4` of
+    /// `.local-requests-from/verus-fork/2026-06-04-engine-refactor-and-meta-compiler.md`).
+    ///
+    /// The plugin sits in `Combination::register` alongside the
+    /// other theories.  Its behaviour is governed by the
+    /// [`FiniteFieldConfig`] knobs:
+    ///
+    /// - `periodic_interval: usize` (default `0` = disabled) — runs
+    ///   one F4 pass every `N`-th theory check round inside the
+    ///   polite-combination loop; an `1 ∈ basis` verdict
+    ///   short-circuits the rest of the engine with the
+    ///   FiniteField `TheoryWitness`.
+    /// - `try_at_budget_exhaustion: bool` (default `false`) — when
+    ///   `check_sat_with_deadline` is about to return `Unknown`
+    ///   the engine first calls
+    ///   [`FiniteFieldTheory::force_check`]; UNSAT replaces the
+    ///   `Unknown` verdict with a real `Unsat`.
+    ///
+    /// Builder-pattern style:
+    /// `Solver::default().with_finite_field(config)`.
+    pub fn with_finite_field(
+        mut self,
+        config: adsmt_theory_finite_field::FiniteFieldConfig,
+    ) -> Self {
+        let theory = adsmt_theory_finite_field::FiniteFieldTheory::new(config);
+        self.theories.register(Box::new(theory));
+        self
+    }
+
+    /// `true` iff the GF(2) Gröbner theory plugin has been
+    /// registered via [`Self::with_finite_field`].  Internal
+    /// helper for the engine hooks below; downstream code that
+    /// cares about the plugin's configuration should instead poke
+    /// at it directly through [`Self::finite_field_mut`].
+    fn has_finite_field(&self) -> bool {
+        self.theories
+            .theories()
+            .iter()
+            .any(|t| t.name() == "FiniteField")
+    }
+
+    /// Mutable handle to the registered [`FiniteFieldTheory`], if
+    /// any.  Used by the budget-exhaustion + clause-install hooks
+    /// inside `check_sat_with_deadline` and exposed publicly so
+    /// callers can re-tune the configuration mid-session.
+    pub fn finite_field_mut(
+        &mut self,
+    ) -> Option<&mut adsmt_theory_finite_field::FiniteFieldTheory> {
+        for t in self.theories.theories_mut() {
+            if t.name() != "FiniteField" {
+                continue;
+            }
+            if let Some(any) = t.as_any_mut()
+                && let Some(ff) = any
+                    .downcast_mut::<adsmt_theory_finite_field::FiniteFieldTheory>(
+                )
+            {
+                return Some(ff);
+            }
+        }
+        None
+    }
+
+    /// Translate the engine's current CNF clause set into the
+    /// DIMACS shape the standalone GF(2) decider consumes and
+    /// install it on the registered FiniteField plugin.  Called by
+    /// `check_sat_with_deadline` at the top of every `check_sat`
+    /// so the plugin's `force_check` / periodic pass always sees
+    /// the live clause set.  Assertions that `flatten_to_clauses`
+    /// returns `None` for (non-Bool top-level terms — equalities,
+    /// theory-shaped literals, etc.) are conservatively skipped;
+    /// the GF(2) decider only reasons about the propositional
+    /// fragment, so missing those rows is sound (it can only
+    /// under-approximate UNSAT, never claim spurious UNSAT).
+    fn install_finite_field_clauses(&mut self) {
+        if !self.has_finite_field() {
+            return;
+        }
+        let mut all_clauses: Vec<crate::cnf::Clause> = Vec::new();
+        for term in self.all_assertions() {
+            if let Some(mut cs) = crate::cnf::flatten_to_clauses(&term) {
+                all_clauses.append(&mut cs);
+            }
+        }
+        use std::collections::HashMap;
+        let mut var_map: HashMap<String, u32> = HashMap::new();
+        let mut next_var: u32 = 1;
+        let dimacs: Vec<Vec<i32>> = all_clauses
+            .iter()
+            .map(|c| {
+                c.iter()
+                    .map(|lit| {
+                        let key = lit.atom.to_string();
+                        let id = *var_map.entry(key).or_insert_with(|| {
+                            let v = next_var;
+                            next_var += 1;
+                            v
+                        });
+                        if lit.polarity {
+                            id as i32
+                        } else {
+                            -(id as i32)
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let n_vars = next_var - 1;
+        if let Some(ff) = self.finite_field_mut() {
+            ff.install_dimacs_clauses(dimacs, n_vars);
+        }
+    }
+
+    /// Last-resort GF(2) Gröbner check.  Returns `Some(witness)`
+    /// when `try_at_budget_exhaustion` is on and the F4 pass
+    /// finds `1 ∈ basis`.  Otherwise `None`.
+    fn try_finite_field_at_budget_exhaustion(
+        &mut self,
+    ) -> Option<adsmt_cert::witness::TheoryWitness> {
+        let ff = self.finite_field_mut()?;
+        if !ff.config().try_at_budget_exhaustion {
+            return None;
+        }
+        ff.force_check()
+    }
+
     /// Declare a datatype to the solver's `Datatypes` theory.
     /// Returns `true` if the declaration was accepted, `false` if no
     /// `Datatypes` theory was registered.
@@ -266,6 +393,38 @@ impl Solver {
     /// `:rlimit` exhaustion produces.  `None` reverts to the
     /// previous unbounded behaviour.
     pub fn check_sat_with_deadline(
+        &mut self,
+        deadline: Option<std::time::Instant>,
+    ) -> SatResult {
+        // §3.4 hook: install the live CNF clause set into the
+        // GF(2) Gröbner theory plugin (if registered via
+        // `with_finite_field`) so its periodic-interval pass and
+        // budget-exhaustion `force_check` both see the up-to-date
+        // formula.  No-op when the plugin isn't registered.
+        self.install_finite_field_clauses();
+
+        let original_result = self.check_sat_inner(deadline);
+
+        // §3.4 budget-exhaustion hook: if CDCL+Tier-1/2/3 ran out
+        // of time and the registered FiniteField plugin has
+        // `try_at_budget_exhaustion = true`, give the GF(2) basis
+        // one final shot.  An `1 ∈ basis` certificate replaces
+        // the Unknown verdict with a real Unsat carrying the
+        // FiniteField `TheoryWitness`.
+        if let SatResult::Unknown { .. } = &original_result
+            && self.try_finite_field_at_budget_exhaustion().is_some()
+        {
+            let core =
+                crate::result::UnsatCore::from_assertions(&self.all_assertions());
+            return SatResult::Unsat { certificate: None, core };
+        }
+        original_result
+    }
+
+    /// The original `check_sat` body extracted so the §3.4 hooks
+    /// can wrap it without complicating the body's already busy
+    /// closure-capture environment.
+    fn check_sat_inner(
         &mut self,
         deadline: Option<std::time::Instant>,
     ) -> SatResult {
@@ -1363,5 +1522,80 @@ mod tests {
         let ranked = rank_candidates(minimized);
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].candidate.sources[0], "quant-tier4");
+    }
+
+    // === §3.4 GF(2) Gröbner theory plugin integration ===
+
+    #[test]
+    fn finite_field_plugin_registers_via_builder() {
+        let s = Solver::default().with_finite_field(
+            adsmt_theory_finite_field::FiniteFieldConfig::default(),
+        );
+        assert!(
+            s.theories
+                .theories()
+                .iter()
+                .any(|t| t.name() == "FiniteField"),
+            "FiniteField theory not found in Combination roster",
+        );
+    }
+
+    #[test]
+    fn finite_field_disabled_default_does_not_intervene() {
+        // Default config: periodic_interval = 0, try_at_budget_exhaustion = false.
+        // The plugin must not change verdicts for instances CDCL
+        // already decides.
+        let p = Term::var("ff_default_p", Type::bool_());
+        let mut s = Solver::default().with_finite_field(
+            adsmt_theory_finite_field::FiniteFieldConfig::default(),
+        );
+        s.assert(p.clone());
+        s.assert(Term::mk_not(p).unwrap());
+        let r = s.check_sat();
+        // CDCL detects the polarity contradiction on its own.
+        assert!(matches!(r, SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn finite_field_budget_exhaustion_converts_unknown_to_unsat() {
+        // Force CDCL to give up by passing an already-elapsed
+        // deadline.  Without `try_at_budget_exhaustion = true`
+        // this would surface as Unknown; with it on, the GF(2)
+        // Gröbner pass kicks in and certifies UNSAT on
+        // `(x) ∧ (¬x)`.
+        let p = Term::var("ff_budget_p", Type::bool_());
+        let mut s = Solver::default().with_finite_field(
+            adsmt_theory_finite_field::FiniteFieldConfig {
+                periodic_interval: 0,
+                try_at_budget_exhaustion: true,
+            },
+        );
+        s.assert(p.clone());
+        s.assert(Term::mk_not(p).unwrap());
+        let past_deadline = std::time::Instant::now()
+            - std::time::Duration::from_millis(1);
+        let r = s.check_sat_with_deadline(Some(past_deadline));
+        assert!(
+            matches!(r, SatResult::Unsat { .. }),
+            "expected Unsat via FiniteField fallback, got {r:?}",
+        );
+    }
+
+    #[test]
+    fn finite_field_mut_returns_registered_handle() {
+        let mut s = Solver::default().with_finite_field(
+            adsmt_theory_finite_field::FiniteFieldConfig {
+                periodic_interval: 7,
+                try_at_budget_exhaustion: false,
+            },
+        );
+        let ff = s.finite_field_mut().expect("plugin registered");
+        assert_eq!(ff.config().periodic_interval, 7);
+    }
+
+    #[test]
+    fn finite_field_unregistered_returns_none() {
+        let mut s = Solver::default();
+        assert!(s.finite_field_mut().is_none());
     }
 }

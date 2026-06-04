@@ -9,6 +9,7 @@ description = "DPLL(T) main loop with incremental push/pop, theory combination g
 adsmt-core.workspace = true
 adsmt-cert.workspace = true
 adsmt-theory.workspace = true
+adsmt-theory-finite-field.workspace = true
 adsmt-class.workspace = true
 adsmt-quant.workspace = true
 adsmt-abduce.workspace = true
