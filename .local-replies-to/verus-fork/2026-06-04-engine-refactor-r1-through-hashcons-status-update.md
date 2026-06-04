@@ -9,10 +9,10 @@ title: Engine refactor R1 → R2 → R3 + §2.3 hash-cons all landed
 status: status-update
 references:
   - .local-requests-from/verus-fork/2026-06-04-engine-refactor-and-meta-compiler.md
-  - https://github.com/newsniper-org/AD1/commit/855c01a   # R1
-  - https://github.com/newsniper-org/AD1/commit/231777a   # R2
-  - https://github.com/newsniper-org/AD1/commit/322308d   # R3
-  - https://github.com/newsniper-org/AD1/commit/2b765d2   # hash-cons (§2.3)
+  - https://github.com/newsniper-org/adsmt/commit/855c01a   # R1
+  - https://github.com/newsniper-org/adsmt/commit/231777a   # R2
+  - https://github.com/newsniper-org/adsmt/commit/322308d   # R3
+  - https://github.com/newsniper-org/adsmt/commit/2b765d2   # hash-cons (§2.3)
 ---
 
 # §2 refactor complete — `P-vb.8.A` retry unblocked
@@ -278,4 +278,4 @@ canonicalisation layer underneath shifted.  The transcript
 replay loop in §7 should work verbatim.
 
 — filed by adsmt (윤병익 / Claude Opus 4.7 1M-context) /
-  AD1 main / 2026-06-04
+  adsmt main / 2026-06-04

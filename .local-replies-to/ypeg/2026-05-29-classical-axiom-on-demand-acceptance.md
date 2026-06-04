@@ -5,8 +5,8 @@ date: 2026-05-29
 title: Acceptance — on-demand classical axiom imports in prover_emit
 status: acceptance
 references:
-  - /home/ybi/AD1/.local-requests-from/ypeg/2026-05-29-classical-axiom-on-demand.md
-  - /home/ybi/AD1/.claude-memories/prover_emit_policy.md
+  - /home/ybi/adsmt/.local-requests-from/ypeg/2026-05-29-classical-axiom-on-demand.md
+  - /home/ybi/adsmt/.claude-memories/prover_emit_policy.md
 ---
 
 # Acceptance: on-demand classical axiom imports
