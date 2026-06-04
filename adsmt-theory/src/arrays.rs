@@ -24,7 +24,7 @@
 //! - `diff   : (Array I E) -> (Array I E) -> I` (extensionality witness)
 
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
-use adsmt_core::{Term, Type};
+use adsmt_core::{Term, TermInner, Type};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 
@@ -62,28 +62,26 @@ impl Arrays {
 
     /// Destructure `(select arr idx)`.
     fn dest_select(t: &Term) -> Option<(Term, Term)> {
-        if let Term::App(outer, idx) = t
-            && let Term::App(head, arr) = &**outer
-                && let Term::Const(c) = &**head
-                    && c.name == "select" {
-                        return Some(((**arr).clone(), (**idx).clone()));
-                    }
+        if let TermInner::App(outer, idx) = t.kind()
+            && let TermInner::App(head, arr) = outer.kind()
+            && let TermInner::Const(c) = head.kind()
+            && c.name == "select"
+        {
+            return Some((arr.clone(), idx.clone()));
+        }
         None
     }
 
     /// Destructure `(store arr idx val)`.
     fn dest_store(t: &Term) -> Option<(Term, Term, Term)> {
-        if let Term::App(outer3, val) = t
-            && let Term::App(outer2, idx) = &**outer3
-                && let Term::App(head, arr) = &**outer2
-                    && let Term::Const(c) = &**head
-                        && c.name == "store" {
-                            return Some((
-                                (**arr).clone(),
-                                (**idx).clone(),
-                                (**val).clone(),
-                            ));
-                        }
+        if let TermInner::App(outer3, val) = t.kind()
+            && let TermInner::App(outer2, idx) = outer3.kind()
+            && let TermInner::App(head, arr) = outer2.kind()
+            && let TermInner::Const(c) = head.kind()
+            && c.name == "store"
+        {
+            return Some((arr.clone(), idx.clone(), val.clone()));
+        }
         None
     }
 
@@ -171,10 +169,10 @@ impl Arrays {
     ) -> Option<Term> {
         // template = App(App(App(store_const, _), _), _).
         let outer = template;
-        let Term::App(level2, _) = outer else { return None; };
-        let Term::App(level1, _) = &**level2 else { return None; };
-        let Term::App(store_op, _) = &**level1 else { return None; };
-        let head: Term = (**store_op).clone();
+        let TermInner::App(level2, _) = outer.kind() else { return None; };
+        let TermInner::App(level1, _) = level2.kind() else { return None; };
+        let TermInner::App(store_op, _) = level1.kind() else { return None; };
+        let head: Term = store_op.clone();
         let with_arr = Term::app(head, arr.clone()).ok()?;
         let with_idx = Term::app(with_arr, idx.clone()).ok()?;
         Term::app(with_idx, val.clone()).ok()

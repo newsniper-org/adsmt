@@ -19,7 +19,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use adsmt_core::{Term, Var};
+use adsmt_core::{Term, TermInner, Var};
 use adsmt_quant::ematch::{EMatcher, TermUniverse};
 use adsmt_quant::trigger::Trigger;
 use indexmap::IndexMap;
@@ -57,12 +57,12 @@ pub fn collect_universe(rest: &[(Term, bool)]) -> TermUniverse {
 
 fn gather_subterms(t: &Term, u: &mut TermUniverse) {
     u.insert(t.clone());
-    match t {
-        Term::App(f, x) => {
+    match t.kind() {
+        TermInner::App(f, x) => {
             gather_subterms(f, u);
             gather_subterms(x, u);
         }
-        Term::Lam(_, body) => gather_subterms(body, u),
+        TermInner::Lam(_, body) => gather_subterms(body, u),
         _ => {}
     }
 }

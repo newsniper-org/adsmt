@@ -27,7 +27,7 @@
 //! occurrences of the same BV variable in a single problem alias
 //! correctly without an external symbol table.
 
-use adsmt_core::{Term, Type};
+use adsmt_core::{Term, TermInner, Type};
 
 use crate::cnf::{Clause, Lit};
 
@@ -188,7 +188,7 @@ pub fn blast_term(t: &Term, w: u32, env: &mut BlastEnv) -> Option<Vec<Bit>> {
         if lit_w != w { return None; }
         return Some(lit_bits(value, w));
     }
-    if let Term::Var(v) = t {
+    if let TermInner::Var(v) = t.kind() {
         return Some((0..w).map(|i| Bit::Atom(bit_var(&v.name, i))).collect());
     }
     // v0.23 C.1 — `bvnot` is a single-arg unary; handle before

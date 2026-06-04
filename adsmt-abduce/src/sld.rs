@@ -24,7 +24,7 @@
 
 use std::collections::HashSet;
 
-use adsmt_core::Term;
+use adsmt_core::{Term, TermInner};
 
 use crate::abducible::{Abducible, AbducibleSet};
 use crate::rule_base::HornRuleBase;
@@ -74,10 +74,10 @@ impl Candidate {
 }
 
 fn term_depth(t: &Term) -> usize {
-    match t {
-        Term::Var(_) | Term::Const(_) => 1,
-        Term::App(f, x) => 1 + term_depth(f).max(term_depth(x)),
-        Term::Lam(_, body) => 1 + term_depth(body),
+    match t.kind() {
+        TermInner::Var(_) | TermInner::Const(_) => 1,
+        TermInner::App(f, x) => 1 + term_depth(f).max(term_depth(x)),
+        TermInner::Lam(_, body) => 1 + term_depth(body),
     }
 }
 

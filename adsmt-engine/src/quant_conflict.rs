@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use adsmt_core::{Term, Var};
+use adsmt_core::{Term, TermInner, Var};
 use indexmap::IndexMap;
 
 /// Find conflict-driving instantiations of `∀var. body` against
@@ -57,23 +57,23 @@ fn extend_match(
     flex: &Arc<Var>,
     sigma: &mut IndexMap<Arc<Var>, Term>,
 ) -> bool {
-    match (pattern, target) {
-        (Term::Var(v), t) if **v == **flex => {
-            if v.ty != t.type_of() {
+    match (pattern.kind(), target.kind()) {
+        (TermInner::Var(v), _) if **v == **flex => {
+            if v.ty != target.type_of() {
                 return false;
             }
             if let Some(prev) = sigma.get(v) {
-                return prev.alpha_eq(t);
+                return prev.alpha_eq(target);
             }
-            sigma.insert(v.clone(), t.clone());
+            sigma.insert(v.clone(), target.clone());
             true
         }
-        (Term::Var(a), Term::Var(b)) => **a == **b,
-        (Term::Const(a), Term::Const(b)) => **a == **b,
-        (Term::App(f1, x1), Term::App(f2, x2)) => {
+        (TermInner::Var(a), TermInner::Var(b)) => **a == **b,
+        (TermInner::Const(a), TermInner::Const(b)) => **a == **b,
+        (TermInner::App(f1, x1), TermInner::App(f2, x2)) => {
             extend_match(f1, f2, flex, sigma) && extend_match(x1, x2, flex, sigma)
         }
-        (Term::Lam(v1, b1), Term::Lam(v2, b2)) => {
+        (TermInner::Lam(v1, b1), TermInner::Lam(v2, b2)) => {
             v1.ty == v2.ty && extend_match(b1, b2, flex, sigma)
         }
         _ => false,

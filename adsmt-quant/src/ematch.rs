@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use adsmt_core::{Term, Var};
+use adsmt_core::{Term, TermInner, Var};
 use indexmap::IndexMap;
 
 use crate::trigger::{Trigger, TriggerKind};
@@ -77,20 +77,20 @@ fn substitute_in(t: &Term, from: &Term, to: &Term) -> Option<Term> {
     if t.alpha_eq(from) {
         return Some(to.clone());
     }
-    match t {
-        Term::Var(_) | Term::Const(_) => None,
-        Term::App(f, x) => {
+    match t.kind() {
+        TermInner::Var(_) | TermInner::Const(_) => None,
+        TermInner::App(f, x) => {
             let f_sub = substitute_in(f, from, to);
             let x_sub = substitute_in(x, from, to);
             if f_sub.is_some() || x_sub.is_some() {
-                let new_f = f_sub.unwrap_or_else(|| (**f).clone());
-                let new_x = x_sub.unwrap_or_else(|| (**x).clone());
+                let new_f = f_sub.unwrap_or_else(|| f.clone());
+                let new_x = x_sub.unwrap_or_else(|| x.clone());
                 Term::app(new_f, new_x).ok()
             } else {
                 None
             }
         }
-        Term::Lam(v, body) => {
+        TermInner::Lam(v, body) => {
             substitute_in(body, from, to)
                 .map(|new_body| Term::lam((**v).clone(), new_body))
         }
@@ -180,23 +180,23 @@ fn extend_match(
     bound: &[Arc<Var>],
     sigma: &mut IndexMap<Arc<Var>, Term>,
 ) -> bool {
-    match (pattern, target) {
-        (Term::Var(v), t) if bound.iter().any(|b| **b == **v) => {
-            if v.ty != t.type_of() {
+    match (pattern.kind(), target.kind()) {
+        (TermInner::Var(v), _) if bound.iter().any(|b| **b == **v) => {
+            if v.ty != target.type_of() {
                 return false;
             }
             if let Some(prev) = sigma.get(v) {
-                return prev.alpha_eq(t);
+                return prev.alpha_eq(target);
             }
-            sigma.insert(v.clone(), t.clone());
+            sigma.insert(v.clone(), target.clone());
             true
         }
-        (Term::Var(v1), Term::Var(v2)) => **v1 == **v2,
-        (Term::Const(c1), Term::Const(c2)) => **c1 == **c2,
-        (Term::App(f1, a1), Term::App(f2, a2)) => {
+        (TermInner::Var(v1), TermInner::Var(v2)) => **v1 == **v2,
+        (TermInner::Const(c1), TermInner::Const(c2)) => **c1 == **c2,
+        (TermInner::App(f1, a1), TermInner::App(f2, a2)) => {
             extend_match(f1, f2, bound, sigma) && extend_match(a1, a2, bound, sigma)
         }
-        (Term::Lam(v1, b1), Term::Lam(v2, b2)) => {
+        (TermInner::Lam(v1, b1), TermInner::Lam(v2, b2)) => {
             v1.ty == v2.ty && extend_match(b1, b2, bound, sigma)
         }
         _ => false,

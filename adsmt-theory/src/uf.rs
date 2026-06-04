@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
-use adsmt_core::{Term, Type};
+use adsmt_core::{Term, TermInner, Type};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 
@@ -48,12 +48,12 @@ struct UfSnapshot {
 ///
 /// Returns the index into `members`.
 fn pick_representative(members: &[adsmt_core::Term]) -> usize {
-    use adsmt_core::Term;
+    use adsmt_core::TermInner;
     for (i, t) in members.iter().enumerate() {
-        if matches!(t, Term::Const(_)) { return i; }
+        if matches!(t.kind(), TermInner::Const(_)) { return i; }
     }
     for (i, t) in members.iter().enumerate() {
-        if matches!(t, Term::Var(_)) { return i; }
+        if matches!(t.kind(), TermInner::Var(_)) { return i; }
     }
     0
 }
@@ -77,7 +77,7 @@ impl Uf {
         if !self.known.iter().any(|kt| kt.alpha_eq(t)) {
             self.known.push(t.clone());
         }
-        if let Term::App(f, x) = t {
+        if let TermInner::App(f, x) = t.kind() {
             self.register(f);
             self.register(x);
         }
@@ -130,11 +130,13 @@ impl Uf {
             for i in 0..snapshot.len() {
                 for j in (i + 1)..snapshot.len() {
                     let (ti, tj) = (&snapshot[i], &snapshot[j]);
-                    if let (Term::App(f1, x1), Term::App(f2, x2)) = (ti, tj) {
-                        let f1c = (**f1).clone();
-                        let x1c = (**x1).clone();
-                        let f2c = (**f2).clone();
-                        let x2c = (**x2).clone();
+                    if let (TermInner::App(f1, x1), TermInner::App(f2, x2)) =
+                        (ti.kind(), tj.kind())
+                    {
+                        let f1c = f1.clone();
+                        let x1c = x1.clone();
+                        let f2c = f2.clone();
+                        let x2c = x2.clone();
                         if self.same_class(&f1c, &f2c)
                             && self.same_class(&x1c, &x2c)
                             && !self.same_class(ti, tj)

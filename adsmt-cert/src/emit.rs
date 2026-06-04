@@ -6,7 +6,7 @@
 
 use std::fmt::Write;
 
-use adsmt_core::{Kind, Term, TyVar, Type, Var};
+use adsmt_core::{Kind, Term, TermInner, TyVar, Type, Var};
 
 use crate::canonical::{Certificate, Sequent, Step, StepBody, StepId};
 use crate::witness::{
@@ -151,29 +151,29 @@ fn emit_sequent(s: &Sequent, out: &mut String) {
 }
 
 fn emit_term(t: &Term, out: &mut String) {
-    match t {
-        Term::Var(v) => {
+    match t.kind() {
+        TermInner::Var(v) => {
             out.push_str("(var ");
             out.push_str(&quote_ident(&v.name));
             out.push(' ');
             emit_type(&v.ty, out);
             out.push(')');
         }
-        Term::Const(c) => {
+        TermInner::Const(c) => {
             out.push_str("(const ");
             out.push_str(&quote_ident(&c.name));
             out.push(' ');
             emit_type(&c.ty, out);
             out.push(')');
         }
-        Term::App(f, x) => {
+        TermInner::App(f, x) => {
             out.push_str("(app ");
             emit_term(f, out);
             out.push(' ');
             emit_term(x, out);
             out.push(')');
         }
-        Term::Lam(v, body) => {
+        TermInner::Lam(v, body) => {
             out.push_str("(lam ");
             emit_var(v, out);
             out.push(' ');

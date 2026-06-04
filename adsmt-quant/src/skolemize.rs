@@ -22,7 +22,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use adsmt_core::{Term, Type, Var};
+use adsmt_core::{Term, TermInner, Type, Var};
 use indexmap::IndexMap;
 use std::sync::Arc;
 
@@ -50,11 +50,11 @@ pub fn normalize_for_engine(t: &Term) -> Term {
 /// purely propositional asserts skip the rewrite cost (and keep
 /// their original Term shape in the certificate).
 pub fn contains_quantifier(t: &Term) -> bool {
-    match t {
-        Term::Var(_) => false,
-        Term::Const(c) => c.name == "forall" || c.name == "exists",
-        Term::App(f, x) => contains_quantifier(f) || contains_quantifier(x),
-        Term::Lam(_, body) => contains_quantifier(body),
+    match t.kind() {
+        TermInner::Var(_) => false,
+        TermInner::Const(c) => c.name == "forall" || c.name == "exists",
+        TermInner::App(f, x) => contains_quantifier(f) || contains_quantifier(x),
+        TermInner::Lam(_, body) => contains_quantifier(body),
     }
 }
 
@@ -254,9 +254,9 @@ mod tests {
         // Should now be P(c) for some fresh c — no exists wrapper.
         assert!(s.dest_exists().is_none());
         // Top-level structure: App(P, sk_const)
-        if let Term::App(head, arg) = &s {
-            assert_eq!(**head, pred("P"));
-            if let Term::Var(v) = &**arg {
+        if let TermInner::App(head, arg) = s.kind() {
+            assert_eq!(*head, pred("P"));
+            if let TermInner::Var(v) = arg.kind() {
                 assert!(v.name.starts_with("@sk_x_"));
                 assert_eq!(v.ty, a_sort());
             } else {
@@ -280,9 +280,9 @@ mod tests {
         let (y_back, inner) = s.dest_forall().expect("forall preserved");
         assert_eq!(y_back.name, "y");
         // inner should be P(sk(y)) — application of fresh skolem fn to y.
-        if let Term::App(_p_head, sk_app) = &inner {
-            if let Term::App(sk_head, y_arg) = &**sk_app {
-                if let Term::Var(sk_v) = &**sk_head {
+        if let TermInner::App(_p_head, sk_app) = inner.kind() {
+            if let TermInner::App(sk_head, y_arg) = sk_app.kind() {
+                if let TermInner::Var(sk_v) = sk_head.kind() {
                     assert!(sk_v.name.starts_with("@sk_x_"));
                     let (dom, cod) = sk_v.ty.dest_fun().expect("Skolem fn type");
                     assert_eq!(dom, a_sort());
@@ -290,7 +290,7 @@ mod tests {
                 } else {
                     panic!("expected fresh Skolem head");
                 }
-                if let Term::Var(y_v) = &**y_arg {
+                if let TermInner::Var(y_v) = y_arg.kind() {
                     assert_eq!(y_v.name, "y");
                 } else {
                     panic!("expected y as Skolem arg");

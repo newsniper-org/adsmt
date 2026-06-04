@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use adsmt_core::{Term, Var};
+use adsmt_core::{Term, TermInner, Var};
 
 #[derive(Clone, Debug)]
 pub enum TriggerKind {
@@ -46,38 +46,45 @@ impl Trigger {
 
 fn miller_check(term: &Term, flex: &HashSet<Arc<Var>>) -> bool {
     let (head, args) = uncurry(term);
-    if let Term::Var(v) = &head
-        && flex.contains(v) {
-            // Flex head: arguments must be distinct rigid bound variables,
-            // i.e. not other flex variables.
-            let mut seen: Vec<Arc<Var>> = Vec::new();
-            for a in &args {
-                match a {
-                    Term::Var(av) if !flex.contains(av) => {
-                        if seen.iter().any(|x| **x == **av) {
-                            return false;
-                        }
-                        seen.push(av.clone());
+    if let TermInner::Var(v) = head.kind()
+        && flex.contains(v)
+    {
+        // Flex head: arguments must be distinct rigid bound variables,
+        // i.e. not other flex variables.
+        let mut seen: Vec<Arc<Var>> = Vec::new();
+        for a in &args {
+            match a.kind() {
+                TermInner::Var(av) if !flex.contains(av) => {
+                    if seen.iter().any(|x| **x == **av) {
+                        return false;
                     }
-                    _ => return false,
+                    seen.push(av.clone());
                 }
+                _ => return false,
             }
-            return true;
         }
+        return true;
+    }
     // Rigid head: recurse into arguments and into the head itself.
-    if let Term::Lam(_, body) = &head
-        && !miller_check(body, flex) {
-            return false;
-        }
+    if let TermInner::Lam(_, body) = head.kind()
+        && !miller_check(body, flex)
+    {
+        return false;
+    }
     args.iter().all(|a| miller_check(a, flex))
 }
 
 fn uncurry(t: &Term) -> (Term, Vec<Term>) {
     let mut args: Vec<Term> = Vec::new();
     let mut cur = t.clone();
-    while let Term::App(f, a) = &cur {
-        args.insert(0, (**a).clone());
-        let next = (**f).clone();
+    loop {
+        let next = match cur.kind() {
+            TermInner::App(f, a) => {
+                args.insert(0, a.clone());
+                f.clone()
+            }
+            _ => break,
+        };
         cur = next;
     }
     (cur, args)
@@ -142,38 +149,38 @@ pub fn learn_triggers(body: &Term, flex: &[Arc<Var>]) -> Option<Trigger> {
 }
 
 fn collect_apps(t: &Term, out: &mut Vec<Term>) {
-    match t {
-        Term::App(f, x) => {
+    match t.kind() {
+        TermInner::App(f, x) => {
             // Record the application itself.
             out.push(t.clone());
             collect_apps(f, out);
             collect_apps(x, out);
         }
-        Term::Lam(_, body) => collect_apps(body, out),
+        TermInner::Lam(_, body) => collect_apps(body, out),
         _ => {}
     }
 }
 
 fn term_depth(t: &Term) -> usize {
-    match t {
-        Term::Var(_) | Term::Const(_) => 0,
-        Term::App(f, x) => 1 + term_depth(f).max(term_depth(x)),
-        Term::Lam(_, b) => 1 + term_depth(b),
+    match t.kind() {
+        TermInner::Var(_) | TermInner::Const(_) => 0,
+        TermInner::App(f, x) => 1 + term_depth(f).max(term_depth(x)),
+        TermInner::Lam(_, b) => 1 + term_depth(b),
     }
 }
 
 fn flex_vars_in(t: &Term, flex: &HashSet<Arc<Var>>) -> Vec<Arc<Var>> {
     let mut out: Vec<Arc<Var>> = Vec::new();
     fn walk(t: &Term, flex: &HashSet<Arc<Var>>, out: &mut Vec<Arc<Var>>) {
-        match t {
-            Term::Var(v) if flex.contains(v) && !out.iter().any(|x| **x == **v) => {
+        match t.kind() {
+            TermInner::Var(v) if flex.contains(v) && !out.iter().any(|x| **x == **v) => {
                 out.push(v.clone());
             }
-            Term::App(f, x) => {
+            TermInner::App(f, x) => {
                 walk(f, flex, out);
                 walk(x, flex, out);
             }
-            Term::Lam(_, b) => walk(b, flex, out),
+            TermInner::Lam(_, b) => walk(b, flex, out),
             _ => {}
         }
     }

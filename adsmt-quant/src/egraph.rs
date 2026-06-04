@@ -33,7 +33,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use adsmt_core::{Term, Var};
+use adsmt_core::{Term, TermInner, Var};
 
 /// Stable identifier for an E-node inside an [`EGraph`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -301,15 +301,15 @@ impl EGraph {
     /// Lower a Term into (head_symbol, child_ids), recursing
     /// into the children via [`EGraph::add`].
     fn lower(&mut self, t: &Term) -> (String, Vec<ENodeId>) {
-        match t {
-            Term::Var(v) => (format!("var:{}:{}", v.name, v.ty), Vec::new()),
-            Term::Const(c) => (format!("const:{}:{}", c.name, c.ty), Vec::new()),
-            Term::App(f, x) => {
+        match t.kind() {
+            TermInner::Var(v) => (format!("var:{}:{}", v.name, v.ty), Vec::new()),
+            TermInner::Const(c) => (format!("const:{}:{}", c.name, c.ty), Vec::new()),
+            TermInner::App(f, x) => {
                 let f_id = self.add(f);
                 let x_id = self.add(x);
                 ("@app".into(), vec![f_id, x_id])
             }
-            Term::Lam(v, body) => {
+            TermInner::Lam(v, body) => {
                 let body_id = self.add(body);
                 let _ = v as &Arc<Var>;
                 // Bound-variable α-renaming would need a real

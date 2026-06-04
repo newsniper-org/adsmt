@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
-use adsmt_core::{Term, Type};
+use adsmt_core::{Term, TermInner, Type};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 
@@ -145,9 +145,9 @@ impl LinArith {
     /// - `(<= (- x y) k)` → `(x, -1, y, "<=", k)`
     /// - `(<= x y)` → treated as `x - y <= 0`
     fn parse_sum_comparison(t: &Term) -> Option<(String, i128, String, &'static str, i128)> {
-        let Term::App(outer, rhs) = t else { return None; };
-        let Term::App(head, lhs) = &**outer else { return None; };
-        let Term::Const(c) = &**head else { return None; };
+        let TermInner::App(outer, rhs) = t.kind() else { return None; };
+        let TermInner::App(head, lhs) = outer.kind() else { return None; };
+        let TermInner::Const(c) = head.kind() else { return None; };
         let op = match c.name.as_str() {
             "<=" | "le" => "<=",
             "<"  | "lt" => "<",
@@ -157,22 +157,22 @@ impl LinArith {
         };
         // Form 1: `(<= x y)` — bare variable-variable comparison.
         if let Some(k) = Self::int_lit(rhs)
-            && let (Term::Var(vx), Term::Var(vy)) = (&**lhs, &**rhs)
+            && let (TermInner::Var(vx), TermInner::Var(vy)) = (lhs.kind(), rhs.kind())
         {
             // Should not actually reach — rhs is the literal — but
             // covers the malformed-shape case defensively.
             return Some((vx.name.clone(), -1, vy.name.clone(), op, k));
         }
-        if let (Term::Var(vx), Term::Var(vy)) = (&**lhs, &**rhs) {
+        if let (TermInner::Var(vx), TermInner::Var(vy)) = (lhs.kind(), rhs.kind()) {
             // `(<= x y)` ≡ `x - y <= 0`
             return Some((vx.name.clone(), -1, vy.name.clone(), op, 0));
         }
         let k = Self::int_lit(rhs)?;
         // Form 2: `(<= (+ x y) k)` or `(<= (- x y) k)`.
-        if let Term::App(plus_outer, y) = &**lhs
-            && let Term::App(plus_head, x) = &**plus_outer
-            && let Term::Const(pc) = &**plus_head
-            && let (Term::Var(vx), Term::Var(vy)) = (&**x, &**y)
+        if let TermInner::App(plus_outer, y) = lhs.kind()
+            && let TermInner::App(plus_head, x) = plus_outer.kind()
+            && let TermInner::Const(pc) = plus_head.kind()
+            && let (TermInner::Var(vx), TermInner::Var(vy)) = (x.kind(), y.kind())
         {
             let sign = match pc.name.as_str() {
                 "+" => 1i128,
@@ -379,28 +379,30 @@ impl LinArith {
     /// Recognise `(<= x k)` / `(< x k)` / `(>= x k)` / `(> x k)`
     /// where `x` is a variable and `k` an integer literal.
     fn parse_comparison(t: &Term) -> Option<(String, &'static str, i128)> {
-        if let Term::App(outer, rhs) = t
-            && let Term::App(head, lhs) = &**outer
-                && let Term::Const(c) = &**head {
-                    let op = match c.name.as_str() {
-                        "<=" | "le" => "<=",
-                        "<"  | "lt" => "<",
-                        ">=" | "ge" => ">=",
-                        ">"  | "gt" => ">",
-                        _ => return None,
-                    };
-                    if let Term::Var(v) = &**lhs
-                        && let Some(k) = Self::int_lit(rhs) {
-                            return Some((v.name.clone(), op, k));
-                        }
-                }
+        if let TermInner::App(outer, rhs) = t.kind()
+            && let TermInner::App(head, lhs) = outer.kind()
+            && let TermInner::Const(c) = head.kind()
+        {
+            let op = match c.name.as_str() {
+                "<=" | "le" => "<=",
+                "<"  | "lt" => "<",
+                ">=" | "ge" => ">=",
+                ">"  | "gt" => ">",
+                _ => return None,
+            };
+            if let TermInner::Var(v) = lhs.kind()
+                && let Some(k) = Self::int_lit(rhs)
+            {
+                return Some((v.name.clone(), op, k));
+            }
+        }
         None
     }
 
     /// Integer literal: `Const` named `int:<n>`, or the bare numeric
     /// form `<n>` as a constant name.
     fn int_lit(t: &Term) -> Option<i128> {
-        if let Term::Const(c) = t {
+        if let TermInner::Const(c) = t.kind() {
             if let Some(rest) = c.name.strip_prefix("int:") {
                 return rest.parse::<i128>().ok();
             }

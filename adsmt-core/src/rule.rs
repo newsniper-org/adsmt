@@ -10,7 +10,9 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::error::{KernelError, KernelResult};
-use crate::term::{Term, TermInner, Var};
+use crate::term::{Term, Var};
+#[cfg(test)]
+use crate::term::TermInner;
 use crate::theorem::{Theorem, remove_hyp, union_hyps};
 use crate::ty::{TyVar, Type};
 

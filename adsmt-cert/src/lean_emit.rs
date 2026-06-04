@@ -29,7 +29,7 @@
 
 use std::fmt::Write;
 
-use adsmt_core::Term;
+use adsmt_core::{Term, TermInner};
 
 use crate::canonical::{Certificate, Step, StepBody};
 use crate::witness::TheoryWitness;
@@ -398,21 +398,21 @@ fn render_term(t: &Term) -> String {
         }
     }
 
-    match t {
-        Term::Var(v) => v.name.clone(),
-        Term::Const(c) => c.name.clone(),
-        Term::App(f, x) => {
+    match t.kind() {
+        TermInner::Var(v) => v.name.clone(),
+        TermInner::Const(c) => c.name.clone(),
+        TermInner::App(f, x) => {
             let f_s = render_term(f);
             let x_s = render_term(x);
             // Wrap compound argument in parens; bare var/const stays bare.
-            let x_render = if matches!(**x, Term::App(..) | Term::Lam(..)) {
+            let x_render = if matches!(x.kind(), TermInner::App(..) | TermInner::Lam(..)) {
                 format!("({x_s})")
             } else {
                 x_s
             };
             format!("{f_s} {x_render}")
         }
-        Term::Lam(v, body) => format!(
+        TermInner::Lam(v, body) => format!(
             "(fun ({} : {}) => {})",
             v.name,
             render_type(&v.ty),
@@ -435,17 +435,18 @@ fn strip_app_head(t: &Term) -> Option<(String, Vec<Term>)> {
     let mut args: Vec<Term> = Vec::new();
     let mut cur = t.clone();
     loop {
-        match cur {
-            Term::App(f, x) => {
-                args.push((*x).clone());
-                cur = (*f).clone();
+        let next = match cur.kind() {
+            TermInner::App(f, x) => {
+                args.push(x.clone());
+                f.clone()
             }
-            Term::Const(c) => {
+            TermInner::Const(c) => {
                 args.reverse();
                 return Some((c.name.clone(), args));
             }
             _ => return None,
-        }
+        };
+        cur = next;
     }
 }
 

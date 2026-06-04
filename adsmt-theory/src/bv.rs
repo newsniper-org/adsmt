@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
-use adsmt_core::{Term, Type};
+use adsmt_core::{Term, TermInner, Type};
 
 use crate::{bv::BinOpEqFactsResult::Failure, trait_::{AssertResult, CheckResult, Literal, Theory}};
 
@@ -178,8 +178,8 @@ impl Bv {
         let mask_all = Self::width_mask(width);
         let lhs_lit = binop_lhs.dest_bv_lit().map(|(v, _)| v);
         let rhs_lit = binop_rhs.dest_bv_lit().map(|(v, _)| v);
-        let lhs_var = if let Term::Var(v) = binop_lhs { Some(v.name.clone()) } else { None };
-        let rhs_var = if let Term::Var(v) = binop_rhs { Some(v.name.clone()) } else { None };
+        let lhs_var = if let TermInner::Var(v) = binop_lhs.kind() { Some(v.name.clone()) } else { None };
+        let rhs_var = if let TermInner::Var(v) = binop_rhs.kind() { Some(v.name.clone()) } else { None };
 
         // Resolve which side is the variable and which is the literal.
         let (var, lit_m) = match (lhs_var, rhs_lit, rhs_var, lhs_lit) {

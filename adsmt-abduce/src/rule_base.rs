@@ -15,7 +15,7 @@
 //! the [`crate::SldEngine`]; mutation is restricted to insertion at
 //! load time.
 
-use adsmt_core::Term;
+use adsmt_core::{Term, TermInner};
 
 /// A single Horn clause `head :- body₁ … bodyₙ`.
 ///
@@ -124,8 +124,8 @@ impl SchematicHornRule {
         schematic: &[String],
         subst: &mut Vec<(String, Term)>,
     ) -> bool {
-        match pattern {
-            Term::Var(v) => {
+        match pattern.kind() {
+            TermInner::Var(v) => {
                 if schematic.iter().any(|s| s == &v.name) {
                     if let Some((_, existing)) =
                         subst.iter().find(|(name, _)| name == &v.name)
@@ -142,18 +142,18 @@ impl SchematicHornRule {
                     pattern.alpha_eq(goal)
                 }
             }
-            Term::Const(c) => match goal {
-                Term::Const(c2) => c.name == c2.name && c.ty == c2.ty,
+            TermInner::Const(c) => match goal.kind() {
+                TermInner::Const(c2) => c.name == c2.name && c.ty == c2.ty,
                 _ => false,
             },
-            Term::App(f1, x1) => match goal {
-                Term::App(f2, x2) => {
+            TermInner::App(f1, x1) => match goal.kind() {
+                TermInner::App(f2, x2) => {
                     Self::unify_inner(f1, f2, schematic, subst)
                         && Self::unify_inner(x1, x2, schematic, subst)
                 }
                 _ => false,
             },
-            Term::Lam(_, _) => pattern.alpha_eq(goal),
+            TermInner::Lam(_, _) => pattern.alpha_eq(goal),
         }
     }
 }

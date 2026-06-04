@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use adsmt_core::{Term, Var};
+use adsmt_core::{Term, TermInner, Var};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Quantifier { Forall, Exists }
@@ -27,18 +27,19 @@ impl Quantified {
 /// Standard convention: `forall : (α -> Bool) -> Bool` is a constant
 /// applied to a λ-abstraction. Same for `exists`.
 fn destructure_outer(t: &Term) -> Option<(Quantifier, Arc<Var>, Term)> {
-    if let Term::App(f, body) = t
-        && let Term::Const(c) = &**f
-            && let Term::Lam(v, b) = &**body {
-                let q = match c.name.as_str() {
-                    "forall" | "∀" => Some(Quantifier::Forall),
-                    "exists" | "∃" => Some(Quantifier::Exists),
-                    _ => None,
-                };
-                if let Some(q) = q {
-                    return Some((q, v.clone(), (**b).clone()));
-                }
-            }
+    if let TermInner::App(f, body) = t.kind()
+        && let TermInner::Const(c) = f.kind()
+        && let TermInner::Lam(v, b) = body.kind()
+    {
+        let q = match c.name.as_str() {
+            "forall" | "∀" => Some(Quantifier::Forall),
+            "exists" | "∃" => Some(Quantifier::Exists),
+            _ => None,
+        };
+        if let Some(q) = q {
+            return Some((q, v.clone(), b.clone()));
+        }
+    }
     None
 }
 

@@ -55,7 +55,7 @@
 
 use crate::canonical::Certificate;
 use crate::witness::TheoryWitness;
-use adsmt_core::{Term, Type, Var};
+use adsmt_core::{Term, TermInner, Type, Var};
 use std::sync::Arc;
 
 /// Walk every sequent in `cert` and gather the distinct free term
@@ -92,17 +92,18 @@ pub fn strip_app_head(t: &Term) -> Option<(String, Vec<Term>)> {
     let mut args: Vec<Term> = Vec::new();
     let mut cur = t.clone();
     loop {
-        match cur {
-            Term::App(f, x) => {
-                args.push((*x).clone());
-                cur = (*f).clone();
+        let next = match cur.kind() {
+            TermInner::App(f, x) => {
+                args.push(x.clone());
+                f.clone()
             }
-            Term::Const(c) => {
+            TermInner::Const(c) => {
                 args.reverse();
                 return Some((c.name.clone(), args));
             }
             _ => return None,
-        }
+        };
+        cur = next;
     }
 }
 

@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
-use adsmt_core::{Term, Type};
+use adsmt_core::{Term, TermInner, Type};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 
@@ -109,27 +109,29 @@ impl Datatypes {
         let mut args: Vec<Term> = Vec::new();
         let mut cur = t.clone();
         loop {
-            match cur {
-                Term::App(f, x) => {
-                    args.push((*x).clone());
-                    cur = (*f).clone();
+            let next = match cur.kind() {
+                TermInner::App(f, x) => {
+                    args.push(x.clone());
+                    f.clone()
                 }
-                Term::Const(c) => {
+                TermInner::Const(c) => {
                     args.reverse();
                     return Some((c.name.clone(), args));
                 }
                 _ => return None,
-            }
+            };
+            cur = next;
         }
     }
 
     /// Recognize whether `t` is one of the registered constructor
     /// constants. Used to short-circuit disjointness checks.
     fn constructor_id(&self, t: &Term) -> Option<(String, String)> {
-        if let Term::Const(c) = t
-            && let Some(d) = self.is_constructor_of(&c.name) {
-                return Some((d.sort_name.clone(), c.name.clone()));
-            }
+        if let TermInner::Const(c) = t.kind()
+            && let Some(d) = self.is_constructor_of(&c.name)
+        {
+            return Some((d.sort_name.clone(), c.name.clone()));
+        }
         None
     }
 }
