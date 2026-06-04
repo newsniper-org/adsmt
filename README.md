@@ -9,10 +9,10 @@ reference (build, run, license, contribute).
 
 | What | Where |
 |---|---|
-| Project version | `1.0.0-rc.14` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
+| Project version | `1.0.0-rc.15` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (triple) |
-| Crate roster | 15 `adsmt-*` + 11 absorbed `lu-*` + `adsmt-meta` umbrella (25 total) |
-| Tests | **855** passing across the workspace; 0 `cargo doc` / `cargo build` warnings |
+| Crate roster | 16 `adsmt-*` + 11 absorbed `lu-*` + `adsmt-meta` umbrella (26 total) |
+| Tests | **870** passing across the workspace; 0 `cargo doc` / `cargo build` warnings |
 | ITP targets | Lean4 (in-tree reference), Rocq + Isabelle (out-of-tree via `~/adsmt-contrib/`) |
 | SAT backend | `oxiz-sat` (Path A+B default), `cadical` (feature flag), built-in CDCL fallback |
 | Engine | DPLL(T) with 1-UIP CDCL, two-watched literals, VSIDS, Luby restarts, LBD-aware learnt-clause retention, deadline-aware end-to-end |
@@ -61,7 +61,7 @@ adsmt is an SMT solver with five differentiating attributes
    surfaces (`oxiz-contrib-abduction`, future binding paths)
    flow upstream as Apache-2 contributions.
 
-## Workspace topology (v1.0.0-rc.14)
+## Workspace topology (v1.0.0-rc.15)
 
 ```
 ~/AD1/
@@ -72,6 +72,8 @@ adsmt is an SMT solver with five differentiating attributes
 │                                  + EgraphTheory wrapper
 ├── adsmt-theory-finite-field/     §3.4 GF(2) Gröbner sibling: Buchberger (dense, v0)
 │                                  + F4 (bit-packed, v1) + FiniteFieldTheory plugin
+├── adsmt-aot/                     §3.1 AOT prelude bank: `.luart` v0 writer
+│                                  + topo-sort guard (§3.1.A landed; §3.1.B-E follow)
 ├── adsmt-class/                   T_class + dictionary passing
 ├── adsmt-quant/                   Miller E-matching, prenex, NNF + Skolemization,
 │                                  Tier-3 enumeration, learn_triggers, EUF-tracked EGraph
@@ -183,6 +185,10 @@ extensions Verus / cvc5 / OxiZ depend on.  Highlights:
 (set-option :produce-proofs)
 (set-option :produce-unsat-cores)
 
+; §3.4 GF(2) Gröbner plugin (opt-in)
+(set-option :finite-field-periodic 32)
+(set-option :finite-field-budget-exhaustion true)
+
 (echo "<<DONE>>")                        ; § 4.2.4 response-batch sentinel
 (get-info :reason-unknown)               ; Z3-canonical "canceled" / "timeout" / "incomplete"
 
@@ -192,6 +198,15 @@ extensions Verus / cvc5 / OxiZ depend on.  Highlights:
 
 (declare-datatype A ((Ca …) (Cb …)))     ; § 3.7 finite-enum datatypes
 (check-sat-assuming (l₁ … lₙ))           ; push-pop-style hypothetical check
+```
+
+CLI flags mirror the same surface for transcript-replay
+consumers that want to opt in at process startup:
+
+```bash
+lu-smt --finite-field-periodic 32 \
+       --finite-field-budget-exhaustion \
+       transcript.smt2
 ```
 
 Abductive verdicts emit a single JSON line on stdout right
@@ -258,7 +273,7 @@ adsmt uses a Debian-style channel model:
 | `testing` | `testing` | Stabilisation candidates promoted from `main` |
 | `stable` | `v1.0.0` (tag) | Released versions (the v1.0.0 tag is the first cut) |
 
-The rc.7 → rc.14 arc has been driven by the verus-fork
+The rc.7 → rc.15 arc has been driven by the verus-fork
 engine-refactor request (see
 `.local-requests-from/verus-fork/` for the joint working
 surface).  Highlights landed since rc.2:
@@ -271,6 +286,7 @@ surface).  Highlights landed since rc.2:
 | rc.12 | `(get-info :reason-unknown)` Z3-canonical mapping, T0 deadline cascade inside `propagate_two_watched` |
 | rc.13 | **§3.4 Buchberger v0** — dense Gröbner-basis decider (`adsmt-theory-finite-field`) |
 | rc.14 | **§3.4 F4 v1** — bit-packed Gröbner + `FiniteFieldTheory` plugin + `Solver::with_finite_field` builder |
+| rc.15 | **§3.4 lu-smt CLI surface** — `--finite-field-periodic N` / `--finite-field-budget-exhaustion` startup flags + `(set-option :finite-field-…)` mid-session handlers.  **§3.1.A AOT prelude bank** — new crate `adsmt-aot` with `.luart` v0 writer (header + topo-sorted Term pool + assertion list with per-axiom `qid: Option<String>`) per the verus-fork ack |
 
 The 8-layer offline safeguard (`adsmt-heuristic-checker`)
 tracks every breaking-version bump under semver from v1.0.0

@@ -5,10 +5,10 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~42 k lines of Rust across 25 workspace crates, 855 tests
+> ~42 k lines of Rust across 26 workspace crates, 870 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.14` on 2026-06-04.
+> `1.0.0-rc.15` on 2026-06-04.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.14):**
+**Active consumers (rc.15):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -190,9 +190,10 @@ Both deciders agree on every input the
 PHP(3, 2) (the smallest combinatorial UNSAT instance with
 non-trivial structure) via both backends.
 
-Engine integration is opt-in:
+Engine integration is opt-in.  Three equivalent surfaces:
 
 ```rust
+// Rust API (programmatic).
 let mut solver = Solver::default()
     .with_finite_field(FiniteFieldConfig {
         periodic_interval: 32,          // F4 every 32 theory-check rounds
@@ -200,6 +201,21 @@ let mut solver = Solver::default()
     });
 solver.assert(/* … */);
 solver.check_sat_with_deadline(Some(deadline));
+```
+
+```bash
+# lu-smt CLI flags (since rc.15).
+lu-smt --finite-field-periodic 32 \
+       --finite-field-budget-exhaustion \
+       transcript.smt2
+```
+
+```text
+;; SMT-LIB script (since rc.15).  Either key auto-registers
+;; the plugin with default knobs on first use, then updates
+;; the existing instance on subsequent calls.
+(set-option :finite-field-periodic 32)
+(set-option :finite-field-budget-exhaustion true)
 ```
 
 ---
@@ -339,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.14` (2026-06-04) |
+| Workspace version | `1.0.0-rc.15` (2026-06-04) |
 
 ---
 
-## Roadmap snapshot (rc.14 → v1.0.0 stable)
+## Roadmap snapshot (rc.15 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -352,7 +368,12 @@ or proof-search strategies without touching the engine core.
 | §3.4 GF(2) Gröbner v0 (Buchberger, dense) | **landed** at rc.13 (`bde2f8c` → `98159c1`) |
 | §3.4 v1 (F4, bit-packed) | **landed** at rc.14 (`3ecf7eb` → `cada5a3`) |
 | §3.4 `Combination::register` integration | **landed** at rc.14 (`5ca3de7`) |
-| §3.1 AOT prelude bank | counter-proposed; awaiting verus-fork ack |
+| §3.4 lu-smt CLI surface (`--finite-field-*` + `(set-option :finite-field-…)`) | **landed** at rc.15 (`e0e3f77` + `50931f2`) |
+| §3.1 AOT prelude bank — counter-proposal | **landed** at rc.14 (`8ba77e1`); verus-fork ack received |
+| §3.1.A `.luart` v0 writer (header + Term pool + assertion list + qid) | **landed** at rc.15 (`a547a5b` + `0eebf57`) |
+| §3.1.B `lu-smt --aot-bake` CLI surface | next sub-cycle (depends on §3.1.A only) |
+| §3.1.C `.luart` reader (mmap + pool reconstruction) | next sub-cycle (depends on §3.1.A only) |
+| §3.1.D `Solver::with_aot_prelude` + `intern_external` | depends on §3.1.C |
 | §3.2 meta-tracing JIT (algebraic-certificate guards) | proposed, design-stage; shares the GF(2) kernel with §3.4 |
 | §3.3 Stålmarck pre-saturation | proposed, design-stage; depends on §3.1 artefact |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
@@ -380,5 +401,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.4`) that's driving the rc.7 → rc.14
+  proposal (`§3.1` … `§3.4`) that's driving the rc.7 → rc.15
   development arc.
