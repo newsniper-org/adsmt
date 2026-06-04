@@ -1,7 +1,7 @@
 //! `.luart` v0 reader — byte-slice decoder + Term-DAG
 //! reconstruction.
 //!
-//! Counterpart to [`writer`] / [`pool`].  The decoder operates on
+//! Counterpart to [`crate::writer`] / [`crate::pool`].  The decoder operates on
 //! a borrowed `&[u8]` slice so the caller can mmap the artifact
 //! directly (the production path lives in adsmt-cli's
 //! `--aot-load`, landing in §3.1.D) and avoid the parse cost on
@@ -16,7 +16,6 @@
 //! identity — the property §3.1.D's `Solver::with_aot_prelude`
 //! relies on for `intern_external` cheap-path semantics.
 //!
-//! [`writer`]: crate::writer
 
 use adsmt_core::{Kind, Term, TermInner, Type, Var};
 

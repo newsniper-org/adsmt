@@ -11,8 +11,8 @@ reference (build, run, license, contribute).
 |---|---|
 | Project version | `1.0.0-rc.15` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (triple) |
-| Crate roster | 16 `adsmt-*` + 11 absorbed `lu-*` + `adsmt-meta` umbrella (26 total) |
-| Tests | **870** passing across the workspace; 0 `cargo doc` / `cargo build` warnings |
+| Crate roster | 18 `adsmt-*` + 11 absorbed `lu-*` + `adsmt-meta` umbrella + `logicutils-translator-to-oxiz-sat` (31 total) |
+| Tests | **901** passing across the workspace; 0 `cargo doc` / `cargo build` warnings |
 | ITP targets | Lean4 (in-tree reference), Rocq + Isabelle (out-of-tree via `~/adsmt-contrib/`) |
 | SAT backend | `oxiz-sat` (Path A+B default), `cadical` (feature flag), built-in CDCL fallback |
 | Engine | DPLL(T) with 1-UIP CDCL, two-watched literals, VSIDS, Luby restarts, LBD-aware learnt-clause retention, deadline-aware end-to-end |
@@ -72,8 +72,14 @@ adsmt is an SMT solver with five differentiating attributes
 │                                  + EgraphTheory wrapper
 ├── adsmt-theory-finite-field/     §3.4 GF(2) Gröbner sibling: Buchberger (dense, v0)
 │                                  + F4 (bit-packed, v1) + FiniteFieldTheory plugin
-├── adsmt-aot/                     §3.1 AOT prelude bank: `.luart` v0 writer
-│                                  + topo-sort guard (§3.1.A landed; §3.1.B-E follow)
+├── adsmt-aot/                     §3.1 AOT prelude bank: `.luart` v0 writer + reader
+│                                  + Term-DAG reconstruction + intern_external
+│                                  (§3.1.A/B/C/D landed; §3.1.E vargo-side follows)
+├── adsmt-jit/                     §3.2 meta-tracing JIT: algebraic-invariant guards
+│                                  (poly-invariant / equiv-class / skeleton-shape)
+│                                  + trace cache; shares GF(2) kernel with §3.4
+├── adsmt-stalmarck/               §3.3 Stålmarck pre-saturation: implication-graph
+│                                  simple-rule fixpoint + contradiction-chain detector
 ├── adsmt-class/                   T_class + dictionary passing
 ├── adsmt-quant/                   Miller E-matching, prenex, NNF + Skolemization,
 │                                  Tier-3 enumeration, learn_triggers, EUF-tracked EGraph
@@ -209,6 +215,18 @@ lu-smt --finite-field-periodic 32 \
        transcript.smt2
 ```
 
+§3.1 AOT prelude bank has its own pair of subcommand-shaped
+flags (mutually exclusive — bake writes, load reads):
+
+```bash
+# One-shot bake of the prelude into a `.luart` v0 artifact.
+lu-smt --aot-bake --aot-output prelude.luart prelude.smt2
+
+# Every subsequent solve loads the prelude pre-asserted; the
+# per-query input only carries the assertion delta.
+lu-smt --aot-load prelude.luart query.smt2
+```
+
 Abductive verdicts emit a single JSON line on stdout right
 after the `abductive` label so subprocess consumers parse it
 inline:
@@ -286,7 +304,7 @@ surface).  Highlights landed since rc.2:
 | rc.12 | `(get-info :reason-unknown)` Z3-canonical mapping, T0 deadline cascade inside `propagate_two_watched` |
 | rc.13 | **§3.4 Buchberger v0** — dense Gröbner-basis decider (`adsmt-theory-finite-field`) |
 | rc.14 | **§3.4 F4 v1** — bit-packed Gröbner + `FiniteFieldTheory` plugin + `Solver::with_finite_field` builder |
-| rc.15 | **§3.4 lu-smt CLI surface** — `--finite-field-periodic N` / `--finite-field-budget-exhaustion` startup flags + `(set-option :finite-field-…)` mid-session handlers.  **§3.1.A AOT prelude bank** — new crate `adsmt-aot` with `.luart` v0 writer (header + topo-sorted Term pool + assertion list with per-axiom `qid: Option<String>`) per the verus-fork ack |
+| rc.15 | **§3.4 lu-smt CLI surface** — `--finite-field-periodic N` / `--finite-field-budget-exhaustion` startup flags + `(set-option :finite-field-…)` mid-session handlers.  **§3.1 AOT prelude bank** end-to-end — new crate `adsmt-aot` with `.luart` v0 writer (§3.1.A) + reader + Term-DAG reconstruction (§3.1.C); `lu-smt --aot-bake` / `--aot-load` (§3.1.B + §3.1.D); `Solver::with_aot_prelude` builder + `intern_external` re-canonicalisation helper.  **§3.2 meta-tracing JIT skeleton** — new crate `adsmt-jit` with `JitGuard` enum (poly-invariant via the shared GF(2) `reduce` kernel / equiv-class / depth-3 skeleton-shape) + `JitCache::lookup`.  **§3.3 Stålmarck pre-saturation skeleton** — new crate `adsmt-stalmarck` with `ImplicationGraph` + `Saturator::saturate_simple` (transitive closure) + `detect_contradiction` BFS witness |
 
 The 8-layer offline safeguard (`adsmt-heuristic-checker`)
 tracks every breaking-version bump under semver from v1.0.0

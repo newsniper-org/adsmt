@@ -86,7 +86,7 @@ impl ImplicationGraph {
 
     /// `true` iff `from ⇒ to` is recorded in the graph.  Does
     /// **not** consider transitive closure — see
-    /// [`Saturator::saturate_simple`] to materialise that first.
+    /// [`crate::Saturator::saturate_simple`] to materialise that first.
     pub fn implies(&self, from: &Lit, to: &Lit) -> bool {
         self.out.get(from).map_or(false, |s| s.contains(to))
     }

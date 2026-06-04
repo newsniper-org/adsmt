@@ -5,7 +5,7 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~42 k lines of Rust across 26 workspace crates, 870 tests
+> ~42 k lines of Rust across 31 workspace crates, 901 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
 > `1.0.0-rc.15` on 2026-06-04.
@@ -350,7 +350,7 @@ or proof-search strategies without touching the engine core.
 |---|---|
 | Lines of Rust | ~42,000 (workspace) |
 | Workspace crates | 25 (`14 adsmt-* + 11 absorbed lu-* + adsmt-meta umbrella`) |
-| Tests | **855 green**, 0 ignored, 0 failed |
+| Tests | **901 green**, 0 ignored, 0 failed |
 | `cargo doc --workspace --no-deps` | **0 warnings** (every intentional warning has an explicit `#[allow(...)]`) |
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
@@ -371,11 +371,12 @@ or proof-search strategies without touching the engine core.
 | §3.4 lu-smt CLI surface (`--finite-field-*` + `(set-option :finite-field-…)`) | **landed** at rc.15 (`e0e3f77` + `50931f2`) |
 | §3.1 AOT prelude bank — counter-proposal | **landed** at rc.14 (`8ba77e1`); verus-fork ack received |
 | §3.1.A `.luart` v0 writer (header + Term pool + assertion list + qid) | **landed** at rc.15 (`a547a5b` + `0eebf57`) |
-| §3.1.B `lu-smt --aot-bake` CLI surface | next sub-cycle (depends on §3.1.A only) |
-| §3.1.C `.luart` reader (mmap + pool reconstruction) | next sub-cycle (depends on §3.1.A only) |
-| §3.1.D `Solver::with_aot_prelude` + `intern_external` | depends on §3.1.C |
-| §3.2 meta-tracing JIT (algebraic-certificate guards) | proposed, design-stage; shares the GF(2) kernel with §3.4 |
-| §3.3 Stålmarck pre-saturation | proposed, design-stage; depends on §3.1 artefact |
+| §3.1.B `lu-smt --aot-bake` CLI surface | **landed** at rc.15 (`699bd5b`) |
+| §3.1.C `.luart` reader + Term-DAG reconstruction | **landed** at rc.15 (`941163d`) |
+| §3.1.D `Solver::with_aot_prelude` + `intern_external` + `lu-smt --aot-load` | **landed** at rc.15 (`38fd8ee`) |
+| §3.1.E `vargo` post-build `--aot-bake` invocation | verus-fork side; gated on rc.15 publish |
+| §3.2 meta-tracing JIT skeleton (`JitGuard` + `JitCache::lookup`) | **landed** at rc.15 (`d11aafb`); shares the GF(2) kernel with §3.4. Recorder + compiled-kernel emit (dynasm-rs) deferred to follow-up sub-cycle |
+| §3.3 Stålmarck pre-saturation skeleton (simple-rule transitive closure + contradiction-chain witness) | **landed** at rc.15 (`52efc77`); n-saturation dilemma rule + AOT-bake integration deferred to follow-up sub-cycle |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
 
