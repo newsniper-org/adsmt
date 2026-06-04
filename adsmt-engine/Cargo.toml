@@ -13,6 +13,10 @@ adsmt-theory-finite-field.workspace = true
 # §3.1.D AOT prelude bank — `Solver::with_aot_prelude` consumes
 # the reconstructed prelude bytes from a `.luart` artifact.
 adsmt-aot.workspace = true
+# §3.5.F — `Solver::replay_aot_cdcl_trace` shares the JIT crate's
+# `JitGuard` / `check_guard` / `CdclTrace` vocabulary with the
+# §3.2 / §3.5.D recorder.
+adsmt-jit.workspace = true
 adsmt-class.workspace = true
 adsmt-quant.workspace = true
 adsmt-abduce.workspace = true

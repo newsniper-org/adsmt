@@ -28,6 +28,36 @@ use crate::state::Scope;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ProofMode { None, Always }
 
+/// Outcome of [`Solver::replay_aot_cdcl_trace`] — the §3.5.F
+/// guard-evaluation gate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ReplayOutcome {
+    /// At least one of the trace's guards no longer holds
+    /// against the current engine state; the caller should
+    /// fall through to the regular `check_sat_with_deadline`
+    /// path.  v0 uses the agreed "full discard on miss"
+    /// semantic from the §3.5 counter-ack §5.4 — partial-replay
+    /// fallback is the v1 follow-up that consumes
+    /// `CdclTrace::checkpoints`.
+    GuardMiss,
+    /// Every guard held.  v0: the caller has informed the
+    /// gate that the trace's algebraic signature is still
+    /// alive in the current query's ideal.  Once §3.5.F is
+    /// promoted from skeleton to full replay, this variant
+    /// returns the trace's verdict; for now the caller still
+    /// falls through to full CDCL because the engine-side
+    /// event-replay machinery is the §3.5.F follow-up.
+    GuardsPassed,
+}
+
+// `adsmt_jit` is the §3.2 / §3.5.D companion crate; `Solver::
+// replay_aot_cdcl_trace` borrows its `CdclTrace` / `JitGuard` /
+// `check_guard` machinery so the replay path and the recorder
+// share one vocabulary (per the §3.5 counter-ack §5.5
+// vocabulary-reuse).  No `use` needed — the dep entry in
+// Cargo.toml brings the crate into scope; call sites name
+// the type via `adsmt_jit::...`.
+
 pub struct Solver {
     scopes: Vec<Scope>,
     theories: Combination,
@@ -169,6 +199,49 @@ impl Solver {
     ) -> Self {
         let _cdcl_section_for_3_5_f = prelude.cdcl_section;
         self.with_aot_prelude(prelude.prelude)
+    }
+
+    /// §3.5.F replay dispatcher (v0 skeleton).  Evaluates every
+    /// guard in `trace.guards` + the end-of-trace
+    /// [`GF2Snapshot`]-derived basis against the current
+    /// engine state.  Returns [`ReplayOutcome::GuardMiss`] on
+    /// the first guard failure (matching the v0 "full discard
+    /// on miss" semantics agreed in the §3.5 counter-ack §5.4 —
+    /// partial-replay fallback via mid-trace checkpoints is the
+    /// v1 follow-up); returns
+    /// [`ReplayOutcome::GuardsPassed`] when every guard holds.
+    ///
+    /// v0 does not yet replay the recorded events through the
+    /// CDCL state machine — that wiring lands once the engine
+    /// side exposes the `restore_cdcl_state` helper the trace's
+    /// events feed into.  Calling this method is therefore a
+    /// guard-evaluation gate only; the caller (lu-smt
+    /// `(check-sat)` dispatcher in the §3.5.G CLI surface)
+    /// uses the result to decide between "try the trace" and
+    /// "fall through to full CDCL".
+    pub fn replay_aot_cdcl_trace(
+        &self,
+        trace: &adsmt_jit::CdclTrace,
+        classes: &[(String, u32)],
+    ) -> ReplayOutcome {
+        // Skeleton-shape guards use the live formula's
+        // depth-3 hash; with no formula in scope (the trace
+        // doesn't carry its own), pass through `SkeletonShape(0)`
+        // and let the caller seed a real hash before the v1
+        // dispatcher.
+        let live_skeleton = adsmt_jit::trace::SkeletonShape(0);
+        for guard in &trace.guards {
+            let pass = adsmt_jit::check_guard(
+                guard,
+                &trace.signature.basis,
+                classes,
+                live_skeleton,
+            );
+            if pass == adsmt_jit::guard::GuardResult::Fail {
+                return ReplayOutcome::GuardMiss;
+            }
+        }
+        ReplayOutcome::GuardsPassed
     }
 
     /// `true` iff the GF(2) Gröbner theory plugin has been
@@ -1668,5 +1741,42 @@ mod tests {
     fn finite_field_unregistered_returns_none() {
         let mut s = Solver::default();
         assert!(s.finite_field_mut().is_none());
+    }
+
+    // §3.5.F regression — guard-evaluation gate semantics.
+
+    #[test]
+    fn replay_returns_guards_passed_on_empty_guard_set() {
+        let s = Solver::default();
+        let trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+        let outcome = s.replay_aot_cdcl_trace(&trace, &[]);
+        assert_eq!(outcome, ReplayOutcome::GuardsPassed);
+    }
+
+    #[test]
+    fn replay_returns_guard_miss_on_failed_skeleton_guard() {
+        let s = Solver::default();
+        let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+        // Live skeleton seeded as `SkeletonShape(0)` by the v0
+        // dispatcher; a guard pinned to a non-zero hash will
+        // miss.
+        trace.guards.push(adsmt_jit::JitGuard::SkeletonShape(
+            adsmt_jit::SkeletonShape(0xdead_beef),
+        ));
+        let outcome = s.replay_aot_cdcl_trace(&trace, &[]);
+        assert_eq!(outcome, ReplayOutcome::GuardMiss);
+    }
+
+    #[test]
+    fn replay_returns_guards_passed_when_equiv_class_holds() {
+        let s = Solver::default();
+        let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+        trace.guards.push(adsmt_jit::JitGuard::EquivClass {
+            a: "a".to_string(),
+            b: "b".to_string(),
+        });
+        let classes = vec![("a".to_string(), 1), ("b".to_string(), 1)];
+        let outcome = s.replay_aot_cdcl_trace(&trace, &classes);
+        assert_eq!(outcome, ReplayOutcome::GuardsPassed);
     }
 }

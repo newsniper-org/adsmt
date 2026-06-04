@@ -81,6 +81,7 @@ dependencies = [
  "adsmt-cert",
  "adsmt-class",
  "adsmt-core",
+ "adsmt-jit",
  "adsmt-quant",
  "adsmt-theory",
  "adsmt-theory-finite-field",
