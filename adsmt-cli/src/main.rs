@@ -802,6 +802,30 @@ impl Driver {
                     };
                 }
             }
+            // §3.4 GF(2) Gröbner-basis plugin runtime configuration.
+            // Both keys auto-register the plugin with default knobs
+            // on first use so a stream consumer that never passes
+            // the corresponding `--finite-field-*` startup flag can
+            // still opt in mid-session by issuing the matching
+            // `(set-option ...)`.
+            "finite-field-periodic" => {
+                if let Some(n) = parse_numeric_option(value) {
+                    self.ensure_finite_field_registered();
+                    if let Some(ff) = self.solver.finite_field_mut() {
+                        let mut cfg = ff.config().clone();
+                        cfg.periodic_interval = n as usize;
+                        ff.set_config(cfg);
+                    }
+                }
+            }
+            "finite-field-budget-exhaustion" => {
+                self.ensure_finite_field_registered();
+                if let Some(ff) = self.solver.finite_field_mut() {
+                    let mut cfg = ff.config().clone();
+                    cfg.try_at_budget_exhaustion = truthy;
+                    ff.set_config(cfg);
+                }
+            }
             _ => {
                 // SMT-LIB v2 spec § 3.9.1 — unrecognised options are
                 // silently accepted (callers may consult the `:status`
@@ -809,6 +833,21 @@ impl Driver {
                 // no-op).
             }
         }
+    }
+
+    /// If no `FiniteFieldTheory` is currently registered with the
+    /// engine, register one with the default knobs (both fields
+    /// disabled).  Called from the `(set-option :finite-field-*)`
+    /// branches so subsequent reads through `finite_field_mut` find
+    /// the instance to update.
+    fn ensure_finite_field_registered(&mut self) {
+        if self.solver.finite_field_mut().is_some() {
+            return;
+        }
+        let theory = adsmt_theory_finite_field::FiniteFieldTheory::new(
+            adsmt_theory_finite_field::FiniteFieldConfig::default(),
+        );
+        self.solver.register_theory(Box::new(theory));
     }
 
     fn record_result(&mut self, r: SatResult) -> LastStatus {
