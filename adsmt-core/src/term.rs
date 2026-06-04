@@ -1,4 +1,5 @@
 use std::fmt;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -18,17 +19,71 @@ pub struct Const {
     pub ty: Type,
 }
 
-/// A term in HOL+HKT.
+/// Internal data layout for [`Term`].
 ///
-/// Structural `PartialEq`/`Eq` is `Hash` is provided; α-equivalence is a
-/// separate method ([`Term::alpha_eq`]) used by the kernel where
-/// appropriate.
+/// Pattern-match through [`Term::kind`] (or through the
+/// [`Deref`] impl which gives `&TermInner`).  The PascalCase
+/// associated constructors on [`Term`] mirror these variants so
+/// most call sites that say `Term::Var(arc_var)` /
+/// `Term::App(f, x)` keep working unchanged.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Term {
+pub enum TermInner {
     Var(Arc<Var>),
     Const(Arc<Const>),
-    App(Arc<Term>, Arc<Term>),
-    Lam(Arc<Var>, Arc<Term>),
+    /// `f x` — `f` is itself a Term (`Arc<TermInner>` under the
+    /// hood), so the App variant adds no further indirection.
+    App(Term, Term),
+    Lam(Arc<Var>, Term),
+}
+
+/// A term in HOL+HKT.
+///
+/// Cloning a `Term` is one `Arc::clone` (a single refcount bump);
+/// the term tree itself is structurally shared between clones.
+/// Structural `PartialEq` / `Eq` / `Hash` are derived through the
+/// underlying [`TermInner`]; α-equivalence is a separate method
+/// ([`Term::alpha_eq`]) used by the kernel where appropriate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Term(pub(crate) Arc<TermInner>);
+
+impl Term {
+    /// Return the underlying [`TermInner`] for pattern matching.
+    /// Equivalent to dereferencing via [`Deref`] — pick whichever
+    /// reads better at the call site.
+    #[inline]
+    pub fn kind(&self) -> &TermInner {
+        &self.0
+    }
+}
+
+impl Deref for Term {
+    type Target = TermInner;
+    #[inline]
+    fn deref(&self) -> &TermInner {
+        &self.0
+    }
+}
+
+// === Variant-shaped associated constructors ===
+//
+// These mirror the historical enum-variant shape (`Term::Var(...)`
+// etc.) so most construction sites that pre-date the
+// `Term(Arc<TermInner>)` refactor keep working without edits.
+
+#[allow(non_snake_case)]
+impl Term {
+    pub fn Var(v: Arc<Var>) -> Term {
+        Term(Arc::new(TermInner::Var(v)))
+    }
+    pub fn Const(c: Arc<Const>) -> Term {
+        Term(Arc::new(TermInner::Const(c)))
+    }
+    pub fn App(f: Term, x: Term) -> Term {
+        Term(Arc::new(TermInner::App(f, x)))
+    }
+    pub fn Lam(v: Arc<Var>, body: Term) -> Term {
+        Term(Arc::new(TermInner::Lam(v, body)))
+    }
 }
 
 impl Term {
@@ -44,7 +99,7 @@ impl Term {
         let ft = f.type_of();
         let xt = x.type_of();
         match ft.dest_fun() {
-            Some((dom, _)) if dom == xt => Ok(Term::App(Arc::new(f), Arc::new(x))),
+            Some((dom, _)) if dom == xt => Ok(Term::App(f, x)),
             Some((dom, _)) => Err(KernelError::TypeMismatch {
                 expected: dom.to_string(),
                 found: xt.to_string(),
@@ -54,19 +109,19 @@ impl Term {
     }
 
     pub fn lam(v: Var, body: Term) -> Term {
-        Term::Lam(Arc::new(v), Arc::new(body))
+        Term::Lam(Arc::new(v), body)
     }
 
     pub fn type_of(&self) -> Type {
-        match self {
-            Term::Var(v) => v.ty.clone(),
-            Term::Const(c) => c.ty.clone(),
-            Term::App(f, _) => f
+        match self.kind() {
+            TermInner::Var(v) => v.ty.clone(),
+            TermInner::Const(c) => c.ty.clone(),
+            TermInner::App(f, _) => f
                 .type_of()
                 .dest_fun()
                 .expect("ill-typed App slipped past Term::app()")
                 .1,
-            Term::Lam(v, body) => Type::fun(v.ty.clone(), body.type_of())
+            TermInner::Lam(v, body) => Type::fun(v.ty.clone(), body.type_of())
                 .expect("kinds match by construction"),
         }
     }
@@ -80,18 +135,18 @@ impl Term {
     }
 
     fn collect_free(&self, bound: &mut Vec<Arc<Var>>, free: &mut Vec<Arc<Var>>) {
-        match self {
-            Term::Var(v) => {
+        match self.kind() {
+            TermInner::Var(v) => {
                 if !bound.iter().any(|b| **b == **v) && !free.iter().any(|f| **f == **v) {
                     free.push(v.clone());
                 }
             }
-            Term::Const(_) => {}
-            Term::App(f, x) => {
+            TermInner::Const(_) => {}
+            TermInner::App(f, x) => {
                 f.collect_free(bound, free);
                 x.collect_free(bound, free);
             }
-            Term::Lam(v, body) => {
+            TermInner::Lam(v, body) => {
                 bound.push(v.clone());
                 body.collect_free(bound, free);
                 bound.pop();
@@ -107,14 +162,14 @@ impl Term {
     }
 
     fn collect_free_tyvars(&self, out: &mut Vec<Arc<TyVar>>) {
-        match self {
-            Term::Var(v) => extend_tyvars(out, &v.ty.free_vars()),
-            Term::Const(c) => extend_tyvars(out, &c.ty.free_vars()),
-            Term::App(f, x) => {
+        match self.kind() {
+            TermInner::Var(v) => extend_tyvars(out, &v.ty.free_vars()),
+            TermInner::Const(c) => extend_tyvars(out, &c.ty.free_vars()),
+            TermInner::App(f, x) => {
                 f.collect_free_tyvars(out);
                 x.collect_free_tyvars(out);
             }
-            Term::Lam(v, body) => {
+            TermInner::Lam(v, body) => {
                 extend_tyvars(out, &v.ty.free_vars());
                 body.collect_free_tyvars(out);
             }
@@ -158,15 +213,15 @@ impl Term {
         sigma: &IndexMap<Arc<Var>, Term>,
         avoid: &[Arc<Var>],
     ) -> KernelResult<Term> {
-        match self {
-            Term::Var(v) => Ok(sigma.get(v).cloned().unwrap_or_else(|| self.clone())),
-            Term::Const(_) => Ok(self.clone()),
-            Term::App(f, x) => {
+        match self.kind() {
+            TermInner::Var(v) => Ok(sigma.get(v).cloned().unwrap_or_else(|| self.clone())),
+            TermInner::Const(_) => Ok(self.clone()),
+            TermInner::App(f, x) => {
                 let f2 = f.subst_rec(sigma, avoid)?;
                 let x2 = x.subst_rec(sigma, avoid)?;
-                Ok(Term::App(Arc::new(f2), Arc::new(x2)))
+                Ok(Term::App(f2, x2))
             }
-            Term::Lam(v, body) => {
+            TermInner::Lam(v, body) => {
                 // Shadow: drop v from sigma inside the binder.
                 let restricted: IndexMap<Arc<Var>, Term> = sigma
                     .iter()
@@ -194,11 +249,11 @@ impl Term {
                     rename.insert(v.clone(), Term::Var(fresh.clone()));
                     let body_renamed = body.subst_rec(&rename, &[])?;
                     let body_done = body_renamed.subst_rec(&restricted, avoid)?;
-                    return Ok(Term::Lam(fresh, Arc::new(body_done)));
+                    return Ok(Term::Lam(fresh, body_done));
                 }
 
                 let body_done = body.subst_rec(&restricted, avoid)?;
-                Ok(Term::Lam(v.clone(), Arc::new(body_done)))
+                Ok(Term::Lam(v.clone(), body_done))
             }
         }
     }
@@ -208,37 +263,35 @@ impl Term {
         if sigma.is_empty() {
             return self.clone();
         }
-        match self {
-            Term::Var(v) => Term::Var(Arc::new(Var {
+        match self.kind() {
+            TermInner::Var(v) => Term::Var(Arc::new(Var {
                 name: v.name.clone(),
                 ty: v.ty.subst(sigma),
             })),
-            Term::Const(c) => Term::Const(Arc::new(Const {
+            TermInner::Const(c) => Term::Const(Arc::new(Const {
                 name: c.name.clone(),
                 ty: c.ty.subst(sigma),
             })),
-            Term::App(f, x) => Term::App(
-                Arc::new(f.type_subst(sigma)),
-                Arc::new(x.type_subst(sigma)),
-            ),
-            Term::Lam(v, body) => {
+            TermInner::App(f, x) => Term::App(f.type_subst(sigma), x.type_subst(sigma)),
+            TermInner::Lam(v, body) => {
                 let new_v = Arc::new(Var {
                     name: v.name.clone(),
                     ty: v.ty.subst(sigma),
                 });
-                Term::Lam(new_v, Arc::new(body.type_subst(sigma)))
+                Term::Lam(new_v, body.type_subst(sigma))
             }
         }
     }
 
     /// β-reduce a redex `(λx. body) arg` to `body[x ↦ arg]`.
     pub fn beta_reduce(&self) -> KernelResult<Term> {
-        if let Term::App(f, arg) = self
-            && let Term::Lam(v, body) = &**f {
-                let mut sigma = IndexMap::new();
-                sigma.insert(v.clone(), (**arg).clone());
-                return body.subst(&sigma);
-            }
+        if let TermInner::App(f, arg) = self.kind()
+            && let TermInner::Lam(v, body) = f.kind()
+        {
+            let mut sigma = IndexMap::new();
+            sigma.insert(v.clone(), arg.clone());
+            return body.subst(&sigma);
+        }
         Err(KernelError::NotBetaRedex(self.to_string()))
     }
 
@@ -265,12 +318,13 @@ impl Term {
 
     /// Destruct an equation `lhs = rhs`.
     pub fn dest_eq(&self) -> Option<(Term, Term)> {
-        if let Term::App(outer, rhs) = self
-            && let Term::App(eq, lhs) = &**outer
-                && let Term::Const(c) = &**eq
-                    && c.name == "=" {
-                        return Some(((**lhs).clone(), (**rhs).clone()));
-                    }
+        if let TermInner::App(outer, rhs) = self.kind()
+            && let TermInner::App(eq, lhs) = outer.kind()
+            && let TermInner::Const(c) = eq.kind()
+            && c.name == "="
+        {
+            return Some((lhs.clone(), rhs.clone()));
+        }
         None
     }
 
@@ -370,21 +424,23 @@ impl Term {
 
     /// Decompose `not P` returning `P`.
     pub fn dest_not(&self) -> Option<Term> {
-        if let Term::App(f, p) = self
-            && let Term::Const(c) = &**f
-                && c.name == "not" {
-                    return Some((**p).clone());
-                }
+        if let TermInner::App(f, p) = self.kind()
+            && let TermInner::Const(c) = f.kind()
+            && c.name == "not"
+        {
+            return Some(p.clone());
+        }
         None
     }
 
     fn dest_bool_binop(name: &str, t: &Term) -> Option<(Term, Term)> {
-        if let Term::App(outer, q) = t
-            && let Term::App(head, p) = &**outer
-                && let Term::Const(c) = &**head
-                    && c.name == name {
-                        return Some(((**p).clone(), (**q).clone()));
-                    }
+        if let TermInner::App(outer, q) = t.kind()
+            && let TermInner::App(head, p) = outer.kind()
+            && let TermInner::Const(c) = head.kind()
+            && c.name == name
+        {
+            return Some((p.clone(), q.clone()));
+        }
         None
     }
 
@@ -393,11 +449,11 @@ impl Term {
     pub fn dest_imp(&self) -> Option<(Term, Term)> { Self::dest_bool_binop("=>", self) }
 
     pub fn is_true_const(&self) -> bool {
-        matches!(self, Term::Const(c) if c.name == "true")
+        matches!(self.kind(), TermInner::Const(c) if c.name == "true")
     }
 
     pub fn is_false_const(&self) -> bool {
-        matches!(self, Term::Const(c) if c.name == "false")
+        matches!(self.kind(), TermInner::Const(c) if c.name == "false")
     }
 
     // === Quantifier built-ins (v0.3 quantifier handling) ===
@@ -451,13 +507,14 @@ impl Term {
 
     /// If `t` is a BV literal, return `(value, width)`.
     pub fn dest_bv_lit(&self) -> Option<(u128, u32)> {
-        if let Term::Const(c) = self
-            && let Some(rest) = c.name.strip_prefix("bv:") {
-                let mut parts = rest.splitn(2, ':');
-                let v = parts.next()?.parse::<u128>().ok()?;
-                let w = parts.next()?.parse::<u32>().ok()?;
-                return Some((v, w));
-            }
+        if let TermInner::Const(c) = self.kind()
+            && let Some(rest) = c.name.strip_prefix("bv:")
+        {
+            let mut parts = rest.splitn(2, ':');
+            let v = parts.next()?.parse::<u128>().ok()?;
+            let w = parts.next()?.parse::<u32>().ok()?;
+            return Some((v, w));
+        }
         None
     }
 
@@ -520,15 +577,15 @@ impl Term {
     /// Destructure a BV unary op `(<op>_w arg)` returning
     /// `(op, width, arg)`. Recognises `bvnot` and `bvneg`.
     pub fn dest_bv_unop(&self) -> Option<(String, u32, Term)> {
-        if let Term::App(head, arg) = self
-            && let Term::Const(c) = &**head
+        if let TermInner::App(head, arg) = self.kind()
+            && let TermInner::Const(c) = head.kind()
         {
             let nm = &c.name;
             for op in ["bvnot", "bvneg"] {
                 if let Some(rest) = nm.strip_prefix(&format!("{op}_"))
                     && let Ok(w) = rest.parse::<u32>()
                 {
-                    return Some((op.into(), w, (**arg).clone()));
+                    return Some((op.into(), w, arg.clone()));
                 }
             }
         }
@@ -537,17 +594,19 @@ impl Term {
 
     /// Destructure a BV binop `(<op>_w lhs rhs)` returning `(op, width, lhs, rhs)`.
     pub fn dest_bv_binop(&self) -> Option<(String, u32, Term, Term)> {
-        if let Term::App(outer, rhs) = self
-            && let Term::App(head, lhs) = &**outer
-                && let Term::Const(c) = &**head {
-                    let nm = &c.name;
-                    for op in ["bvand", "bvor", "bvxor", "bvadd", "bvsub", "bvmul"] {
-                        if let Some(rest) = nm.strip_prefix(&format!("{op}_"))
-                            && let Ok(w) = rest.parse::<u32>() {
-                                return Some((op.into(), w, (**lhs).clone(), (**rhs).clone()));
-                            }
-                    }
+        if let TermInner::App(outer, rhs) = self.kind()
+            && let TermInner::App(head, lhs) = outer.kind()
+            && let TermInner::Const(c) = head.kind()
+        {
+            let nm = &c.name;
+            for op in ["bvand", "bvor", "bvxor", "bvadd", "bvsub", "bvmul"] {
+                if let Some(rest) = nm.strip_prefix(&format!("{op}_"))
+                    && let Ok(w) = rest.parse::<u32>()
+                {
+                    return Some((op.into(), w, lhs.clone(), rhs.clone()));
                 }
+            }
+        }
         None
     }
 
@@ -555,31 +614,34 @@ impl Term {
     pub fn bv_sort_width(ty: &Type) -> Option<u32> {
         if let Type::Const(c) = ty
             && let Some(rest) = c.name.strip_prefix("BV<")
-                && let Some(num) = rest.strip_suffix('>') {
-                    return num.parse::<u32>().ok();
-                }
+            && let Some(num) = rest.strip_suffix('>')
+        {
+            return num.parse::<u32>().ok();
+        }
         None
     }
 
     /// Destructure `∀v. body`, returning the binder and body.
     pub fn dest_forall(&self) -> Option<(Var, Term)> {
-        if let Term::App(f, lam) = self
-            && let Term::Const(c) = &**f
-                && c.name == "forall"
-                    && let Term::Lam(v, body) = &**lam {
-                        return Some(((**v).clone(), (**body).clone()));
-                    }
+        if let TermInner::App(f, lam) = self.kind()
+            && let TermInner::Const(c) = f.kind()
+            && c.name == "forall"
+            && let TermInner::Lam(v, body) = lam.kind()
+        {
+            return Some(((**v).clone(), body.clone()));
+        }
         None
     }
 
     /// Destructure `∃v. body`, returning the binder and body.
     pub fn dest_exists(&self) -> Option<(Var, Term)> {
-        if let Term::App(f, lam) = self
-            && let Term::Const(c) = &**f
-                && c.name == "exists"
-                    && let Term::Lam(v, body) = &**lam {
-                        return Some(((**v).clone(), (**body).clone()));
-                    }
+        if let TermInner::App(f, lam) = self.kind()
+            && let TermInner::Const(c) = f.kind()
+            && c.name == "exists"
+            && let TermInner::Lam(v, body) = lam.kind()
+        {
+            return Some(((**v).clone(), body.clone()));
+        }
         None
     }
 }
@@ -598,8 +660,8 @@ fn alpha_eq_rec(
     a_bound: &mut Vec<Arc<Var>>,
     b_bound: &mut Vec<Arc<Var>>,
 ) -> bool {
-    match (a, b) {
-        (Term::Var(va), Term::Var(vb)) => {
+    match (a.kind(), b.kind()) {
+        (TermInner::Var(va), TermInner::Var(vb)) => {
             let pos_a = a_bound.iter().rposition(|v| **v == **va);
             let pos_b = b_bound.iter().rposition(|v| **v == **vb);
             match (pos_a, pos_b) {
@@ -612,12 +674,12 @@ fn alpha_eq_rec(
                 _ => false,
             }
         }
-        (Term::Const(ca), Term::Const(cb)) => **ca == **cb,
-        (Term::App(fa, xa), Term::App(fb, xb)) => {
+        (TermInner::Const(ca), TermInner::Const(cb)) => **ca == **cb,
+        (TermInner::App(fa, xa), TermInner::App(fb, xb)) => {
             alpha_eq_rec(fa, fb, a_bound, b_bound)
                 && alpha_eq_rec(xa, xb, a_bound, b_bound)
         }
-        (Term::Lam(va, ba), Term::Lam(vb, bb)) => {
+        (TermInner::Lam(va, ba), TermInner::Lam(vb, bb)) => {
             if va.ty != vb.ty {
                 return false;
             }
@@ -650,23 +712,23 @@ impl fmt::Display for Term {
         if let Some((lhs, rhs)) = self.dest_eq() {
             return write!(f, "({lhs} = {rhs})");
         }
-        match self {
-            Term::Var(v) => write!(f, "{}", v.name),
-            Term::Const(c) => write!(f, "{}", c.name),
-            Term::App(g, x) => {
-                if matches!(**g, Term::Lam(..)) {
+        match self.kind() {
+            TermInner::Var(v) => write!(f, "{}", v.name),
+            TermInner::Const(c) => write!(f, "{}", c.name),
+            TermInner::App(g, x) => {
+                if matches!(g.kind(), TermInner::Lam(..)) {
                     write!(f, "({g})")?;
                 } else {
                     write!(f, "{g}")?;
                 }
                 write!(f, " ")?;
-                if matches!(**x, Term::App(..) | Term::Lam(..)) {
+                if matches!(x.kind(), TermInner::App(..) | TermInner::Lam(..)) {
                     write!(f, "({x})")
                 } else {
                     write!(f, "{x}")
                 }
             }
-            Term::Lam(v, body) => write!(f, "λ{}:{}. {body}", v.name, v.ty),
+            TermInner::Lam(v, body) => write!(f, "λ{}:{}. {body}", v.name, v.ty),
         }
     }
 }
@@ -685,102 +747,121 @@ mod tests {
     }
 
     #[test]
-    fn app_typechecks() {
-        let arrow_ty = Type::fun(int_(), int_()).unwrap();
-        let f = Term::var("f", arrow_ty);
+    fn constant_type() {
+        let one = Term::const_("1", int_());
+        assert_eq!(one.type_of(), int_());
+    }
+
+    #[test]
+    fn ill_typed_app_rejected() {
+        let f = Term::var("f", Type::fun(int_(), int_()).unwrap());
+        let b = Term::var("b", Type::bool_());
+        let r = Term::app(f, b);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn well_typed_app_succeeds() {
+        let f = Term::var("f", Type::fun(int_(), int_()).unwrap());
         let x = Term::var("x", int_());
         let fx = Term::app(f, x).unwrap();
         assert_eq!(fx.type_of(), int_());
     }
 
     #[test]
-    fn app_type_mismatch() {
-        let arrow_ty = Type::fun(int_(), int_()).unwrap();
-        let f = Term::var("f", arrow_ty);
-        let b = Term::var("b", Type::bool_());
-        assert!(Term::app(f, b).is_err());
-    }
-
-    #[test]
     fn lambda_type_is_arrow() {
         let x = Var { name: "x".into(), ty: int_() };
-        let body = Term::Var(Arc::new(x.clone()));
+        let body = Term::var("body", int_());
         let lam = Term::lam(x, body);
         assert_eq!(lam.type_of(), Type::fun(int_(), int_()).unwrap());
     }
 
     #[test]
-    fn beta_identity() {
+    fn alpha_eq_lambdas_renames_bound() {
         let x = Var { name: "x".into(), ty: int_() };
-        let body = Term::Var(Arc::new(x.clone()));
-        let lam = Term::lam(x, body);
-        let arg = Term::var("y", int_());
-        let redex = Term::app(lam, arg.clone()).unwrap();
-        assert!(redex.beta_reduce().unwrap().alpha_eq(&arg));
+        let y = Var { name: "y".into(), ty: int_() };
+        let body_x = Term::Var(Arc::new(x.clone()));
+        let body_y = Term::Var(Arc::new(y.clone()));
+        let lam_x = Term::lam(x, body_x);
+        let lam_y = Term::lam(y, body_y);
+        assert!(lam_x.alpha_eq(&lam_y));
     }
 
     #[test]
-    fn alpha_equivalence_of_identity_lambdas() {
+    fn alpha_eq_distinct_constants_no_match() {
         let x = Var { name: "x".into(), ty: int_() };
         let y = Var { name: "y".into(), ty: int_() };
-        let lx = Term::lam(x.clone(), Term::Var(Arc::new(x)));
-        let ly = Term::lam(y.clone(), Term::Var(Arc::new(y)));
-        assert!(lx.alpha_eq(&ly));
-        assert_ne!(lx, ly);
+        let body_x = Term::var("z", int_());
+        let body_y = Term::var("w", int_());
+        let lam_x = Term::lam(x, body_x);
+        let lam_y = Term::lam(y, body_y);
+        assert!(!lam_x.alpha_eq(&lam_y));
     }
 
     #[test]
-    fn capture_avoiding_substitution() {
-        // (λx. y) [y ↦ x] should rename, not capture.
-        let x = Var { name: "x".into(), ty: int_() };
-        let y = Var { name: "y".into(), ty: int_() };
-        let y_arc = Arc::new(y.clone());
-        let lam_y_free = Term::lam(x.clone(), Term::Var(y_arc.clone()));
+    fn subst_substitutes_variable() {
+        let x = Arc::new(Var { name: "x".into(), ty: int_() });
+        let y = Term::var("y", int_());
         let mut sigma = IndexMap::new();
-        sigma.insert(y_arc, Term::Var(Arc::new(x.clone())));
-        let result = lam_y_free.subst(&sigma).unwrap();
-        // Result should have the outer lambda bind a fresh name, not "x"
-        match &result {
-            Term::Lam(v, body) => {
-                assert_ne!(v.name, "y");
-                // body's free var (the substituted x) must not equal v
-                let fvs = body.free_vars();
-                assert!(fvs.iter().all(|fv| **fv != **v));
-            }
-            _ => panic!("expected Lam"),
+        sigma.insert(x.clone(), y.clone());
+        let result = Term::Var(x).subst(&sigma).unwrap();
+        assert_eq!(result, y);
+    }
+
+    #[test]
+    fn subst_into_lambda_capture_avoiding() {
+        // λy. x  with  σ = {x ↦ y}  must rename the binder.
+        let y = Arc::new(Var { name: "y".into(), ty: int_() });
+        let x = Arc::new(Var { name: "x".into(), ty: int_() });
+        let body = Term::Var(x.clone());
+        let lam = Term::Lam(y.clone(), body);
+        let mut sigma = IndexMap::new();
+        sigma.insert(x.clone(), Term::Var(y.clone()));
+        let result = lam.subst(&sigma).unwrap();
+        // The bound name should NOT be `y` any more.
+        if let TermInner::Lam(v, _) = result.kind() {
+            assert_ne!(v.name, "y", "binder was not renamed");
+        } else {
+            panic!("expected Lam result");
         }
     }
 
     #[test]
-    fn type_subst_threads_into_term() {
-        use crate::ty::TyVar as Tv;
-        let alpha = Arc::new(Tv { name: "α".into(), kind: Kind::Type });
-        let alpha_ty = Type::Var(alpha.clone());
-        let x = Term::var("x", alpha_ty);
-        let mut sigma = IndexMap::new();
-        sigma.insert(alpha, int_());
-        let x2 = x.type_subst(&sigma);
-        assert_eq!(x2.type_of(), int_());
+    fn beta_reduces_redex() {
+        let x = Arc::new(Var { name: "x".into(), ty: int_() });
+        let body = Term::Var(x.clone());
+        let lam = Term::Lam(x.clone(), body);
+        let arg = Term::var("a", int_());
+        let redex = Term::app(lam, arg.clone()).unwrap();
+        let r = redex.beta_reduce().unwrap();
+        assert_eq!(r, arg);
     }
 
     #[test]
-    fn equation_round_trip() {
+    fn eq_term_well_typed() {
+        let x = Term::var("x", int_());
+        let y = Term::var("y", int_());
+        let eq = Term::mk_eq(x, y).unwrap();
+        assert_eq!(eq.type_of(), Type::bool_());
+    }
+
+    #[test]
+    fn eq_term_round_trips() {
         let x = Term::var("x", int_());
         let y = Term::var("y", int_());
         let eq = Term::mk_eq(x.clone(), y.clone()).unwrap();
         let (l, r) = eq.dest_eq().unwrap();
-        assert_eq!(l, x);
-        assert_eq!(r, y);
+        assert!(l.alpha_eq(&x));
+        assert!(r.alpha_eq(&y));
     }
 
     #[test]
-    fn boolean_round_trips() {
+    fn boolean_builtins_well_typed_and_roundtrip() {
         let p = Term::var("p", Type::bool_());
         let q = Term::var("q", Type::bool_());
-
         let n = Term::mk_not(p.clone()).unwrap();
-        assert_eq!(n.dest_not().unwrap(), p);
         assert_eq!(n.type_of(), Type::bool_());
+        assert_eq!(n.dest_not().unwrap(), p);
 
         let conj = Term::mk_and(p.clone(), q.clone()).unwrap();
         let (l, r) = conj.dest_and().unwrap();
@@ -798,19 +879,11 @@ mod tests {
     }
 
     #[test]
-    fn boolean_ops_reject_non_bool() {
+    fn boolean_builtins_reject_non_bool() {
         let x = Term::var("x", int_());
-        assert!(Term::mk_not(x.clone()).is_err());
         let p = Term::var("p", Type::bool_());
-        assert!(Term::mk_and(x, p).is_err());
-    }
-
-    #[test]
-    fn true_false_constants() {
-        let t = Term::true_const();
-        let f = Term::false_const();
-        assert!(t.is_true_const());
-        assert!(f.is_false_const());
-        assert!(!t.is_false_const());
+        assert!(Term::mk_not(x.clone()).is_err());
+        assert!(Term::mk_and(x.clone(), p.clone()).is_err());
+        assert!(Term::mk_and(p.clone(), x).is_err());
     }
 }

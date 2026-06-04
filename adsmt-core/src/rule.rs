@@ -10,7 +10,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::error::{KernelError, KernelResult};
-use crate::term::{Term, Var};
+use crate::term::{Term, TermInner, Var};
 use crate::theorem::{Theorem, remove_hyp, union_hyps};
 use crate::ty::{TyVar, Type};
 
@@ -206,8 +206,8 @@ mod tests {
         let eq = assume(Term::mk_eq(s.clone(), t.clone()).unwrap()).unwrap();
         let thm = abs(x.clone(), &eq).unwrap();
         let (l, r) = thm.concl().dest_eq().unwrap();
-        match (l, r) {
-            (Term::Lam(_, body_l), Term::Lam(_, body_r)) => {
+        match (l.kind(), r.kind()) {
+            (TermInner::Lam(_, body_l), TermInner::Lam(_, body_r)) => {
                 assert!(body_l.alpha_eq(&s));
                 assert!(body_r.alpha_eq(&t));
             }

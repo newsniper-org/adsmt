@@ -14,5 +14,5 @@ pub mod rule;
 pub use error::{KernelError, KernelResult};
 pub use kind::Kind;
 pub use ty::{TyConst, TyVar, Type};
-pub use term::{Const, Term, Var};
+pub use term::{Const, Term, TermInner, Var};
 pub use theorem::Theorem;
