@@ -69,7 +69,7 @@ pub use pool::{
     AssertionEntry, PoolBuilder, PoolEntry,
 };
 pub use reader::{
-    parse_type, read_luart, reconstruct, LuartFile, ReadError,
-    ReconstructedPrelude,
+    intern_external, parse_type, read_luart, reconstruct, LuartFile,
+    ReadError, ReconstructedPrelude,
 };
 pub use writer::{topo_check, write_header, WriteError};

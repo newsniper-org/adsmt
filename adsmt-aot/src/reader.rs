@@ -18,7 +18,7 @@
 //!
 //! [`writer`]: crate::writer
 
-use adsmt_core::{Kind, Term, Type, Var};
+use adsmt_core::{Kind, Term, TermInner, Type, Var};
 
 use crate::format::{LuartHeader, Tag, LUART_MAGIC, LUART_VERSION};
 use crate::pool::{AssertionEntry, PoolEntry};
@@ -460,6 +460,43 @@ fn parse_atom(tokens: &mut Vec<TyTok>) -> Option<Type> {
             }
         }
         _ => None,
+    }
+}
+
+/// Re-intern an externally-built `Term` through the hash-cons
+/// cache so its `Arc<TermInner>` identity matches anything the
+/// process has already constructed for the same structure.  A
+/// no-op on a `Term` that came out of [`reconstruct`] (or any
+/// other in-process `Term::var` / `Term::const_` / `Term::app` /
+/// `Term::lam` chain) — the cache lookups inside those
+/// constructors do the work up-front.  Provided as a free
+/// function so call sites that thread a `Term` across crate
+/// boundaries (FFI, deserialised cert payloads, language
+/// bindings) can re-canonicalise without depending on the
+/// adsmt-engine `Solver` type.
+pub fn intern_external(t: &Term) -> Term {
+    match t.kind() {
+        TermInner::Var(v) => Term::var(&v.name, v.ty.clone()),
+        TermInner::Const(c) => Term::const_(&c.name, c.ty.clone()),
+        TermInner::App(f, x) => {
+            let fi = intern_external(f);
+            let xi = intern_external(x);
+            Term::app(fi, xi).expect(
+                "intern_external: rebuilt App was ill-kinded — the \
+                 input Term was not produced by a valid kernel \
+                 construction chain",
+            )
+        }
+        TermInner::Lam(v, body) => {
+            let bi = intern_external(body);
+            Term::lam(
+                Var {
+                    name: v.name.clone(),
+                    ty: v.ty.clone(),
+                },
+                bi,
+            )
+        }
     }
 }
 

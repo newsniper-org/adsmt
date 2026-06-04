@@ -10,6 +10,9 @@ adsmt-core.workspace = true
 adsmt-cert.workspace = true
 adsmt-theory.workspace = true
 adsmt-theory-finite-field.workspace = true
+# §3.1.D AOT prelude bank — `Solver::with_aot_prelude` consumes
+# the reconstructed prelude bytes from a `.luart` artifact.
+adsmt-aot.workspace = true
 adsmt-class.workspace = true
 adsmt-quant.workspace = true
 adsmt-abduce.workspace = true

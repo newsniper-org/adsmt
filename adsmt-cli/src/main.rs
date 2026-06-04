@@ -122,6 +122,15 @@ struct Cli {
     /// bake input.
     #[arg(long)]
     aot_sha: Option<String>,
+    /// §3.1.D AOT load.  Pre-asserts the prelude carried by the
+    /// `.luart` artifact at `<PATH>` before reading the regular
+    /// SMT-LIB input.  Each prelude assertion routes through
+    /// `Solver::with_aot_prelude`'s hash-cons re-intern so it
+    /// shares `Arc<TermInner>` identity with anything the
+    /// per-query input rebuilds structurally.  Mutually
+    /// exclusive with `--aot-bake`.
+    #[arg(long)]
+    aot_load: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -151,12 +160,30 @@ fn main() -> ExitCode {
         eprintln!("lu-smt: --aot-bake requires --aot-output <PATH>");
         return ExitCode::from(13);
     }
-    let mut driver = Driver::new(DriverConfig {
-        strict_commands: cli.strict_commands,
-        no_autodeclare: cli.no_autodeclare,
-        finite_field,
-        aot_bake: cli.aot_bake,
-    });
+    if cli.aot_bake && cli.aot_load.is_some() {
+        eprintln!("lu-smt: --aot-bake and --aot-load are mutually exclusive");
+        return ExitCode::from(13);
+    }
+    // §3.1.D — load the prelude bank (if any) before the solver
+    // sees its first per-query assertion.  Errors carry their own
+    // exit-code mapping so vargo can distinguish a missing file
+    // (12) from a corrupt artifact (15).
+    let aot_prelude = match cli.aot_load.as_deref() {
+        Some(path) => match load_aot_prelude(path) {
+            Ok(p) => Some(p),
+            Err(code) => return ExitCode::from(code),
+        },
+        None => None,
+    };
+    let mut driver = Driver::new(
+        DriverConfig {
+            strict_commands: cli.strict_commands,
+            no_autodeclare: cli.no_autodeclare,
+            finite_field,
+            aot_bake: cli.aot_bake,
+        },
+        aot_prelude,
+    );
     let mut last = LastStatus::Sat;
     // Stash the input bytes for the bake-side SHA-256 computation
     // when `--aot-bake` was requested without an explicit `--aot-sha`
@@ -280,6 +307,34 @@ fn bake_to_path(
         return Err(14);
     }
     Ok(())
+}
+
+/// Read a `.luart` v0 artifact off disk + reconstruct its
+/// prelude DAG.  v0 uses the simple `fs::read` path; mmap is a
+/// v1 optimisation (the bake-side cost is what currently
+/// dominates).  Returns the exit code shape lu-smt uses
+/// elsewhere — 12 for I/O failures, 15 for `.luart` corruption.
+fn load_aot_prelude(
+    path: &str,
+) -> Result<adsmt_aot::ReconstructedPrelude, u8> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("lu-smt: cannot read --aot-load {path}: {e}");
+            return Err(12);
+        }
+    };
+    let file = match adsmt_aot::read_luart(&bytes) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("lu-smt: --aot-load {path} decode: {e}");
+            return Err(15);
+        }
+    };
+    adsmt_aot::reconstruct(&file).map_err(|e| {
+        eprintln!("lu-smt: --aot-load {path} reconstruct: {e}");
+        15
+    })
 }
 
 fn decode_sha_hex(hex: &str) -> Option<[u8; 32]> {
@@ -671,13 +726,30 @@ struct Driver {
 }
 
 impl Driver {
-    fn new(cfg: DriverConfig) -> Self {
+    fn new(
+        cfg: DriverConfig,
+        aot_prelude: Option<adsmt_aot::ReconstructedPrelude>,
+    ) -> Self {
         // Builder-style construction so the optional §3.4 plugin
-        // registration composes with the default theory roster
-        // before the first command runs.
+        // registration + the §3.1.D AOT prelude both compose with
+        // the default theory roster before the first command runs.
         let mut solver = Solver::new();
         if let Some(ff_cfg) = cfg.finite_field.clone() {
             solver = solver.with_finite_field(ff_cfg);
+        }
+        // Mirror the prelude into the driver's `assertions` ledger
+        // (and the parallel qid table) so `(get-unsat-core)` and
+        // `--audit-json` see the prelude axioms alongside the
+        // per-query ones.
+        let mut assertions: Vec<Term> = Vec::new();
+        let mut assertion_qids: Vec<Option<String>> = Vec::new();
+        if let Some(prelude) = aot_prelude {
+            for (term, qid) in &prelude.assertions {
+                let canonical = adsmt_aot::intern_external(term);
+                assertions.push(canonical);
+                assertion_qids.push(qid.clone());
+            }
+            solver = solver.with_aot_prelude(prelude);
         }
         Self {
             solver,
@@ -687,8 +759,8 @@ impl Driver {
             cfg,
             last_cert: None,
             last_result: None,
-            assertions: Vec::new(),
-            assertion_qids: Vec::new(),
+            assertions,
+            assertion_qids,
         }
     }
 

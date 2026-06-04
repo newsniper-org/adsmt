@@ -77,6 +77,7 @@ name = "adsmt-engine"
 version = "1.0.0-rc.15"
 dependencies = [
  "adsmt-abduce",
+ "adsmt-aot",
  "adsmt-cert",
  "adsmt-class",
  "adsmt-core",

@@ -121,6 +121,29 @@ impl Solver {
         self
     }
 
+    /// Pre-assert every term in a reconstructed `.luart` prelude
+    /// bank (§3.1.D — the load half of the §3.1 AOT pipeline).
+    /// Routes each prelude term through `intern_external` so its
+    /// `Arc<TermInner>` identity merges with anything per-query
+    /// input rebuilds structurally, then funnels through the
+    /// regular `assert_at` path so the cert ledger records each
+    /// prelude axiom with a synthetic `(line=0, col=<index>)`
+    /// source location.  The optional per-axiom `qid` carried in
+    /// the prelude is currently ignored — §3.2's JIT-guard
+    /// metadata is the natural consumer; v0 keeps the wire field
+    /// available without yet routing it into the engine.
+    ///
+    /// Builder-pattern style:
+    /// `Solver::default().with_aot_prelude(prelude)`.
+    pub fn with_aot_prelude(mut self, prelude: adsmt_aot::ReconstructedPrelude) -> Self {
+        for (idx, (term, _qid)) in prelude.assertions.into_iter().enumerate() {
+            let canonical = adsmt_aot::intern_external(&term);
+            let loc = adsmt_cert::SourceLoc::new(0, idx as u32);
+            self.assert_at(canonical, loc);
+        }
+        self
+    }
+
     /// `true` iff the GF(2) Gröbner theory plugin has been
     /// registered via [`Self::with_finite_field`].  Internal
     /// helper for the engine hooks below; downstream code that
