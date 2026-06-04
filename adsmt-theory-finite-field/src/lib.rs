@@ -22,6 +22,7 @@
 pub mod bitpacked;
 pub mod bp_polynomial;
 pub mod buchberger;
+pub mod f4_symbolic;
 pub mod monomial;
 pub mod polynomial;
 pub mod reduction;
@@ -30,6 +31,9 @@ pub mod sat_encoder;
 pub use bitpacked::BPMonomial;
 pub use bp_polynomial::BPPolynomial;
 pub use buchberger::{buchberger, contains_one};
+pub use f4_symbolic::{
+    column_index, poly_to_row, symbolic_preprocess, PairIdx, PreprocessOutput,
+};
 pub use monomial::{Monomial, MonomialOrder};
 pub use polynomial::Polynomial;
 pub use reduction::{monomials_coprime, reduce, s_polynomial};
