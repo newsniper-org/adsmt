@@ -58,9 +58,13 @@
 //! and once for JIT-guard liveness (§3.2).
 
 pub mod cache;
+pub mod cdcl;
 pub mod guard;
 pub mod trace;
 
 pub use cache::JitCache;
+pub use cdcl::{
+    CdclCheckpoint, CdclTrace, CdclTraceEvent, CdclTracer, GF2Snapshot,
+};
 pub use guard::{check_guard, GuardResult, JitGuard};
 pub use trace::{SkeletonShape, Trace, TraceKey};
