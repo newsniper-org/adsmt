@@ -199,6 +199,12 @@ impl CdclTrace {
 #[derive(Default, Clone, Debug)]
 pub struct CdclTracer {
     events: Vec<CdclTraceEvent>,
+    /// §1.4 / §3.5.E — mid-trace checkpoints captured at phase
+    /// transitions (Restart, high-LBD Conflict, scope-0
+    /// Backjump per the counter-ack §5.4 recommended set).
+    /// `at_event` is the index into `events` just before the
+    /// checkpoint was captured.
+    checkpoints: Vec<CdclCheckpoint>,
 }
 
 impl CdclTracer {
@@ -212,6 +218,24 @@ impl CdclTracer {
         self.events.push(event);
     }
 
+    /// §1.4 — capture a mid-trace checkpoint at the *current*
+    /// event-stream position.  The recorder is responsible
+    /// for deciding *when* to call this (the recommended set
+    /// is Restart, high-LBD Conflict, scope-0 Backjump per
+    /// the §3.5 counter-ack §5.4); the API itself does not
+    /// enforce a policy.
+    pub fn record_checkpoint(&mut self, signature: GF2Snapshot) {
+        let at_event: u32 = self
+            .events
+            .len()
+            .try_into()
+            .expect("trace event count > u32 is implausible");
+        self.checkpoints.push(CdclCheckpoint {
+            at_event,
+            signature,
+        });
+    }
+
     /// Number of events the tracer has recorded so far.
     pub fn len(&self) -> usize {
         self.events.len()
@@ -222,16 +246,22 @@ impl CdclTracer {
         self.events.is_empty()
     }
 
+    /// Number of checkpoints currently captured.
+    pub fn checkpoint_count(&self) -> usize {
+        self.checkpoints.len()
+    }
+
     /// Consume the tracer and freeze its recording into a
     /// [`CdclTrace`].  Caller supplies the end-of-trace
     /// [`GF2Snapshot`] (per the counter-ack §5.4 — mandatory)
-    /// + the guard set the replay path will check.
-    /// `checkpoints` stays empty in v0; §3.5.E populates.
+    /// + the guard set the replay path will check.  Any
+    /// mid-trace checkpoints accumulated via
+    /// [`Self::record_checkpoint`] ride through.
     pub fn finalize(self, signature: GF2Snapshot, guards: Vec<JitGuard>) -> CdclTrace {
         CdclTrace {
             events: self.events,
             signature,
-            checkpoints: Vec::new(),
+            checkpoints: self.checkpoints,
             guards,
             kernel_id: 0,
         }
