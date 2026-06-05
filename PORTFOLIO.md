@@ -8,7 +8,7 @@
 > ~44 k lines of Rust across 31 workspace crates, 946 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.20` on 2026-06-05.
+> `1.0.0-rc.21` on 2026-06-05.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.20):**
+**Active consumers (rc.21):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -355,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.20` (2026-06-05) |
+| Workspace version | `1.0.0-rc.21` (2026-06-05) |
 
 ---
 
-## Roadmap snapshot (rc.20 → v1.0.0 stable)
+## Roadmap snapshot (rc.21 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -408,9 +408,11 @@ or proof-search strategies without touching the engine core.
 | §3.5.H `vargo` post-build hook extension (`--aot-include-cdcl`) | verus-fork side; gated on §3.5.H prerequisites — adsmt-side v1 recorder hooks landed at rc.18, CLI wiring landed at rc.19, CDCL state restoration landed at rc.20, verus-side prelude-suppression flag pending |
 | §3.5.I `SmtProcess` argv wiring (env vars `VERUS_ADSMT_AOT_LUART` + `VERUS_ADSMT_JIT_TRACE`) | **landed** verus-fork side at `source/air/src/smt_process.rs::solver_argv` 2026-06-05; activation gated on §3.5.H prelude-suppression |
 | §3.5.J.pre verus-fork 5-mode smoke retry against T0′ landings | verus-fork rc.17 retry §3 — same 5-6 s threshold as rc.16 (T0' didn't move the floor on the verus_smoke prelude) |
-| §3.5.J verus-fork 5-mode smoke retry against §3.5-baked artefact + T0′ | verus-fork side; rc.20 lands the largest single per-`(check-sat)` shortcut (prelude clause-cache via `restore_cdcl_state_into`).  Trail / watches / VSIDS / saved-phase restoration queued for the rc.21 follow-up that grows a CDCL `_with_seed` variant |
-| Trail / watches / VSIDS / saved-phase restoration via `cdcl_solve_with_model_deadline_with_seed` | post-rc.20 follow-up; the rc.20 `restore_cdcl_state_into` v0.x scope ships the clause vec only, the four remaining `CdclState` fields need an inner-loop signature change |
-| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.20 follow-up |
+| (1) §3.5.J runtime gate — `cdcl::cdcl_solve_with_model_deadline_with_seed` + `Solver::prepare_cdcl_seed` (verus-fork rc.20 retry §1) | **landed** at rc.21 (`706b7bf`).  Inner-loop variant + Luby wrapper + sat-only wrapper consume a `CdclState` seed projected from the v1 artefact's `trail` / `vsids` / `saved_phase` records (atom_pool_idx → Term via new `Solver::aot_pool_terms: Vec<Term>` field).  Per-query CDCL now bypasses the prelude's BCP-fixpoint rerun — the missing half of the §3.5.J payoff |
+| (b''') Tracer Unknown / deadline-cancel coverage (verus-fork rc.20 retry §(b'')) | **landed** at rc.21 (`78eff65`).  Session-boundary fallback inside `Solver::check_sat_with_deadline` force-records Restart + verdict-shaped event when `tracer.is_empty()` after `check_sat_inner` returns; covers every CDCL path the inline recorder can't reach |
+| (c''') v0 `--aot-load` allocator-chain hotspot — `CdclState` String → Term migration (verus-fork rc.20 retry §(c''')) | **landed** at rc.21 (`e2eaec8` profile + `de0aedb` migration).  pacman-installed cargo-flamegraph localised ~12.6 % of cycles in the allocator chain driven by `cdcl::atom_key(lit) -> lit.atom.to_string()` per propagation step on String-keyed CdclState maps.  Migrated `TrailEntry::atom`, `CdclState::{assign, activity, saved_phase, watches}`, `HashSet seen`, `pick_vsids_atom` return + `evaluate_clause` arg from `String` to hash-consed `Term` (Arc::ptr_eq Hash/Eq O(1) post-rc.10 — same probe cost, zero per-step allocation).  `CdclOutcome::Sat`'s `HashMap<String, bool>` model + `CdclEventSink` trait `&str` preserved with one-shot boundary conversion.  **Verus_smoke-shaped wall-clock: 5 955 ms → 1 923 ms (≈ 67 % reduction)**; allocator chain absent from top-40 frames post-migration |
+| §3.5.J verus-fork 5-mode smoke retry against rc.21 (post-seed + post-hotspot) | verus-fork side; both prerequisites (`_with_seed` variant + allocator hotspot elimination) landed at rc.21.  Expected to drop Mode C' / F under `--rlimit 5 s` well below the previous 5.8 s wall.  If §3.5.J doesn't close, the next-largest hotspot is visible in `.claude-notes/profiling/2026-06-05-post-migration-flamegraph.txt` |
+| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.21 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
 
@@ -436,5 +438,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.20
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.21
   development arc.
