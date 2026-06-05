@@ -9,10 +9,10 @@ reference (build, run, license, contribute).
 
 | What | Where |
 |---|---|
-| Project version | `1.0.0-rc.15` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
+| Project version | `1.0.0-rc.16` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (triple) |
 | Crate roster | 18 `adsmt-*` + 11 absorbed `lu-*` + `adsmt-meta` umbrella + `logicutils-translator-to-oxiz-sat` (31 total) |
-| Tests | **901** passing across the workspace; 0 `cargo doc` / `cargo build` warnings |
+| Tests | **923** passing across the workspace; 0 `cargo doc` / `cargo build` warnings |
 | ITP targets | Lean4 (in-tree reference), Rocq + Isabelle (out-of-tree via `~/adsmt-contrib/`) |
 | SAT backend | `oxiz-sat` (Path A+B default), `cadical` (feature flag), built-in CDCL fallback |
 | Engine | DPLL(T) with 1-UIP CDCL, two-watched literals, VSIDS, Luby restarts, LBD-aware learnt-clause retention, deadline-aware end-to-end |
@@ -61,7 +61,7 @@ adsmt is an SMT solver with five differentiating attributes
    surfaces (`oxiz-contrib-abduction`, future binding paths)
    flow upstream as Apache-2 contributions.
 
-## Workspace topology (v1.0.0-rc.15)
+## Workspace topology (v1.0.0-rc.16)
 
 ```
 ~/AD1/
@@ -227,6 +227,30 @@ lu-smt --aot-bake --aot-output prelude.luart prelude.smt2
 lu-smt --aot-load prelude.luart query.smt2
 ```
 
+§3.5 JIT-on-AOT-prelude composes with §3.1.  The bake side
+opts into the v1 CDCL section (post-flatten clauses + initial
+BCP trail + two-watched index + VSIDS + phase-save) with
+`--aot-include-cdcl`; the load side picks the section up
+automatically when the artefact carries one.  The CLI
+additionally surfaces a separate `.lutrace` v0 artefact
+plumbing for recorded CDCL traces (the recorder hook that
+populates the event stream lands in the §3.5.F follow-up):
+
+```bash
+# Bake prelude + v1 CDCL section (clauses + BCP trail +
+# two-watched index + VSIDS + phase-save).  The v1 header
+# carries a SHA-256 of the lu-smt binary so reloading
+# detects silent tooling-drift the source-level
+# `flatten_version` knob misses.
+lu-smt --aot-bake --aot-include-cdcl --aot-output prelude.luart \
+       prelude.smt2
+
+# Emit / load a recorded CDCL trace.  Mutually exclusive
+# pair; mirrors the `--aot-bake` / `--aot-load` shape.
+lu-smt --jit-trace-emit trace.lutrace query.smt2
+lu-smt --jit-trace-load trace.lutrace query.smt2
+```
+
 Abductive verdicts emit a single JSON line on stdout right
 after the `abductive` label so subprocess consumers parse it
 inline:
@@ -291,7 +315,7 @@ adsmt uses a Debian-style channel model:
 | `testing` | `testing` | Stabilisation candidates promoted from `main` |
 | `stable` | `v1.0.0` (tag) | Released versions (the v1.0.0 tag is the first cut) |
 
-The rc.7 → rc.15 arc has been driven by the verus-fork
+The rc.7 → rc.16 arc has been driven by the verus-fork
 engine-refactor request (see
 `.local-requests-from/verus-fork/` for the joint working
 surface).  Highlights landed since rc.2:
@@ -305,6 +329,7 @@ surface).  Highlights landed since rc.2:
 | rc.13 | **§3.4 Buchberger v0** — dense Gröbner-basis decider (`adsmt-theory-finite-field`) |
 | rc.14 | **§3.4 F4 v1** — bit-packed Gröbner + `FiniteFieldTheory` plugin + `Solver::with_finite_field` builder |
 | rc.15 | **§3.4 lu-smt CLI surface** — `--finite-field-periodic N` / `--finite-field-budget-exhaustion` startup flags + `(set-option :finite-field-…)` mid-session handlers.  **§3.1 AOT prelude bank** end-to-end — new crate `adsmt-aot` with `.luart` v0 writer (§3.1.A) + reader + Term-DAG reconstruction (§3.1.C); `lu-smt --aot-bake` / `--aot-load` (§3.1.B + §3.1.D); `Solver::with_aot_prelude` builder + `intern_external` re-canonicalisation helper.  **§3.2 meta-tracing JIT skeleton** — new crate `adsmt-jit` with `JitGuard` enum (poly-invariant via the shared GF(2) `reduce` kernel / equiv-class / depth-3 skeleton-shape) + `JitCache::lookup`.  **§3.3 Stålmarck pre-saturation skeleton** — new crate `adsmt-stalmarck` with `ImplicationGraph` + `Saturator::saturate_simple` (transitive closure) + `detect_contradiction` BFS witness |
+| rc.16 | **T0′ deadline cascade refinement** — deadline checks now fire inside `analyze_conflict_1uip` (T0′.1), the learnt-clause reduction loop + post-loop boundary (T0′.2), and the post-backjump unit-prop entry (T0′.3); `DEADLINE_CHECK_INTERVAL = 256` promoted to a module-level constant so every `*_deadline` function shares the cadence.  **§3.5 JIT-on-AOT-prelude** — `.luart-cdcl` v1 section writer + reader with `binary_sha256: [u8; 32]` header field (§3.5.A); `--aot-bake --aot-include-cdcl` composable flag with mutex rules + `current_binary_sha256()` helper (§3.5.B); `Solver::with_aot_cdcl(ReconstructedCdclPrelude)` builder routing v0/v1 artefacts through the same call site (§3.5.C); new `adsmt-jit::cdcl` submodule with `CdclTraceEvent` (`Propagate` / `Conflict` / `Backjump` / `Decide` / `Restart`) + `CdclTrace` + `CdclTracer` + `GF2Snapshot` + `CdclCheckpoint` (§3.5.D); `GF2Snapshot::capture(&FiniteFieldTheory, classes)` + `FiniteFieldTheory::current_generators` (§3.5.E); `Solver::replay_aot_cdcl_trace` guard-evaluation gate + `ReplayOutcome` enum (§3.5.F); `lu-smt --jit-trace-emit` / `--jit-trace-load` CLI surface + v0 `.lutrace` binary format with 5-event vocabulary (§3.5.G) |
 
 The 8-layer offline safeguard (`adsmt-heuristic-checker`)
 tracks every breaking-version bump under semver from v1.0.0

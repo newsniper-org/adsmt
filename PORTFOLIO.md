@@ -5,10 +5,10 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~42 k lines of Rust across 31 workspace crates, 901 tests
+> ~43 k lines of Rust across 31 workspace crates, 923 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.15` on 2026-06-04.
+> `1.0.0-rc.16` on 2026-06-05.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.15):**
+**Active consumers (rc.16):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -350,16 +350,16 @@ or proof-search strategies without touching the engine core.
 |---|---|
 | Lines of Rust | ~42,000 (workspace) |
 | Workspace crates | 25 (`14 adsmt-* + 11 absorbed lu-* + adsmt-meta umbrella`) |
-| Tests | **901 green**, 0 ignored, 0 failed |
+| Tests | **923 green**, 0 ignored, 0 failed |
 | `cargo doc --workspace --no-deps` | **0 warnings** (every intentional warning has an explicit `#[allow(...)]`) |
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.15` (2026-06-04) |
+| Workspace version | `1.0.0-rc.16` (2026-06-05) |
 
 ---
 
-## Roadmap snapshot (rc.15 → v1.0.0 stable)
+## Roadmap snapshot (rc.16 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -374,9 +374,22 @@ or proof-search strategies without touching the engine core.
 | §3.1.B `lu-smt --aot-bake` CLI surface | **landed** at rc.15 (`699bd5b`) |
 | §3.1.C `.luart` reader + Term-DAG reconstruction | **landed** at rc.15 (`941163d`) |
 | §3.1.D `Solver::with_aot_prelude` + `intern_external` + `lu-smt --aot-load` | **landed** at rc.15 (`38fd8ee`) |
-| §3.1.E `vargo` post-build `--aot-bake` invocation | verus-fork side; gated on rc.15 publish |
+| §3.1.E `vargo` post-build `--aot-bake` invocation | verus-fork side; gated on rc.16 publish |
 | §3.2 meta-tracing JIT skeleton (`JitGuard` + `JitCache::lookup`) | **landed** at rc.15 (`d11aafb`); shares the GF(2) kernel with §3.4. Recorder + compiled-kernel emit (dynasm-rs) deferred to follow-up sub-cycle |
 | §3.3 Stålmarck pre-saturation skeleton (simple-rule transitive closure + contradiction-chain witness) | **landed** at rc.15 (`52efc77`); n-saturation dilemma rule + AOT-bake integration deferred to follow-up sub-cycle |
+| T0′.1 deadline check inside `analyze_conflict_1uip` | **landed** at rc.16 (`627aded`) |
+| T0′.2 + T0′.3 deadline checks around learnt-clause reduction + post-backjump unit-prop | **landed** at rc.16 (`03649f3`) |
+| §3.5.A `.luart-cdcl` v1 section writer + reader | **landed** at rc.16 (`df18edd`) |
+| §3.5.B `lu-smt --aot-bake --aot-include-cdcl` composable flag + `current_binary_sha256` | **landed** at rc.16 (`00ce626`) |
+| §3.5.C `Solver::with_aot_cdcl` + `ReconstructedCdclPrelude` | **landed** at rc.16 (`f91bea5`) |
+| §3.5.D `adsmt-jit::cdcl` submodule (5-event vocabulary + `CdclTrace` + `CdclTracer` + `GF2Snapshot` + `CdclCheckpoint`) | **landed** at rc.16 (`95efa45`) |
+| §3.5.E `GF2Snapshot::capture` + `FiniteFieldTheory::current_generators` | **landed** at rc.16 (`5fac19d`) |
+| §3.5.F `Solver::replay_aot_cdcl_trace` guard-evaluation gate + `ReplayOutcome` enum | **landed** at rc.16 (`77ea879`) (v0 skeleton; engine-side event replay is the v1 follow-up that wires `restore_cdcl_state(...)` into `check_sat_with_deadline`) |
+| §3.5.G `lu-smt --jit-trace-emit / --jit-trace-load` + v0 `.lutrace` binary format | **landed** at rc.16 (`7706327`) |
+| §3.5.H `vargo` post-build hook extension (`--aot-include-cdcl`) | verus-fork side; gated on rc.16 publish |
+| §3.5.I `SmtProcess` argv wiring for `--aot-load <luart-cdcl>` + `--jit-trace-load <trace>` | verus-fork side; gated on §3.5.H |
+| §3.5.J.pre verus-fork 5-mode smoke retry against T0′ landings | verus-fork side; gated on rc.16 publish |
+| §3.5.J verus-fork 5-mode smoke retry against §3.5-baked artefact + T0′ | verus-fork side; gated on §3.5.H + §3.5.I + §3.5.J.pre |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
 
@@ -402,5 +415,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.4`) that's driving the rc.7 → rc.15
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.16
   development arc.
