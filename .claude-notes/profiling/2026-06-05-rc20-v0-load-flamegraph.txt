@@ -1,0 +1,44 @@
+Total profiled cycles: 24,719,571,259
+
+Top 40 frames by cycles attributed (any-position-in-stack):
+
+  7.3%    1,799,258,088  __libc_malloc
+  2.3%      575,404,991  tcache_get_n
+  2.3%      575,404,991  tcache_get
+  1.6%      396,924,912  checked_request2size
+  1.4%      353,106,132  __libc_free
+  0.3%       75,134,952  tcache_put_n
+  0.3%       75,134,952  tcache_put
+  0.3%       71,191,300  alloc
+  0.2%       58,580,443  finish_grow<alloc::alloc::Global>
+  0.2%       47,892,027  pick_vsids_atom
+  0.2%       46,376,215  append_elements<u8, alloc::alloc::Global>
+  0.2%       46,376,215  spec_extend<u8, alloc::alloc::Global>
+  0.2%       46,376,215  extend_from_slice<u8, alloc::alloc::Global>
+  0.2%       46,376,215  push_str
+  0.2%       46,376,215  write_str
+  0.2%       45,919,794  finish
+  0.1%       35,595,650  __rdl_alloc
+  0.1%       35,595,650  alloc_impl_runtime
+  0.1%       35,595,650  alloc_impl
+  0.1%       35,595,650  allocate
+  0.1%       34,602,845  do_reserve_and_handle<alloc::alloc::Global>
+  0.1%       32,254,527  spec_to_string<adsmt_core::term::Term>
+  0.1%       32,254,527  to_string<adsmt_core::term::Term>
+  0.1%       32,254,527  atom_key
+  0.1%       29,539,486  branch<core::ptr::non_null::NonNull<[u8]>, alloc::collections::TryReserveError>
+  0.1%       29,539,486  grow_amortized<alloc::alloc::Global>
+  0.1%       27,671,074  evaluate_clause
+  0.1%       24,839,055  hash_one<std::hash::random::RandomState, &alloc::string::String>
+  0.1%       22,959,897  finish<core::hash::sip::Sip13Rounds>
+  0.1%       21,170,264  get<alloc::string::String, bool, std::hash::random::RandomState, alloc::alloc::Global, all
+  0.1%       20,863,930  copy_nonoverlapping<u8>
+  0.1%       20,215,280  reserve<u8, alloc::alloc::Global>
+  0.1%       15,404,645  add<u8>
+  0.1%       13,424,973  write<core::hash::sip::Sip13Rounds>
+  0.0%       10,585,132  find_inner
+  0.0%       10,585,132  find<(alloc::string::String, bool), alloc::alloc::Global, hashbrown::map::equivalent_key::
+  0.0%       10,585,132  get<(alloc::string::String, bool), alloc::alloc::Global, hashbrown::map::equivalent_key::{
+  0.0%       10,465,463  fmt
+  0.0%       10,107,640  reserve<alloc::alloc::Global>
+  0.0%       10,104,736  contains_key<alloc::string::String, bool, std::hash::random::RandomState, alloc::alloc::Gl

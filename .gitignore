@@ -11,4 +11,5 @@
 
 .DS_Store
 
-docs/upstream/*.md
+docs/upstream/*.mdperf.data
+perf.data.old
