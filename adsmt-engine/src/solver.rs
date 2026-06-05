@@ -158,16 +158,15 @@ pub struct Solver {
     /// `restore_cdcl_state_into` ran.
     aot_prelude_clauses: Vec<crate::cnf::Clause>,
     /// rc.20 / verus-fork rc.19 retry — set of prelude
-    /// assertion Term-strings (`Term::to_string()` keys; the
-    /// `Term`s themselves hash-cons identically via
-    /// `Arc::ptr_eq` but iterating a `HashSet<Term>` directly
-    /// risks pointer-identity surprises across re-canonicalised
-    /// boundaries — strings are the safer key for this dedup
-    /// pass).  Populated by `with_aot_prelude` so the per-
-    /// query `check_sat_with_deadline` can skip re-flattening
-    /// any literal whose Term already lives in the cached
+    /// assertion `Term`s.  `Term`'s `Hash` / `Eq` impls are
+    /// `Arc::ptr_eq`-based (post-rc.10 hash-cons), so a
+    /// `HashSet<Term>` lookup is O(1) without the
+    /// `to_string()` cost the v0.x prototype paid.
+    /// Populated by `with_aot_prelude` so the per-query
+    /// `check_sat_with_deadline` can skip re-flattening any
+    /// literal whose Term already lives in the cached
     /// `aot_prelude_clauses` payload.
-    aot_prelude_term_keys: std::collections::HashSet<String>,
+    aot_prelude_term_set: std::collections::HashSet<Term>,
     /// §3.5.D — append-only JIT-trace recorder.  When `Some`,
     /// every CDCL state transition the per-query solve walks
     /// through is appended.  Activated via
@@ -208,7 +207,7 @@ impl Default for Solver {
             proof_mode: ProofMode::Always,
             aot_cdcl_state: None,
             aot_prelude_clauses: Vec::new(),
-            aot_prelude_term_keys: std::collections::HashSet::new(),
+            aot_prelude_term_set: std::collections::HashSet::new(),
             jit_tracer: None,
             jit_registry: None,
         }
@@ -303,13 +302,14 @@ impl Solver {
             // anywhere structurally-equal atoms surface
             // from the per-query input later.
             //
-            // rc.20 — also stash the prelude term's
-            // `to_string()` key on
-            // `Self::aot_prelude_term_keys` so the per-query
+            // rc.20 — stash the prelude term on
+            // `Self::aot_prelude_term_set` (Arc::ptr_eq-keyed
+            // `HashSet<Term>`) so the per-query
             // `check_sat_with_deadline` can skip re-flattening
-            // any assertion that's already represented in
-            // the `aot_prelude_clauses` cache.
-            self.aot_prelude_term_keys.insert(term.to_string());
+            // any assertion already cached in
+            // `aot_prelude_clauses`.  No `to_string()` cost —
+            // the hash-cons cache makes Term lookup O(1).
+            self.aot_prelude_term_set.insert(term.clone());
             let loc = adsmt_cert::SourceLoc::new(0, idx as u32);
             self.assert_at(term, loc);
         }
@@ -1120,7 +1120,7 @@ impl Solver {
         // delta only.
         let lits: Vec<_> = if !self.aot_prelude_clauses.is_empty() {
             lits.into_iter()
-                .filter(|(t, _)| !self.aot_prelude_term_keys.contains(&t.to_string()))
+                .filter(|(t, _)| !self.aot_prelude_term_set.contains(t))
                 .collect()
         } else {
             lits
