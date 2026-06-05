@@ -77,7 +77,14 @@ impl std::error::Error for KernelError {}
 /// future kernels return verdict-shaped sentinels the
 /// dispatcher interprets.
 pub struct CompiledKernel {
+    /// RAII handle for the mmap that backs `entry`.  Read
+    /// only for the executable-buffer lifetime side effect —
+    /// dropping the kernel drops this buffer, which in turn
+    /// munmaps the page the function pointer dereferences.
+    /// `#[allow(dead_code)]` because the field is never
+    /// observed by Rust code, only by `entry`'s call site.
     #[cfg(target_arch = "x86_64")]
+    #[allow(dead_code)]
     buf: ExecutableBuffer,
     entry: unsafe extern "C" fn() -> i64,
 }

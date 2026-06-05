@@ -66,7 +66,8 @@ pub mod writer;
 
 pub use cdcl::{
     write_cdcl_section, CdclClause, CdclSection, SavedPhaseEntry,
-    TrailEntry, VsidsEntry, WatchEntry, LUART_CDCL_VERSION,
+    StalmarckEdge, TrailEntry, VsidsEntry, WatchEntry,
+    LUART_CDCL_VERSION,
 };
 pub use format::{LuartHeader, Tag, LUART_MAGIC, LUART_VERSION};
 pub use pool::{

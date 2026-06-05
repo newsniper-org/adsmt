@@ -517,6 +517,12 @@ fn build_cdcl_section(
             polarity: *polarity,
         })
         .collect();
+    // §3.3 / §3.5.A v1.1 — Stålmarck-saturated implication
+    // graph baked alongside the CDCL state.  Build the
+    // binary-clause subset of the prelude, run simple-rule
+    // saturation + one round of dilemma-rule saturation, then
+    // project the resulting edges into the v1.1 wire shape.
+    let stalmarck_edges = stalmarck_edges_for(&clauses, &lookup);
     adsmt_aot::CdclSection {
         binary_sha256: binary_sha,
         flatten_version: FLATTEN_VERSION,
@@ -525,7 +531,64 @@ fn build_cdcl_section(
         watches,
         vsids,
         saved_phase,
+        stalmarck_edges,
     }
+}
+
+/// §3.3 / §3.5.A v1.1 glue: lift every binary clause out of
+/// the engine's CNF, build an [`adsmt_stalmarck::ImplicationGraph`]
+/// from the resulting two-literal subset, run simple-rule
+/// saturation + one dilemma-rule round, then translate the
+/// final edge set into `.luart-cdcl` `StalmarckEdge` records.
+/// Atom-key → pool-index translation reuses the `lookup`
+/// closure the caller threads through (any edge whose endpoint
+/// cannot be resolved is dropped silently — the v1 reader
+/// rejects out-of-range indices on its own).
+fn stalmarck_edges_for(
+    clauses: &[adsmt_engine::cnf::Clause],
+    lookup: &dyn Fn(&str) -> u32,
+) -> Vec<adsmt_aot::StalmarckEdge> {
+    let mut binary: Vec<Vec<adsmt_stalmarck::Lit>> = Vec::new();
+    for c in clauses {
+        if c.len() != 2 {
+            continue;
+        }
+        binary.push(
+            c.iter()
+                .map(|l| adsmt_stalmarck::Lit {
+                    atom: l.atom.to_string(),
+                    polarity: l.polarity,
+                })
+                .collect(),
+        );
+    }
+    if binary.is_empty() {
+        return Vec::new();
+    }
+    let mut graph = adsmt_stalmarck::from_binary_clauses(&binary);
+    let saturator = adsmt_stalmarck::Saturator::new();
+    saturator.saturate_simple(&mut graph);
+    let _ = saturator.n_saturate(&mut graph, 1);
+    let mut out = Vec::new();
+    for from in graph.keys_iter().cloned().collect::<Vec<_>>() {
+        let from_idx = lookup(&from.atom);
+        if from_idx == u32::MAX {
+            continue;
+        }
+        for to in graph.successors(&from).cloned().collect::<Vec<_>>() {
+            let to_idx = lookup(&to.atom);
+            if to_idx == u32::MAX {
+                continue;
+            }
+            out.push(adsmt_aot::StalmarckEdge {
+                from_atom_pool_idx: from_idx,
+                from_polarity: from.polarity,
+                to_atom_pool_idx: to_idx,
+                to_polarity: to.polarity,
+            });
+        }
+    }
+    out
 }
 
 /// Walk `t` post-order and intern every sub-term into

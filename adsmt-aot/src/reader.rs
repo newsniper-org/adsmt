@@ -191,6 +191,10 @@ impl<'a> Cursor<'a> {
             .map(|s| s.to_string())
             .map_err(|_| ReadError::BadUtf8 { offset: start })
     }
+
+    fn at_end(&self) -> bool {
+        self.offset >= self.buf.len()
+    }
 }
 
 /// Decode a `.luart` v0 file from `buf`.  Pure byte-level pass —
@@ -426,6 +430,40 @@ fn read_cdcl_section_inner<'a>(
             polarity,
         });
     }
+    // §3.3 / §3.5.A v1.1 trailing Stålmarck section.
+    // Absence is silently treated as an empty graph so v1.0
+    // artefacts continue to round-trip cleanly.
+    let stalmarck_edges = if c.at_end() {
+        Vec::new()
+    } else {
+        let n = c.u64()? as usize;
+        let mut v = Vec::with_capacity(n);
+        for _ in 0..n {
+            let from_atom_pool_idx = c.u32()?;
+            if (from_atom_pool_idx as usize) >= pool_len {
+                return Err(ReadError::PoolIndexOutOfRange {
+                    entry_index: pool_len,
+                    child: from_atom_pool_idx,
+                });
+            }
+            let from_polarity = c.u8()? != 0;
+            let to_atom_pool_idx = c.u32()?;
+            if (to_atom_pool_idx as usize) >= pool_len {
+                return Err(ReadError::PoolIndexOutOfRange {
+                    entry_index: pool_len,
+                    child: to_atom_pool_idx,
+                });
+            }
+            let to_polarity = c.u8()? != 0;
+            v.push(crate::cdcl::StalmarckEdge {
+                from_atom_pool_idx,
+                from_polarity,
+                to_atom_pool_idx,
+                to_polarity,
+            });
+        }
+        v
+    };
     Ok(CdclSection {
         binary_sha256,
         flatten_version,
@@ -434,6 +472,7 @@ fn read_cdcl_section_inner<'a>(
         watches,
         vsids,
         saved_phase,
+        stalmarck_edges,
     })
 }
 

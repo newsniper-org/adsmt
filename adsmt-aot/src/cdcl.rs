@@ -117,6 +117,28 @@ pub struct SavedPhaseEntry {
     pub polarity: bool,
 }
 
+/// §3.3 / §3.5.A v1.1 — one directed implication edge of the
+/// Stålmarck-saturated propositional skeleton baked into the
+/// `.luart-cdcl` v1 artefact.  An edge `(from, to)` records
+/// the implication
+/// `(from_atom_pool_idx, from_polarity) ⇒ (to_atom_pool_idx,
+///  to_polarity)`.  CDCL replays the saturated graph as a
+/// head-start clause set on every per-query `(check-sat)`.
+///
+/// The graph is appended *after* the v1 phase-save section so
+/// readers built for the v1.0 layout (no Stålmarck section)
+/// silently ignore the trailing bytes; readers built for v1.1
+/// pick the section up by reading the trailing
+/// `stalmarck_edges_len: u64` slot when the cursor has not
+/// reached the buffer's end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StalmarckEdge {
+    pub from_atom_pool_idx: u32,
+    pub from_polarity: bool,
+    pub to_atom_pool_idx: u32,
+    pub to_polarity: bool,
+}
+
 /// Full decoded CDCL section.
 #[derive(Clone, Debug)]
 pub struct CdclSection {
@@ -130,14 +152,21 @@ pub struct CdclSection {
     pub watches: Vec<WatchEntry>,
     pub vsids: Vec<VsidsEntry>,
     pub saved_phase: Vec<SavedPhaseEntry>,
+    /// §3.3 / §3.5.A v1.1 — Stålmarck-saturated propositional
+    /// implication graph baked alongside the CDCL state.  The
+    /// CDCL fast path consumes the edges as a head-start
+    /// implication set on every per-query `(check-sat)`.
+    /// Empty for v1.0 bakers and for v1.1 bakers that did not
+    /// run [`adsmt_stalmarck`-style saturation].
+    pub stalmarck_edges: Vec<StalmarckEdge>,
 }
 
 impl CdclSection {
     /// Empty section — zero clauses / trail / watches / VSIDS /
-    /// saved-phase entries — for the degenerate AOT bake where
-    /// the prelude is empty or the bake side decided to skip the
-    /// CDCL extension.  Useful as a fresh start for the bake
-    /// path's incremental population.
+    /// saved-phase / Stålmarck entries — for the degenerate
+    /// AOT bake where the prelude is empty or the bake side
+    /// decided to skip the CDCL extension.  Useful as a fresh
+    /// start for the bake path's incremental population.
     pub fn empty(binary_sha256: [u8; 32], flatten_version: u32) -> Self {
         Self {
             binary_sha256,
@@ -147,6 +176,7 @@ impl CdclSection {
             watches: Vec::new(),
             vsids: Vec::new(),
             saved_phase: Vec::new(),
+            stalmarck_edges: Vec::new(),
         }
     }
 }
@@ -204,6 +234,17 @@ pub fn write_cdcl_section<W: Write>(
         out.write_all(&entry.atom_pool_idx.to_le_bytes())?;
         out.write_all(&[if entry.polarity { 1u8 } else { 0u8 }])?;
     }
+    // §3.3 / §3.5.A v1.1 trailing Stålmarck section.  v1.0
+    // readers stop at the saved-phase section and silently
+    // ignore the trailing bytes; v1.1 readers pick them up
+    // when the buffer has not reached its end.
+    out.write_all(&(section.stalmarck_edges.len() as u64).to_le_bytes())?;
+    for edge in &section.stalmarck_edges {
+        out.write_all(&edge.from_atom_pool_idx.to_le_bytes())?;
+        out.write_all(&[if edge.from_polarity { 1u8 } else { 0u8 }])?;
+        out.write_all(&edge.to_atom_pool_idx.to_le_bytes())?;
+        out.write_all(&[if edge.to_polarity { 1u8 } else { 0u8 }])?;
+    }
     Ok(())
 }
 
@@ -224,21 +265,59 @@ mod tests {
         let s = CdclSection::empty(sha32(), 0xdead_beef);
         let mut buf: Vec<u8> = Vec::new();
         write_cdcl_section(&mut buf, &s).unwrap();
-        // 32 (sha) + 4 (flatten) + 5 * 8 (each Vec len = 0u64).
-        assert_eq!(buf.len(), 32 + 4 + 5 * 8);
+        // 32 (sha) + 4 (flatten) + 5 * 8 (each v1.0 Vec
+        // len = 0u64) + 8 (v1.1 Stålmarck Vec len = 0u64).
+        assert_eq!(buf.len(), 32 + 4 + 6 * 8);
         assert_eq!(&buf[..32], &sha32());
         assert_eq!(
             u32::from_le_bytes(buf[32..36].try_into().unwrap()),
             0xdead_beef,
         );
-        // All five `_len` slots are 0.
-        for i in 0..5 {
+        // All six `_len` slots are 0.
+        for i in 0..6 {
             let off = 36 + 8 * i;
             assert_eq!(
                 u64::from_le_bytes(buf[off..off + 8].try_into().unwrap()),
                 0,
             );
         }
+    }
+
+    #[test]
+    fn stalmarck_section_round_trips_through_bytes() {
+        let mut s = CdclSection::empty(sha32(), 0);
+        s.stalmarck_edges.push(StalmarckEdge {
+            from_atom_pool_idx: 3,
+            from_polarity: false,
+            to_atom_pool_idx: 7,
+            to_polarity: true,
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        write_cdcl_section(&mut buf, &s).unwrap();
+        // Locate the Stålmarck section: after sha+flatten +
+        // 5 zero counts (v1.0) + 1 stalmarck_count slot.
+        let stalmarck_off = 32 + 4 + 5 * 8;
+        assert_eq!(
+            u64::from_le_bytes(
+                buf[stalmarck_off..stalmarck_off + 8].try_into().unwrap()
+            ),
+            1,
+        );
+        let entry_off = stalmarck_off + 8;
+        assert_eq!(
+            u32::from_le_bytes(
+                buf[entry_off..entry_off + 4].try_into().unwrap()
+            ),
+            3,
+        );
+        assert_eq!(buf[entry_off + 4], 0);
+        assert_eq!(
+            u32::from_le_bytes(
+                buf[entry_off + 5..entry_off + 9].try_into().unwrap()
+            ),
+            7,
+        );
+        assert_eq!(buf[entry_off + 9], 1);
     }
 
     #[test]

@@ -29,6 +29,10 @@ adsmt-aot.workspace = true
 # §3.5.G — `--jit-trace-emit` / `--jit-trace-load` consume the
 # `adsmt-jit::CdclTrace` + cdcl_io reader/writer.
 adsmt-jit.workspace = true
+# §3.3 / §3.5.A v1.1 — Stålmarck phase 2 saturation feeds the
+# bake-side `.luart-cdcl` v1 section's `stalmarck_edges`
+# trailing payload.
+adsmt-stalmarck.workspace = true
 # Re-exported through adsmt-engine's SatResult::Abductive payload
 # (Vec<RankedCandidate>). Listed explicitly so the CLI can call the
 # ranking type's fields by name without going through engine privacy.

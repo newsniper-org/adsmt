@@ -55,6 +55,7 @@ dependencies = [
  "adsmt-jit",
  "adsmt-lints",
  "adsmt-parser",
+ "adsmt-stalmarck",
  "adsmt-theory",
  "adsmt-theory-finite-field",
  "clap",

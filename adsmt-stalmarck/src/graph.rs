@@ -84,6 +84,39 @@ impl ImplicationGraph {
         self.out.keys()
     }
 
+    /// §3.3 phase 2 — element-wise intersection of two
+    /// implication graphs.  Returns a fresh graph that
+    /// contains an edge `(from, to)` iff *both* `self` and
+    /// `other` contained it.  Used by the dilemma rule to
+    /// compute the implication set common to two case-split
+    /// branches.
+    pub fn intersect_with(&self, other: &ImplicationGraph) -> ImplicationGraph {
+        let mut out = ImplicationGraph::new();
+        for (from, succs) in &self.out {
+            if let Some(other_succs) = other.out.get(from) {
+                for to in succs {
+                    if other_succs.contains(to) {
+                        out.add(from.clone(), to.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Drain every `(from, to)` edge into an owned `Vec`.
+    /// Useful for the dilemma-rule fold-back step which
+    /// otherwise would have to clone every edge twice.
+    pub fn into_edges(self) -> Vec<(Lit, Lit)> {
+        let mut out = Vec::new();
+        for (from, succs) in self.out {
+            for to in succs {
+                out.push((from.clone(), to));
+            }
+        }
+        out
+    }
+
     /// `true` iff `from ⇒ to` is recorded in the graph.  Does
     /// **not** consider transitive closure — see
     /// [`crate::Saturator::saturate_simple`] to materialise that first.
