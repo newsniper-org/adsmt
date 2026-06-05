@@ -244,6 +244,17 @@ fn main() -> ExitCode {
         },
         aot_prelude,
     );
+    // §3.5.D / verus-fork rc.18 retry (b') — install the
+    // tracer on the live solver so every CDCL state
+    // transition the engine walks through during the
+    // session is recorded for the §3.5.G `.lutrace`
+    // artefact.  Pre-rc.19 the `--jit-trace-emit` path only
+    // wrote an empty file because the tracer was never
+    // installed; the rc.17 hooks then `78284bc` engine
+    // hooks had no `CdclTracer` to feed.
+    if cli.jit_trace_emit.is_some() {
+        driver.solver.start_jit_recording();
+    }
     let mut last = LastStatus::Sat;
     // Stash the input bytes for the bake-side SHA-256 computation
     // when `--aot-bake` was requested without an explicit `--aot-sha`
@@ -308,12 +319,27 @@ fn main() -> ExitCode {
         };
     }
     if let Some(path) = cli.jit_trace_emit.as_deref() {
-        // v0 emit: empty trace.  The recorder hook that
-        // populates `tracer.events` lives in adsmt-engine and
-        // lands in the §3.5.F follow-up; for now we ship the
-        // file shape so vargo can stage the §3.5.H call site
-        // without waiting for the recorder.
-        if let Err(code) = emit_jit_trace(path) {
+        // §3.5.D / verus-fork rc.18 retry (b') — finalize
+        // the tracer that was installed before the
+        // dispatch loop ran.  Every CDCL state transition
+        // the engine walked through during this session
+        // sits in `tracer.events` (via the §1.3 v1
+        // recorder hooks landed at `78284bc`); we close
+        // the tracer with `GF2Snapshot::empty()` + empty
+        // guards because the v0.x emit shape does not yet
+        // carry a meaningful algebraic signature or guard
+        // list (those land alongside the §3.5.F engine-
+        // side replay wiring).  If no tracer was ever
+        // installed (e.g. `--jit-trace-emit` was set but
+        // the session never ran a `(check-sat)`), fall
+        // back to the empty-trace placeholder so the
+        // file-shape gate still holds.
+        let trace = driver.solver.take_jit_recording().map(|tracer| {
+            tracer.finalize(adsmt_jit::GF2Snapshot::empty(), Vec::new())
+        }).unwrap_or_else(|| {
+            adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty())
+        });
+        if let Err(code) = emit_jit_trace_with(path, &trace) {
             return ExitCode::from(code);
         }
     }
@@ -337,12 +363,12 @@ fn load_jit_trace(path: &str) -> Result<adsmt_jit::CdclTrace, u8> {
     })
 }
 
-/// §3.5.G — write an empty `.lutrace` v0 file at `path`.
-/// The recorder hook lands in §3.5.F; v0 emit is the file-shape
-/// validation gate so vargo can stage the §3.5.H call site
-/// against a real artefact.
-fn emit_jit_trace(path: &str) -> Result<(), u8> {
-    let trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+/// §3.5.G / verus-fork rc.18 retry (b') — write the supplied
+/// `.lutrace` artefact at `path`.  Caller supplies the
+/// finalised `CdclTrace`; for sessions that ran a recording
+/// `(check-sat)` this is the populated tracer's
+/// `finalize(...)` output, otherwise it's an empty trace.
+fn emit_jit_trace_with(path: &str, trace: &adsmt_jit::CdclTrace) -> Result<(), u8> {
     let mut file = match std::fs::File::create(path) {
         Ok(f) => f,
         Err(e) => {
@@ -350,7 +376,7 @@ fn emit_jit_trace(path: &str) -> Result<(), u8> {
             return Err(12);
         }
     };
-    if let Err(e) = adsmt_jit::write_trace(&mut file, &trace) {
+    if let Err(e) = adsmt_jit::write_trace(&mut file, trace) {
         eprintln!("lu-smt: --jit-trace-emit write failed: {e}");
         return Err(14);
     }
