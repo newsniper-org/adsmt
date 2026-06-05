@@ -139,6 +139,14 @@ adsmt-jit = { path = "adsmt-jit" }
 # §3.3 Stålmarck pre-saturation — AOT-time propositional
 # implication-graph saturator.
 adsmt-stalmarck = { path = "adsmt-stalmarck" }
+# §3.2 dynasm-rs JIT compiled-kernel emit — runtime assembler
+# DSL for the meta-tracing JIT's specialised propagation kernel
+# fragments.  x86_64 is the only currently-supported host
+# triple; non-x86_64 builds compile the `kernel` module's
+# stub variants that surface an `UnsupportedHostTriple` error
+# at register-time instead of emitting machine code.
+dynasmrt = "5.0.0"
+dynasm = "5.0.0"
 
 [profile.release]
 lto = "thin"

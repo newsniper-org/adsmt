@@ -61,6 +61,7 @@ pub mod cache;
 pub mod cdcl;
 pub mod cdcl_io;
 pub mod guard;
+pub mod kernel;
 pub mod trace;
 
 pub use cache::JitCache;
@@ -71,4 +72,5 @@ pub use cdcl_io::{
     read_trace, write_trace, TraceIoError, LUTRACE_MAGIC, LUTRACE_VERSION,
 };
 pub use guard::{check_guard, GuardResult, JitGuard};
+pub use kernel::{emit_noop_kernel, CompiledKernel, KernelError, KernelStore};
 pub use trace::{SkeletonShape, Trace, TraceKey};

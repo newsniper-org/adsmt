@@ -13,3 +13,10 @@ adsmt-core.workspace = true
 # layer.  This sharing is the key engineering claim in §3.5 of
 # the proposal — one kernel, two consumers.
 adsmt-theory-finite-field.workspace = true
+# §3.2 dynasm-rs runtime assembler — emits specialised
+# propagation kernel fragments at trace-replay time.  Only the
+# x86_64 host triple has a working code generator at v0.x;
+# other triples surface an `UnsupportedHostTriple` error from
+# `KernelStore::register_emitted` at register time.
+dynasmrt.workspace = true
+dynasm.workspace = true
