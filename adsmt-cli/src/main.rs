@@ -456,18 +456,60 @@ fn build_cdcl_section(
     let (clauses, state) = driver.solver.dump_cdcl_state();
     let mut builder = adsmt_aot::PoolBuilder::new();
     let mut atom_key_to_pool_idx: HashMap<String, u32> = HashMap::new();
+    // Phase 1 — intern every assertion's Term-DAG so the v0
+    // pool's entries align with the v0 sections the writer
+    // already emitted.
     for a in assertions {
         collect_atom_mapping(&a.term, &mut builder, &mut atom_key_to_pool_idx);
     }
-    // Helper: project an `atom_key: String` to its pool index
-    // (or `u32::MAX` as a sentinel when the bake side asserted
-    // a term the BCP fixpoint touched but didn't carry as a
-    // Var/Const directly — e.g. a freshly-introduced Tseitin
-    // aux atom).  The reader ignores entries with the sentinel
-    // since it cannot resolve them; v1 follow-up promotes
-    // aux-atom interning into the pool itself.
-    let lookup = |k: &str| -> u32 {
-        atom_key_to_pool_idx.get(k).copied().unwrap_or(u32::MAX)
+    // Phase 2 — intern every CNF-flattened atom too.  The
+    // v0.x pre-fix interned only `assertions`'s sub-terms, but
+    // `flatten_to_clauses` can introduce literals whose
+    // `Lit::atom` is a freshly-built `Term` that the original
+    // assertion never carried (negation push-downs, Tseitin
+    // aux atoms once `adsmt-engine::bv_blast` is involved,
+    // synthesised triggers from quantifier `:pattern` lifts).
+    // The verus-fork rc.17 retry bake (2026-06-05) tripped
+    // exactly this — `pool entry 6542 references out-of-range
+    // / forward index 4294967295` because the bake side
+    // pasted the `u32::MAX` sentinel through to disk for atoms
+    // the phase-1 walk missed.  Walking every `Lit::atom`
+    // here closes that gap.
+    for c in &clauses {
+        for l in c {
+            collect_atom_mapping(&l.atom, &mut builder, &mut atom_key_to_pool_idx);
+        }
+    }
+    // Phase 3 — register any residual atom-keys the engine's
+    // CdclState surfaced from internal bookkeeping (e.g.
+    // `activity` / `saved_phase` keys whose source `Lit::atom`
+    // string round-trip differs from `Term::to_string()` for
+    // hash-cons reasons).  We synthesise a `Term::var(name,
+    // Bool)` for every still-unmapped key — the hash-cons
+    // cache collapses it onto whichever canonical `Term`
+    // already exists if the key shape matches.
+    let leftover_keys: Vec<String> = state
+        .trail
+        .iter()
+        .map(|e| e.atom_key.clone())
+        .chain(state.watches.keys().map(|(k, _)| k.clone()))
+        .chain(state.activity.keys().cloned())
+        .chain(state.saved_phase.keys().cloned())
+        .filter(|k| !atom_key_to_pool_idx.contains_key(k))
+        .collect();
+    for k in &leftover_keys {
+        let synth = adsmt_core::Term::var(k, adsmt_core::Type::bool_());
+        let idx = builder.intern(&synth);
+        atom_key_to_pool_idx.insert(k.clone(), idx);
+        atom_key_to_pool_idx.entry(synth.to_string()).or_insert(idx);
+    }
+    // After Phase 1+2+3, every CdclState atom-key reachable
+    // by the writer should be mapped.  Defence-in-depth:
+    // anything that *still* doesn't resolve we drop from the
+    // emitted entry rather than ship a `u32::MAX` sentinel
+    // through to the reader.
+    let lookup = |k: &str| -> Option<u32> {
+        atom_key_to_pool_idx.get(k).copied()
     };
 
     let cdcl_clauses: Vec<adsmt_aot::CdclClause> = clauses
@@ -475,46 +517,61 @@ fn build_cdcl_section(
         .map(|c| adsmt_aot::CdclClause {
             lits: c
                 .iter()
-                .map(|l| (lookup(&l.atom.to_string()), l.polarity))
+                .filter_map(|l| {
+                    lookup(&l.atom.to_string()).map(|i| (i, l.polarity))
+                })
                 .collect(),
         })
         .collect();
     let trail: Vec<adsmt_aot::TrailEntry> = state
         .trail
         .iter()
-        .map(|e| adsmt_aot::TrailEntry {
-            atom_pool_idx: lookup(&e.atom_key),
-            polarity: e.polarity,
-            // v0.x: every trail entry the bake side captures
-            // is at scope 0 (BCP fixpoint without decisions),
-            // so it has no per-query antecedent — `-1` sentinel
-            // per the §3.5.A counter-ack §(c) ack.
-            reason_clause_idx: -1,
+        .filter_map(|e| {
+            let idx = lookup(&e.atom_key)?;
+            Some(adsmt_aot::TrailEntry {
+                atom_pool_idx: idx,
+                polarity: e.polarity,
+                // v0.x: every trail entry the bake side
+                // captures is at scope 0 (BCP fixpoint
+                // without decisions), so it has no
+                // per-query antecedent — `-1` sentinel per
+                // the §3.5.A counter-ack §(c) ack.
+                reason_clause_idx: -1,
+            })
         })
         .collect();
     let watches: Vec<adsmt_aot::WatchEntry> = state
         .watches
         .iter()
-        .map(|((atom_key, polarity), clauses)| adsmt_aot::WatchEntry {
-            atom_pool_idx: lookup(atom_key),
-            polarity: *polarity,
-            watching_clauses: clauses.iter().map(|&i| i as u32).collect(),
+        .filter_map(|((atom_key, polarity), clauses)| {
+            let idx = lookup(atom_key)?;
+            Some(adsmt_aot::WatchEntry {
+                atom_pool_idx: idx,
+                polarity: *polarity,
+                watching_clauses: clauses.iter().map(|&i| i as u32).collect(),
+            })
         })
         .collect();
     let vsids: Vec<adsmt_aot::VsidsEntry> = state
         .activity
         .iter()
-        .map(|(atom_key, activity)| adsmt_aot::VsidsEntry {
-            atom_pool_idx: lookup(atom_key),
-            activity: *activity,
+        .filter_map(|(atom_key, activity)| {
+            let idx = lookup(atom_key)?;
+            Some(adsmt_aot::VsidsEntry {
+                atom_pool_idx: idx,
+                activity: *activity,
+            })
         })
         .collect();
     let saved_phase: Vec<adsmt_aot::SavedPhaseEntry> = state
         .saved_phase
         .iter()
-        .map(|(atom_key, polarity)| adsmt_aot::SavedPhaseEntry {
-            atom_pool_idx: lookup(atom_key),
-            polarity: *polarity,
+        .filter_map(|(atom_key, polarity)| {
+            let idx = lookup(atom_key)?;
+            Some(adsmt_aot::SavedPhaseEntry {
+                atom_pool_idx: idx,
+                polarity: *polarity,
+            })
         })
         .collect();
     // §3.3 / §3.5.A v1.1 — Stålmarck-saturated implication
@@ -546,7 +603,7 @@ fn build_cdcl_section(
 /// rejects out-of-range indices on its own).
 fn stalmarck_edges_for(
     clauses: &[adsmt_engine::cnf::Clause],
-    lookup: &dyn Fn(&str) -> u32,
+    lookup: &dyn Fn(&str) -> Option<u32>,
 ) -> Vec<adsmt_aot::StalmarckEdge> {
     let mut binary: Vec<Vec<adsmt_stalmarck::Lit>> = Vec::new();
     for c in clauses {
@@ -571,15 +628,13 @@ fn stalmarck_edges_for(
     let _ = saturator.n_saturate(&mut graph, 1);
     let mut out = Vec::new();
     for from in graph.keys_iter().cloned().collect::<Vec<_>>() {
-        let from_idx = lookup(&from.atom);
-        if from_idx == u32::MAX {
+        let Some(from_idx) = lookup(&from.atom) else {
             continue;
-        }
+        };
         for to in graph.successors(&from).cloned().collect::<Vec<_>>() {
-            let to_idx = lookup(&to.atom);
-            if to_idx == u32::MAX {
+            let Some(to_idx) = lookup(&to.atom) else {
                 continue;
-            }
+            };
             out.push(adsmt_aot::StalmarckEdge {
                 from_atom_pool_idx: from_idx,
                 from_polarity: from.polarity,
