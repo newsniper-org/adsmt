@@ -484,21 +484,38 @@ fn read_cdcl_section_inner<'a>(
 /// shared across many quantifier binders) settles on one
 /// `Arc<TermInner>` identity.
 pub fn reconstruct(file: &LuartFile) -> Result<ReconstructedPrelude, ReadError> {
+    use std::collections::HashMap;
     let mut interned: Vec<Term> = Vec::with_capacity(file.pool.len());
+    // Type-string parse cache.  The verus-fork rc.17 retry
+    // §2 flagged a +700 ms regression on the v0 `--aot-load`
+    // path between rc.15 and rc.17; profiling on a synthetic
+    // prelude shaped like the verus_smoke artefact (~10⁵
+    // pool entries, dozens of repeated type strings —
+    // `Bool`, `Int`, `Real`, `Bool -> Bool -> Bool`, …)
+    // localised the hot loop to `parse_type`'s recursive
+    // tokeniser running once per Var/Const/Lam entry.  A
+    // single hash-map cache keyed on the ty-string collapses
+    // the cost to one parse per *distinct* type.
+    let mut ty_cache: HashMap<String, Type> = HashMap::new();
+    let mut parse_cached = |ty_str: &str, entry_index: usize| -> Result<Type, ReadError> {
+        if let Some(t) = ty_cache.get(ty_str) {
+            return Ok(t.clone());
+        }
+        let parsed = parse_type(ty_str).ok_or_else(|| ReadError::BadTypeString {
+            entry_index,
+            ty_str: ty_str.to_string(),
+        })?;
+        ty_cache.insert(ty_str.to_string(), parsed.clone());
+        Ok(parsed)
+    };
     for (i, entry) in file.pool.iter().enumerate() {
         let term = match entry {
             PoolEntry::Var { name, ty_str } => {
-                let ty = parse_type(ty_str).ok_or_else(|| ReadError::BadTypeString {
-                    entry_index: i,
-                    ty_str: ty_str.clone(),
-                })?;
+                let ty = parse_cached(ty_str, i)?;
                 Term::var(name, ty)
             }
             PoolEntry::Const { name, ty_str } => {
-                let ty = parse_type(ty_str).ok_or_else(|| ReadError::BadTypeString {
-                    entry_index: i,
-                    ty_str: ty_str.clone(),
-                })?;
+                let ty = parse_cached(ty_str, i)?;
                 Term::const_(name, ty)
             }
             PoolEntry::App { f, x } => {
@@ -514,10 +531,7 @@ pub fn reconstruct(file: &LuartFile) -> Result<ReconstructedPrelude, ReadError> 
                 var_ty_str,
                 body,
             } => {
-                let ty = parse_type(var_ty_str).ok_or_else(|| ReadError::BadTypeString {
-                    entry_index: i,
-                    ty_str: var_ty_str.clone(),
-                })?;
+                let ty = parse_cached(var_ty_str, i)?;
                 let body_t = interned[*body as usize].clone();
                 Term::lam(
                     Var {
