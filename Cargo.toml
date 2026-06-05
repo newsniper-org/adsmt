@@ -86,7 +86,7 @@ exclude = ["external/oxiz"]
 #     definition over stdin/stdout, verify responses.
 #   * RC2.H.1 mid-cycle audit + RC2.H.2 final stable sign-off
 #     (gates v1.0.0 bump).
-version = "1.0.0-rc.16"
+version = "1.0.0-rc.17"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 rust-version = "1.96"
@@ -141,10 +141,13 @@ adsmt-jit = { path = "adsmt-jit" }
 adsmt-stalmarck = { path = "adsmt-stalmarck" }
 # §3.2 dynasm-rs JIT compiled-kernel emit — runtime assembler
 # DSL for the meta-tracing JIT's specialised propagation kernel
-# fragments.  x86_64 is the only currently-supported host
-# triple; non-x86_64 builds compile the `kernel` module's
-# stub variants that surface an `UnsupportedHostTriple` error
-# at register-time instead of emitting machine code.
+# fragments.  x86_64 + aarch64 + riscv64 emit paths are all
+# wired in (per the upstream README's supported-arch list);
+# every other host triple compiles the `kernel` module's
+# `UnsupportedHostTriple` stub.  Cross-arch CI exercises the
+# AArch64 + RISC-V emitters under QEMU `binfmt_misc` shims.
+# v5.0.0 is the minimum-version floor — see
+# `feedback_dynasm_min_version.md` for the rationale.
 dynasmrt = "5.0.0"
 dynasm = "5.0.0"
 

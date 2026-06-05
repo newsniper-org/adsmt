@@ -105,7 +105,7 @@ mod tests {
     use super::*;
     use crate::guard::JitGuard;
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))]
     #[test]
     fn register_trace_emits_noop_and_inserts_into_cache() {
         let mut registry = JitRegistry::new();
@@ -116,7 +116,7 @@ mod tests {
         assert_eq!(registry.compiled_kernels(), 1);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))]
     #[test]
     fn lookup_kernel_returns_compiled_kernel_on_guard_pass() {
         let mut registry = JitRegistry::new();
@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(r, 0);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))]
     #[test]
     fn lookup_kernel_misses_on_guard_fail() {
         let mut registry = JitRegistry::new();
@@ -147,7 +147,7 @@ mod tests {
         assert!(miss.is_none());
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))]
     #[test]
     fn distinct_traces_get_distinct_kernel_ids() {
         let mut registry = JitRegistry::new();
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(registry.compiled_kernels(), 2);
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
     #[test]
     fn register_trace_errors_on_unsupported_host() {
         let mut registry = JitRegistry::new();

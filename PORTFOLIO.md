@@ -5,10 +5,10 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~43 k lines of Rust across 31 workspace crates, 923 tests
+> ~44 k lines of Rust across 31 workspace crates, 945 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.16` on 2026-06-05.
+> `1.0.0-rc.17` on 2026-06-05.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.16):**
+**Active consumers (rc.17):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -350,16 +350,16 @@ or proof-search strategies without touching the engine core.
 |---|---|
 | Lines of Rust | ~42,000 (workspace) |
 | Workspace crates | 25 (`14 adsmt-* + 11 absorbed lu-* + adsmt-meta umbrella`) |
-| Tests | **923 green**, 0 ignored, 0 failed |
+| Tests | **945 green**, 0 ignored, 0 failed |
 | `cargo doc --workspace --no-deps` | **0 warnings** (every intentional warning has an explicit `#[allow(...)]`) |
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.16` (2026-06-05) |
+| Workspace version | `1.0.0-rc.17` (2026-06-05) |
 
 ---
 
-## Roadmap snapshot (rc.16 → v1.0.0 stable)
+## Roadmap snapshot (rc.17 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -384,12 +384,24 @@ or proof-search strategies without touching the engine core.
 | §3.5.C `Solver::with_aot_cdcl` + `ReconstructedCdclPrelude` | **landed** at rc.16 (`f91bea5`) |
 | §3.5.D `adsmt-jit::cdcl` submodule (5-event vocabulary + `CdclTrace` + `CdclTracer` + `GF2Snapshot` + `CdclCheckpoint`) | **landed** at rc.16 (`95efa45`) |
 | §3.5.E `GF2Snapshot::capture` + `FiniteFieldTheory::current_generators` | **landed** at rc.16 (`5fac19d`) |
-| §3.5.F `Solver::replay_aot_cdcl_trace` guard-evaluation gate + `ReplayOutcome` enum | **landed** at rc.16 (`77ea879`) (v0 skeleton; engine-side event replay is the v1 follow-up that wires `restore_cdcl_state(...)` into `check_sat_with_deadline`) |
-| §3.5.G `lu-smt --jit-trace-emit / --jit-trace-load` + v0 `.lutrace` binary format | **landed** at rc.16 (`7706327`) |
-| §3.5.H `vargo` post-build hook extension (`--aot-include-cdcl`) | verus-fork side; gated on rc.16 publish |
+| §3.5.F `Solver::replay_aot_cdcl_trace` guard-evaluation gate + `ReplayOutcome` enum | v0 skeleton **landed** at rc.16 (`77ea879`); **promoted** at rc.17 (`f91ed5f`) with real `compute_live_skeleton` + event-replay scan (`Replayed { verdict }` variant + empty-trace / conflict-without-restart shortcuts) |
+| §3.5.G `lu-smt --jit-trace-emit / --jit-trace-load` + `.lutrace` v0 binary format | v0 **landed** at rc.16 (`7706327`) |
+| §3.5.A v1.1 — Stålmarck-saturated implication graph as a trailing section in `.luart-cdcl` | **landed** at rc.17 (`09b33b2`) |
+| §3.5.B real CDCL bake (`Solver::dump_cdcl_state` + `cdcl::initial_bcp` helper) | **landed** at rc.17 (`f91ed5f`); the bake side now ships clauses + trail + watches + VSIDS + saved-phase instead of an empty section |
+| §3.5.C cache field (`Solver::aot_cdcl_state` + `with_aot_cdcl` no-drop) | **landed** at rc.17 (`f91ed5f`) |
+| §3.5.D engine recorder hook (post-hoc `CdclTracer::record` in `check_sat_with_deadline`) | **landed** at rc.17 (`f91ed5f`) |
+| §3.5.E mid-trace checkpoint API (`CdclTracer::record_checkpoint`) | **landed** at rc.17 (`8f8fbb1`) |
+| §1.6 / `.lutrace` v1 wire format (signature + guards + checkpoints) | **landed** at rc.17 (`8f8fbb1`) |
+| §3.2 `adsmt-jit::kernel` — `KernelStore` + `CompiledKernel` + dynasm-rs `emit_noop_kernel` | **landed** at rc.17 (`3ed23b6`) |
+| §3.2 `adsmt-jit::JitRegistry` joint cache + store | **landed** at rc.17 (`07bcacb`) |
+| §3.2 `Solver::jit_registry` + replay-time kernel invocation hook | **landed** at rc.17 (`51835a2`) |
+| §3.3 phase 2 — dilemma rule + n-saturation in `adsmt-stalmarck` | **landed** at rc.17 (`09b33b2`) |
+| §3.5.H `vargo` post-build hook extension (`--aot-include-cdcl`) | verus-fork side; gated on rc.17 publish |
 | §3.5.I `SmtProcess` argv wiring for `--aot-load <luart-cdcl>` + `--jit-trace-load <trace>` | verus-fork side; gated on §3.5.H |
 | §3.5.J.pre verus-fork 5-mode smoke retry against T0′ landings | verus-fork side; gated on rc.16 publish |
 | §3.5.J verus-fork 5-mode smoke retry against §3.5-baked artefact + T0′ | verus-fork side; gated on §3.5.H + §3.5.I + §3.5.J.pre |
+| §3.5.F v1 — engine-side `restore_cdcl_state` + per-event replay into the live CDCL state machine | post-rc.17 follow-up; v0.x scan covers the empty-trace + conflict-without-restart shortcuts but the live state restore is not yet wired |
+| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.17 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
 
@@ -415,5 +427,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.16
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.17
   development arc.

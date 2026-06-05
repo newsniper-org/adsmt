@@ -2104,7 +2104,7 @@ mod tests {
         assert!(s.jit_registry().is_none());
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))]
     #[test]
     fn start_jit_caching_then_register_trace_returns_kernel_id() {
         let mut s = Solver::default();

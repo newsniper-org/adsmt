@@ -26,19 +26,54 @@
 //!
 //! ## Host-triple gating
 //!
-//! dynasm-rs's x64 module emits AMD64 machine code; on a
-//! non-x86_64 host the `cfg(target_arch = "x86_64")` gates
-//! every emit path off, and `register_emitted` immediately
-//! surfaces [`KernelError::UnsupportedHostTriple`].  The
-//! store itself (registration, lookup, drop) stays available
-//! on every triple so the JIT cache + dispatcher can compile
-//! cleanly anywhere; only the actual execute path is gated.
+//! adsmt-jit wires in every dynasm-rs runtime backend at the
+//! workspace's pinned version (v5.0.0 at rc.17 — the
+//! upstream README ships x64 + aarch64 + riscv32/64
+//! encoders):
+//!
+//! - `dynasmrt::x64` for `target_arch = "x86_64"` (AMD64
+//!   machine code, the legacy host triple; every AMD/Intel/
+//!   VIA extension except AVX-512 per the upstream README)
+//! - `dynasmrt::aarch64` for `target_arch = "aarch64"`
+//!   (AArch64 little- *and* big-endian, up to ARMv8.4 per
+//!   the upstream README — the user's directive covers
+//!   every ARMv8.4-and-lower microarch.  Big-endian
+//!   AArch64 is rare in the wild but the encoder is the
+//!   same — dynasm-rs writes the same instruction-word
+//!   bytes either way, and the kernel runs in the
+//!   ambient-endianness the OS configured)
+//! - `dynasmrt::riscv` for `target_arch = "riscv64"`
+//!   (`Assembler` type alias targets the 64-bit ISA via
+//!   the `.arch riscv64` directive; upstream encoder also
+//!   exposes a `riscv32` path that the v0 surface does
+//!   not register yet)
+//!
+//! Every other host triple surfaces
+//! [`KernelError::UnsupportedHostTriple`] the same way.
+//! The store itself (registration, lookup, drop) stays
+//! available on every triple so the JIT cache + dispatcher
+//! can compile cleanly anywhere; only the actual emit path
+//! is gated.
+//!
+//! Cross-arch CI relies on QEMU user-mode emulation —
+//! `cargo test --target aarch64-unknown-linux-gnu` and
+//! `cargo test --target riscv64gc-unknown-linux-gnu` under
+//! a QEMU `binfmt_misc` shim exercise the per-arch emitters
+//! the same way the x86_64 host suite does locally.
 
 use std::mem;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+))]
 use dynasm::dynasm;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+))]
 use dynasmrt::{DynasmApi, ExecutableBuffer};
 
 /// Error surface for kernel emit / register operations.
@@ -83,7 +118,11 @@ pub struct CompiledKernel {
     /// munmaps the page the function pointer dereferences.
     /// `#[allow(dead_code)]` because the field is never
     /// observed by Rust code, only by `entry`'s call site.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+    ))]
     #[allow(dead_code)]
     buf: ExecutableBuffer,
     entry: unsafe extern "C" fn() -> i64,
@@ -174,13 +213,27 @@ impl KernelStore {
     }
 }
 
-/// Emit a minimal noop kernel — a single `ret` instruction
-/// that returns 0.  Used as the v0.x placeholder for traces
-/// that the guard gate passed but the dispatcher doesn't yet
-/// have a specialised kernel for.
+/// Emit a minimal noop kernel that returns 0 via the C
+/// calling convention's integer-return register.  Used as
+/// the v0.x placeholder for traces that the guard gate
+/// passed but the dispatcher doesn't yet have a specialised
+/// kernel for.
 ///
-/// On x86_64: emits the AMD64 encoding via dynasm-rs.
-/// On other host triples: surfaces
+/// Per-arch encoding:
+///
+/// - **x86_64**: `xor rax, rax; ret`
+/// - **aarch64**: `mov x0, xzr; ret` — `x0` is the
+///   ARM-EABI integer-return register, `xzr` is the
+///   zero register, `ret` returns to `x30` (the link
+///   register the caller pushed).  Encodes identically
+///   under both little- and big-endian AArch64
+///   targets (`target_endian` does not affect dynasm-rs's
+///   instruction-word emit on this triple).
+/// - **riscv64**: `li a0, 0; ret` — `a0` is the
+///   RISC-V calling-convention return register; `ret`
+///   is a pseudo-op for `jalr x0, ra, 0`.
+///
+/// Every other host triple surfaces
 /// [`KernelError::UnsupportedHostTriple`].
 #[cfg(target_arch = "x86_64")]
 pub fn emit_noop_kernel() -> Result<CompiledKernel, KernelError> {
@@ -211,10 +264,79 @@ pub fn emit_noop_kernel() -> Result<CompiledKernel, KernelError> {
     Ok(CompiledKernel { buf, entry })
 }
 
-/// Non-x86_64 fallback — surfaces an error at register time.
-/// The store itself stays usable; only the emit path is
-/// gated.
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+pub fn emit_noop_kernel() -> Result<CompiledKernel, KernelError> {
+    let mut ops = dynasmrt::aarch64::Assembler::new().map_err(|e| {
+        KernelError::Assemble {
+            message: format!("Assembler::new: {e}"),
+        }
+    })?;
+    let entry_offset = ops.offset();
+    dynasm!(ops
+        ; .arch aarch64
+        ; mov x0, xzr
+        ; ret
+    );
+    let buf = ops
+        .finalize()
+        .map_err(|e| KernelError::Assemble {
+            message: format!("finalize: {e:?}"),
+        })?;
+    let entry_ptr = buf.ptr(entry_offset);
+    // SAFETY: the AArch64 emit above writes a
+    // standards-compliant `extern "C"` function tail.
+    let entry: unsafe extern "C" fn() -> i64 =
+        unsafe { mem::transmute(entry_ptr) };
+    Ok(CompiledKernel { buf, entry })
+}
+
+#[cfg(target_arch = "riscv64")]
+pub fn emit_noop_kernel() -> Result<CompiledKernel, KernelError> {
+    // dynasm-rs's RISC-V backend uses the `riscv` module
+    // (one assembler covers both 32- and 64-bit ISAs; the
+    // `.arch riscv64i` directive selects the 64-bit "I"
+    // base ISA).  The backend does *not* expose `li` /
+    // `ret` pseudo-ops directly — we synthesise them from
+    // the underlying RV64I instructions:
+    //
+    //   - `li a0, 0` ≡ `addi x10, x0, 0` (x10 is the a0
+    //     argument-return register; x0 is the hard-wired
+    //     zero register)
+    //   - `ret`      ≡ `jalr x0, x1, 0` (jump to the link
+    //     register x1 = ra; discard the link by writing
+    //     it to x0)
+    let mut ops = dynasmrt::riscv::Assembler::new().map_err(|e| {
+        KernelError::Assemble {
+            message: format!("Assembler::new: {e}"),
+        }
+    })?;
+    let entry_offset = ops.offset();
+    dynasm!(ops
+        ; .arch riscv64i
+        ; addi x10, x0, 0
+        ; jalr x0, x1, 0
+    );
+    let buf = ops
+        .finalize()
+        .map_err(|e| KernelError::Assemble {
+            message: format!("finalize: {e:?}"),
+        })?;
+    let entry_ptr = buf.ptr(entry_offset);
+    // SAFETY: the RISC-V emit above writes a
+    // standards-compliant RV64I `extern "C"` function tail.
+    let entry: unsafe extern "C" fn() -> i64 =
+        unsafe { mem::transmute(entry_ptr) };
+    Ok(CompiledKernel { buf, entry })
+}
+
+/// Fallback for triples not yet wired in — surfaces an error
+/// at register time.  The store itself stays usable; only the
+/// emit path is gated.
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+)))]
 pub fn emit_noop_kernel() -> Result<CompiledKernel, KernelError> {
     Err(KernelError::UnsupportedHostTriple {
         found: std::env::consts::ARCH,
@@ -233,15 +355,23 @@ mod tests {
         assert!(s.get(0).is_none());
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+    ))]
     #[test]
     fn emit_noop_kernel_returns_zero_when_invoked() {
-        let kernel = emit_noop_kernel().expect("x86_64 noop emit must succeed");
+        let kernel = emit_noop_kernel().expect("supported-arch noop emit must succeed");
         let r = unsafe { kernel.invoke() };
         assert_eq!(r, 0);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+    ))]
     #[test]
     fn register_emitted_noop_assigns_sequential_ids() {
         let mut store = KernelStore::new();
@@ -255,7 +385,11 @@ mod tests {
         assert_eq!(r, 0);
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64",
+    )))]
     #[test]
     fn emit_noop_kernel_surfaces_unsupported_host_triple() {
         match emit_noop_kernel() {
