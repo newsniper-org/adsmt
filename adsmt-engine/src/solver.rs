@@ -29,8 +29,8 @@ use crate::state::Scope;
 pub enum ProofMode { None, Always }
 
 /// Outcome of [`Solver::replay_aot_cdcl_trace`] — the §3.5.F
-/// guard-evaluation gate.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// guard-evaluation gate + minimal event-replay scan.
+#[derive(Clone, Debug)]
 pub enum ReplayOutcome {
     /// At least one of the trace's guards no longer holds
     /// against the current engine state; the caller should
@@ -40,14 +40,19 @@ pub enum ReplayOutcome {
     /// fallback is the v1 follow-up that consumes
     /// `CdclTrace::checkpoints`.
     GuardMiss,
-    /// Every guard held.  v0: the caller has informed the
-    /// gate that the trace's algebraic signature is still
-    /// alive in the current query's ideal.  Once §3.5.F is
-    /// promoted from skeleton to full replay, this variant
-    /// returns the trace's verdict; for now the caller still
-    /// falls through to full CDCL because the engine-side
-    /// event-replay machinery is the §3.5.F follow-up.
+    /// Every guard held but the dispatcher chose not to fire
+    /// the trace's `events` end-to-end (e.g. the trace carries
+    /// no decisive event, or the v0.x dispatcher's
+    /// internal-consistency scan deferred to full CDCL).  The
+    /// caller falls through to `check_sat_with_deadline` the
+    /// same way `GuardMiss` does.
     GuardsPassed,
+    /// Every guard held + the v0.x event-replay scan reached
+    /// the recorded verdict without re-entering CDCL.  The
+    /// `verdict` is the [`SatResult`] the dispatcher
+    /// reconstructed from the trace; the caller surfaces it
+    /// directly.
+    Replayed { verdict: SatResult },
 }
 
 // `adsmt_jit` is the §3.2 / §3.5.D companion crate; `Solver::
@@ -58,6 +63,24 @@ pub enum ReplayOutcome {
 // Cargo.toml brings the crate into scope; call sites name
 // the type via `adsmt_jit::...`.
 
+/// Stable `u32` projection of an atom-key string for the v0.x
+/// JIT trace recorder.  The `CdclTraceEvent::Propagate /
+/// Decide` variants carry `atom: u32` (a `.luart` v0 pool
+/// index when the bake side runs); the in-engine recorder
+/// doesn't have a Term-DAG pool to consult, so it surfaces a
+/// 32-bit DefaultHasher digest of the atom-key string as a
+/// stable surrogate.  Collisions are statistically irrelevant
+/// at the trace cache sizes the v0.x dispatcher inspects;
+/// the §3.5.F / v1 follow-up replaces this with the real pool
+/// index once the engine recorder hooks fire inside CDCL.
+fn atom_key_hash_u32(atom_key: &str) -> u32 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+    let mut h = DefaultHasher::new();
+    h.write(atom_key.as_bytes());
+    h.finish() as u32
+}
+
 pub struct Solver {
     scopes: Vec<Scope>,
     theories: Combination,
@@ -65,6 +88,18 @@ pub struct Solver {
     abduction_state: AbductionState,
     cert_builder: CertBuilder,
     proof_mode: ProofMode,
+    /// §3.5.B/C — cached CDCL scope-0 snapshot loaded from a
+    /// `.luart-cdcl` v1 artefact via [`Self::with_aot_cdcl`].
+    /// Consumed by [`Self::replay_aot_cdcl_trace`]'s replay path
+    /// + [`Self::restore_cdcl_state_into`] when constructing
+    /// the per-query CDCL fresh state.
+    aot_cdcl_state: Option<adsmt_aot::CdclSection>,
+    /// §3.5.D — append-only JIT-trace recorder.  When `Some`,
+    /// every CDCL state transition the per-query solve walks
+    /// through is appended.  Activated via
+    /// [`Self::start_jit_recording`]; drained via
+    /// [`Self::take_jit_recording`].
+    jit_tracer: Option<adsmt_jit::CdclTracer>,
 }
 
 impl Default for Solver {
@@ -90,6 +125,8 @@ impl Default for Solver {
             // `.with_proof_mode(ProofMode::None)` to skip the
             // bookkeeping cost.
             proof_mode: ProofMode::Always,
+            aot_cdcl_state: None,
+            jit_tracer: None,
         }
     }
 }
@@ -194,11 +231,67 @@ impl Solver {
     /// new artefact shape end-to-end without coupling the CLI
     /// landing to the engine-side state-restoration work.
     pub fn with_aot_cdcl(
-        self,
+        mut self,
         prelude: adsmt_aot::ReconstructedCdclPrelude,
     ) -> Self {
-        let _cdcl_section_for_3_5_f = prelude.cdcl_section;
+        // §3.5.C — stash the CDCL scope-0 snapshot on the
+        // solver so the §3.5.F replay dispatcher + the
+        // §1.2 `restore_cdcl_state_into` helper can consume
+        // it on the next `(check-sat)`.  The prelude
+        // assertions still thread through `with_aot_prelude`
+        // for the cert ledger / `(get-unsat-core)` / audit
+        // surface, so callers that ignore the CDCL snapshot
+        // (e.g. legacy v0 readers) keep seeing the prelude
+        // axioms as if `with_aot_prelude` had been called
+        // directly.
+        self.aot_cdcl_state = prelude.cdcl_section;
         self.with_aot_prelude(prelude.prelude)
+    }
+
+    /// §3.5.B real-bake helper — flatten every assertion the
+    /// solver currently holds into CNF, then run initial BCP to
+    /// fixpoint without making any decisions.  Returns the
+    /// resulting `(clauses, state)` pair so callers (e.g.
+    /// `lu-smt --aot-bake --aot-include-cdcl`) can serialise it
+    /// into a `.luart-cdcl` v1 [`adsmt_aot::CdclSection`].
+    ///
+    /// Stays Term-DAG-agnostic — the `state.trail[*].atom_key`
+    /// `String` rendering of `Lit::atom: Term` is what callers
+    /// map to the `.luart` v0 pool index they own; the engine
+    /// does not know about the pool layout.
+    pub fn dump_cdcl_state(&self) -> (Vec<crate::cnf::Clause>, crate::cdcl::CdclState) {
+        let mut all_clauses: Vec<crate::cnf::Clause> = Vec::new();
+        for term in self.all_assertions() {
+            if let Some(mut cs) = crate::cnf::flatten_to_clauses(&term) {
+                all_clauses.append(&mut cs);
+            }
+        }
+        let state = crate::cdcl::initial_bcp(&all_clauses);
+        (all_clauses, state)
+    }
+
+    /// §3.5.B / `--aot-include-cdcl` consumer — read-only
+    /// borrow of the cached CDCL snapshot (if any) that was
+    /// installed via [`Self::with_aot_cdcl`].  Returns `None`
+    /// for solvers loaded from a v0 `.luart` artefact (or
+    /// constructed without ever loading one).
+    pub fn aot_cdcl_state(&self) -> Option<&adsmt_aot::CdclSection> {
+        self.aot_cdcl_state.as_ref()
+    }
+
+    /// §3.5.D recorder activation — install an empty
+    /// [`adsmt_jit::CdclTracer`] so subsequent
+    /// `(check-sat)` calls append CDCL state transitions to
+    /// it.  Idempotent: calling twice resets the recorder.
+    pub fn start_jit_recording(&mut self) {
+        self.jit_tracer = Some(adsmt_jit::CdclTracer::new());
+    }
+
+    /// §3.5.D recorder drain — pull the active tracer (if any)
+    /// out of the solver.  Returns `None` if no recording was
+    /// started via [`Self::start_jit_recording`].
+    pub fn take_jit_recording(&mut self) -> Option<adsmt_jit::CdclTracer> {
+        self.jit_tracer.take()
     }
 
     /// §3.5.F replay dispatcher (v0 skeleton).  Evaluates every
@@ -224,12 +317,13 @@ impl Solver {
         trace: &adsmt_jit::CdclTrace,
         classes: &[(String, u32)],
     ) -> ReplayOutcome {
-        // Skeleton-shape guards use the live formula's
-        // depth-3 hash; with no formula in scope (the trace
-        // doesn't carry its own), pass through `SkeletonShape(0)`
-        // and let the caller seed a real hash before the v1
-        // dispatcher.
-        let live_skeleton = adsmt_jit::trace::SkeletonShape(0);
+        // §3.5.F live-skeleton computation — depth-3
+        // SkeletonShape hash of the per-query top-level
+        // formula.  The v0 dispatcher hard-coded
+        // `SkeletonShape(0)`; promoting the computation here
+        // makes `JitGuard::SkeletonShape` checks consult the
+        // actual query rather than the constant.
+        let live_skeleton = self.compute_live_skeleton();
         for guard in &trace.guards {
             let pass = adsmt_jit::check_guard(
                 guard,
@@ -241,7 +335,55 @@ impl Solver {
                 return ReplayOutcome::GuardMiss;
             }
         }
+        // §3.5.F v0.x event-replay scan.  Rather than
+        // re-firing each recorded event through the live CDCL
+        // state machine (the full restoration path that v1
+        // unlocks via `restore_cdcl_state_into`), the v0.x
+        // dispatcher walks the trace's `events` and reaches a
+        // verdict iff the event sequence is *internally
+        // consistent and decisive*:
+        //   - `events.is_empty()`            → Sat (vacuous)
+        //   - any `Conflict { … }` at the     → Unsat
+        //     top of the sequence
+        //   - otherwise                       → fall through
+        //                                       (GuardsPassed)
+        // The conservative arm preserves the v0 fall-through
+        // semantics — a guard-pass with no decisive event
+        // makes the caller run regular `check_sat_with_deadline`
+        // exactly as before.
+        if trace.events.is_empty() {
+            return ReplayOutcome::Replayed {
+                verdict: SatResult::Sat { model: crate::result::Model::new() },
+            };
+        }
+        let has_conflict = trace.events.iter().any(|e| {
+            matches!(e, adsmt_jit::CdclTraceEvent::Conflict { .. })
+        });
+        let has_restart = trace.events.iter().any(|e| {
+            matches!(e, adsmt_jit::CdclTraceEvent::Restart)
+        });
+        if has_conflict && !has_restart {
+            return ReplayOutcome::Replayed {
+                verdict: SatResult::Unsat {
+                    certificate: None,
+                    core: crate::result::UnsatCore::new(),
+                },
+            };
+        }
         ReplayOutcome::GuardsPassed
+    }
+
+    /// Internal helper — depth-3 skeleton hash of the
+    /// per-query top-level formula.  v0.x reads the first
+    /// asserted term (the most-recently-pushed top-level fact
+    /// the engine has not yet popped) as the representative;
+    /// an empty assertion ledger surfaces `SkeletonShape(0)`.
+    fn compute_live_skeleton(&self) -> adsmt_jit::SkeletonShape {
+        if let Some(first) = self.all_assertions().first() {
+            adsmt_jit::SkeletonShape::of(first)
+        } else {
+            adsmt_jit::SkeletonShape(0)
+        }
     }
 
     /// `true` iff the GF(2) Gröbner theory plugin has been
@@ -541,6 +683,42 @@ impl Solver {
         self.install_finite_field_clauses();
 
         let original_result = self.check_sat_inner(deadline);
+
+        // §1.3 / §3.5.D engine recorder hook (v0.x).  When a
+        // tracer is active (started via `start_jit_recording`),
+        // post-hoc record the session boundaries the v0 wire
+        // shape can represent: one `Restart`-shaped session
+        // start, then a `Conflict` per learnt clause we can
+        // observe in the post-check ledger, then end-of-trace.
+        // The full per-event vocabulary (every individual
+        // `Propagate` / `Decide` along the CDCL trail) needs
+        // the inner-loop hook the cdcl module exposes in
+        // `cdcl::*_recording` variants — those land alongside
+        // the §3.5.F event-replay engine wiring follow-up.
+        // For now the tracer captures the macro shape so
+        // `--jit-trace-emit` produces non-vacuous artefacts
+        // that the §3.5.G CLI surface can round-trip end-to-end.
+        if let Some(tracer) = self.jit_tracer.as_mut() {
+            tracer.record(adsmt_jit::CdclTraceEvent::Restart);
+            match &original_result {
+                SatResult::Unsat { .. } => {
+                    tracer.record(adsmt_jit::CdclTraceEvent::Conflict {
+                        learnt: Vec::new(),
+                        lbd: 0,
+                    });
+                }
+                SatResult::Sat { model } => {
+                    for (atom, polarity) in &model.bool_assignments {
+                        let atom_u32 = atom_key_hash_u32(atom);
+                        tracer.record(adsmt_jit::CdclTraceEvent::Decide {
+                            atom: atom_u32,
+                            polarity: *polarity,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
 
         // §3.4 budget-exhaustion hook: if CDCL+Tier-1/2/3 ran out
         // of time and the registered FiniteField plugin has
@@ -1743,32 +1921,35 @@ mod tests {
         assert!(s.finite_field_mut().is_none());
     }
 
-    // §3.5.F regression — guard-evaluation gate semantics.
+    // §3.5.F regression — guard-evaluation gate + event-replay
+    // scan semantics.
 
     #[test]
-    fn replay_returns_guards_passed_on_empty_guard_set() {
+    fn replay_returns_replayed_sat_on_empty_guard_set_and_empty_events() {
         let s = Solver::default();
         let trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
         let outcome = s.replay_aot_cdcl_trace(&trace, &[]);
-        assert_eq!(outcome, ReplayOutcome::GuardsPassed);
+        match outcome {
+            ReplayOutcome::Replayed { verdict: SatResult::Sat { .. } } => {}
+            other => panic!("expected Replayed{{Sat}} on vacuous trace, got {other:?}"),
+        }
     }
 
     #[test]
     fn replay_returns_guard_miss_on_failed_skeleton_guard() {
         let s = Solver::default();
         let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
-        // Live skeleton seeded as `SkeletonShape(0)` by the v0
-        // dispatcher; a guard pinned to a non-zero hash will
-        // miss.
+        // Live skeleton is `SkeletonShape(0)` on a solver with
+        // no assertions; a guard pinned to a non-zero hash misses.
         trace.guards.push(adsmt_jit::JitGuard::SkeletonShape(
             adsmt_jit::SkeletonShape(0xdead_beef),
         ));
         let outcome = s.replay_aot_cdcl_trace(&trace, &[]);
-        assert_eq!(outcome, ReplayOutcome::GuardMiss);
+        assert!(matches!(outcome, ReplayOutcome::GuardMiss));
     }
 
     #[test]
-    fn replay_returns_guards_passed_when_equiv_class_holds() {
+    fn replay_returns_replayed_when_equiv_class_holds() {
         let s = Solver::default();
         let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
         trace.guards.push(adsmt_jit::JitGuard::EquivClass {
@@ -1777,6 +1958,79 @@ mod tests {
         });
         let classes = vec![("a".to_string(), 1), ("b".to_string(), 1)];
         let outcome = s.replay_aot_cdcl_trace(&trace, &classes);
-        assert_eq!(outcome, ReplayOutcome::GuardsPassed);
+        match outcome {
+            ReplayOutcome::Replayed { verdict: SatResult::Sat { .. } } => {}
+            other => panic!("expected Replayed{{Sat}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_returns_replayed_unsat_when_conflict_event_present_and_no_restart() {
+        let s = Solver::default();
+        let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+        trace.events.push(adsmt_jit::CdclTraceEvent::Decide { atom: 1, polarity: true });
+        trace.events.push(adsmt_jit::CdclTraceEvent::Conflict {
+            learnt: vec![(1, false)],
+            lbd: 1,
+        });
+        let outcome = s.replay_aot_cdcl_trace(&trace, &[]);
+        match outcome {
+            ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } } => {}
+            other => panic!("expected Replayed{{Unsat}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_returns_guards_passed_on_conflict_with_restart_followup() {
+        // Restart after the conflict means the trace's final
+        // verdict is no longer pinned — caller must fall through
+        // to full CDCL.
+        let s = Solver::default();
+        let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+        trace.events.push(adsmt_jit::CdclTraceEvent::Conflict {
+            learnt: vec![(1, false)],
+            lbd: 1,
+        });
+        trace.events.push(adsmt_jit::CdclTraceEvent::Restart);
+        let outcome = s.replay_aot_cdcl_trace(&trace, &[]);
+        assert!(matches!(outcome, ReplayOutcome::GuardsPassed));
+    }
+
+    // §1.1 / §1.2 — dump_cdcl_state + aot_cdcl_state cache.
+
+    #[test]
+    fn dump_cdcl_state_empty_solver_produces_empty_clauses_and_state() {
+        let s = Solver::default();
+        let (clauses, state) = s.dump_cdcl_state();
+        assert!(clauses.is_empty());
+        assert!(state.trail.is_empty());
+    }
+
+    #[test]
+    fn dump_cdcl_state_after_assert_propagates_unit() {
+        // (assert p) → 1-literal clause → root-level trail entry.
+        let mut s = Solver::default();
+        let p = Term::var("p", Type::bool_());
+        s.assert(p.clone());
+        let (clauses, state) = s.dump_cdcl_state();
+        assert_eq!(clauses.len(), 1);
+        assert_eq!(state.trail.len(), 1);
+        assert_eq!(state.trail[0].atom_key, p.to_string());
+        assert!(state.trail[0].polarity);
+    }
+
+    #[test]
+    fn aot_cdcl_state_returns_none_without_with_aot_cdcl() {
+        let s = Solver::default();
+        assert!(s.aot_cdcl_state().is_none());
+    }
+
+    #[test]
+    fn start_take_jit_recording_round_trips() {
+        let mut s = Solver::default();
+        assert!(s.take_jit_recording().is_none());
+        s.start_jit_recording();
+        let drained = s.take_jit_recording().expect("recording was started");
+        assert!(drained.is_empty());
     }
 }

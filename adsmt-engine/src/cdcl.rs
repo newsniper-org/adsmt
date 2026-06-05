@@ -1127,6 +1127,29 @@ pub fn analyze_conflict_1uip_deadline(
     AnalyzeOutcome::Done { learnt, backjump_level }
 }
 
+/// §3.5.B real-bake helper — ingest `clauses`, install
+/// two-watched-literals metadata, then run initial BCP to
+/// fixpoint without making any decisions.  Returns the
+/// resulting state for downstream serialisation into the
+/// `.luart-cdcl` v1 section.  Caller-side mapping from
+/// `state.trail[*].atom_key` (a `String` rendering of the
+/// `Lit::atom: Term`) to the `.luart` v0 pool index is the
+/// `dump_cdcl_state` consumer's responsibility — this helper
+/// stays Term-DAG-agnostic so it can be reused by any other
+/// consumer that wants a BCP-fixpoint snapshot.
+pub fn initial_bcp(clauses: &[Clause]) -> CdclState {
+    let mut state = CdclState::default();
+    build_watches(&mut state, clauses);
+    let _ = propagate_two_watched(
+        clauses,
+        &mut state,
+        clauses.len(),
+        1.0,
+        None,
+    );
+    state
+}
+
 /// v0.21 B.1 follow-up — compute the Literal Block Distance of
 /// a clause against the current trail. The LBD is the number
 /// of distinct decision levels among the clause's literals; a

@@ -413,17 +413,14 @@ fn bake_to_path(
         eprintln!("lu-smt: bake write failed: {e}");
         return Err(14);
     }
-    // §3.5.B — composable v1 CDCL section.  The actual clause /
-    // trail / VSIDS / phase-save bytes need the engine's
-    // post-flatten + initial-BCP state, which §3.5.C wires in
-    // through a follow-up `Solver::dump_cdcl_state` helper.  For
-    // now write an empty section with the binary SHA-256 +
-    // `flatten_version = 0` so the artefact shape is exercised
-    // end-to-end and downstream consumers can read it back.
-    // Empty section = zero clauses / trail / watches / vsids /
-    // saved-phase entries, which the loader treats the same as
-    // "no v1 section present" semantically but still validates
-    // the binary-hash + flatten-version header on load.
+    // §3.5.B / §1.1 — real CDCL section bake.  Calls
+    // `Solver::dump_cdcl_state` (which runs flatten +
+    // `cdcl::initial_bcp` to BCP fixpoint without making any
+    // decisions) and serialises the resulting state into the
+    // v1 section.  Atom keys (string `Term::to_string()`
+    // renderings of `Lit::atom`) are mapped to `.luart` v0
+    // pool indices via the `atom_key_to_pool_idx` table the
+    // bake side builds while ingesting the assertion list.
     if cli.aot_include_cdcl {
         let binary_sha = match current_binary_sha256() {
             Ok(s) => s,
@@ -432,14 +429,129 @@ fn bake_to_path(
                 return Err(12);
             }
         };
-        let section =
-            adsmt_aot::CdclSection::empty(binary_sha, FLATTEN_VERSION);
+        let section = build_cdcl_section(driver, binary_sha, &assertions);
         if let Err(e) = adsmt_aot::write_cdcl_section(&mut file, &section) {
             eprintln!("lu-smt: cdcl section write failed: {e}");
             return Err(14);
         }
     }
     Ok(())
+}
+
+/// §1.1 / §3.5.B real-bake glue: pull the post-BCP CDCL
+/// snapshot out of the driver's solver and serialise it into a
+/// `.luart-cdcl` v1 `CdclSection`.  The atom-key → pool-index
+/// table is built by interning every `Term` mentioned in the
+/// `assertions` argument (and recursively its sub-terms) into
+/// a fresh `PoolBuilder`; the hash-cons cache guarantees that
+/// the indices match the ones the v0 sections emitted, so
+/// loaders can look up the v1 section's atom references
+/// against the same pool.
+fn build_cdcl_section(
+    driver: &Driver,
+    binary_sha: [u8; 32],
+    assertions: &[adsmt_aot::Assertion],
+) -> adsmt_aot::CdclSection {
+    use std::collections::HashMap;
+    let (clauses, state) = driver.solver.dump_cdcl_state();
+    let mut builder = adsmt_aot::PoolBuilder::new();
+    let mut atom_key_to_pool_idx: HashMap<String, u32> = HashMap::new();
+    for a in assertions {
+        collect_atom_mapping(&a.term, &mut builder, &mut atom_key_to_pool_idx);
+    }
+    // Helper: project an `atom_key: String` to its pool index
+    // (or `u32::MAX` as a sentinel when the bake side asserted
+    // a term the BCP fixpoint touched but didn't carry as a
+    // Var/Const directly — e.g. a freshly-introduced Tseitin
+    // aux atom).  The reader ignores entries with the sentinel
+    // since it cannot resolve them; v1 follow-up promotes
+    // aux-atom interning into the pool itself.
+    let lookup = |k: &str| -> u32 {
+        atom_key_to_pool_idx.get(k).copied().unwrap_or(u32::MAX)
+    };
+
+    let cdcl_clauses: Vec<adsmt_aot::CdclClause> = clauses
+        .iter()
+        .map(|c| adsmt_aot::CdclClause {
+            lits: c
+                .iter()
+                .map(|l| (lookup(&l.atom.to_string()), l.polarity))
+                .collect(),
+        })
+        .collect();
+    let trail: Vec<adsmt_aot::TrailEntry> = state
+        .trail
+        .iter()
+        .map(|e| adsmt_aot::TrailEntry {
+            atom_pool_idx: lookup(&e.atom_key),
+            polarity: e.polarity,
+            // v0.x: every trail entry the bake side captures
+            // is at scope 0 (BCP fixpoint without decisions),
+            // so it has no per-query antecedent — `-1` sentinel
+            // per the §3.5.A counter-ack §(c) ack.
+            reason_clause_idx: -1,
+        })
+        .collect();
+    let watches: Vec<adsmt_aot::WatchEntry> = state
+        .watches
+        .iter()
+        .map(|((atom_key, polarity), clauses)| adsmt_aot::WatchEntry {
+            atom_pool_idx: lookup(atom_key),
+            polarity: *polarity,
+            watching_clauses: clauses.iter().map(|&i| i as u32).collect(),
+        })
+        .collect();
+    let vsids: Vec<adsmt_aot::VsidsEntry> = state
+        .activity
+        .iter()
+        .map(|(atom_key, activity)| adsmt_aot::VsidsEntry {
+            atom_pool_idx: lookup(atom_key),
+            activity: *activity,
+        })
+        .collect();
+    let saved_phase: Vec<adsmt_aot::SavedPhaseEntry> = state
+        .saved_phase
+        .iter()
+        .map(|(atom_key, polarity)| adsmt_aot::SavedPhaseEntry {
+            atom_pool_idx: lookup(atom_key),
+            polarity: *polarity,
+        })
+        .collect();
+    adsmt_aot::CdclSection {
+        binary_sha256: binary_sha,
+        flatten_version: FLATTEN_VERSION,
+        clauses: cdcl_clauses,
+        trail,
+        watches,
+        vsids,
+        saved_phase,
+    }
+}
+
+/// Walk `t` post-order and intern every sub-term into
+/// `builder`, recording each term's `to_string()` rendering →
+/// pool-index mapping in `map`.  Used by the bake-side glue
+/// to make `Lit::atom: Term` references findable by the
+/// `atom_key: String` keys the engine's CDCL state machine
+/// holds.
+fn collect_atom_mapping(
+    t: &adsmt_core::Term,
+    builder: &mut adsmt_aot::PoolBuilder,
+    map: &mut std::collections::HashMap<String, u32>,
+) {
+    use adsmt_core::TermInner;
+    let idx = builder.intern(t);
+    map.insert(t.to_string(), idx);
+    match t.kind() {
+        TermInner::Var(_) | TermInner::Const(_) => {}
+        TermInner::App(f, x) => {
+            collect_atom_mapping(f, builder, map);
+            collect_atom_mapping(x, builder, map);
+        }
+        TermInner::Lam(_, body) => {
+            collect_atom_mapping(body, builder, map);
+        }
+    }
 }
 
 /// `flatten_to_clauses` semantic version recorded in the
