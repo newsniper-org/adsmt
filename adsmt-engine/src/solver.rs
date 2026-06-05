@@ -992,8 +992,44 @@ impl Solver {
         // model-carrying CDCL path), so every state
         // transition the engine walks through is captured
         // per-Propagate / per-Conflict / per-Backjump /
-        // per-Decide / per-Restart.  No post-hoc macro-event
-        // synthesis here — that v0.x stop-gap is replaced.
+        // per-Decide / per-Restart.
+        //
+        // rc.21 / verus-fork rc.20 retry (b''') — session
+        // boundary fallback.  Some exit paths surface
+        // SatResult::Unknown without the inner-loop sink ever
+        // firing (deadline-cancel inside `flatten_to_clauses`,
+        // theory check on a quantifier-heavy prelude that
+        // never reaches CDCL, etc.).  The verus-fork retry
+        // measured this on the verus_smoke prelude — Unknown
+        // verdicts dropped a 56-byte header-only `.lutrace`.
+        // The fallback below records a single Restart event
+        // (and on the verdict side, a Conflict or Decide
+        // shape) when the tracer is active and otherwise
+        // empty, so the load-back path's session-shape
+        // diagnostics always have *something* to inspect.
+        if let Some(tracer) = self.jit_tracer.as_mut()
+            && tracer.is_empty()
+        {
+            tracer.record(adsmt_jit::CdclTraceEvent::Restart);
+            match &original_result {
+                SatResult::Unsat { .. } => {
+                    tracer.record(adsmt_jit::CdclTraceEvent::Conflict {
+                        learnt: Vec::new(),
+                        lbd: 0,
+                    });
+                }
+                SatResult::Sat { model } => {
+                    for (atom, polarity) in &model.bool_assignments {
+                        let atom_u32 = atom_key_hash_u32(atom);
+                        tracer.record(adsmt_jit::CdclTraceEvent::Decide {
+                            atom: atom_u32,
+                            polarity: *polarity,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
 
         // §3.4 budget-exhaustion hook: if CDCL+Tier-1/2/3 ran out
         // of time and the registered FiniteField plugin has
