@@ -8,7 +8,7 @@
 > ~44 k lines of Rust across 31 workspace crates, 946 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.19` on 2026-06-05.
+> `1.0.0-rc.20` on 2026-06-05.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.19):**
+**Active consumers (rc.20):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -355,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.19` (2026-06-05) |
+| Workspace version | `1.0.0-rc.20` (2026-06-05) |
 
 ---
 
-## Roadmap snapshot (rc.19 → v1.0.0 stable)
+## Roadmap snapshot (rc.20 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -401,13 +401,16 @@ or proof-search strategies without touching the engine core.
 | `reconstruct` parse-type cache (verus-fork rc.17 retry §2 +700 ms regression) | **landed** at rc.18 (`b6d1da9`); rc.19 retry §3 measured no-op — see (c') row below |
 | (a') v1.1 bake topo-order fix — unified PoolBuilder for v0 + v1 sections (verus-fork rc.18 retry §1) | **landed** at rc.19 (`aa079d9`) — `bake_to_path` inlines `write_luart` and drives Phase 1/2/3 through one shared builder so the v1 section's references always point into the v0 pool |
 | (b') CLI `start_jit_recording()` / `take_jit_recording()` wiring (verus-fork rc.18 retry §2) | **landed** at rc.19 (`d9b9fb2`) — `main()` installs the tracer before the dispatch loop and finalises it after; `emit_jit_trace_with` takes the populated `CdclTrace` instead of constructing an empty one |
-| (c') v0 `--aot-load` `intern_external` redundant walk drop (verus-fork rc.18 retry §3) | **landed** at rc.19 (`c554be8`) — both `Solver::with_aot_prelude` and `Driver::new` skip the post-`reader::reconstruct` re-canonicalise walk; addresses the +700 ms rc.15 → rc.18 regression |
-| §3.5.H `vargo` post-build hook extension (`--aot-include-cdcl`) | verus-fork side; gated on §3.5.H prerequisites — adsmt-side v1 recorder hooks landed at rc.18, CLI wiring landed at rc.19, verus-side prelude-suppression flag pending |
+| (c') v0 `--aot-load` `intern_external` redundant walk drop (verus-fork rc.18 retry §3) | **landed** at rc.19 (`c554be8`); rc.19 retry §3 measured no-op — the three audit candidates were all ruled out at rc.20, profile escalated |
+| (NEW) `Solver::restore_cdcl_state_into` — §3.5.J gate (verus-fork rc.19 retry NEW finding) | **landed** at rc.20 (`371e5aa`).  Reader now exposes `ReconstructedPrelude::pool_terms` so the v1 section's `atom_pool_idx: u32` references translate back to engine-side `Lit::atom: Term`.  `Solver::aot_prelude_clauses` cache + `aot_prelude_term_set` skip set short-circuit the prelude's CNF flatten on every per-query `(check-sat)` |
+| (b'') Satisfiability-only CDCL recorder routing (verus-fork rc.19 retry §2) | **landed** at rc.20 (`104106b`) — new `cdcl::cdcl_with_restarts_deadline_recording`; `check_sat_inner`'s first SAT stage now picks the recording variant on `jit_tracer.is_some()`.  tiny-unsat trace size 56 B → 70 B |
+| (c'') v0 `--aot-load` +662 ms hotspot — Term hash-cons skip set + audit report | **landed** at rc.20 (`66d2a13`) — `aot_prelude_term_set` switched `HashSet<String>` → `HashSet<Term>`; intern_external / compute_live_skeleton / aot_cdcl_state candidates all ruled out, flamegraph request flagged to verus-fork |
+| §3.5.H `vargo` post-build hook extension (`--aot-include-cdcl`) | verus-fork side; gated on §3.5.H prerequisites — adsmt-side v1 recorder hooks landed at rc.18, CLI wiring landed at rc.19, CDCL state restoration landed at rc.20, verus-side prelude-suppression flag pending |
 | §3.5.I `SmtProcess` argv wiring (env vars `VERUS_ADSMT_AOT_LUART` + `VERUS_ADSMT_JIT_TRACE`) | **landed** verus-fork side at `source/air/src/smt_process.rs::solver_argv` 2026-06-05; activation gated on §3.5.H prelude-suppression |
 | §3.5.J.pre verus-fork 5-mode smoke retry against T0′ landings | verus-fork rc.17 retry §3 — same 5-6 s threshold as rc.16 (T0' didn't move the floor on the verus_smoke prelude) |
-| §3.5.J verus-fork 5-mode smoke retry against §3.5-baked artefact + T0′ | verus-fork side; rc.19 unblocks the CLI half of the bake / record / replay loop (the rc.18 partial fix's two follow-ups are addressed) |
-| §3.5.F v1 — engine-side `restore_cdcl_state` + per-event replay into the live CDCL state machine | post-rc.19 follow-up; v0.x scan covers the empty-trace + conflict-without-restart shortcuts but the live state restore is not yet wired |
-| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.19 follow-up |
+| §3.5.J verus-fork 5-mode smoke retry against §3.5-baked artefact + T0′ | verus-fork side; rc.20 lands the largest single per-`(check-sat)` shortcut (prelude clause-cache via `restore_cdcl_state_into`).  Trail / watches / VSIDS / saved-phase restoration queued for the rc.21 follow-up that grows a CDCL `_with_seed` variant |
+| Trail / watches / VSIDS / saved-phase restoration via `cdcl_solve_with_model_deadline_with_seed` | post-rc.20 follow-up; the rc.20 `restore_cdcl_state_into` v0.x scope ships the clause vec only, the four remaining `CdclState` fields need an inner-loop signature change |
+| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.20 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
 
@@ -433,5 +436,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.19
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.20
   development arc.
