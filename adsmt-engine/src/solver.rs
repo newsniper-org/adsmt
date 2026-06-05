@@ -265,9 +265,22 @@ impl Solver {
     /// `Solver::default().with_aot_prelude(prelude)`.
     pub fn with_aot_prelude(mut self, prelude: adsmt_aot::ReconstructedPrelude) -> Self {
         for (idx, (term, _qid)) in prelude.assertions.into_iter().enumerate() {
-            let canonical = adsmt_aot::intern_external(&term);
+            // §3.1.D / verus-fork rc.18 retry (c') — drop
+            // the per-term `intern_external` call.  Pre-
+            // rc.19 every prelude assertion ran through a
+            // redundant post-order walk on top of what
+            // `adsmt_aot::reconstruct` had already done at
+            // file-decode time, paying a recursive cache-
+            // hit loop with no observable effect (the
+            // reader's `Term::var / Term::const_ / Term::
+            // app / Term::lam` chain installs canonical
+            // hash-cons entries before this point).  The
+            // term enters the cert ledger directly; the
+            // hash-cons cache continues to do its job
+            // anywhere structurally-equal atoms surface
+            // from the per-query input later.
             let loc = adsmt_cert::SourceLoc::new(0, idx as u32);
-            self.assert_at(canonical, loc);
+            self.assert_at(term, loc);
         }
         self
     }

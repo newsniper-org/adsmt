@@ -1191,13 +1191,18 @@ impl Driver {
         // Mirror the prelude into the driver's `assertions` ledger
         // (and the parallel qid table) so `(get-unsat-core)` and
         // `--audit-json` see the prelude axioms alongside the
-        // per-query ones.
+        // per-query ones.  The `intern_external` walk that used
+        // to wrap each `term.clone()` is dropped here per the
+        // verus-fork rc.18 retry (c') analysis — the
+        // `adsmt_aot::reconstruct` reader already installs every
+        // pool entry through the canonical hash-cons chain, so
+        // the post-order re-walk was redundant work on the
+        // load-side hot path.
         let mut assertions: Vec<Term> = Vec::new();
         let mut assertion_qids: Vec<Option<String>> = Vec::new();
         if let Some(prelude) = aot_prelude {
             for (term, qid) in &prelude.prelude.assertions {
-                let canonical = adsmt_aot::intern_external(term);
-                assertions.push(canonical);
+                assertions.push(term.clone());
                 assertion_qids.push(qid.clone());
             }
             solver = solver.with_aot_cdcl(prelude);
