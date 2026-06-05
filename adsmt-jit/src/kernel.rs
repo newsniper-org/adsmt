@@ -34,14 +34,29 @@
 //! - `dynasmrt::x64` for `target_arch = "x86_64"` (AMD64
 //!   machine code, the legacy host triple; every AMD/Intel/
 //!   VIA extension except AVX-512 per the upstream README)
-//! - `dynasmrt::aarch64` for `target_arch = "aarch64"`
-//!   (AArch64 little- *and* big-endian, up to ARMv8.4 per
-//!   the upstream README — the user's directive covers
-//!   every ARMv8.4-and-lower microarch.  Big-endian
-//!   AArch64 is rare in the wild but the encoder is the
-//!   same — dynasm-rs writes the same instruction-word
-//!   bytes either way, and the kernel runs in the
-//!   ambient-endianness the OS configured)
+//! - `dynasmrt::aarch64` for `target_arch = "aarch64"`,
+//!   up to ARMv8.4 per the upstream README — covers every
+//!   ARMv8.4-and-lower microarch on **little-endian**
+//!   `aarch64-*` targets.
+//!
+//!   **Warning (big-endian AArch64):** clean compilation
+//!   *and* runtime correctness on big-endian `aarch64_be-*`
+//!   targets are **not guaranteed**.  dynasm-rs's
+//!   `dynasmrt::aarch64` encoder is built and tested
+//!   against the little-endian ABI; the emitter writes
+//!   instruction-word bytes assuming LE pack order and
+//!   the runtime patches relocations the same way.  The
+//!   stub here cfg-gates on `target_arch = "aarch64"`
+//!   alone (which matches both endian-flavoured triples
+//!   the compiler exposes), so cross-compilation against
+//!   `aarch64_be-unknown-linux-gnu` may even succeed — but
+//!   the emitted code may execute with reversed
+//!   instruction words on a big-endian host, and the
+//!   project provides no CI coverage there.  Treat the
+//!   big-endian arm as best-effort until upstream
+//!   confirms BE support or until a dedicated cfg gate
+//!   surfaces `KernelError::UnsupportedHostTriple` for
+//!   the BE flavour.
 //! - `dynasmrt::riscv` for `target_arch = "riscv64"`
 //!   (`Assembler` type alias targets the 64-bit ISA via
 //!   the `.arch riscv64` directive; upstream encoder also
