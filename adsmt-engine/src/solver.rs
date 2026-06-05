@@ -81,6 +81,59 @@ fn atom_key_hash_u32(atom_key: &str) -> u32 {
     h.finish() as u32
 }
 
+/// `CdclEventSink` adapter that funnels every engine-side
+/// state-transition event into a borrowed
+/// [`adsmt_jit::CdclTracer`].  Atom-key strings flow through
+/// [`atom_key_hash_u32`] so the recorded
+/// [`adsmt_jit::CdclTraceEvent`]'s `atom: u32` shape stays
+/// stable across the recorder ⇔ replay-time guard checks.
+///
+/// The adapter sits in `solver.rs` rather than `adsmt-jit`
+/// because the [`crate::cdcl::CdclEventSink`] trait is
+/// `adsmt-engine` private — keeping the impl beside the
+/// hook avoids exposing the engine-internal sink trait
+/// through the JIT crate's public API.
+struct CdclTracerSink<'a> {
+    tracer: &'a mut adsmt_jit::CdclTracer,
+}
+
+impl crate::cdcl::CdclEventSink for CdclTracerSink<'_> {
+    fn on_propagate(&mut self, atom_key: &str, polarity: bool, antecedent: i64) {
+        self.tracer.record(adsmt_jit::CdclTraceEvent::Propagate {
+            atom: atom_key_hash_u32(atom_key),
+            polarity,
+            antecedent,
+        });
+    }
+
+    fn on_conflict(&mut self, learnt: &[(String, bool)], lbd: u32) {
+        let learnt_event: Vec<(u32, bool)> = learnt
+            .iter()
+            .map(|(k, p)| (atom_key_hash_u32(k), *p))
+            .collect();
+        self.tracer.record(adsmt_jit::CdclTraceEvent::Conflict {
+            learnt: learnt_event,
+            lbd,
+        });
+    }
+
+    fn on_backjump(&mut self, to_scope: u32) {
+        self.tracer
+            .record(adsmt_jit::CdclTraceEvent::Backjump { to_scope });
+    }
+
+    fn on_decide(&mut self, atom_key: &str, polarity: bool) {
+        self.tracer.record(adsmt_jit::CdclTraceEvent::Decide {
+            atom: atom_key_hash_u32(atom_key),
+            polarity,
+        });
+    }
+
+    fn on_restart(&mut self) {
+        self.tracer.record(adsmt_jit::CdclTraceEvent::Restart);
+    }
+}
+
 pub struct Solver {
     scopes: Vec<Scope>,
     theories: Combination,
@@ -746,41 +799,14 @@ impl Solver {
 
         let original_result = self.check_sat_inner(deadline);
 
-        // §1.3 / §3.5.D engine recorder hook (v0.x).  When a
-        // tracer is active (started via `start_jit_recording`),
-        // post-hoc record the session boundaries the v0 wire
-        // shape can represent: one `Restart`-shaped session
-        // start, then a `Conflict` per learnt clause we can
-        // observe in the post-check ledger, then end-of-trace.
-        // The full per-event vocabulary (every individual
-        // `Propagate` / `Decide` along the CDCL trail) needs
-        // the inner-loop hook the cdcl module exposes in
-        // `cdcl::*_recording` variants — those land alongside
-        // the §3.5.F event-replay engine wiring follow-up.
-        // For now the tracer captures the macro shape so
-        // `--jit-trace-emit` produces non-vacuous artefacts
-        // that the §3.5.G CLI surface can round-trip end-to-end.
-        if let Some(tracer) = self.jit_tracer.as_mut() {
-            tracer.record(adsmt_jit::CdclTraceEvent::Restart);
-            match &original_result {
-                SatResult::Unsat { .. } => {
-                    tracer.record(adsmt_jit::CdclTraceEvent::Conflict {
-                        learnt: Vec::new(),
-                        lbd: 0,
-                    });
-                }
-                SatResult::Sat { model } => {
-                    for (atom, polarity) in &model.bool_assignments {
-                        let atom_u32 = atom_key_hash_u32(atom);
-                        tracer.record(adsmt_jit::CdclTraceEvent::Decide {
-                            atom: atom_u32,
-                            polarity: *polarity,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
+        // §1.3 / §3.5.D engine recorder hook (rc.17+).  The
+        // tracer is now wired through `cdcl::*_recording`'s
+        // inner-loop sink (see `check_sat_inner`'s
+        // model-carrying CDCL path), so every state
+        // transition the engine walks through is captured
+        // per-Propagate / per-Conflict / per-Backjump /
+        // per-Decide / per-Restart.  No post-hoc macro-event
+        // synthesis here — that v0.x stop-gap is replaced.
 
         // §3.4 budget-exhaustion hook: if CDCL+Tier-1/2/3 ran out
         // of time and the registered FiniteField plugin has
@@ -1043,14 +1069,42 @@ impl Solver {
                 // satisfiability check, leave nothing for the
                 // model-carrying re-run, and then hang forever
                 // here while ostensibly under a tight rlimit.
-                let model = match crate::cdcl::cdcl_with_restarts_with_model_deadline(
-                    &clauses,
-                    64,
-                    12,
-                    deadline,
-                ) {
-                    crate::cdcl::CdclOutcome::Sat { model } => model,
-                    _ => HashMap::new(),
+                // §1.3 / §3.5.D — when the JIT tracer is
+                // active, route the model-carrying CDCL run
+                // through the recording variant so every
+                // `Propagate` / `Conflict` / `Backjump` /
+                // `Decide` / `Restart` transition is
+                // captured for the §3.5.G `.lutrace`
+                // artefact (the verus-fork rc.17 retry
+                // pointed at this hook as the gating piece
+                // for a non-vacuous trace on the
+                // verus_smoke prelude).
+                let model = if self.jit_tracer.is_some() {
+                    let mut sink = CdclTracerSink {
+                        tracer: self.jit_tracer.as_mut().expect(
+                            "is_some checked above",
+                        ),
+                    };
+                    match crate::cdcl::cdcl_with_restarts_with_model_deadline_recording(
+                        &clauses,
+                        64,
+                        12,
+                        deadline,
+                        &mut sink,
+                    ) {
+                        crate::cdcl::CdclOutcome::Sat { model } => model,
+                        _ => HashMap::new(),
+                    }
+                } else {
+                    match crate::cdcl::cdcl_with_restarts_with_model_deadline(
+                        &clauses,
+                        64,
+                        12,
+                        deadline,
+                    ) {
+                        crate::cdcl::CdclOutcome::Sat { model } => model,
+                        _ => HashMap::new(),
+                    }
                 };
                 if expired(deadline) {
                     return SatResult::Unknown {
@@ -2102,6 +2156,39 @@ mod tests {
     fn jit_registry_defaults_to_none() {
         let s = Solver::default();
         assert!(s.jit_registry().is_none());
+    }
+
+    #[test]
+    fn jit_tracer_captures_propagate_events_on_sat_check() {
+        // (assert p) + (assert (or p q)) → SAT.  The recording
+        // cdcl variant should surface at least one Propagate
+        // event for `p` along the way.
+        let mut s = Solver::default();
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        s.assert(p);
+        s.assert(Term::mk_or(
+            Term::var("p", Type::bool_()),
+            q,
+        ).unwrap());
+        s.start_jit_recording();
+        let _ = s.check_sat();
+        let tracer = s.take_jit_recording().expect("recording was started");
+        assert!(
+            !tracer.is_empty(),
+            "tracer should record at least one propagate / decide event"
+        );
+        // At least one event should be a Propagate (root-level
+        // unit-clause assignment for `p`).
+        assert!(
+            tracer
+                .clone()
+                .finalize(adsmt_jit::GF2Snapshot::empty(), vec![])
+                .events
+                .iter()
+                .any(|e| matches!(e, adsmt_jit::CdclTraceEvent::Propagate { .. })),
+            "tracer should record at least one Propagate event",
+        );
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))]

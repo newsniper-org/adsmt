@@ -513,6 +513,214 @@ pub fn cdcl_solve_with_model_deadline(
     }
 }
 
+/// §1.3 / §3.5.D per-Propagate hook variant of
+/// [`cdcl_solve_with_model_deadline`].  Functionally
+/// identical state-machine semantics; the only difference is
+/// that every observable state transition routes through
+/// `sink` (a [`CdclEventSink`] implementation).
+///
+/// Replaying the resulting `.lutrace` artefact through the
+/// §3.5.F event-replay scan needs the full `Propagate` /
+/// `Conflict` / `Backjump` / `Decide` vocabulary on a
+/// prelude-sized workload — the v0.x post-hoc recorder in
+/// `Solver::check_sat_with_deadline` could only ship
+/// macro-shape (`Restart` session boundary + per-model
+/// `Decide` + per-Unsat `Conflict`) which doesn't capture
+/// what the engine actually walks through on the verus_smoke
+/// prelude (see the verus-fork rc.17 retry
+/// `.local-replies-from/verus-fork/2026-06-05-rc17-smoke-retry-and-section-bake-regression.md`
+/// §4 for the smoke-matrix gap this closes).
+///
+/// `Restart` events fire from the outer
+/// [`cdcl_with_restarts_with_model_deadline_recording`]
+/// wrapper, not from this single-epoch entry point.
+pub fn cdcl_solve_with_model_deadline_recording(
+    clauses: &[Clause],
+    max_conflicts: usize,
+    deadline: Option<std::time::Instant>,
+    sink: &mut dyn CdclEventSink,
+) -> CdclOutcome {
+    let mut deadline_tick: usize = 0;
+
+    let mut state = CdclState::new();
+    let input_len = clauses.len();
+    let mut owned: Vec<Clause> = clauses.to_vec();
+    if owned.iter().any(|c| c.is_empty()) {
+        return CdclOutcome::Unsat;
+    }
+    build_watches(&mut state, &owned);
+    let mut conflicts = 0;
+    let vsids_bump: f64 = 1.0;
+    let vsids_decay: f64 = 0.95;
+    let mut learnt_limit: usize = (input_len / 3).max(32);
+    let learnt_limit_growth: f64 = 1.1;
+    let clause_bump: f64 = 1.0;
+    let clause_decay: f64 = 0.999;
+    // Track which trail entries have already been reported
+    // so per-propagate hook fires once per assignment.
+    let mut last_reported_trail_len: usize = 0;
+    loop {
+        deadline_tick = deadline_tick.wrapping_add(1);
+        if deadline_tick.is_multiple_of(DEADLINE_CHECK_INTERVAL) && expired(deadline) {
+            return CdclOutcome::Unknown;
+        }
+        let prop_outcome = propagate_two_watched(
+            &owned,
+            &mut state,
+            input_len,
+            clause_bump,
+            deadline,
+        );
+        // Report every trail entry the just-finished
+        // propagation round added.  Every entry the inner
+        // loop pushes routes through `state.push`, which
+        // appends to `state.trail` in insertion order, so a
+        // tail walk after the propagation call observes the
+        // round's new entries.
+        for entry in &state.trail[last_reported_trail_len..] {
+            let antecedent: i64 = match entry.reason {
+                Reason::Decision => -1,
+                Reason::Propagated { clause_idx } => clause_idx as i64,
+            };
+            sink.on_propagate(&entry.atom_key, entry.polarity, antecedent);
+        }
+        last_reported_trail_len = state.trail.len();
+
+        let conflict_idx = match prop_outcome {
+            PropagateOutcome::Expired => return CdclOutcome::Unknown,
+            PropagateOutcome::Conflict(idx) => Some(idx),
+            PropagateOutcome::Fixpoint => None,
+        };
+        if let Some(idx) = conflict_idx {
+            conflicts += 1;
+            if conflicts > max_conflicts { return CdclOutcome::Unknown; }
+            if expired(deadline) { return CdclOutcome::Unknown; }
+            if state.decision_level == 0 { return CdclOutcome::Unsat; }
+            let (learnt, bj_level) =
+                match analyze_conflict_1uip_deadline(&owned, &state, idx, deadline) {
+                    AnalyzeOutcome::Done { learnt, backjump_level } =>
+                        (learnt, backjump_level),
+                    AnalyzeOutcome::Expired => return CdclOutcome::Unknown,
+                };
+            if learnt.is_empty() { return CdclOutcome::Unsat; }
+            let learnt_records: Vec<(String, bool)> = learnt
+                .iter()
+                .map(|l| (l.atom.to_string(), l.polarity))
+                .collect();
+            let lbd_for_event = compute_lbd(&learnt, &state) as u32;
+            sink.on_conflict(&learnt_records, lbd_for_event);
+
+            state.bump_activity(&learnt, vsids_bump);
+            state.decay_activity(vsids_decay);
+            state.decay_learnt_activity(clause_decay);
+            state.backtrack_to(bj_level);
+            sink.on_backjump(bj_level);
+            // Trail shrank; reset the report cursor so the
+            // next propagate round's diff is computed
+            // against the new (shorter) tail.
+            last_reported_trail_len = state.trail.len();
+
+            let lbd = compute_lbd(&learnt, &state);
+            let new_idx = owned.len();
+            owned.push(learnt.clone());
+            register_clause_watches(&mut state, &learnt, new_idx);
+            state.learnt_clauses.push(learnt);
+            state.learnt_activity.push(1.0);
+            state.learnt_lbd.push(lbd);
+            if state.learnt_clauses.len() > learnt_limit {
+                state.backtrack_to(0);
+                let keep = state.learnt_clauses.len() / 2;
+                const GLUE_LBD_THRESHOLD: usize = 6;
+                let mut candidates: Vec<(usize, f64)> = state
+                    .learnt_activity
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter(|(i, _)| {
+                        state.learnt_lbd.get(*i).copied().unwrap_or(usize::MAX)
+                            > GLUE_LBD_THRESHOLD
+                    })
+                    .collect();
+                candidates.sort_by(|a, b| {
+                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let drop_count = state.learnt_clauses.len().saturating_sub(keep);
+                let drop_count = drop_count.min(candidates.len());
+                let mut to_drop: Vec<usize> = candidates
+                    .into_iter()
+                    .take(drop_count)
+                    .map(|(i, _)| i)
+                    .collect();
+                to_drop.sort_by(|a, b| b.cmp(a));
+                for (i, idx) in to_drop.into_iter().enumerate() {
+                    if i.is_multiple_of(DEADLINE_CHECK_INTERVAL)
+                        && expired(deadline)
+                    {
+                        return CdclOutcome::Unknown;
+                    }
+                    state.learnt_clauses.remove(idx);
+                    state.learnt_activity.remove(idx);
+                    state.learnt_lbd.remove(idx);
+                    owned.remove(input_len + idx);
+                }
+                if expired(deadline) {
+                    return CdclOutcome::Unknown;
+                }
+                build_watches(&mut state, &owned);
+                state.prop_head = 0;
+                learnt_limit =
+                    ((learnt_limit as f64) * learnt_limit_growth) as usize;
+                last_reported_trail_len = state.trail.len();
+            }
+            if expired(deadline) {
+                return CdclOutcome::Unknown;
+            }
+            continue;
+        }
+        let key = pick_vsids_atom(&owned[..input_len], &state);
+        let Some(key) = key else {
+            return CdclOutcome::Sat { model: state.assign };
+        };
+        let phase = state.saved_phase.get(&key).copied().unwrap_or(true);
+        sink.on_decide(&key, phase);
+        state.push(key, phase, Reason::Decision);
+    }
+}
+
+/// §1.3 / §3.5.D per-Propagate hook variant of
+/// [`cdcl_with_restarts_with_model_deadline`].  Emits a
+/// `Restart` event at every Luby-restart boundary; forwards
+/// every other event through the supplied `sink`.
+pub fn cdcl_with_restarts_with_model_deadline_recording(
+    clauses: &[Clause],
+    base_conflicts: usize,
+    restarts: usize,
+    deadline: Option<std::time::Instant>,
+    sink: &mut dyn CdclEventSink,
+) -> CdclOutcome {
+    let luby = luby_sequence(restarts);
+    for (i, &mult) in luby.iter().enumerate() {
+        if expired(deadline) {
+            return CdclOutcome::Unknown;
+        }
+        if i > 0 {
+            sink.on_restart();
+        }
+        let budget = base_conflicts.saturating_mul(mult);
+        match cdcl_solve_with_model_deadline_recording(
+            clauses,
+            budget,
+            deadline,
+            sink,
+        ) {
+            CdclOutcome::Sat { model } => return CdclOutcome::Sat { model },
+            CdclOutcome::Unsat => return CdclOutcome::Unsat,
+            CdclOutcome::Unknown => continue,
+        }
+    }
+    CdclOutcome::Unknown
+}
+
 /// v0.21 B.1 stages 1+2+3 entry point: trail-based CDCL with
 /// 1-UIP conflict analysis, learnt-clause storage, and
 /// non-chronological backjumping.
@@ -1127,6 +1335,26 @@ pub fn analyze_conflict_1uip_deadline(
     AnalyzeOutcome::Done { learnt, backjump_level }
 }
 
+/// §1.3 / §3.5.D engine-side recorder trait.  The cdcl loop's
+/// `*_recording` variants invoke these hooks at every state
+/// transition the §3.5 5-event vocabulary covers
+/// (`Propagate` / `Conflict` / `Backjump` / `Decide` /
+/// `Restart`).  Implementations decide how to project the
+/// engine-side atom-key strings to whatever atom encoding
+/// the consumer keeps (e.g. `.luart` pool indices, hashed
+/// `u32` surrogates for the v0.x `CdclTraceEvent` shape).
+///
+/// `learnt` records are surfaced as `(atom_key, polarity)`
+/// pairs in conflict-resolution order, matching the existing
+/// `Lit` shape the engine carries internally.
+pub trait CdclEventSink {
+    fn on_propagate(&mut self, atom_key: &str, polarity: bool, antecedent: i64);
+    fn on_conflict(&mut self, learnt: &[(String, bool)], lbd: u32);
+    fn on_backjump(&mut self, to_scope: u32);
+    fn on_decide(&mut self, atom_key: &str, polarity: bool);
+    fn on_restart(&mut self);
+}
+
 /// §3.5.B real-bake helper — ingest `clauses`, install
 /// two-watched-literals metadata, then run initial BCP to
 /// fixpoint without making any decisions.  Returns the
@@ -1147,6 +1375,53 @@ pub fn initial_bcp(clauses: &[Clause]) -> CdclState {
         1.0,
         None,
     );
+    state
+}
+
+/// §1.3 / §3.5.D per-Propagate hook variant of
+/// [`initial_bcp`].  Identical state-machine semantics; the
+/// only difference is that every trail entry the BCP
+/// fixpoint pushes — root-level facts derived from unit
+/// clauses + everything `propagate_two_watched` discovers
+/// downstream — is reported to the supplied callback as a
+/// `Propagate`-shaped record.
+///
+/// The callback receives `(atom_key, polarity, antecedent)`
+/// per trail entry, where `antecedent` is `-1` for entries
+/// without a per-query antecedent clause (every BCP-fixpoint
+/// entry baked here qualifies — there are no decisions yet,
+/// so every assignment is either a root-level fact or
+/// propagated from a clause).  The callback's call order is
+/// trail-push order.
+///
+/// The verus-fork rc.17 retry's §3.5.J cannot complete on
+/// the `verus_smoke` fixture without a non-vacuous
+/// `Propagate` event stream from the prelude's BCP fixpoint;
+/// this is the recorder the §3.5.G CLI surface threads
+/// through when `--jit-trace-emit` is active.
+pub fn initial_bcp_recording<F>(
+    clauses: &[Clause],
+    mut record_propagate: F,
+) -> CdclState
+where
+    F: FnMut(&str, bool, i64),
+{
+    let mut state = CdclState::default();
+    build_watches(&mut state, clauses);
+    let _ = propagate_two_watched(
+        clauses,
+        &mut state,
+        clauses.len(),
+        1.0,
+        None,
+    );
+    for entry in &state.trail {
+        let antecedent: i64 = match entry.reason {
+            Reason::Decision => -1,
+            Reason::Propagated { clause_idx } => clause_idx as i64,
+        };
+        record_propagate(&entry.atom_key, entry.polarity, antecedent);
+    }
     state
 }
 
