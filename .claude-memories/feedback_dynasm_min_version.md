@@ -37,9 +37,23 @@ directive):
 `adsmt-jit::kernel::emit_noop_kernel` wires every host
 triple dynasm-rs v5 exposes — `target_arch = "x86_64"` via
 `dynasmrt::x64`, `"aarch64"` via `dynasmrt::aarch64`
-(little- *and* big-endian, every ARMv8.4-and-lower
-microarch), and `"riscv64"` via `dynasmrt::riscv` with
-`.arch riscv64i`.  Notes:
+(every ARMv8.4-and-lower microarch on **little-endian**
+`aarch64-*` targets), and `"riscv64"` via `dynasmrt::riscv`
+with `.arch riscv64i`.  Notes:
+
+- **AArch64 big-endian is not guaranteed.**  dynasm-rs's
+  `dynasmrt::aarch64` encoder is built and tested against
+  the little-endian ABI; the upstream README does not
+  certify the BE flavour.  Our cfg gate keys on
+  `target_arch = "aarch64"` alone (matching both
+  endian-flavoured triples the compiler exposes), so
+  cross-compilation against `aarch64_be-unknown-linux-gnu`
+  may succeed — but the emitted code may execute with
+  reversed instruction words on a BE host, and we ship no
+  CI coverage there.  Treat BE as best-effort until
+  upstream confirms support or until we add a dedicated
+  cfg gate surfacing `KernelError::UnsupportedHostTriple`
+  for the BE flavour.
 
 - The RISC-V module is `dynasmrt::riscv`, *not*
   `dynasmrt::riscv64`.  One assembler covers both 32-
