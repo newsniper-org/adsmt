@@ -1,6 +1,6 @@
 ---
 name: verus-fork integration as lu-smt's primary downstream
-description: Verus fork (~/verus-fork) consumes lu-smt as an SMT backend via `verus -V adsmt`; the rc.7→rc.15 arc has been driven by closing the gap end-to-end. rc.10 landed R1+R2+R3+§2.3 hash-cons; rc.12 landed T0 deadline cascade; rc.13/14 landed §3.4 Buchberger+F4 + FiniteFieldTheory plugin; rc.15 closed §3.1.A→§3.1.D AOT prelude bank end-to-end + §3.2/§3.3 skeletons + CLI surface for §3.4. rc.15 5-mode smoke matrix retry localised the `~5.3 s` floor *inside `(check-sat)` itself* (Mode C `--aot-load` invariance vs Mode A baseline = strongest possible signal). 2026-06-04 verus-fork filed §3.5 JIT-on-AOT-prelude design (`.luart-cdcl` v1 + CdclTracer + GF(2) algebraic-guard replay); adsmt-side §3.5 ack mirrored 2026-06-04 (commit `b484369`). Pending — both sides: T0' finer-grained deadline cascade inside CDCL inner work between `propagate_two_watched` calls.
+description: Verus fork (~/verus-fork) consumes lu-smt as an SMT backend via `verus -V adsmt`; the rc.7→rc.16 arc has been driven by closing the gap end-to-end. rc.10 hash-cons; rc.12 T0; rc.13/14 §3.4 Buchberger+F4+plugin; rc.15 closed §3.1.A→§3.1.D + §3.2/§3.3 skeletons + §3.4 CLI; rc.16 landed §3.5.A→§3.5.G end-to-end + T0'.1/.2/.3 deadline cascade refinement.  rc.15 5-mode smoke matrix localised the `~5.3 s` floor inside `(check-sat)`; rc.16 §3.5 ack cycle closed 2026-06-05 (verus-fork accepted all six adsmt-side recommendations + T0' parallel + added §3.5.J.pre row).  Next gate is verus-fork §3.5.H (vargo --aot-include-cdcl hook) + §3.5.I (SmtProcess argv wiring) + §3.5.J.pre / §3.5.J smoke matrix retries.
 type: project
 originSessionId: 32a1dc0d-7730-4862-8df4-6958199ce84f
 ---
@@ -334,5 +334,49 @@ and §3.2 skeleton's eventual fully-traced CDCL.  Three layers:
 | 2026-06-04 | verus-fork | `EXPECTED_ADSMT_VERSION` rc.14 → rc.15 + 5-mode smoke matrix retry — all 5 modes hit the same `~5.3 s` floor; Mode C invariance localises floor inside `(check-sat)` |
 | 2026-06-04 | verus-fork | §3.5 JIT-on-AOT-prelude design filed at `.local-requests-to/adsmt/2026-06-04-3.5-jit-on-aot-prelude.md` |
 | 2026-06-04 | adsmt | §3.5 ack at `.local-replies-to/verus-fork/2026-06-04-3.5-jit-on-aot-prelude-ack.md` (commit `b484369`); recommends binary-SHA in `.luart-cdcl` header, Restart added to event vocab, hybrid signature timing, vocabulary reuse split |
-| (pending) | both | T0' deadline-cascade refinement (analyze_conflict_1uip + learnt-clause insertion + post-backjump unit-prop) — adsmt side will land in parallel with §3.5.A |
-| (pending) | verus-fork | §3.5 ack response — confirm parallel T0' + §3.5.A sequencing, ack `.luart-cdcl` header extension, ack new `adsmt-jit::cdcl` submodule split |
+| 2026-06-05 | verus-fork | §3.5 counter-ack at `.local-replies-to/adsmt/2026-06-04-3.5-jit-on-aot-prelude-counter-ack.md` — accept all six adsmt recommendations; decline the optional `0x00/0x01` watch-width gate byte (format-version bump preferred over permanent v0/v1 compat surface during testing channel); add §3.5.J.pre row (verus-fork 5-mode retry after T0'.1–.3, ahead of §3.5.J full retry); T0' parallel progression confirmed.  Design phase closes; §3.5.A + T0'.1 unblocked on adsmt side. |
+
+## rc.16 cycle (2026-06-05) — what landed
+
+| sub-cycle | commit | scope |
+|---|---|---|
+| T0'.1 | `627aded` | deadline check inside `analyze_conflict_1uip_deadline` (new variant; original keeps its public signature).  256-iter cadence inside the trail-walking resolution loop.  `DEADLINE_CHECK_INTERVAL = 256` + `expired(deadline)` helper promoted to module-level constants so every `*_deadline` function in `adsmt-engine/src/cdcl.rs` shares the cadence. |
+| T0'.2 + T0'.3 | `03649f3` | T0'.2 = deadline check inside the learnt-clause reduction loop (`for (i, idx) in to_drop.into_iter().enumerate()`, every 256-th iteration) + unconditional check after the loop exits.  T0'.3 = unconditional `if expired(deadline)` right before the `continue` of the conflict-handling branch, so the next outer `propagate_two_watched` call doesn't run unmodulated after a backjump. |
+| §3.5.A | `df18edd` | new `adsmt_aot::cdcl` module with `CdclSection { binary_sha256: [u8; 32], flatten_version: u32, clauses, trail, watches, vsids, saved_phase }` + sub-record types (`CdclClause`, `TrailEntry` carrying `reason_clause_idx: i64` with `-1` sentinel, `WatchEntry`, `VsidsEntry`, `SavedPhaseEntry`).  `write_cdcl_section` + `read_luart_with_cdcl(buf) -> (LuartFile, Option<CdclSection>)` — v0 readers silently ignore trailing v1 bytes.  v1 `watch_count: u64` + inner `watching_clauses: Vec<u32>` fixed-width per counter-ack §(b). |
+| §3.5.B | `00ce626` | `lu-smt --aot-bake --aot-include-cdcl` composable flag.  Mutex rules: `--aot-include-cdcl` without `--aot-bake` → exit 12; `--aot-include-cdcl + --aot-load` → exit 12.  `current_binary_sha256()` helper: SHA-256 of `current_exe()` via `sha2` crate.  `FLATTEN_VERSION: u32 = 0` constant — bumped on next breaking change to `flatten_to_clauses`.  v0 emits `CdclSection::empty(binary_sha, FLATTEN_VERSION)` (real CDCL state capture is the §3.5.F follow-up that exposes `Solver::dump_cdcl_state`). |
+| §3.5.C | `f91bea5` | `Solver::with_aot_cdcl(prelude: adsmt_aot::ReconstructedCdclPrelude)` builder.  New `ReconstructedCdclPrelude { prelude: ReconstructedPrelude, cdcl_section: Option<CdclSection> }` + `reconstruct_with_cdcl(&[u8])` adsmt-aot helper.  v0 semantics: assertions thread through `with_aot_prelude` as before; `cdcl_section` is stashed (`let _cdcl_section_for_3_5_f = ...`) until §3.5.F lands `restore_cdcl_state(...)`.  CLI `load_aot_prelude` switched to `reconstruct_with_cdcl`; `Driver::new` takes `Option<ReconstructedCdclPrelude>` and routes through `with_aot_cdcl`. |
+| §3.5.D | `95efa45` | new `adsmt_jit::cdcl` submodule.  `CdclTraceEvent` = 5-event vocabulary: `Propagate { atom, polarity, antecedent: i64 (-1 = prelude-only) }` / `Conflict { learnt: Vec<(u32, bool)>, lbd: u32 }` / `Backjump { to_scope: u32 }` / `Decide { atom, polarity }` / `Restart`.  `GF2Snapshot { basis: Vec<Polynomial>, classes: Vec<(String, u32)> }` + `CdclCheckpoint { at_event, signature }` + `CdclTrace { events, signature, checkpoints, guards: Vec<JitGuard>, kernel_id }` — shares the guard surface with §3.2's bytecode `Trace` per counter-ack §5.5 vocabulary reuse.  `CdclTracer { events }` recorder (append-only, `record(event)` + `finalize(sig, guards)`). |
+| §3.5.E | `5fac19d` | `FiniteFieldTheory::current_generators() -> Vec<Polynomial>` — re-runs `sat_encoder::cnf_to_generators` on the installed `clauses + n_vars`.  `GF2Snapshot::empty()` + `GF2Snapshot::capture(theory, classes)` helpers.  Capture is one cheap CNF-to-polynomial pass, not a fresh Gröbner computation (per counter-ack §5.4 free-at-the-kernel-layer guarantee). |
+| §3.5.F | `77ea879` | `Solver::replay_aot_cdcl_trace(&CdclTrace, classes: &[(String, u32)]) -> ReplayOutcome` + new `ReplayOutcome { GuardMiss, GuardsPassed }` enum.  v0 skeleton: evaluates `trace.guards` via `adsmt_jit::check_guard` against `trace.signature.basis` + the engine-supplied class view.  `GuardMiss` on first failure (full-discard v0 per counter-ack §5.4).  Actual event replay is deferred to follow-up that wires `restore_cdcl_state(...)` into `check_sat_with_deadline`.  adsmt-engine grows an `adsmt-jit` dep so the recorder and the dispatcher share one vocabulary. |
+| §3.5.G | `7706327` | new `adsmt_jit::cdcl_io` module with `LUTRACE_MAGIC = "lutrace\0"` + `LUTRACE_VERSION = 0` + `write_trace` / `read_trace` byte-level codec.  v0 wire shape covers events + `kernel_id` only; `signature` / `guards` / `checkpoints` reconstructed as empty on read.  `lu-smt --jit-trace-emit <PATH>` (writes empty `.lutrace` v0 = 24-byte header-only payload) + `--jit-trace-load <PATH>` (decode + 12/15 error-code mapping).  Mutex rule: `--jit-trace-emit + --jit-trace-load` → exit 12. |
+| rc.16 bump | `ae12a9f` | workspace + 8 path-dep manifests + Cargo.lock |
+| books cheatsheet | `4de2727` | 4-lang `§3.5 JIT-on-AOT-prelude` section added (en/ko/ja/de) |
+| docs | `44ef399` | README + PORTFOLIO + submodule pointer refresh |
+
+### v0 → v1 follow-up items (deferred per counter-ack)
+
+- **§3.5.C**: `restore_cdcl_state(...)` engine-side method (consumed by `with_aot_cdcl` to set up the CDCL trail / watches / VSIDS from `cdcl_section`).  v0 currently stashes the section away unused.
+- **§3.5.D**: engine-side recorder hooks (calls to `tracer.record(CdclTraceEvent::*)` inside `propagate_two_watched` / `analyze_conflict_1uip` / `cdcl_solve_with_model`'s decision branch).  v0 ships the data structures only.
+- **§3.5.E**: mid-trace checkpoint capture at phase transitions (Restart, high-LBD Conflict, scope-0 Backjump).  v0 ships end-of-trace only.
+- **§3.5.F**: actual event replay through the CDCL state machine.  v0 ships the guard-evaluation gate only.
+- **§3.5.G**: extended wire format that persists `signature` / `guards` / `checkpoints` — needs a GF2Poly wire shape (queued for v1).
+
+### Updated §6 ledger (rc.16 cycle)
+
+| date | side | event |
+|---|---|---|
+| 2026-06-05 | adsmt | T0'.1 (`627aded`) deadline check inside `analyze_conflict_1uip_deadline` |
+| 2026-06-05 | adsmt | T0'.2 + T0'.3 (`03649f3`) deadline checks around learnt-clause reduction + post-backjump unit-prop |
+| 2026-06-05 | adsmt | §3.5.A (`df18edd`) `.luart-cdcl` v1 section writer + reader |
+| 2026-06-05 | adsmt | §3.5.B (`00ce626`) `--aot-bake --aot-include-cdcl` composable flag + `current_binary_sha256` |
+| 2026-06-05 | adsmt | §3.5.C (`f91bea5`) `Solver::with_aot_cdcl` + `ReconstructedCdclPrelude` |
+| 2026-06-05 | adsmt | §3.5.D (`95efa45`) `adsmt-jit::cdcl` submodule (5-event vocabulary + CdclTrace + CdclTracer + GF2Snapshot + CdclCheckpoint) |
+| 2026-06-05 | adsmt | §3.5.E (`5fac19d`) `GF2Snapshot::capture` + `FiniteFieldTheory::current_generators` |
+| 2026-06-05 | adsmt | §3.5.F (`77ea879`) `Solver::replay_aot_cdcl_trace` guard-evaluation gate (v0 skeleton) + `ReplayOutcome` enum |
+| 2026-06-05 | adsmt | §3.5.G (`7706327`) `lu-smt --jit-trace-emit / --jit-trace-load` + v0 `.lutrace` binary format |
+| 2026-06-05 | adsmt | workspace bump to testing `1.0.0-rc.16` (`ae12a9f`) + books cheatsheet (`4de2727`) + docs refresh (`44ef399`) |
+| (pending) | verus-fork | `EXPECTED_ADSMT_VERSION` rc.15 → rc.16 + §3.5.J.pre 5-mode smoke matrix retry against T0'.1–.3 (verus-fork side; gated on rc.16 publish) |
+| (pending) | verus-fork | §3.5.H — vargo extends post-build hook to invoke `lu-smt --aot-bake --aot-include-cdcl` (verus-fork side; gated on rc.16 publish) |
+| (pending) | verus-fork | §3.5.I — SmtProcess threads `--aot-load <baked.luart-cdcl> --jit-trace-load <baked.trace>` into argv when both files exist (verus-fork side; gated on §3.5.H) |
+| (pending) | verus-fork | §3.5.J — 5-mode smoke matrix retry against §3.5-baked artefact + T0' (verus-fork side; gated on §3.5.H + §3.5.I + §3.5.J.pre).  Expectation: 5–7 s threshold disappears, every `--rlimit ≥ 1 s` budget surfaces a productive verdict. |
+| (pending) | adsmt | §3.5.F engine-side event replay — wire `restore_cdcl_state(...)` into `check_sat_with_deadline` so guard-passed traces actually fire instead of just gating fallback. |
