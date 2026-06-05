@@ -1193,9 +1193,28 @@ impl Solver {
         let sat_result = crate::oxiz_backend::solve(&clauses);
         #[cfg(all(feature = "cadical", not(feature = "oxiz")))]
         let sat_result = crate::cadical_backend::solve(&clauses);
+        // §1.3 v1 / verus-fork rc.19 retry (b'') — when the
+        // JIT tracer is active, route the satisfiability-only
+        // first stage through the recording variant so the
+        // recorder captures events on Unsat / Unknown verdicts
+        // (pre-rc.20 only the model-carrying second-stage call
+        // ran through the recording variant, so Sat traces
+        // populated but Unsat / deadline-cancelled
+        // `(check-sat)`s emitted vacuous artefacts).
         #[cfg(not(any(feature = "oxiz", feature = "cadical")))]
-        let sat_result =
-            crate::cdcl::cdcl_with_restarts_deadline(&clauses, 64, 12, deadline);
+        let sat_result = if self.jit_tracer.is_some() {
+            let mut sink = CdclTracerSink {
+                tracer: self
+                    .jit_tracer
+                    .as_mut()
+                    .expect("is_some checked above"),
+            };
+            crate::cdcl::cdcl_with_restarts_deadline_recording(
+                &clauses, 64, 12, deadline, &mut sink,
+            )
+        } else {
+            crate::cdcl::cdcl_with_restarts_deadline(&clauses, 64, 12, deadline)
+        };
         match sat_result {
             BoolResult::Sat => {
                 // The model-extracting re-run must carry the same

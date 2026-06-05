@@ -111,6 +111,30 @@ pub fn cdcl_with_restarts_deadline(
     cdcl_with_restarts_with_model_deadline(clauses, base_conflicts, restarts, deadline).into()
 }
 
+/// §1.3 v1 / verus-fork rc.19 retry (b'') — recording
+/// variant of [`cdcl_with_restarts_deadline`].  Routes the
+/// satisfiability-only path through
+/// [`cdcl_with_restarts_with_model_deadline_recording`] so
+/// the recorder captures `Propagate` / `Conflict` /
+/// `Backjump` / `Decide` / `Restart` events on Unsat and
+/// Unknown verdicts as well as Sat (pre-rc.20 the engine
+/// only routed the *model-carrying* re-run through the
+/// recording variant, so Unsat / deadline-cancelled
+/// `(check-sat)`s emitted vacuous artefacts even though the
+/// CDCL inner loop walked through events worth recording).
+pub fn cdcl_with_restarts_deadline_recording(
+    clauses: &[Clause],
+    base_conflicts: usize,
+    restarts: usize,
+    deadline: Option<std::time::Instant>,
+    sink: &mut dyn CdclEventSink,
+) -> BoolResult {
+    cdcl_with_restarts_with_model_deadline_recording(
+        clauses, base_conflicts, restarts, deadline, sink,
+    )
+    .into()
+}
+
 /// Model-carrying variant of [`cdcl_with_restarts`]. Returns the
 /// raw [`CdclOutcome`] so callers that want the satisfying
 /// assignment (e.g. `Solver::check_sat` populating
