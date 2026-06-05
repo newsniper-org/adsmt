@@ -1,0 +1,43 @@
+samples: 13482
+top 40 frames by sample count
+===============================
+  9.20%  clone<adsmt_core::term::TermInner,
+  5.85%  pick_vsids_atom+0x231
+  5.85%  evaluate_clause+0x231
+  5.85%  clone+0x231
+  5.85%  atom_key+0x231
+  4.30%  get<adsmt_core::term::Term,
+  3.33%  pick_vsids_atom+0x52a
+  3.33%  clone+0x52a
+  3.33%  atom_key+0x52a
+  2.80%  make_hash<adsmt_core::term::Term,
+  2.80%  hash_one<std::hash::random::RandomState,
+  2.33%  contains_key<adsmt_core::term::Term,
+  0.73%  drop_in_place<alloc::sync::Arc<adsmt_core::term::TermInner,
+  0.73%  drop<adsmt_core::term::TermInner,
+  0.68%  finish+0x2cf
+  0.51%  get<(adsmt_core::term::Term,
+  0.51%  find<(adsmt_core::term::Term,
+  0.42%  pick_vsids_atom+0x491
+  0.42%  evaluate_clause+0x491
+  0.42%  drop_in_place<adsmt_core::term::Term>+0x491
+  0.42%  finish+0x363
+  0.36%  finish+0x638
+  0.34%  pick_vsids_atom+0x2cf
+  0.34%  finish<core::hash::sip::Sip13Rounds>+0x2cf
+  0.34%  evaluate_clause+0x2cf
+  0.33%  pick_vsids_atom+0x4df
+  0.33%  evaluate_clause+0x4df
+  0.33%  drop_in_place<alloc::vec::Vec<&adsmt_engine::cnf::Lit,
+  0.33%  drop_in_place<alloc::raw_vec::RawVec<&adsmt_engine::cnf::Lit,
+  0.33%  drop<&adsmt_engine::cnf::Lit,
+  0.33%  deallocate_impl_runtime+0x4df
+  0.33%  deallocate_impl+0x4df
+  0.33%  deallocate<alloc::alloc::Global>+0x4df
+  0.33%  deallocate+0x4df
+  0.33%  dealloc_nonnull+0x4df
+  0.33%  dealloc+0x4df
+  0.33%  __rdl_dealloc+0x4df
+  0.33%  [unknown]
+  0.31%  finish+0x2e2
+  0.24%  finish+0x377

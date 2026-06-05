@@ -561,10 +561,10 @@ fn build_cdcl_section(
     let leftover_keys: Vec<String> = state
         .trail
         .iter()
-        .map(|e| e.atom_key.clone())
-        .chain(state.watches.keys().map(|(k, _)| k.clone()))
-        .chain(state.activity.keys().cloned())
-        .chain(state.saved_phase.keys().cloned())
+        .map(|e| e.atom.to_string())
+        .chain(state.watches.keys().map(|(k, _)| k.to_string()))
+        .chain(state.activity.keys().map(|k| k.to_string()))
+        .chain(state.saved_phase.keys().map(|k| k.to_string()))
         .filter(|k| !atom_key_to_pool_idx.contains_key(k))
         .collect();
     for k in &leftover_keys {
@@ -597,7 +597,7 @@ fn build_cdcl_section(
         .trail
         .iter()
         .filter_map(|e| {
-            let idx = lookup(&e.atom_key)?;
+            let idx = lookup(&e.atom.to_string())?;
             Some(adsmt_aot::TrailEntry {
                 atom_pool_idx: idx,
                 polarity: e.polarity,
@@ -614,7 +614,7 @@ fn build_cdcl_section(
         .watches
         .iter()
         .filter_map(|((atom_key, polarity), clauses)| {
-            let idx = lookup(atom_key)?;
+            let idx = lookup(&atom_key.to_string())?;
             Some(adsmt_aot::WatchEntry {
                 atom_pool_idx: idx,
                 polarity: *polarity,
@@ -626,7 +626,7 @@ fn build_cdcl_section(
         .activity
         .iter()
         .filter_map(|(atom_key, activity)| {
-            let idx = lookup(atom_key)?;
+            let idx = lookup(&atom_key.to_string())?;
             Some(adsmt_aot::VsidsEntry {
                 atom_pool_idx: idx,
                 activity: *activity,
@@ -637,7 +637,7 @@ fn build_cdcl_section(
         .saved_phase
         .iter()
         .filter_map(|(atom_key, polarity)| {
-            let idx = lookup(atom_key)?;
+            let idx = lookup(&atom_key.to_string())?;
             Some(adsmt_aot::SavedPhaseEntry {
                 atom_pool_idx: idx,
                 polarity: *polarity,

@@ -42,7 +42,19 @@ CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph \
     -- --aot-load /tmp/big.luart < /tmp/per-query.smt2
 ```
 
-## Findings
+## Wall-clock comparison
+
+| version | run 1 | run 2 | run 3 | median |
+|---|---:|---:|---:|---:|
+| rc.20                | 5 975 ms | 5 955 ms | 5 852 ms | **5 955 ms** |
+| rc.21 post-migration | 1 923 ms | 1 935 ms | 1 922 ms | **1 923 ms** |
+
+≈ **67 % wall-clock reduction** on the verus_smoke-shaped
+fixture.  The +662 → +747 ms regression rc.15 → rc.19/20
+verus-fork measured is now reversed by ~3 s, taking the
+load-path below rc.15's baseline.
+
+## Pre-migration findings (rc.20)
 
 See `2026-06-05-rc20-v0-load-flamegraph.txt` for the
 `perf script` cycle attribution.  Headline numbers:
@@ -59,14 +71,14 @@ See `2026-06-05-rc20-v0-load-flamegraph.txt` for the
 |     0.2% | `push_str` / `write_str` chain    | `Term::to_string()`     |
 |     0.2% | `to_string<adsmt_core::term::Term>` | `Term::Display`       |
 
-**Combined allocator chain: ~12.6% of total cycles.**
+**Combined allocator chain: ~12.6 % of total cycles.**
 
 Each allocator hit traces back to a `Term::to_string()` call
 that produces a fresh owned `String`.  The trail of who's
 calling `to_string()` highest up:
 
 - `cdcl::atom_key(lit) -> String { lit.atom.to_string() }`
-  (line 1080 in `adsmt-engine/src/cdcl.rs`)
+  (line 1171 in `adsmt-engine/src/cdcl.rs` pre-rc.21)
 - Every `CdclState` field keyed by atom-string: `assign:
   HashMap<String, bool>`, `activity: HashMap<String, f64>`,
   `saved_phase: HashMap<String, bool>`, `watches:
@@ -76,38 +88,36 @@ calling `to_string()` highest up:
   update on `assign`, push onto `trail`).
 
 On a verus_smoke-sized fixture (~5 k clauses), the inner
-loop walks through ~10⁵ propagation steps × ≥ 4
+loop walked through ~10⁵ propagation steps × ≥ 4
 `atom_key` calls per step × ~one allocator pair per call
-= ~4 × 10⁵ alloc/free pairs.  That's the +662 → +747 ms
-regression rc.15 → rc.19/20 the verus-fork retries
-measured.
+= ~4 × 10⁵ alloc/free pairs.
 
-## Recommended fix (large, queued for rc.22)
+## Post-migration findings (rc.21)
 
-Migrate `CdclState`'s atom-keyed HashMaps from
-`HashMap<String, _>` to `HashMap<Term, _>` (or
-`HashMap<Arc<TermInner>, _>` if the boundary types want
-the ptr explicitly).  Post-rc.10 `Term::Hash` / `Eq` are
-`Arc::ptr_eq` O(1), so the lookup cost stays the same
-but the per-step `to_string()` allocation disappears.
+`.atom_key: String` → `.atom: Term` migration landed in rc.21
+(see commit history for the engine + solver + CLI diff).
+`Term::Hash` / `Eq` are `Arc::ptr_eq` O(1) post-rc.10
+hash-cons, so the HashMap probe stays cheap but the per-step
+`to_string()` allocation disappears.
 
-Scope is large: `TrailEntry::atom_key: String`,
-`CdclState::assign / activity / saved_phase / watches`,
-plus the helper `atom_key(&Lit) -> String` and every
-callsite that destructures a `(String, _)` watch key.
-Two-watched-literals propagator, `analyze_conflict_1uip`
-resolution loop, `compute_lbd`, `pick_vsids_atom`,
-`build_watches`, `register_clause_watches` all touch
-the same key shape.
+Re-run `perf script` cycle attribution
+(`2026-06-05-post-migration-flamegraph.txt`):
 
-Out of scope for rc.21's three-fix priority list — filed
-as the rc.22 priority follow-up.
+| % cycles | function                                    | category        |
+|---------:|---------------------------------------------|-----------------|
+|     9.2% | `clone<TermInner>`                          | Arc refcount    |
+|     5.85%| `pick_vsids_atom+0x231` / `evaluate_clause+0x231` | CDCL inner loop |
+|     5.85%| `atom_key+0x231`                            | Arc clone       |
+|     4.30%| `get<Term, …>`                              | HashMap probe   |
+|     2.80%| `make_hash<Term>` / `hash_one<…>`           | Hash machinery  |
+|     2.33%| `contains_key<Term, …>`                     | HashMap probe   |
+|     0.73%| `drop_in_place<Arc<TermInner>>`             | Arc drop        |
 
-## Why not just intern the String?
+**Combined allocator chain: 0 % of the top 12 frames.**
+`__libc_malloc`, `tcache_get`, `checked_request2size`,
+`__libc_free` all dropped below the top-40 threshold.
 
-A thread-local `OnceCell<String>`-style cache keyed on
-`Arc::as_ptr` could collapse the duplicate allocations
-without changing the CdclState's HashMap key shape,
-but it would still leave the HashMap's lookup paying
-the `String` hash cost on every probe.  Migrating the
-key type itself is the structurally-correct fix.
+The remaining cycle budget is now in the CDCL algorithm
+itself (VSIDS pick + clause evaluation + Arc::clone for
+hash-cons handles) — there is no further low-hanging-fruit
+allocator hotspot on the v0 `--aot-load` path.

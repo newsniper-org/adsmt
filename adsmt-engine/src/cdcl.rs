@@ -49,6 +49,8 @@
 
 use std::collections::HashMap;
 
+use adsmt_core::Term;
+
 use crate::bool_solver::{luby_sequence, BoolResult};
 use crate::cnf::{Clause, Lit};
 
@@ -232,9 +234,17 @@ pub enum Reason {
 }
 
 /// One assignment recorded on the trail.
+///
+/// `atom` is held as a [`Term`] (hash-consed, `Arc::ptr_eq` Hash/Eq
+/// since rc.10) so the inner-loop propagation paths can key
+/// [`CdclState::assign`] / `activity` / `saved_phase` / `watches`
+/// directly without allocating a fresh `String` per access.  The
+/// CdclEventSink boundary (which speaks `&str`) renders to
+/// `atom.to_string()` at call time — paid once per recorded event,
+/// not once per propagation step.
 #[derive(Clone, Debug)]
 pub struct TrailEntry {
-    pub atom_key: String,
+    pub atom: Term,
     pub polarity: bool,
     /// 0 for the pre-decision propagation prefix, 1+ for entries
     /// underneath the n-th decision.
@@ -249,7 +259,13 @@ pub struct TrailEntry {
 #[derive(Default, Debug)]
 pub struct CdclState {
     pub trail: Vec<TrailEntry>,
-    pub assign: HashMap<String, bool>,
+    /// Atom-keyed assignment map.  Key is a hash-consed [`Term`]
+    /// so post-rc.10 the Hash / Eq paths are `Arc::ptr_eq` O(1)
+    /// and the inner propagation loop pays zero allocations per
+    /// lookup.  The boundary to `CdclOutcome::Sat`'s
+    /// `HashMap<String, bool>` model surface is converted exactly
+    /// once at the verdict edge.
+    pub assign: HashMap<Term, bool>,
     pub decision_level: u32,
     /// v0.21 B.1 stage 3 — clauses learnt by
     /// [`analyze_conflict_1uip`]. Stored separately from the
@@ -263,7 +279,7 @@ pub struct CdclState {
     /// learnt clause; periodic [`Self::decay_activity`] scales
     /// every score by `decay_factor` so recently-active atoms
     /// dominate the decision order. See `pick_vsids_atom` (internal).
-    pub activity: HashMap<String, f64>,
+    pub activity: HashMap<Term, f64>,
     /// v0.21 B.1 follow-up — phase saving. Records the polarity
     /// each atom most recently held on the trail before being
     /// popped by a backtrack. New decisions on the same atom
@@ -271,7 +287,7 @@ pub struct CdclState {
     /// to `true`. Classical CDCL "phase saving" heuristic —
     /// keeps locality across restarts and tends to flip many
     /// Unknown verdicts to Sat on satisfiable inputs.
-    pub saved_phase: HashMap<String, bool>,
+    pub saved_phase: HashMap<Term, bool>,
     /// v0.21 B.1 follow-up — per-learnt-clause activity score.
     /// Parallel to [`Self::learnt_clauses`]: index `i` holds
     /// the activity of `learnt_clauses[i]`. Each time the
@@ -303,7 +319,7 @@ pub struct CdclState {
     /// the propagator looks up `watches[(atom, true)]` (the
     /// clauses whose watched literal `Lit{atom, false}` just
     /// became false) and re-evaluates them.
-    pub watches: HashMap<(String, bool), Vec<usize>>,
+    pub watches: HashMap<(Term, bool), Vec<usize>>,
     /// v1.0.0-rc.1 RC1.2 — head pointer into `trail` marking
     /// the next entry the propagator hasn't processed yet. The
     /// two-watched-literals propagator advances this monotonically;
@@ -318,13 +334,13 @@ impl CdclState {
     /// and the *current* `decision_level`. Bumps `decision_level`
     /// by 1 when the reason is a fresh decision so the next
     /// propagated entries inherit the new level.
-    pub fn push(&mut self, atom_key: String, polarity: bool, reason: Reason) {
+    pub fn push(&mut self, atom: Term, polarity: bool, reason: Reason) {
         if matches!(reason, Reason::Decision) {
             self.decision_level += 1;
         }
-        self.assign.insert(atom_key.clone(), polarity);
+        self.assign.insert(atom.clone(), polarity);
         self.trail.push(TrailEntry {
-            atom_key,
+            atom,
             polarity,
             decision_level: self.decision_level,
             reason,
@@ -368,8 +384,8 @@ impl CdclState {
         while let Some(last) = self.trail.last() {
             if last.decision_level <= level { break; }
             let entry = self.trail.pop().expect("checked above");
-            self.assign.remove(&entry.atom_key);
-            self.saved_phase.insert(entry.atom_key, entry.polarity);
+            self.assign.remove(&entry.atom);
+            self.saved_phase.insert(entry.atom, entry.polarity);
         }
         self.decision_level = level;
         // v1.0.0-rc.1 RC1.2 — clamp prop_head to the new trail
@@ -382,12 +398,25 @@ impl CdclState {
 }
 
 /// v0.21 B.1 follow-up — Sat outcome carrying the satisfying
-/// assignment.
+/// assignment.  The model keys are atom name `String`s for
+/// backwards compatibility with the [`crate::result::Model`]
+/// boundary; internally the engine carries the assignment as
+/// `HashMap<Term, bool>` and converts exactly once via
+/// [`model_from_assign`] when constructing this variant.
 #[derive(Clone, Debug)]
 pub enum CdclOutcome {
     Sat { model: HashMap<String, bool> },
     Unsat,
     Unknown,
+}
+
+/// Convert the engine-internal `HashMap<Term, bool>` assignment
+/// into the [`CdclOutcome::Sat`] model surface (`HashMap<String,
+/// bool>`).  Called exactly once at the Sat boundary so the
+/// inner CDCL hot path never pays a `Term::to_string()`
+/// allocation per propagation step.
+fn model_from_assign(assign: HashMap<Term, bool>) -> HashMap<String, bool> {
+    assign.into_iter().map(|(t, b)| (t.to_string(), b)).collect()
 }
 
 impl From<CdclOutcome> for BoolResult {
@@ -621,7 +650,7 @@ pub fn cdcl_solve_with_model_deadline_with_seed(
         }
         let key = pick_vsids_atom(&owned[..input_len], &state);
         let Some(key) = key else {
-            return CdclOutcome::Sat { model: state.assign };
+            return CdclOutcome::Sat { model: model_from_assign(state.assign) };
         };
         let phase = state.saved_phase.get(&key).copied().unwrap_or(true);
         state.push(key, phase, Reason::Decision);
@@ -697,7 +726,7 @@ pub fn cdcl_solve_with_model_deadline_recording(
                 Reason::Decision => -1,
                 Reason::Propagated { clause_idx } => clause_idx as i64,
             };
-            sink.on_propagate(&entry.atom_key, entry.polarity, antecedent);
+            sink.on_propagate(&entry.atom.to_string(), entry.polarity, antecedent);
         }
         last_reported_trail_len = state.trail.len();
 
@@ -794,10 +823,10 @@ pub fn cdcl_solve_with_model_deadline_recording(
         }
         let key = pick_vsids_atom(&owned[..input_len], &state);
         let Some(key) = key else {
-            return CdclOutcome::Sat { model: state.assign };
+            return CdclOutcome::Sat { model: model_from_assign(state.assign) };
         };
         let phase = state.saved_phase.get(&key).copied().unwrap_or(true);
-        sink.on_decide(&key, phase);
+        sink.on_decide(&key.to_string(), phase);
         state.push(key, phase, Reason::Decision);
     }
 }
@@ -868,8 +897,8 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
 /// the unassigned literal with the highest activity score. Falls
 /// back to the first-unassigned policy when no unassigned atom
 /// has been bumped yet (cold start — every score is 0).
-fn pick_vsids_atom(input_clauses: &[Clause], state: &CdclState) -> Option<String> {
-    let mut best: Option<(String, f64)> = None;
+fn pick_vsids_atom(input_clauses: &[Clause], state: &CdclState) -> Option<Term> {
+    let mut best: Option<(Term, f64)> = None;
     for clause in input_clauses {
         match evaluate_clause(clause, &state.assign) {
             ClauseEval::Satisfied => continue,
@@ -1029,7 +1058,7 @@ fn propagate_two_watched(
         // The literal whose polarity just became false is the
         // negation of the assigned polarity.
         let false_polarity = !entry.polarity;
-        let key = (entry.atom_key.clone(), false_polarity);
+        let key = (entry.atom.clone(), false_polarity);
         let watched_clauses: Vec<usize> = state
             .watches
             .get(&key)
@@ -1047,12 +1076,12 @@ fn propagate_two_watched(
             // Identify which slot the now-falsified literal
             // occupies in this clause.
             let (false_slot, other_slot) = if w0 < clause.len()
-                && atom_key(&clause[w0]) == entry.atom_key
+                && atom_key(&clause[w0]) == entry.atom
                 && clause[w0].polarity == false_polarity
             {
                 (0usize, w1)
             } else if w1 < clause.len()
-                && atom_key(&clause[w1]) == entry.atom_key
+                && atom_key(&clause[w1]) == entry.atom
                 && clause[w1].polarity == false_polarity
             {
                 (1usize, w0)
@@ -1168,7 +1197,12 @@ fn propagate(clauses: &[Clause], state: &mut CdclState) -> PropOutcome {
     PropOutcome::Fixed
 }
 
-fn atom_key(lit: &Lit) -> String { lit.atom.to_string() }
+/// Cheap-clone atom extractor.  `Lit::atom` is a hash-consed
+/// [`Term`] so this is an `Arc::clone` (refcount bump) — O(1)
+/// and allocation-free.  Used everywhere the inner CDCL loop
+/// needs a key for [`CdclState`]'s `assign` / `activity` /
+/// `saved_phase` / `watches` maps.
+fn atom_key(lit: &Lit) -> Term { lit.atom.clone() }
 
 /// v0.21 B.1 (stage 2) — 1-UIP conflict analysis.
 ///
@@ -1198,7 +1232,7 @@ pub fn analyze_conflict_1uip(
 ) -> (Vec<Lit>, u32) {
     use std::collections::HashSet;
     let current_level = state.decision_level;
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<Term> = HashSet::new();
     // Learnt accumulates literals NOT at the current level.
     let mut learnt: Vec<Lit> = Vec::new();
     let mut count_current_level: usize = 0;
@@ -1208,7 +1242,7 @@ pub fn analyze_conflict_1uip(
     // clause's), but on the trail the *opposite* polarity is
     // assigned (which is what makes the clause falsified /
     // unit-propagates on the remaining literal).
-    let process_lit = |lit: &Lit, seen: &mut HashSet<String>,
+    let process_lit = |lit: &Lit, seen: &mut HashSet<Term>,
                            learnt: &mut Vec<Lit>,
                            count_current_level: &mut usize| {
         let key = atom_key(lit);
@@ -1217,7 +1251,7 @@ pub fn analyze_conflict_1uip(
         let level = state
             .trail
             .iter()
-            .find(|e| e.atom_key == key)
+            .find(|e| e.atom == key)
             .map(|e| e.decision_level)
             .unwrap_or(0);
         if level == current_level {
@@ -1245,7 +1279,7 @@ pub fn analyze_conflict_1uip(
         if trail_idx == 0 { break; }
         trail_idx -= 1;
         let entry = &state.trail[trail_idx];
-        if !seen.contains(&entry.atom_key) { continue; }
+        if !seen.contains(&entry.atom) { continue; }
         if entry.decision_level != current_level { continue; }
         // Resolve this literal.
         count_current_level -= 1;
@@ -1257,9 +1291,7 @@ pub fn analyze_conflict_1uip(
                 // to 1 means there is no further resolution at
                 // this level; the decision IS the UIP.
                 uip_lit = Some(Lit::new(
-                    entry_to_atom_term(clauses, entry).unwrap_or_else(
-                        || Lit::pos(any_atom_of_clause(&clauses[conflict_idx])).atom,
-                    ),
+                    entry.atom.clone(),
                     !entry.polarity,
                 ));
                 break;
@@ -1267,7 +1299,7 @@ pub fn analyze_conflict_1uip(
             Reason::Propagated { clause_idx } => {
                 let antecedent = &clauses[clause_idx];
                 for lit in antecedent {
-                    if atom_key(lit) == entry.atom_key { continue; }
+                    if atom_key(lit) == entry.atom { continue; }
                     process_lit(
                         lit,
                         &mut seen,
@@ -1283,10 +1315,9 @@ pub fn analyze_conflict_1uip(
     if uip_lit.is_none() {
         for entry in state.trail.iter().rev() {
             if entry.decision_level != current_level { continue; }
-            if !seen.contains(&entry.atom_key) { continue; }
+            if !seen.contains(&entry.atom) { continue; }
             uip_lit = Some(Lit::new(
-                term_for_atom_key(clauses, &entry.atom_key)
-                    .expect("atom key must originate in some clause literal"),
+                entry.atom.clone(),
                 !entry.polarity,
             ));
             break;
@@ -1303,7 +1334,7 @@ pub fn analyze_conflict_1uip(
             state
                 .trail
                 .iter()
-                .find(|e| e.atom_key == atom_key(l))
+                .find(|e| e.atom == atom_key(l))
                 .map(|e| e.decision_level)
         })
         .filter(|&lvl| lvl < current_level)
@@ -1350,11 +1381,11 @@ pub fn analyze_conflict_1uip_deadline(
 ) -> AnalyzeOutcome {
     use std::collections::HashSet;
     let current_level = state.decision_level;
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<Term> = HashSet::new();
     let mut learnt: Vec<Lit> = Vec::new();
     let mut count_current_level: usize = 0;
 
-    let process_lit = |lit: &Lit, seen: &mut HashSet<String>,
+    let process_lit = |lit: &Lit, seen: &mut HashSet<Term>,
                            learnt: &mut Vec<Lit>,
                            count_current_level: &mut usize| {
         let key = atom_key(lit);
@@ -1363,7 +1394,7 @@ pub fn analyze_conflict_1uip_deadline(
         let level = state
             .trail
             .iter()
-            .find(|e| e.atom_key == key)
+            .find(|e| e.atom == key)
             .map(|e| e.decision_level)
             .unwrap_or(0);
         if level == current_level {
@@ -1390,15 +1421,13 @@ pub fn analyze_conflict_1uip_deadline(
         if trail_idx == 0 { break; }
         trail_idx -= 1;
         let entry = &state.trail[trail_idx];
-        if !seen.contains(&entry.atom_key) { continue; }
+        if !seen.contains(&entry.atom) { continue; }
         if entry.decision_level != current_level { continue; }
         count_current_level -= 1;
         match entry.reason {
             Reason::Decision => {
                 uip_lit = Some(Lit::new(
-                    entry_to_atom_term(clauses, entry).unwrap_or_else(
-                        || Lit::pos(any_atom_of_clause(&clauses[conflict_idx])).atom,
-                    ),
+                    entry.atom.clone(),
                     !entry.polarity,
                 ));
                 break;
@@ -1406,7 +1435,7 @@ pub fn analyze_conflict_1uip_deadline(
             Reason::Propagated { clause_idx } => {
                 let antecedent = &clauses[clause_idx];
                 for lit in antecedent {
-                    if atom_key(lit) == entry.atom_key { continue; }
+                    if atom_key(lit) == entry.atom { continue; }
                     process_lit(
                         lit,
                         &mut seen,
@@ -1421,10 +1450,9 @@ pub fn analyze_conflict_1uip_deadline(
     if uip_lit.is_none() {
         for entry in state.trail.iter().rev() {
             if entry.decision_level != current_level { continue; }
-            if !seen.contains(&entry.atom_key) { continue; }
+            if !seen.contains(&entry.atom) { continue; }
             uip_lit = Some(Lit::new(
-                term_for_atom_key(clauses, &entry.atom_key)
-                    .expect("atom key must originate in some clause literal"),
+                entry.atom.clone(),
                 !entry.polarity,
             ));
             break;
@@ -1441,7 +1469,7 @@ pub fn analyze_conflict_1uip_deadline(
             state
                 .trail
                 .iter()
-                .find(|e| e.atom_key == atom_key(l))
+                .find(|e| e.atom == atom_key(l))
                 .map(|e| e.decision_level)
         })
         .filter(|&lvl| lvl < current_level)
@@ -1475,7 +1503,7 @@ pub trait CdclEventSink {
 /// fixpoint without making any decisions.  Returns the
 /// resulting state for downstream serialisation into the
 /// `.luart-cdcl` v1 section.  Caller-side mapping from
-/// `state.trail[*].atom_key` (a `String` rendering of the
+/// `state.trail[*].atom` (a `String` rendering of the
 /// `Lit::atom: Term`) to the `.luart` v0 pool index is the
 /// `dump_cdcl_state` consumer's responsibility — this helper
 /// stays Term-DAG-agnostic so it can be reused by any other
@@ -1535,7 +1563,7 @@ where
             Reason::Decision => -1,
             Reason::Propagated { clause_idx } => clause_idx as i64,
         };
-        record_propagate(&entry.atom_key, entry.polarity, antecedent);
+        record_propagate(&entry.atom.to_string(), entry.polarity, antecedent);
     }
     state
 }
@@ -1551,39 +1579,11 @@ pub fn compute_lbd(clause: &Clause, state: &CdclState) -> usize {
     let mut levels: HashSet<u32> = HashSet::new();
     for lit in clause {
         let key = atom_key(lit);
-        if let Some(entry) = state.trail.iter().find(|e| e.atom_key == key) {
+        if let Some(entry) = state.trail.iter().find(|e| e.atom == key) {
             levels.insert(entry.decision_level);
         }
     }
     levels.len()
-}
-
-/// Find any clause literal whose atom-key matches `key`, returning
-/// its underlying [`adsmt_core::Term`] so we can rebuild a new
-/// `Lit` with the opposite polarity for the learnt clause.
-fn term_for_atom_key(
-    clauses: &[Clause],
-    key: &str,
-) -> Option<adsmt_core::Term> {
-    for c in clauses {
-        for lit in c {
-            if atom_key(lit) == key {
-                return Some(lit.atom.clone());
-            }
-        }
-    }
-    None
-}
-
-fn entry_to_atom_term(
-    clauses: &[Clause],
-    entry: &TrailEntry,
-) -> Option<adsmt_core::Term> {
-    term_for_atom_key(clauses, &entry.atom_key)
-}
-
-fn any_atom_of_clause(clause: &Clause) -> adsmt_core::Term {
-    clause[0].atom.clone()
 }
 
 enum ClauseEval {
@@ -1597,7 +1597,7 @@ enum ClauseEval {
     Open,
 }
 
-fn evaluate_clause(clause: &Clause, assign: &HashMap<String, bool>) -> ClauseEval {
+fn evaluate_clause(clause: &Clause, assign: &HashMap<Term, bool>) -> ClauseEval {
     let mut unassigned: Vec<&Lit> = Vec::new();
     for lit in clause {
         let key = atom_key(lit);
@@ -1617,10 +1617,12 @@ fn evaluate_clause(clause: &Clause, assign: &HashMap<String, bool>) -> ClauseEva
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adsmt_core::{Term, Type};
+    use adsmt_core::Type;
 
     fn p() -> Term { Term::var("p", Type::bool_()) }
     fn q() -> Term { Term::var("q", Type::bool_()) }
+    fn r() -> Term { Term::var("r", Type::bool_()) }
+    fn v(name: &str) -> Term { Term::var(name, Type::bool_()) }
 
     #[test]
     fn empty_clauses_is_sat() {
@@ -1668,20 +1670,20 @@ mod tests {
         let mut state = CdclState::new();
         let outcome = propagate(&cs, &mut state);
         assert!(matches!(outcome, PropOutcome::Fixed));
-        assert!(state.assign.get("p").copied() == Some(true));
-        assert!(state.assign.get("q").copied() == Some(true));
+        assert!(state.assign.get(&p()).copied() == Some(true));
+        assert!(state.assign.get(&q()).copied() == Some(true));
         // Both came in at decision_level=0 (no decision happened).
         assert!(state.trail.iter().all(|e| e.decision_level == 0));
         // The trail entry for `q` should record the propagating clause idx (1).
-        let q_entry = state.trail.iter().find(|e| e.atom_key == "q").unwrap();
+        let q_entry = state.trail.iter().find(|e| e.atom == q()).unwrap();
         assert!(matches!(q_entry.reason, Reason::Propagated { clause_idx: 1 }));
     }
 
     #[test]
     fn backtrack_to_level_zero_clears_decisions() {
         let mut state = CdclState::new();
-        state.push("p".into(), true, Reason::Decision);
-        state.push("q".into(), false, Reason::Propagated { clause_idx: 0 });
+        state.push(p(), true, Reason::Decision);
+        state.push(q(), false, Reason::Propagated { clause_idx: 0 });
         assert_eq!(state.decision_level, 1);
         assert_eq!(state.trail.len(), 2);
         state.backtrack_to(0);
@@ -1708,12 +1710,12 @@ mod tests {
         ];
         let mut state = CdclState::new();
         // Manually drive: decide p=true at level 1.
-        state.push("p".into(), true, Reason::Decision);
+        state.push(p(), true, Reason::Decision);
         // After decision, propagation finds c1 falsified.
         let (learnt, bj_level) = analyze_conflict_1uip(&cs, &state, 1);
         assert_eq!(learnt.len(), 1, "learnt clause is unit");
         assert!(!learnt[0].polarity, "learnt is ¬p");
-        assert_eq!(atom_key(&learnt[0]), "p");
+        assert_eq!(atom_key(&learnt[0]), p());
         assert_eq!(bj_level, 0, "unit learnt ⇒ backjump to root");
     }
 
@@ -1734,19 +1736,18 @@ mod tests {
         // This is the canonical 1-UIP behaviour: resolve back
         // only as far as needed to make the cut unique, NOT all
         // the way to the decision.
-        let r = Term::var("r", Type::bool_());
         let cs = vec![
             vec![Lit::neg(p()), Lit::pos(q())],
-            vec![Lit::neg(q()), Lit::pos(r.clone())],
-            vec![Lit::neg(r)],
+            vec![Lit::neg(q()), Lit::pos(r())],
+            vec![Lit::neg(r())],
         ];
         let mut state = CdclState::new();
-        state.push("p".into(), true, Reason::Decision);
-        state.push("q".into(), true, Reason::Propagated { clause_idx: 0 });
-        state.push("r".into(), true, Reason::Propagated { clause_idx: 1 });
+        state.push(p(), true, Reason::Decision);
+        state.push(q(), true, Reason::Propagated { clause_idx: 0 });
+        state.push(r(), true, Reason::Propagated { clause_idx: 1 });
         let (learnt, bj_level) = analyze_conflict_1uip(&cs, &state, 2);
         assert_eq!(learnt.len(), 1, "first UIP at r, no chain resolution needed");
-        assert_eq!(atom_key(&learnt[0]), "r");
+        assert_eq!(atom_key(&learnt[0]), r());
         assert!(!learnt[0].polarity);
         assert_eq!(bj_level, 0);
     }
@@ -1761,19 +1762,18 @@ mod tests {
         // becomes the conflict clause: literals ¬p (level 1),
         // ¬r (level 2). Two seen literals total, only one at
         // current level → already 1-UIP. Learnt = [¬p, ¬r].
-        let r = Term::var("r", Type::bool_());
         let cs = vec![
-            vec![Lit::neg(p()), Lit::neg(q()), Lit::pos(r.clone())],
-            vec![Lit::neg(p()), Lit::neg(r)],
+            vec![Lit::neg(p()), Lit::neg(q()), Lit::pos(r())],
+            vec![Lit::neg(p()), Lit::neg(r())],
         ];
         let mut state = CdclState::new();
-        state.push("p".into(), true, Reason::Decision);
-        state.push("q".into(), true, Reason::Decision);
-        state.push("r".into(), true, Reason::Propagated { clause_idx: 0 });
+        state.push(p(), true, Reason::Decision);
+        state.push(q(), true, Reason::Decision);
+        state.push(r(), true, Reason::Propagated { clause_idx: 0 });
         let (learnt, bj_level) = analyze_conflict_1uip(&cs, &state, 1);
-        let keys: Vec<String> = learnt.iter().map(atom_key).collect();
-        assert!(keys.contains(&"r".to_string()));
-        assert!(keys.contains(&"p".to_string()));
+        let keys: Vec<Term> = learnt.iter().map(atom_key).collect();
+        assert!(keys.contains(&r()));
+        assert!(keys.contains(&p()));
         assert_eq!(bj_level, 1, "backjump to the level of ¬p");
     }
 
@@ -1781,22 +1781,20 @@ mod tests {
 
     #[test]
     fn compute_lbd_counts_distinct_decision_levels() {
-        let r = Term::var("r", Type::bool_());
         let mut state = CdclState::new();
         // Level 1
-        state.push("p".into(), true, Reason::Decision);
-        state.push("q".into(), true, Reason::Propagated { clause_idx: 0 });
+        state.push(p(), true, Reason::Decision);
+        state.push(q(), true, Reason::Propagated { clause_idx: 0 });
         // Level 2
-        state.push("r".into(), true, Reason::Decision);
+        state.push(r(), true, Reason::Decision);
         // Clause mentioning p (lvl 1) and r (lvl 2) → LBD = 2.
-        let clause = vec![Lit::neg(p()), Lit::neg(r.clone())];
+        let clause = vec![Lit::neg(p()), Lit::neg(r())];
         assert_eq!(compute_lbd(&clause, &state), 2);
         // Clause mentioning p and q (both lvl 1) → LBD = 1.
         let clause = vec![Lit::neg(p()), Lit::neg(q())];
         assert_eq!(compute_lbd(&clause, &state), 1);
         // Clause mentioning an atom not on the trail → LBD = 0.
-        let z = Term::var("z", Type::bool_());
-        let clause = vec![Lit::pos(z)];
+        let clause = vec![Lit::pos(v("z"))];
         assert_eq!(compute_lbd(&clause, &state), 0);
     }
 
@@ -1816,6 +1814,9 @@ mod tests {
             }
             other => panic!("expected Sat, got {other:?}"),
         }
+        // `model` is the `CdclOutcome::Sat` boundary surface
+        // (HashMap<String, bool>), so the key is still the
+        // `Term::to_string()` rendering — that part is unchanged.
     }
 
     #[test]
@@ -1854,26 +1855,26 @@ mod tests {
     #[test]
     fn backtrack_records_polarity_in_saved_phase() {
         let mut state = CdclState::new();
-        state.push("p".into(), true, Reason::Decision);
-        state.push("q".into(), false, Reason::Propagated { clause_idx: 0 });
+        state.push(p(), true, Reason::Decision);
+        state.push(q(), false, Reason::Propagated { clause_idx: 0 });
         state.backtrack_to(0);
         // Both popped entries recorded their polarity.
-        assert_eq!(state.saved_phase.get("p").copied(), Some(true));
-        assert_eq!(state.saved_phase.get("q").copied(), Some(false));
+        assert_eq!(state.saved_phase.get(&p()).copied(), Some(true));
+        assert_eq!(state.saved_phase.get(&q()).copied(), Some(false));
     }
 
     #[test]
     fn backtrack_to_level_zero_is_idempotent_on_saved_phase() {
         let mut state = CdclState::new();
         // First decision at level 1.
-        state.push("p".into(), false, Reason::Decision);
+        state.push(p(), false, Reason::Decision);
         state.backtrack_to(0);
-        assert_eq!(state.saved_phase.get("p").copied(), Some(false));
+        assert_eq!(state.saved_phase.get(&p()).copied(), Some(false));
         // Re-decide with the opposite polarity, backtrack again —
         // the saved phase updates to the most recent polarity.
-        state.push("p".into(), true, Reason::Decision);
+        state.push(p(), true, Reason::Decision);
         state.backtrack_to(0);
-        assert_eq!(state.saved_phase.get("p").copied(), Some(true));
+        assert_eq!(state.saved_phase.get(&p()).copied(), Some(true));
     }
 
     // === Learnt clause deletion policy ===
@@ -1883,16 +1884,15 @@ mod tests {
         // 3-var pigeonhole — generates more conflicts/learnt than
         // the 2-var case, exercising the reduction code path. Still
         // closes within the conflict budget.
-        let r = Term::var("r", Type::bool_());
         let cs = vec![
-            vec![Lit::pos(p()), Lit::pos(q()), Lit::pos(r.clone())],
-            vec![Lit::neg(p()), Lit::pos(q()), Lit::pos(r.clone())],
-            vec![Lit::pos(p()), Lit::neg(q()), Lit::pos(r.clone())],
-            vec![Lit::neg(p()), Lit::neg(q()), Lit::pos(r.clone())],
-            vec![Lit::pos(p()), Lit::pos(q()), Lit::neg(r.clone())],
-            vec![Lit::neg(p()), Lit::pos(q()), Lit::neg(r.clone())],
-            vec![Lit::pos(p()), Lit::neg(q()), Lit::neg(r.clone())],
-            vec![Lit::neg(p()), Lit::neg(q()), Lit::neg(r)],
+            vec![Lit::pos(p()), Lit::pos(q()), Lit::pos(r())],
+            vec![Lit::neg(p()), Lit::pos(q()), Lit::pos(r())],
+            vec![Lit::pos(p()), Lit::neg(q()), Lit::pos(r())],
+            vec![Lit::neg(p()), Lit::neg(q()), Lit::pos(r())],
+            vec![Lit::pos(p()), Lit::pos(q()), Lit::neg(r())],
+            vec![Lit::neg(p()), Lit::pos(q()), Lit::neg(r())],
+            vec![Lit::pos(p()), Lit::neg(q()), Lit::neg(r())],
+            vec![Lit::neg(p()), Lit::neg(q()), Lit::neg(r())],
         ];
         assert_eq!(cdcl_solve(&cs, 64), BoolResult::Unsat);
     }
@@ -1905,18 +1905,18 @@ mod tests {
         let clause = vec![Lit::pos(p()), Lit::pos(q())];
         state.bump_activity(&clause, 1.0);
         state.bump_activity(&clause, 0.5);
-        assert!((state.activity.get("p").copied().unwrap() - 1.5).abs() < 1e-9);
-        assert!((state.activity.get("q").copied().unwrap() - 1.5).abs() < 1e-9);
+        assert!((state.activity.get(&p()).copied().unwrap() - 1.5).abs() < 1e-9);
+        assert!((state.activity.get(&q()).copied().unwrap() - 1.5).abs() < 1e-9);
     }
 
     #[test]
     fn decay_activity_scales_every_score() {
         let mut state = CdclState::new();
-        state.activity.insert("p".into(), 2.0);
-        state.activity.insert("q".into(), 1.0);
+        state.activity.insert(p(), 2.0);
+        state.activity.insert(q(), 1.0);
         state.decay_activity(0.5);
-        assert!((state.activity.get("p").copied().unwrap() - 1.0).abs() < 1e-9);
-        assert!((state.activity.get("q").copied().unwrap() - 0.5).abs() < 1e-9);
+        assert!((state.activity.get(&p()).copied().unwrap() - 1.0).abs() < 1e-9);
+        assert!((state.activity.get(&q()).copied().unwrap() - 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -1924,10 +1924,10 @@ mod tests {
         let cs = vec![vec![Lit::pos(p()), Lit::pos(q())]];
         let mut state = CdclState::new();
         // Bias toward q.
-        state.activity.insert("p".into(), 0.1);
-        state.activity.insert("q".into(), 5.0);
+        state.activity.insert(p(), 0.1);
+        state.activity.insert(q(), 5.0);
         let picked = pick_vsids_atom(&cs, &state).expect("a clause is open");
-        assert_eq!(picked, "q");
+        assert_eq!(picked, q());
     }
 
     #[test]
@@ -1940,7 +1940,7 @@ mod tests {
         // Either is acceptable in cold start; we just assert
         // SOMETHING was picked (i.e. the picker doesn't deadlock
         // on a tie).
-        assert!(picked == "p" || picked == "q");
+        assert!(picked == p() || picked == q());
     }
 
     // === Stage 4 — Luby restart wrapper ===
@@ -2050,20 +2050,20 @@ mod tests {
     #[test]
     fn backtrack_preserves_lower_level_entries() {
         let mut state = CdclState::new();
-        state.push("a".into(), true, Reason::Propagated { clause_idx: 0 });
-        state.push("b".into(), true, Reason::Decision);
-        state.push("c".into(), true, Reason::Propagated { clause_idx: 1 });
-        state.push("d".into(), true, Reason::Decision);
-        state.push("e".into(), true, Reason::Propagated { clause_idx: 2 });
+        state.push(v("a"), true, Reason::Propagated { clause_idx: 0 });
+        state.push(v("b"), true, Reason::Decision);
+        state.push(v("c"), true, Reason::Propagated { clause_idx: 1 });
+        state.push(v("d"), true, Reason::Decision);
+        state.push(v("e"), true, Reason::Propagated { clause_idx: 2 });
         // Levels: a=0, b=1, c=1, d=2, e=2
         assert_eq!(state.decision_level, 2);
         state.backtrack_to(1);
         assert_eq!(state.decision_level, 1);
         // a, b, c remain
-        assert!(state.assign.contains_key("a"));
-        assert!(state.assign.contains_key("b"));
-        assert!(state.assign.contains_key("c"));
-        assert!(!state.assign.contains_key("d"));
-        assert!(!state.assign.contains_key("e"));
+        assert!(state.assign.contains_key(&v("a")));
+        assert!(state.assign.contains_key(&v("b")));
+        assert!(state.assign.contains_key(&v("c")));
+        assert!(!state.assign.contains_key(&v("d")));
+        assert!(!state.assign.contains_key(&v("e")));
     }
 }

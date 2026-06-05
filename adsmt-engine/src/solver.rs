@@ -475,23 +475,22 @@ impl Solver {
         // safe at root level — conflict analysis short-circuits
         // before walking past it.
         for entry in &section.trail {
-            let term = pool.get(entry.atom_pool_idx as usize)?;
-            let key = term.to_string();
-            state.assign.insert(key.clone(), entry.polarity);
+            let term = pool.get(entry.atom_pool_idx as usize)?.clone();
+            state.assign.insert(term.clone(), entry.polarity);
             state.trail.push(crate::cdcl::TrailEntry {
-                atom_key: key,
+                atom: term,
                 polarity: entry.polarity,
                 decision_level: 0,
                 reason: crate::cdcl::Reason::Decision,
             });
         }
         for entry in &section.vsids {
-            let term = pool.get(entry.atom_pool_idx as usize)?;
-            state.activity.insert(term.to_string(), entry.activity);
+            let term = pool.get(entry.atom_pool_idx as usize)?.clone();
+            state.activity.insert(term, entry.activity);
         }
         for entry in &section.saved_phase {
-            let term = pool.get(entry.atom_pool_idx as usize)?;
-            state.saved_phase.insert(term.to_string(), entry.polarity);
+            let term = pool.get(entry.atom_pool_idx as usize)?.clone();
+            state.saved_phase.insert(term, entry.polarity);
         }
         Some(state)
     }
@@ -2416,7 +2415,7 @@ mod tests {
         let (clauses, state) = s.dump_cdcl_state();
         assert_eq!(clauses.len(), 1);
         assert_eq!(state.trail.len(), 1);
-        assert_eq!(state.trail[0].atom_key, p.to_string());
+        assert_eq!(state.trail[0].atom, p);
         assert!(state.trail[0].polarity);
     }
 
