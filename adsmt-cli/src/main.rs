@@ -407,21 +407,39 @@ fn bake_to_path(
         }
     };
     let version = env!("CARGO_PKG_VERSION");
-    if let Err(e) =
-        adsmt_aot::write_luart(&mut file, sha, version, &assertions)
-    {
-        eprintln!("lu-smt: bake write failed: {e}");
-        return Err(14);
+
+    // §1.1 / verus-fork rc.18 retry (a') — unified
+    // PoolBuilder.  Pre-rc.19 the v0 sections (header + pool
+    // + assertion list) flowed through `write_luart`'s
+    // self-contained PoolBuilder while the v1 CDCL section
+    // built its *own* PoolBuilder inside `build_cdcl_section`.
+    // Whenever the CDCL section's Phase-2/3 walks discovered
+    // a Term the assertion DAG didn't carry (Tseitin aux
+    // atoms, post-flatten `Lit::atom`s, synthesised
+    // `Term::var(key, Bool)` for residual `CdclState`
+    // bookkeeping), it would intern that Term at an index
+    // the v0 sections' pool never had — the loader saw a
+    // `.luart-cdcl` v1.1 artefact whose CDCL section
+    // referenced pool indices past the assertion-list pool
+    // length.  Routing both halves through a single builder
+    // makes the v0 pool the union of every atom the v1
+    // section needs.
+    let mut builder = adsmt_aot::PoolBuilder::new();
+    let assertion_entries: Vec<adsmt_aot::AssertionEntry> = assertions
+        .iter()
+        .map(|a| builder.ingest(a))
+        .collect();
+    let mut atom_key_to_pool_idx: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    // Phase 1 — assertion sub-terms.
+    for a in &assertions {
+        collect_atom_mapping(&a.term, &mut builder, &mut atom_key_to_pool_idx);
     }
-    // §3.5.B / §1.1 — real CDCL section bake.  Calls
-    // `Solver::dump_cdcl_state` (which runs flatten +
-    // `cdcl::initial_bcp` to BCP fixpoint without making any
-    // decisions) and serialises the resulting state into the
-    // v1 section.  Atom keys (string `Term::to_string()`
-    // renderings of `Lit::atom`) are mapped to `.luart` v0
-    // pool indices via the `atom_key_to_pool_idx` table the
-    // bake side builds while ingesting the assertion list.
-    if cli.aot_include_cdcl {
+    // CDCL section preparation — must happen *before* the
+    // builder is consumed by `into_entries`, because Phase
+    // 2/3 may install new pool entries that the v0 sections
+    // emit alongside the assertions.
+    let cdcl_section = if cli.aot_include_cdcl {
         let binary_sha = match current_binary_sha256() {
             Ok(s) => s,
             Err(e) => {
@@ -429,7 +447,42 @@ fn bake_to_path(
                 return Err(12);
             }
         };
-        let section = build_cdcl_section(driver, binary_sha, &assertions);
+        Some(build_cdcl_section(
+            driver,
+            binary_sha,
+            &mut builder,
+            &mut atom_key_to_pool_idx,
+        ))
+    } else {
+        None
+    };
+    // Drain the builder.  Every pool entry we'll emit lives
+    // in `pool`, including the CDCL section's Phase-2/3
+    // additions if `--aot-include-cdcl` ran.
+    let pool = builder.into_entries();
+    let header = adsmt_aot::LuartHeader::new(
+        sha,
+        version,
+        pool.len() as u64,
+        assertion_entries.len() as u64,
+    );
+    if let Err(e) = adsmt_aot::write_header(&mut file, &header) {
+        eprintln!("lu-smt: bake header write failed: {e}");
+        return Err(14);
+    }
+    for e in &pool {
+        if let Err(err) = adsmt_aot::write_pool_entry(&mut file, e) {
+            eprintln!("lu-smt: bake pool-entry write failed: {err}");
+            return Err(14);
+        }
+    }
+    for e in &assertion_entries {
+        if let Err(err) = adsmt_aot::write_assertion(&mut file, e) {
+            eprintln!("lu-smt: bake assertion write failed: {err}");
+            return Err(14);
+        }
+    }
+    if let Some(section) = cdcl_section {
         if let Err(e) = adsmt_aot::write_cdcl_section(&mut file, &section) {
             eprintln!("lu-smt: cdcl section write failed: {e}");
             return Err(14);
@@ -450,34 +503,25 @@ fn bake_to_path(
 fn build_cdcl_section(
     driver: &Driver,
     binary_sha: [u8; 32],
-    assertions: &[adsmt_aot::Assertion],
+    builder: &mut adsmt_aot::PoolBuilder,
+    atom_key_to_pool_idx: &mut std::collections::HashMap<String, u32>,
 ) -> adsmt_aot::CdclSection {
-    use std::collections::HashMap;
     let (clauses, state) = driver.solver.dump_cdcl_state();
-    let mut builder = adsmt_aot::PoolBuilder::new();
-    let mut atom_key_to_pool_idx: HashMap<String, u32> = HashMap::new();
-    // Phase 1 — intern every assertion's Term-DAG so the v0
-    // pool's entries align with the v0 sections the writer
-    // already emitted.
-    for a in assertions {
-        collect_atom_mapping(&a.term, &mut builder, &mut atom_key_to_pool_idx);
-    }
-    // Phase 2 — intern every CNF-flattened atom too.  The
-    // v0.x pre-fix interned only `assertions`'s sub-terms, but
-    // `flatten_to_clauses` can introduce literals whose
-    // `Lit::atom` is a freshly-built `Term` that the original
-    // assertion never carried (negation push-downs, Tseitin
-    // aux atoms once `adsmt-engine::bv_blast` is involved,
-    // synthesised triggers from quantifier `:pattern` lifts).
-    // The verus-fork rc.17 retry bake (2026-06-05) tripped
-    // exactly this — `pool entry 6542 references out-of-range
-    // / forward index 4294967295` because the bake side
-    // pasted the `u32::MAX` sentinel through to disk for atoms
-    // the phase-1 walk missed.  Walking every `Lit::atom`
-    // here closes that gap.
+    // Phase 2 — intern every CNF-flattened atom into the
+    // *shared* PoolBuilder so the v0 pool sees the same
+    // entries the v1 section's atom indices will reference.
+    // The verus-fork rc.17 retry bake tripped a `u32::MAX`
+    // sentinel here; the rc.18 retry tripped a topologically-
+    // invalid pool index (entry 6542 pointing at 6550)
+    // because a *separate* PoolBuilder was used for the v1
+    // section.  Sharing the builder closes both failure
+    // modes — any new entry Phase 2/3 installs lands in the
+    // same pool the v0 sections will emit, so the v1
+    // section's references always point into the same
+    // address space.
     for c in &clauses {
         for l in c {
-            collect_atom_mapping(&l.atom, &mut builder, &mut atom_key_to_pool_idx);
+            collect_atom_mapping(&l.atom, builder, atom_key_to_pool_idx);
         }
     }
     // Phase 3 — register any residual atom-keys the engine's
