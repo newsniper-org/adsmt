@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adsmt-abduce"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-cert",
  "adsmt-class",
@@ -16,14 +16,14 @@ dependencies = [
 
 [[package]]
 name = "adsmt-aot"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-core",
 ]
 
 [[package]]
 name = "adsmt-cert"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-core",
  "adsmt-heuristic-checker-macros",
@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-class"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cli"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-abduce",
  "adsmt-aot",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-core"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "indexmap",
  "scc",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-engine"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-abduce",
  "adsmt-aot",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-ffi"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-core",
  "adsmt-engine",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-heuristic-checker"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-heuristic-checker-macros"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "lu-common",
  "proc-macro2",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-jit"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-core",
  "adsmt-theory-finite-field",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-lints"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-lsp"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-meta"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-abduce",
  "adsmt-cert",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-parser"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-core",
  "adsmt-heuristic-checker-macros",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-quant"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -218,11 +218,11 @@ dependencies = [
 
 [[package]]
 name = "adsmt-stalmarck"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 
 [[package]]
 name = "adsmt-theory"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-theory-finite-field"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "freshcheck"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "clap",
  "lu-common",
@@ -1350,7 +1350,7 @@ checksum = "113b30b4cd05f7c06868fdb2854f66a7b9fece9a48425351cd532e810d74024f"
 
 [[package]]
 name = "logicutils-translator-to-oxiz-sat"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "lu-common",
  "oxiz-sat",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "lu-common"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "blake3",
  "crc",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "lu-deps"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "clap",
  "lu-common",
@@ -1400,7 +1400,7 @@ dependencies = [
 
 [[package]]
 name = "lu-expand"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "clap",
  "lu-common",
@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "lu-match"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "clap",
  "glob",
@@ -1421,14 +1421,14 @@ dependencies = [
 
 [[package]]
 name = "lu-multi"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "lu-common",
 ]
 
 [[package]]
 name = "lu-par"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "clap",
  "lu-common",
@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "lu-query"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "clap",
  "lu-common",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "lu-queue"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "clap",
  "lu-common",
@@ -1456,7 +1456,7 @@ dependencies = [
 
 [[package]]
 name = "lu-rule"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "clap",
  "lu-common",
@@ -2112,7 +2112,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stamp"
-version = "1.0.0-rc.17"
+version = "1.0.0-rc.18"
 dependencies = [
  "clap",
  "lu-common",

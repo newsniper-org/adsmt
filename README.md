@@ -9,10 +9,10 @@ reference (build, run, license, contribute).
 
 | What | Where |
 |---|---|
-| Project version | `1.0.0-rc.17` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
+| Project version | `1.0.0-rc.18` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (triple) |
 | Crate roster | 18 `adsmt-*` + 11 absorbed `lu-*` + `adsmt-meta` umbrella + `logicutils-translator-to-oxiz-sat` (31 total) |
-| Tests | **945** passing across the workspace; 0 `cargo doc` / `cargo build` warnings |
+| Tests | **946** passing across the workspace; 0 `cargo doc` / `cargo build` warnings |
 | ITP targets | Lean4 (in-tree reference), Rocq + Isabelle (out-of-tree via `~/adsmt-contrib/`) |
 | SAT backend | `oxiz-sat` (Path A+B default), `cadical` (feature flag), built-in CDCL fallback |
 | Engine | DPLL(T) with 1-UIP CDCL, two-watched literals, VSIDS, Luby restarts, LBD-aware learnt-clause retention, deadline-aware end-to-end |
@@ -61,7 +61,7 @@ adsmt is an SMT solver with five differentiating attributes
    surfaces (`oxiz-contrib-abduction`, future binding paths)
    flow upstream as Apache-2 contributions.
 
-## Workspace topology (v1.0.0-rc.17)
+## Workspace topology (v1.0.0-rc.18)
 
 ```
 ~/AD1/
@@ -315,7 +315,7 @@ adsmt uses a Debian-style channel model:
 | `testing` | `testing` | Stabilisation candidates promoted from `main` |
 | `stable` | `v1.0.0` (tag) | Released versions (the v1.0.0 tag is the first cut) |
 
-The rc.7 → rc.17 arc has been driven by the verus-fork
+The rc.7 → rc.18 arc has been driven by the verus-fork
 engine-refactor request (see
 `.local-requests-from/verus-fork/` for the joint working
 surface).  Highlights landed since rc.2:
@@ -331,6 +331,7 @@ surface).  Highlights landed since rc.2:
 | rc.15 | **§3.4 lu-smt CLI surface** — `--finite-field-periodic N` / `--finite-field-budget-exhaustion` startup flags + `(set-option :finite-field-…)` mid-session handlers.  **§3.1 AOT prelude bank** end-to-end — new crate `adsmt-aot` with `.luart` v0 writer (§3.1.A) + reader + Term-DAG reconstruction (§3.1.C); `lu-smt --aot-bake` / `--aot-load` (§3.1.B + §3.1.D); `Solver::with_aot_prelude` builder + `intern_external` re-canonicalisation helper.  **§3.2 meta-tracing JIT skeleton** — new crate `adsmt-jit` with `JitGuard` enum (poly-invariant via the shared GF(2) `reduce` kernel / equiv-class / depth-3 skeleton-shape) + `JitCache::lookup`.  **§3.3 Stålmarck pre-saturation skeleton** — new crate `adsmt-stalmarck` with `ImplicationGraph` + `Saturator::saturate_simple` (transitive closure) + `detect_contradiction` BFS witness |
 | rc.16 | **T0′ deadline cascade refinement** — deadline checks now fire inside `analyze_conflict_1uip` (T0′.1), the learnt-clause reduction loop + post-loop boundary (T0′.2), and the post-backjump unit-prop entry (T0′.3); `DEADLINE_CHECK_INTERVAL = 256` promoted to a module-level constant so every `*_deadline` function shares the cadence.  **§3.5 JIT-on-AOT-prelude** — `.luart-cdcl` v1 section writer + reader with `binary_sha256: [u8; 32]` header field (§3.5.A); `--aot-bake --aot-include-cdcl` composable flag with mutex rules + `current_binary_sha256()` helper (§3.5.B); `Solver::with_aot_cdcl(ReconstructedCdclPrelude)` builder routing v0/v1 artefacts through the same call site (§3.5.C); new `adsmt-jit::cdcl` submodule with `CdclTraceEvent` (`Propagate` / `Conflict` / `Backjump` / `Decide` / `Restart`) + `CdclTrace` + `CdclTracer` + `GF2Snapshot` + `CdclCheckpoint` (§3.5.D); `GF2Snapshot::capture(&FiniteFieldTheory, classes)` + `FiniteFieldTheory::current_generators` (§3.5.E); `Solver::replay_aot_cdcl_trace` guard-evaluation gate + `ReplayOutcome` enum (§3.5.F); `lu-smt --jit-trace-emit` / `--jit-trace-load` CLI surface + v0 `.lutrace` binary format with 5-event vocabulary (§3.5.G) |
 | rc.17 | **Promotion of every §3.5 v0 skeleton to v0.x working** — §3.5.B `Solver::dump_cdcl_state` + `cdcl::initial_bcp` (real BCP-fixpoint bake; `--aot-include-cdcl` now ships clauses + trail + watches + VSIDS + saved-phase); §3.5.C `Solver::aot_cdcl_state` cache field + `with_aot_cdcl` no-drop; §3.5.D engine recorder hook (post-hoc `CdclTracer::record` in `check_sat_with_deadline`); §3.5.E mid-trace checkpoint API (`CdclTracer::record_checkpoint`); §3.5.F real `compute_live_skeleton` + event-replay scan (`ReplayOutcome::Replayed { verdict }` for empty-trace / conflict-without-restart shortcuts); **`.lutrace` v1 wire format** — `LUTRACE_VERSION` bumped 0 → 1; signature + guards + checkpoints all persist + round-trip end-to-end (§1.6).  **§3.2 dynasm-rs JIT compiled-kernel emit** — new `adsmt-jit::kernel` module with `KernelStore` + `CompiledKernel` (RAII `ExecutableBuffer`) + `emit_noop_kernel` on `target_arch = "x86_64"` (`xor rax, rax; ret`) **+ `aarch64`** (`mov x0, xzr; ret`, every ARMv8.4-and-lower microarch on **little-endian** `aarch64-*` targets; clean compile + runtime correctness on **big-endian** `aarch64_be-*` is *not* guaranteed — upstream dynasm-rs ships a single LE-targeted encoder for both endians, the project provides no CI coverage there) **+ `riscv64`** (`addi x10, x0, 0; jalr x0, x1, 0` via dynasm-rs's `.arch riscv64i`); every other host triple surfaces `KernelError::UnsupportedHostTriple`.  Cross-arch coverage runs through QEMU `binfmt_misc` shims.  **`adsmt-jit::JitRegistry`** — joint cache + store; `Solver::start_jit_caching` / `register_jit_trace` / `jit_registry` lifecycle; `replay_aot_cdcl_trace` invokes registered kernels after the guard gate.  `dynasm` + `dynasmrt` pinned to v5.0.0+.  **§3.3 Stålmarck phase 2** — dilemma rule + n-saturation (`Saturator::dilemma_step` / `Saturator::n_saturate`); `.luart-cdcl` v1.1 trailing `StalmarckEdge` section bakes the saturated implication graph alongside the CDCL state; v1.0 readers ignore the trailing bytes (`Cursor::at_end()`-gated) |
+| rc.18 | **Three rc.17 follow-up fixes** prioritised by the verus-fork rc.17 retry (2026-06-05).  (1) `.luart-cdcl` v1.1 bake `u32::MAX` forward-ref leak fix — `build_cdcl_section` adopts a 3-phase atom-key registration (assertion sub-terms + CNF-flatten `Lit::atom` walk + synthesised `Term::var(key, Bool)` for residual `CdclState` bookkeeping), `lookup` switched from `unwrap_or(u32::MAX)` to `Option<u32>` so unmapped entries drop silently instead of writing the sentinel.  (2) `cdcl::*_recording` per-Propagate / per-Backjump / per-Conflict / per-Decide / per-Restart hooks — new `pub trait CdclEventSink` + `initial_bcp_recording` / `cdcl_solve_with_model_deadline_recording` / `cdcl_with_restarts_with_model_deadline_recording`; `Solver::CdclTracerSink` adapter funnels every transition into the active `adsmt_jit::CdclTracer` so prelude-sized workloads record non-vacuous `.lutrace` artefacts.  (3) `reconstruct` parse-type cache — `HashMap<String, Type>` collapses per-pool-entry tokeniser cost to one parse per distinct ty-string, addressing the +700 ms regression flagged in the rc.17 retry §2 |
 
 The 8-layer offline safeguard (`adsmt-heuristic-checker`)
 tracks every breaking-version bump under semver from v1.0.0
