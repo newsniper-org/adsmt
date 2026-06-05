@@ -167,6 +167,14 @@ pub struct Solver {
     /// literal whose Term already lives in the cached
     /// `aot_prelude_clauses` payload.
     aot_prelude_term_set: std::collections::HashSet<Term>,
+    /// rc.21 / verus-fork rc.20 retry — pool-index → Term
+    /// table the `restore_cdcl_state_into` pass kept around
+    /// so the `_with_seed` variant's seed-builder can resolve
+    /// the CDCL section's trail / VSIDS / saved-phase fields'
+    /// `atom_pool_idx: u32` references into engine-side
+    /// `atom_key: String` shapes.  Empty unless
+    /// `with_aot_cdcl` consumed a `.luart-cdcl` v1 prelude.
+    aot_pool_terms: Vec<Term>,
     /// §3.5.D — append-only JIT-trace recorder.  When `Some`,
     /// every CDCL state transition the per-query solve walks
     /// through is appended.  Activated via
@@ -208,6 +216,7 @@ impl Default for Solver {
             aot_cdcl_state: None,
             aot_prelude_clauses: Vec::new(),
             aot_prelude_term_set: std::collections::HashSet::new(),
+            aot_pool_terms: Vec::new(),
             jit_tracer: None,
             jit_registry: None,
         }
@@ -353,6 +362,11 @@ impl Solver {
         if let Some(section) = prelude.cdcl_section.as_ref() {
             self.restore_cdcl_state_into(section, &prelude.prelude.pool_terms);
         }
+        // rc.21 — stash the pool terms so the
+        // `cdcl_solve_with_model_deadline_with_seed` builder
+        // can resolve the v1 section's `atom_pool_idx: u32`
+        // references when assembling the BCP-fixpoint seed.
+        self.aot_pool_terms = prelude.prelude.pool_terms.clone();
         self.aot_cdcl_state = prelude.cdcl_section;
         self.with_aot_prelude(prelude.prelude)
     }
@@ -426,6 +440,60 @@ impl Solver {
     /// [`Self::restore_cdcl_state_into`] runs.
     pub fn aot_prelude_clauses(&self) -> &[crate::cnf::Clause] {
         &self.aot_prelude_clauses
+    }
+
+    /// rc.21 / verus-fork rc.20 retry §3.5.J gate — build the
+    /// `CdclState` seed
+    /// [`crate::cdcl::cdcl_solve_with_model_deadline_with_seed`]
+    /// consumes.  Translates the stashed `.luart-cdcl` v1 CDCL
+    /// section's `trail` / `activity` / `saved_phase` records
+    /// (which carry `atom_pool_idx: u32` references) into the
+    /// engine-side `atom_key: String` shapes the CDCL inner
+    /// loop expects.
+    ///
+    /// Returns `None` when no v1 artefact has been loaded —
+    /// the seed-aware CDCL entry point falls through to the
+    /// fresh-state path in that case.
+    ///
+    /// The `watches` / `clause_watches` fields are *not*
+    /// populated here — the v1 section's watch-graph indices
+    /// are stale against the per-query clause vector, so the
+    /// CDCL inner loop rebuilds them via `build_watches`
+    /// after consuming the seed.
+    fn prepare_cdcl_seed(&self) -> Option<crate::cdcl::CdclState> {
+        let section = self.aot_cdcl_state.as_ref()?;
+        if self.aot_pool_terms.is_empty() {
+            return None;
+        }
+        let mut state = crate::cdcl::CdclState::default();
+        let pool = &self.aot_pool_terms;
+        // Trail — every entry the v1 section captured is at
+        // decision level 0 (BCP fixpoint, no decisions yet),
+        // so we tag each with `decision_level = 0` regardless
+        // of what the on-disk `reason_clause_idx` field
+        // implied.  The `Reason::Decision` synthetic shape is
+        // safe at root level — conflict analysis short-circuits
+        // before walking past it.
+        for entry in &section.trail {
+            let term = pool.get(entry.atom_pool_idx as usize)?;
+            let key = term.to_string();
+            state.assign.insert(key.clone(), entry.polarity);
+            state.trail.push(crate::cdcl::TrailEntry {
+                atom_key: key,
+                polarity: entry.polarity,
+                decision_level: 0,
+                reason: crate::cdcl::Reason::Decision,
+            });
+        }
+        for entry in &section.vsids {
+            let term = pool.get(entry.atom_pool_idx as usize)?;
+            state.activity.insert(term.to_string(), entry.activity);
+        }
+        for entry in &section.saved_phase {
+            let term = pool.get(entry.atom_pool_idx as usize)?;
+            state.saved_phase.insert(term.to_string(), entry.polarity);
+        }
+        Some(state)
     }
 
     /// §3.5.B real-bake helper — flatten every assertion the
@@ -1193,6 +1261,16 @@ impl Solver {
         let sat_result = crate::oxiz_backend::solve(&clauses);
         #[cfg(all(feature = "cadical", not(feature = "oxiz")))]
         let sat_result = crate::cadical_backend::solve(&clauses);
+        // rc.21 / verus-fork rc.20 retry §3.5.J gate — when
+        // the v1.1 artefact's CDCL section sits stashed on
+        // `self.aot_cdcl_state`, build a seed from it so the
+        // first Luby epoch's `cdcl_solve_with_model_deadline`
+        // call reuses the BCP-fixpoint trail / VSIDS / saved-
+        // phase the bake side captured.  This is the piece
+        // that finally drops the §3.5.J wall below the
+        // ~5.3 s prelude-BCP floor the v0.x clause-cache
+        // shortcut left in place.
+        //
         // §1.3 v1 / verus-fork rc.19 retry (b'') — when the
         // JIT tracer is active, route the satisfiability-only
         // first stage through the recording variant so the
@@ -1201,6 +1279,16 @@ impl Solver {
         // ran through the recording variant, so Sat traces
         // populated but Unsat / deadline-cancelled
         // `(check-sat)`s emitted vacuous artefacts).
+        //
+        // Note: the seed-aware `_recording` variant doesn't
+        // exist yet; tracer-active + seed-active is rare in
+        // practice (tracer for warm-up runs, seed for
+        // per-query runs), so the v0.x scope picks
+        // whichever takes priority on the live path —
+        // recording wins when both are set, because losing a
+        // ~5.3 s shortcut to log per-event Propagate stream
+        // is acceptable for a one-shot diagnostic run, while
+        // losing the per-query shortcut is a recurring cost.
         #[cfg(not(any(feature = "oxiz", feature = "cadical")))]
         let sat_result = if self.jit_tracer.is_some() {
             let mut sink = CdclTracerSink {
@@ -1213,7 +1301,10 @@ impl Solver {
                 &clauses, 64, 12, deadline, &mut sink,
             )
         } else {
-            crate::cdcl::cdcl_with_restarts_deadline(&clauses, 64, 12, deadline)
+            let seed = self.prepare_cdcl_seed();
+            crate::cdcl::cdcl_with_restarts_deadline_with_seed(
+                &clauses, 64, 12, deadline, seed,
+            )
         };
         match sat_result {
             BoolResult::Sat => {
@@ -1252,11 +1343,13 @@ impl Solver {
                         _ => HashMap::new(),
                     }
                 } else {
-                    match crate::cdcl::cdcl_with_restarts_with_model_deadline(
+                    let seed = self.prepare_cdcl_seed();
+                    match crate::cdcl::cdcl_with_restarts_with_model_deadline_with_seed(
                         &clauses,
                         64,
                         12,
                         deadline,
+                        seed,
                     ) {
                         crate::cdcl::CdclOutcome::Sat { model } => model,
                         _ => HashMap::new(),

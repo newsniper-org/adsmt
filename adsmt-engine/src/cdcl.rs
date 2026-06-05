@@ -111,6 +111,23 @@ pub fn cdcl_with_restarts_deadline(
     cdcl_with_restarts_with_model_deadline(clauses, base_conflicts, restarts, deadline).into()
 }
 
+/// rc.21 / verus-fork rc.20 retry §3.5.J gate — seed-aware
+/// satisfiability-only variant.  Threads `seed` through to
+/// the model-carrying wrapper + discards the model the same
+/// way [`cdcl_with_restarts_deadline`] does.
+pub fn cdcl_with_restarts_deadline_with_seed(
+    clauses: &[Clause],
+    base_conflicts: usize,
+    restarts: usize,
+    deadline: Option<std::time::Instant>,
+    seed: Option<CdclState>,
+) -> BoolResult {
+    cdcl_with_restarts_with_model_deadline_with_seed(
+        clauses, base_conflicts, restarts, deadline, seed,
+    )
+    .into()
+}
+
 /// §1.3 v1 / verus-fork rc.19 retry (b'') — recording
 /// variant of [`cdcl_with_restarts_deadline`].  Routes the
 /// satisfiability-only path through
@@ -165,13 +182,38 @@ pub fn cdcl_with_restarts_with_model_deadline(
     restarts: usize,
     deadline: Option<std::time::Instant>,
 ) -> CdclOutcome {
+    cdcl_with_restarts_with_model_deadline_with_seed(
+        clauses, base_conflicts, restarts, deadline, None,
+    )
+}
+
+/// rc.21 / verus-fork rc.20 retry §3.5.J gate — seed-aware
+/// Luby-restart wrapper.  When `seed` is `Some`, the first
+/// Luby epoch consumes the seed (via
+/// [`cdcl_solve_with_model_deadline_with_seed`]); every
+/// subsequent epoch falls back to a fresh `CdclState::new()`
+/// in the usual way.  This honours the standard Luby invariant
+/// (each restart starts from a clean trail) while still
+/// shortcutting the prelude's BCP fixpoint on the first slot —
+/// which is the single largest piece of work the `.luart-cdcl`
+/// v1 artefact lets the engine skip.
+pub fn cdcl_with_restarts_with_model_deadline_with_seed(
+    clauses: &[Clause],
+    base_conflicts: usize,
+    restarts: usize,
+    deadline: Option<std::time::Instant>,
+    mut seed: Option<CdclState>,
+) -> CdclOutcome {
     let luby = luby_sequence(restarts);
     for &mult in &luby {
         if expired(deadline) {
             return CdclOutcome::Unknown;
         }
         let budget = base_conflicts.saturating_mul(mult);
-        match cdcl_solve_with_model_deadline(clauses, budget, deadline) {
+        let epoch_seed = seed.take();
+        match cdcl_solve_with_model_deadline_with_seed(
+            clauses, budget, deadline, epoch_seed,
+        ) {
             CdclOutcome::Sat { model } => return CdclOutcome::Sat { model },
             CdclOutcome::Unsat => return CdclOutcome::Unsat,
             CdclOutcome::Unknown => continue,
@@ -384,9 +426,58 @@ pub fn cdcl_solve_with_model_deadline(
     max_conflicts: usize,
     deadline: Option<std::time::Instant>,
 ) -> CdclOutcome {
+    cdcl_solve_with_model_deadline_with_seed(clauses, max_conflicts, deadline, None)
+}
+
+/// rc.21 / verus-fork rc.20 retry §3.5.J gate — seed-aware
+/// variant of [`cdcl_solve_with_model_deadline`].
+///
+/// When `seed` is `Some(state)`, the CDCL loop reuses the
+/// supplied `CdclState` instead of allocating a fresh
+/// `CdclState::new()`.  The seed carries the BCP-fixpoint
+/// trail / VSIDS activity / saved-phase polarities the
+/// `.luart-cdcl` v1 artefact's CDCL section captured at bake
+/// time, so the per-query `(check-sat)` skips the prelude's
+/// initial BCP rerun.  This is the `_with_seed` follow-up
+/// the `restore_cdcl_state_into` v0.x clause-cache landing
+/// (rc.20 `371e5aa`) queued — the §3.5.J wall stays at the
+/// prelude's ~5.3 s BCP-fixpoint floor until this variant
+/// fires.
+///
+/// `seed = None` falls through to the fresh-state path the
+/// non-seed entry point uses, so callers that don't have a
+/// v1 artefact in flight pay nothing for the extra arm.
+///
+/// The two-watched-literals metadata (`watches` /
+/// `clause_watches`) is **always** rebuilt from `clauses`
+/// via [`build_watches`] — the on-disk indices the v1
+/// section carries are stale against the per-query clause
+/// vector, and the watch-graph is cheap to re-derive once
+/// the trail has been primed.  Future revs may persist a
+/// stable watch shape if profiling shows the rebuild
+/// dominates; v0.x ships the trail-only restore.
+pub fn cdcl_solve_with_model_deadline_with_seed(
+    clauses: &[Clause],
+    max_conflicts: usize,
+    deadline: Option<std::time::Instant>,
+    seed: Option<CdclState>,
+) -> CdclOutcome {
     let mut deadline_tick: usize = 0;
 
-    let mut state = CdclState::new();
+    let mut state = seed.unwrap_or_default();
+    // rc.21 seed sanity: the v1.1 CDCL section's stale
+    // watch-graph indices are pointless against the per-query
+    // clause vector, so always rebuild the two-watched-
+    // literals metadata via `build_watches`.  Reset `prop_head`
+    // to 0 so every clause — both the prelude clauses the seed
+    // primed and the per-query additions — runs through unit
+    // propagation once against the rebuilt watch graph.
+    // `state.trail` / `state.assign` / `state.activity` /
+    // `state.saved_phase` stay populated, so the BCP
+    // fixpoint the seed carries costs nothing to consult.
+    // No-op when `seed` was `None` (CdclState::default() already
+    // has `prop_head = 0` and empty watches).
+    state.prop_head = 0;
     let input_len = clauses.len();
     let mut owned: Vec<Clause> = clauses.to_vec();
     // v1.0.0-rc.1 RC1.2 — initialise watcher metadata for the
