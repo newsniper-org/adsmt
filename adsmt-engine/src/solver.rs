@@ -100,6 +100,13 @@ pub struct Solver {
     /// [`Self::start_jit_recording`]; drained via
     /// [`Self::take_jit_recording`].
     jit_tracer: Option<adsmt_jit::CdclTracer>,
+    /// §3.2 — joint `(JitCache, KernelStore)` registry.  When
+    /// `Some`, [`Self::replay_aot_cdcl_trace`]'s `GuardsPassed`
+    /// / `Replayed` arms can invoke a registered compiled
+    /// kernel after the guard gate; `None` keeps the v0.x
+    /// pure-interpreter behaviour.  Activated via
+    /// [`Self::start_jit_caching`].
+    jit_registry: Option<adsmt_jit::JitRegistry>,
 }
 
 impl Default for Solver {
@@ -127,6 +134,7 @@ impl Default for Solver {
             proof_mode: ProofMode::Always,
             aot_cdcl_state: None,
             jit_tracer: None,
+            jit_registry: None,
         }
     }
 }
@@ -294,6 +302,36 @@ impl Solver {
         self.jit_tracer.take()
     }
 
+    /// §3.2 registry activation — install an empty
+    /// [`adsmt_jit::JitRegistry`] so subsequent
+    /// `Self::register_jit_trace` calls emit + cache
+    /// compiled kernels.  Idempotent: calling twice resets
+    /// the registry.
+    pub fn start_jit_caching(&mut self) {
+        self.jit_registry = Some(adsmt_jit::JitRegistry::new());
+    }
+
+    /// §3.2 — register a recorded trace with the JIT
+    /// registry.  No-op + `Ok(None)` when the registry is
+    /// not active; otherwise emits a kernel + caches the
+    /// trace + returns the assigned kernel id.
+    pub fn register_jit_trace(
+        &mut self,
+        trace: adsmt_jit::Trace,
+    ) -> Result<Option<u32>, adsmt_jit::KernelError> {
+        match self.jit_registry.as_mut() {
+            Some(registry) => Ok(Some(registry.register_trace(trace)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// §3.2 — read-only borrow of the JIT registry (if any).
+    /// Used by `replay_aot_cdcl_trace`'s post-guard hook +
+    /// integration tests.
+    pub fn jit_registry(&self) -> Option<&adsmt_jit::JitRegistry> {
+        self.jit_registry.as_ref()
+    }
+
     /// §3.5.F replay dispatcher (v0 skeleton).  Evaluates every
     /// guard in `trace.guards` + the end-of-trace
     /// `GF2Snapshot`-derived basis against the current
@@ -351,6 +389,30 @@ impl Solver {
         // semantics — a guard-pass with no decisive event
         // makes the caller run regular `check_sat_with_deadline`
         // exactly as before.
+        // §3.2 compiled-kernel invocation (v0.x post-guard
+        // hook).  When the JIT registry is active + the
+        // trace was previously registered via
+        // `register_jit_trace`, lookup the compiled kernel
+        // and invoke it before the event-replay scan.  v0.x
+        // kernels are `emit_noop_kernel`-produced (zero
+        // payload — a single `xor rax, rax; ret`), so the
+        // invocation is observable only as a function-call
+        // overhead.  Specialised kernels lifted from
+        // `trace.events` land alongside the v1 follow-up.
+        if let Some(registry) = self.jit_registry.as_ref()
+            && let Some(kernel) = registry.lookup_kernel(
+                live_skeleton,
+                &trace.signature.basis,
+                classes,
+            )
+        {
+            // SAFETY: the noop kernel emitted by
+            // `emit_noop_kernel` matches the `unsafe extern
+            // "C" fn() -> i64` shape; v0.x guarantees no
+            // other emitter is in flight.
+            let _ = unsafe { kernel.invoke() };
+        }
+
         if trace.events.is_empty() {
             return ReplayOutcome::Replayed {
                 verdict: SatResult::Sat { model: crate::result::Model::new() },
@@ -2032,5 +2094,36 @@ mod tests {
         s.start_jit_recording();
         let drained = s.take_jit_recording().expect("recording was started");
         assert!(drained.is_empty());
+    }
+
+    // §3.2 — JIT registry integration.
+
+    #[test]
+    fn jit_registry_defaults_to_none() {
+        let s = Solver::default();
+        assert!(s.jit_registry().is_none());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn start_jit_caching_then_register_trace_returns_kernel_id() {
+        let mut s = Solver::default();
+        // Inactive registry — registration is a no-op.
+        let trace = adsmt_jit::Trace::new(
+            adsmt_jit::SkeletonShape(0xc0de),
+            vec![],
+            0,
+        );
+        let id_when_inactive = s.register_jit_trace(trace.clone()).unwrap();
+        assert!(id_when_inactive.is_none());
+        // Active registry — returns the assigned id.
+        s.start_jit_caching();
+        let id_when_active = s
+            .register_jit_trace(trace)
+            .expect("x86_64 noop emit must succeed");
+        assert_eq!(id_when_active, Some(0));
+        let registry = s.jit_registry().expect("registry was started");
+        assert_eq!(registry.cached_traces(), 1);
+        assert_eq!(registry.compiled_kernels(), 1);
     }
 }
