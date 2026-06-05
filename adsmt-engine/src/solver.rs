@@ -147,6 +147,27 @@ pub struct Solver {
     /// + [`Self::restore_cdcl_state_into`] when constructing
     /// the per-query CDCL fresh state.
     aot_cdcl_state: Option<adsmt_aot::CdclSection>,
+    /// rc.20 / verus-fork rc.19 retry — pre-flattened CNF
+    /// clause set the `restore_cdcl_state_into` pass lifted
+    /// from a `.luart-cdcl` v1 artefact's CDCL section.  Every
+    /// per-query `check_sat_with_deadline` prepends these
+    /// clauses to the freshly-flattened per-query CNF so the
+    /// prelude's clause set does not need to be re-derived from
+    /// the (Term, Lit) ground formulas on every `(check-sat)`.
+    /// Empty (and therefore zero-cost) unless
+    /// `restore_cdcl_state_into` ran.
+    aot_prelude_clauses: Vec<crate::cnf::Clause>,
+    /// rc.20 / verus-fork rc.19 retry — set of prelude
+    /// assertion Term-strings (`Term::to_string()` keys; the
+    /// `Term`s themselves hash-cons identically via
+    /// `Arc::ptr_eq` but iterating a `HashSet<Term>` directly
+    /// risks pointer-identity surprises across re-canonicalised
+    /// boundaries — strings are the safer key for this dedup
+    /// pass).  Populated by `with_aot_prelude` so the per-
+    /// query `check_sat_with_deadline` can skip re-flattening
+    /// any literal whose Term already lives in the cached
+    /// `aot_prelude_clauses` payload.
+    aot_prelude_term_keys: std::collections::HashSet<String>,
     /// §3.5.D — append-only JIT-trace recorder.  When `Some`,
     /// every CDCL state transition the per-query solve walks
     /// through is appended.  Activated via
@@ -186,6 +207,8 @@ impl Default for Solver {
             // bookkeeping cost.
             proof_mode: ProofMode::Always,
             aot_cdcl_state: None,
+            aot_prelude_clauses: Vec::new(),
+            aot_prelude_term_keys: std::collections::HashSet::new(),
             jit_tracer: None,
             jit_registry: None,
         }
@@ -279,6 +302,14 @@ impl Solver {
             // hash-cons cache continues to do its job
             // anywhere structurally-equal atoms surface
             // from the per-query input later.
+            //
+            // rc.20 — also stash the prelude term's
+            // `to_string()` key on
+            // `Self::aot_prelude_term_keys` so the per-query
+            // `check_sat_with_deadline` can skip re-flattening
+            // any assertion that's already represented in
+            // the `aot_prelude_clauses` cache.
+            self.aot_prelude_term_keys.insert(term.to_string());
             let loc = adsmt_cert::SourceLoc::new(0, idx as u32);
             self.assert_at(term, loc);
         }
@@ -309,17 +340,92 @@ impl Solver {
         prelude: adsmt_aot::ReconstructedCdclPrelude,
     ) -> Self {
         // §3.5.C — stash the CDCL scope-0 snapshot on the
-        // solver so the §3.5.F replay dispatcher + the
-        // §1.2 `restore_cdcl_state_into` helper can consume
-        // it on the next `(check-sat)`.  The prelude
+        // solver.  At rc.20 the stash flows directly into
+        // `restore_cdcl_state_into` so the per-query
+        // `check_sat_with_deadline` skips re-flattening the
+        // prelude on every `(check-sat)`.  The prelude
         // assertions still thread through `with_aot_prelude`
         // for the cert ledger / `(get-unsat-core)` / audit
         // surface, so callers that ignore the CDCL snapshot
         // (e.g. legacy v0 readers) keep seeing the prelude
         // axioms as if `with_aot_prelude` had been called
         // directly.
+        if let Some(section) = prelude.cdcl_section.as_ref() {
+            self.restore_cdcl_state_into(section, &prelude.prelude.pool_terms);
+        }
         self.aot_cdcl_state = prelude.cdcl_section;
         self.with_aot_prelude(prelude.prelude)
+    }
+
+    /// rc.20 / verus-fork rc.19 retry §3.5.J gate — consume a
+    /// `.luart-cdcl` v1 [`adsmt_aot::CdclSection`] and rebuild
+    /// the engine-side CNF clause set the bake side captured.
+    ///
+    /// v0.x scope (this rev): the section's `clauses` field is
+    /// projected back into `Vec<crate::cnf::Clause>` and stashed
+    /// on `Self::aot_prelude_clauses`.  Every per-query
+    /// `check_sat_with_deadline` prepends the stash to the
+    /// freshly-flattened CNF before running CDCL, so the
+    /// prelude's clause set does not need to be re-derived from
+    /// the assertion DAG on every `(check-sat)`.  This is the
+    /// single largest payoff the §3.5.J smoke matrix expected
+    /// from `restore_cdcl_state_into`'s landing — the §1.1 bake
+    /// captures clauses + trail + watches + VSIDS + saved-phase
+    /// in the artefact, the load side picks up the clause vec
+    /// here.
+    ///
+    /// Trail / watches / VSIDS / saved-phase are *not* restored
+    /// at this rev — the engine's CDCL inner loop allocates its
+    /// own `CdclState::new()` per call.  Promoting the
+    /// remaining four CDCL state fields needs a CDCL-loop
+    /// signature change (a `_with_seed` variant of
+    /// `cdcl_solve_with_model_deadline`) and lands in the
+    /// follow-up.  The clause-set cache lifted by the v0.x
+    /// scope here already shortcuts the bulk of the work the
+    /// verus_smoke prelude pays per-`(check-sat)`.
+    ///
+    /// `pool_terms` is the index → `Term` map
+    /// `adsmt_aot::reader::reconstruct` produced; we use it to
+    /// translate the section's `atom_pool_idx: u32` references
+    /// back into engine-side `Lit::atom: Term` shapes.
+    pub fn restore_cdcl_state_into(
+        &mut self,
+        section: &adsmt_aot::CdclSection,
+        pool_terms: &[adsmt_core::Term],
+    ) {
+        let mut clauses: Vec<crate::cnf::Clause> = Vec::with_capacity(section.clauses.len());
+        for c in &section.clauses {
+            let mut lits: Vec<crate::cnf::Lit> = Vec::with_capacity(c.lits.len());
+            for (atom_idx, polarity) in &c.lits {
+                let Some(atom) = pool_terms.get(*atom_idx as usize).cloned() else {
+                    // Defence-in-depth: out-of-range atom
+                    // index in the v1 section.  Drop the
+                    // entire clause rather than emit a bogus
+                    // Lit; v1 readers already reject this
+                    // shape on decode but the cross-check is
+                    // cheap.
+                    lits.clear();
+                    break;
+                };
+                lits.push(crate::cnf::Lit {
+                    atom,
+                    polarity: *polarity,
+                });
+            }
+            if !lits.is_empty() {
+                clauses.push(lits);
+            }
+        }
+        self.aot_prelude_clauses = clauses;
+    }
+
+    /// rc.20 read-only borrow of the prelude clause-set cache
+    /// — used by `check_sat_with_deadline` to prepend the
+    /// cached clauses to the freshly-flattened per-query CNF
+    /// before running CDCL.  Empty until
+    /// [`Self::restore_cdcl_state_into`] runs.
+    pub fn aot_prelude_clauses(&self) -> &[crate::cnf::Clause] {
+        &self.aot_prelude_clauses
     }
 
     /// §3.5.B real-bake helper — flatten every assertion the
@@ -1007,8 +1113,26 @@ impl Solver {
             .iter()
             .cloned()
             .partition(|(t, p)| *p && t.dest_forall().is_some());
+        // rc.20 / verus-fork rc.19 retry §3.5.J gate — skip
+        // any prelude assertion the `restore_cdcl_state_into`
+        // pass already lifted into `aot_prelude_clauses`.  The
+        // per-query CNF flatten step below then runs over the
+        // delta only.
+        let lits: Vec<_> = if !self.aot_prelude_clauses.is_empty() {
+            lits.into_iter()
+                .filter(|(t, _)| !self.aot_prelude_term_keys.contains(&t.to_string()))
+                .collect()
+        } else {
+            lits
+        };
         // (1) Decompose every asserted (term, polarity) into CNF clauses.
         let mut clauses: Vec<Clause> = Vec::new();
+        // rc.20 — prepend the prelude clause-set cache when
+        // `restore_cdcl_state_into` has populated it.  v0.x
+        // scope ships the clause vec only; trail / watches /
+        // VSIDS / saved-phase restoration sits behind the
+        // CDCL-loop signature change queued for the follow-up.
+        clauses.extend(self.aot_prelude_clauses.iter().cloned());
         for (term, polarity) in &lits {
             if expired(deadline) {
                 return SatResult::Unknown {

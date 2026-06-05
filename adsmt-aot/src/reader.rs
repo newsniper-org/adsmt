@@ -38,10 +38,17 @@ pub struct LuartFile {
 /// `(Term, Option<qid>)` pairs the bake side recorded.  This is
 /// what `Solver::with_aot_prelude` (§3.1.D) hands to the engine
 /// as pre-asserted facts.
+///
+/// `pool_terms` exposes the reader's interned pool — index `i`
+/// holds the canonical `Term` for pool entry `i`.  Used by
+/// `Solver::restore_cdcl_state_into` (rc.20) to translate the
+/// `.luart-cdcl` v1 CDCL section's `atom_pool_idx: u32`
+/// references back into engine-side `Lit::atom: Term` shapes.
 #[derive(Clone, Debug)]
 pub struct ReconstructedPrelude {
     pub header: LuartHeader,
     pub assertions: Vec<(Term, Option<String>)>,
+    pub pool_terms: Vec<Term>,
 }
 
 /// Reconstructed prelude with an optional CDCL state snapshot —
@@ -552,6 +559,7 @@ pub fn reconstruct(file: &LuartFile) -> Result<ReconstructedPrelude, ReadError> 
     Ok(ReconstructedPrelude {
         header: file.header.clone(),
         assertions,
+        pool_terms: interned,
     })
 }
 
