@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
 use adsmt_core::{Term, TermInner, Type};
+use indexmap::{IndexMap, IndexSet};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 
@@ -20,13 +21,27 @@ use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 pub struct Uf {
     asserted_eqs: Vec<(Term, Term)>,
     asserted_diseqs: Vec<(Term, Term)>,
-    pos_atoms: Vec<Term>,
-    neg_atoms: Vec<Term>,
+    /// rc.23 (e''.1.b) — was `Vec<Term>` scanned with
+    /// `iter().any(alpha_eq)` per assert.  `IndexSet<Term>`
+    /// keeps insertion-deterministic order (so
+    /// `truncate(snap.pos_len)` rollback semantics are
+    /// preserved 1:1) but adds an O(1) `contains` probe via
+    /// rc.10 hash-cons (`Term::Hash` is pointer-hash,
+    /// `Term::Eq` is `Arc::ptr_eq`).
+    pos_atoms: IndexSet<Term>,
+    neg_atoms: IndexSet<Term>,
     /// Union-find parent map. Rebuilt at each `check`.
     parent: HashMap<Term, Term>,
-    /// All terms registered for congruence reasoning. Rebuilt at
-    /// each `check`.
-    known: Vec<Term>,
+    /// rc.23 (e''.1.a) — congruence universe.  Was
+    /// `Vec<Term>` with `register()`'s
+    /// `iter().any(kt.alpha_eq(t))` linear-scan dedup
+    /// (verus-fork rc.22 retry: ~10⁴ `add_known` × ~10³
+    /// `known` size = ~10⁷ alpha_eq invocations per
+    /// `(check-sat)`).  `IndexSet<Term>` collapses the
+    /// inner check to O(1) `contains` while preserving the
+    /// indexed `for i; for j > i` pairs scan inside `close()`
+    /// (via `get_index(i)`).
+    known: IndexSet<Term>,
     conflict: Option<TheoryWitness>,
     scope_stack: Vec<UfSnapshot>,
 }
@@ -62,10 +77,6 @@ fn pick_representative(members: &[adsmt_core::Term]) -> usize {
 impl Uf {
     pub fn new() -> Self { Self::default() }
 
-    fn contains_alpha(set: &[Term], t: &Term) -> bool {
-        set.iter().any(|x| x.alpha_eq(t))
-    }
-
     fn invalidate_cache(&mut self) {
         self.parent.clear();
         self.known.clear();
@@ -73,10 +84,14 @@ impl Uf {
     }
 
     /// Register `t` and all its sub-terms in the congruence universe.
+    ///
+    /// Pre-rc.23 this scanned `self.known: Vec<Term>` via
+    /// `iter().any(|kt| kt.alpha_eq(t))` for dedup.  With
+    /// `IndexSet<Term>` the contains-probe is O(1) on the rc.10
+    /// hash-cons handles; `insert` itself is the no-op when `t`
+    /// is already present, so the redundant pre-check is dropped.
     fn register(&mut self, t: &Term) {
-        if !self.known.iter().any(|kt| kt.alpha_eq(t)) {
-            self.known.push(t.clone());
-        }
+        self.known.insert(t.clone());
         if let TermInner::App(f, x) = t.kind() {
             self.register(f);
             self.register(x);
@@ -124,12 +139,21 @@ impl Uf {
             self.union(a, b);
         }
         // Congruence closure: iterate until fixpoint.
+        //
+        // rc.23 (e''.1.a) — `snapshot` is now an `IndexSet`
+        // clone, so the `i < j` pair walk uses `get_index`
+        // instead of `&snapshot[i]`.  Insertion order is
+        // preserved (matching the pre-rc.23 `Vec` shape), so
+        // the union sequence + emitted equalities stay
+        // reproducible run-to-run.
         loop {
             let mut changed = false;
-            let snapshot = self.known.clone();
-            for i in 0..snapshot.len() {
-                for j in (i + 1)..snapshot.len() {
-                    let (ti, tj) = (&snapshot[i], &snapshot[j]);
+            let snapshot: IndexSet<Term> = self.known.clone();
+            let n = snapshot.len();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let ti = snapshot.get_index(i).expect("i < n");
+                    let tj = snapshot.get_index(j).expect("j < n");
                     if let (TermInner::App(f1, x1), TermInner::App(f2, x2)) =
                         (ti.kind(), tj.kind())
                     {
@@ -187,9 +211,14 @@ impl Theory for Uf {
             }
             return AssertResult::Accepted;
         }
-        // Plain Bool atom: keep the v0.1 polarity-contradiction path.
+        // Plain Bool atom: keep the v0.1 polarity-contradiction
+        // path.  rc.23 (e''.1.b) — `pos_atoms` / `neg_atoms`
+        // are `IndexSet<Term>` so `contains` is O(1) (rc.10
+        // hash-cons makes `Term::Hash` / `Eq` pointer-based);
+        // `insert` does its own dedup so the pre-check is
+        // dropped on the push side.
         if lit.polarity {
-            if Self::contains_alpha(&self.neg_atoms, &lit.term) {
+            if self.neg_atoms.contains(&lit.term) {
                 let w = TheoryWitness::Opaque {
                     kind: "UF".into(),
                     notes: format!("conflicting polarities on {}", lit.term),
@@ -197,11 +226,9 @@ impl Theory for Uf {
                 self.conflict = Some(w.clone());
                 return AssertResult::Conflict { witness: w };
             }
-            if !Self::contains_alpha(&self.pos_atoms, &lit.term) {
-                self.pos_atoms.push(lit.term);
-            }
+            self.pos_atoms.insert(lit.term);
         } else {
-            if Self::contains_alpha(&self.pos_atoms, &lit.term) {
+            if self.pos_atoms.contains(&lit.term) {
                 let w = TheoryWitness::Opaque {
                     kind: "UF".into(),
                     notes: format!("conflicting polarities on {}", lit.term),
@@ -209,9 +236,7 @@ impl Theory for Uf {
                 self.conflict = Some(w.clone());
                 return AssertResult::Conflict { witness: w };
             }
-            if !Self::contains_alpha(&self.neg_atoms, &lit.term) {
-                self.neg_atoms.push(lit.term);
-            }
+            self.neg_atoms.insert(lit.term);
         }
         AssertResult::Accepted
     }
@@ -251,7 +276,14 @@ impl Theory for Uf {
             }
         };
 
-        let mut classes: HashMap<Term, Vec<Term>> = HashMap::new();
+        // rc.23 (e''.1.c) — was `HashMap<Term, Vec<Term>>`
+        // with non-deterministic `.values()` iteration order.
+        // `IndexMap` keeps the insertion-order of class
+        // representatives (driven by `self.known`'s
+        // insertion-order, also `IndexSet` since (e''.1.a)),
+        // so the emitted equalities are reproducible
+        // run-to-run.
+        let mut classes: IndexMap<Term, Vec<Term>> = IndexMap::new();
         for t in &self.known {
             classes.entry(find_root(t)).or_default().push(t.clone());
         }
