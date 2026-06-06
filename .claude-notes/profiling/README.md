@@ -173,3 +173,61 @@ should **preserve** that spread (the algorithmic work
 shrinks but no new allocations are introduced); if the
 spread grows the fix introduced unanticipated allocator
 churn.
+
+## verus_smoke rc.22 retry — proportional shift
+
+verus-fork's rc.22 retry against verus_smoke recovered
+~1 100 ms at rlimit ≤ 4 s (Mode A 5 208 → 4 134 ms,
+Mode C' 5 898 → 4 635 ms) and pushed the `unknown` exit
+threshold from 5-6 s to 4-5 s.  Rlimit ≥ 5 s now hits a
+new deadline-uncatchable loop (the T0' commits never
+extended the cascade into UF / SLD / quant work).
+
+rc.22 flamegraph (rlimit 3 s) at
+`.claude-notes/profiling/2026-06-06-verus_smoke-{flamegraph,perf-script}-rc22.{svg,txt}`:
+
+| % cycles | function | rc.21 | rc.22 |
+|---:|---|---:|---:|
+| **97.98 %** | `adsmt_core::term::alpha_eq_rec` | 62.16 % | **+35.82 pp** |
+| ~0 % | `<adsmt_core::ty::Type as PartialEq>::eq` | 17.20 % | **−17.20 pp** ✅ |
+
+(e.2) cleared Type::eq completely.  The proportional
+shift exposed that the (e.1) `is_empty()` fast path only
+fires at top-level entries; recursive `App`-arm descent
+through 50+ levels never hits the short-circuit because
+sub-terms differ at the leaves.  Mode C' variance broke
+from 23 ms (rc.21) to 235 ms (rc.22) — but the rc.22
+fix diffs are clean (no new `Arc::clone`), so the
+variance shift is the engine entering a new search phase
+the recovered ~1 100 ms purchased, not a regression in
+the fix itself.
+
+## rc.23 (e''.1) + (e''.2) — UF + abductive container migration
+
+Root cause for the rc.22 `alpha_eq_rec` 97.98 %
+concentration: `adsmt-theory/src/uf.rs` had three
+`iter().any(|x| x.alpha_eq(t))` linear scans over
+`Vec<Term>` fields (`known`, `pos_atoms`, `neg_atoms`).
+Cost model: ~10⁴ `add_known` per `(check-sat)` × ~10³
+`known` size = ~10⁷ alpha_eq invocations × avg depth 20
+≈ 2 × 10⁸ `alpha_eq_rec` body executions per query.
+
+- `5d347c2` (e''.1) — `Vec<Term>` → `indexmap::IndexSet<Term>`
+  for `known` / `pos_atoms` / `neg_atoms`.  `IndexSet`
+  over `std::HashSet` chosen so `IndexSet::truncate(n)`
+  preserves `UfSnapshot.{pos,neg}_len` rollback, and
+  `IndexSet::get_index(i)` keeps `close()`'s
+  `for i in 0..n; for j in (i+1)..n` indexed pair walk
+  intact.  Bonus: `derive_equalities`'s
+  `HashMap<Term, Vec<Term>>` → `IndexMap` for
+  deterministic Nelson-Oppen emit order.
+- `e2c1761` (e''.2) — `Candidate::merge` pre-stages a
+  one-shot `HashSet<Term>` from `self.hypotheses`,
+  dedup keyed off `HashSet::insert`'s `bool` return.
+  Parallel `hypotheses` / `explanations` / `sources`
+  `Vec` layout preserved.
+
+Verus-fork-predicted recovery on Mode C': 4 600 → ~1 100 ms
+(inside §3.5.J's `≤ 1 500 ms` window); predicted
+variance signature: 235 → ≤ 50 ms.  rc.23 retry against
+verus-fork host is the confirmation path.

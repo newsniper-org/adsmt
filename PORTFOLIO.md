@@ -8,7 +8,7 @@
 > ~44 k lines of Rust across 31 workspace crates, 946 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.22` on 2026-06-06.
+> `1.0.0-rc.23` on 2026-06-07.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.22):**
+**Active consumers (rc.23):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -355,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.22` (2026-06-06) |
+| Workspace version | `1.0.0-rc.23` (2026-06-07) |
 
 ---
 
-## Roadmap snapshot (rc.22 → v1.0.0 stable)
+## Roadmap snapshot (rc.23 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -414,9 +414,12 @@ or proof-search strategies without touching the engine core.
 | (e.1) `alpha_eq_rec` Arc::ptr_eq fast path (verus-fork rc.21 retry §(d) §5.1) | **landed** at rc.22 (`c54e71c`).  Five-line guard at the top of `adsmt-core/src/term.rs::alpha_eq_rec` gated by `a_bound.is_empty() && b_bound.is_empty()`; addresses 62.16 % of cycles attributed to the function on the verus_smoke flamegraph.  Soundness: empty-stack guard restricts the fast path to closed sub-terms in identical bound contexts.  Top-level entry points (mk_forall / nnf_pos / UF / SLD / proof-rule) all hit the short-circuit |
 | (e.2) `<Type as PartialEq>::eq` Arc::ptr_eq-first hand-roll (verus-fork rc.21 retry §(d) §5.2) | **landed** at rc.22 (`d01d78a`).  Drop `PartialEq` from `Type`'s `derive` list; hand-roll with `Arc::ptr_eq(a, b) || **a == **b` on every recursive arm; addresses 17.20 % of cycles.  Soundness-equivalent to the derive; `Hash` stays derived (structural) since the equivalence relation is unchanged |
 | (e.3) `feedback_hashcons_hot_paths.md` rule generalisation | **landed** at rc.22 (`d703956`).  Renamed from "HashMap key" rule to "Arc::ptr_eq short-circuit on hash-consed types in hot paths".  Three numbered sections: HashMap / HashSet keys (rc.21 surface), structural equality fast paths (rc.22 surfaces), outer linear-scan callers (uf.rs / sld.rs / rule.rs).  Diagnostic anchor: rc.21 Mode C' 23 ms variance signature (preserve → algorithmic fix; grow → new allocator churn) |
-| §3.5.J verus-fork 5-mode smoke retry against rc.22 (post-alpha_eq + post-Type::eq) | verus-fork side; verus-fork-predicted wall recovery on verus_smoke Mode C' 5 898 → ~1 300 ms (inside §3.5.J's `≤ 1 500 ms` window).  Adsmt-side direct wall measurement host-environment-limited (lu-smt direct invocation does not catch the in-flight `:rlimit 5 s` deadline inside the assert-stage hot path; verus-fork wall numbers were external-SIGTERM-driven through verus's own timeout wrapper) |
-| (3) Optional UF / abductive / proof-rule `iter().any(alpha_eq)` linear-scan replacement | deferred — landed (e.1) + (e.2) drop the inner alpha_eq to O(1) so the outer `iter().any` is O(N) instead of O(N²).  Only escalates to a `HashSet<Term>` lookup if the verus-fork rc.22 retry shows the wall doesn't drop the predicted ~4.6 s |
-| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.22 follow-up |
+| (e''.1) UF `Vec<Term>` → `IndexSet<Term>` for `known` / `pos_atoms` / `neg_atoms` (verus-fork rc.22 retry §4 + §5) | **landed** at rc.23 (`5d347c2`).  `adsmt-theory/src/uf.rs` migrated; `IndexSet` over `HashSet` so `truncate(n)` rollback + `get_index(i)` indexed-pair scan in `close()` + insertion-deterministic certificate-emit order all survive without re-architecture.  Bonus reproducibility side-fix: `derive_equalities`'s `HashMap<Term, Vec<Term>>` → `IndexMap`.  Addresses 97.98 % alpha_eq_rec cycle concentration on the rc.22 verus_smoke flamegraph (driven by ~10⁴ × ~10³ UF `iter().any(alpha_eq)` cost model) |
+| (e''.2) abductive `Candidate::merge` `HashSet<Term>` dedup (verus-fork rc.22 retry §6) | **landed** at rc.23 (`e2c1761`).  `adsmt-abduce/src/sld.rs::Candidate::merge` pre-stages a one-shot `HashSet<Term>` from `self.hypotheses`; dedup keyed off `HashSet::insert`'s `bool` return.  Parallel `hypotheses` / `explanations` / `sources` `Vec` layout preserved.  `HashSet` over `IndexSet` since the scratch is never iterated / indexed / serialised |
+| (e''.3) `feedback_hashcons_hot_paths.md` container-shape rule extension | **landed** at rc.23 (`c97a3ba`).  §3 retitled "container-shape `Vec<T>` + `iter().any(custom_eq)` → `(Index)Set<T>::contains`" with picking-the-container matrix (HashSet for dedup-only scratch / IndexSet for rollback / indexed-loop / reproducibility) + soundness checks (hash-cons coverage on closed Skolemized terms, reproducibility, rollback shape) + rc.23 row in the measured-incidents table |
+| §3.5.J verus-fork 5-mode smoke retry against rc.23 (post-UF-IndexSet) | verus-fork side; verus-fork-predicted wall recovery on verus_smoke Mode C' 4 600 → ~1 100 ms (inside §3.5.J's `≤ 1 500 ms` window); variance signature 235 → ≤ 50 ms.  Adsmt-side direct wall measurement host-environment-limited |
+| Deadline-cascade extension into UF / SLD / quant phase-2 loops (T0''') | post-rc.23 follow-up if the rc.23 retry shows that rlimit ≥ 5 s still hits a deadline-uncatchable loop.  T0' commits (rc.16) covered `analyze_conflict_1uip` + learnt-clause insertion + post-backjump unit-prop; the phase-2 work the engine reaches after the rc.23 hot-path removal would need similar deadline checks |
+| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.23 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
 
@@ -442,5 +445,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.22
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.23
   development arc.
