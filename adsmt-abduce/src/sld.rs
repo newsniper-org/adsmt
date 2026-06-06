@@ -58,12 +58,26 @@ impl Candidate {
 
     /// Merge another candidate's hypotheses into this one,
     /// deduplicating by α-equivalence. Preserves insertion order.
+    ///
+    /// rc.23 (e''.2) — the per-element
+    /// `self.hypotheses.iter().any(existing.alpha_eq(h))`
+    /// scan was O(N) per `other` element and quadratic across
+    /// merges of large candidate sets.  Hash-cons makes
+    /// `Term::Eq` `Arc::ptr_eq` O(1), so a single
+    /// `HashSet<Term>` populated from `self.hypotheses`
+    /// collapses the inner scan to O(1) per probe.  Parallel
+    /// `explanations` / `sources` indexing is preserved by
+    /// keying the dedup off `HashSet::insert`'s `bool`
+    /// return — `false` means the hypothesis was already
+    /// present, skip all three pushes.
     pub fn merge(&mut self, other: &Candidate) {
+        let mut existing: HashSet<Term> =
+            self.hypotheses.iter().cloned().collect();
         for ((h, src), expl) in other.hypotheses.iter()
             .zip(other.sources.iter())
             .zip(other.explanations.iter())
         {
-            if self.hypotheses.iter().any(|existing| existing.alpha_eq(h)) {
+            if !existing.insert(h.clone()) {
                 continue;
             }
             self.hypotheses.push(h.clone());
