@@ -21,11 +21,37 @@ pub struct TyConst {
 /// A type in predicative rank-1 polymorphic HOL with HKT.
 ///
 /// Type-level lambda is intentionally absent (FOU at type level).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///
+/// `PartialEq` is hand-rolled (rc.22 e.2) to add an
+/// `Arc::ptr_eq` short-circuit on every recursive arm.  The
+/// derived structural `Eq` would deref through every
+/// `Arc<Type>` and re-enter `Type::eq` even when both sides
+/// share one Arc — the verus_smoke flamegraph (2026-06-06)
+/// attributed 17.20 % of cycles to that recursion.  Soundness
+/// is preserved by the `||` fallback to the existing
+/// structural comparison.  `Hash` is still derived because the
+/// hand-rolled eq returns identical results to the derived
+/// shape; the `Arc::ptr_eq` branch is purely a performance
+/// short-circuit and does not change the equivalence relation.
+#[derive(Clone, Debug, Eq, Hash)]
 pub enum Type {
     Var(Arc<TyVar>),
     Const(Arc<TyConst>),
     App(Arc<Type>, Arc<Type>),
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Type::Var(a), Type::Var(b)) => Arc::ptr_eq(a, b) || **a == **b,
+            (Type::Const(a), Type::Const(b)) => Arc::ptr_eq(a, b) || **a == **b,
+            (Type::App(fa, xa), Type::App(fb, xb)) => {
+                (Arc::ptr_eq(fa, fb) || **fa == **fb)
+                    && (Arc::ptr_eq(xa, xb) || **xa == **xb)
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Type {
