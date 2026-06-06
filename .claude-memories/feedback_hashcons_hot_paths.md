@@ -1,6 +1,6 @@
 ---
 name: Take the Arc::ptr_eq short-circuit on hash-consed types in hot paths
-description: Whenever a hash-consed type (Term, Type, …) is compared / hashed / looked-up in an inner loop, route the comparison through `Arc::ptr_eq` first. Post-rc.10 `Term::Hash/Eq` is pointer-based O(1); `Type` after rc.22 has hand-rolled `PartialEq` with `Arc::ptr_eq` short-circuit; `alpha_eq_rec` after rc.22 has a top-level `Arc::ptr_eq` fast-path. Three measured incidents — CDCL String-keyed maps (rc.21: 5 955→1 923 ms, 67 %), `alpha_eq_rec` (rc.22: ~3 670→~50 ms predicted), `Type::eq` (rc.22: ~1 010→~30 ms predicted). All three were the same shape — an O(1) handle existed in the codebase but the hot path did not use it.
+description: Whenever a hash-consed type (Term, Type, …) is compared / hashed / looked-up / stored in an inner loop, route the comparison through `Arc::ptr_eq` first AND prefer `(Index)Set<T>::contains` over `Vec<T>::iter().any(custom_eq)` for dedup-shaped containers. Post-rc.10 `Term::Hash/Eq` is pointer-based O(1); `Type` after rc.22 has hand-rolled `PartialEq` with `Arc::ptr_eq` short-circuit; `alpha_eq_rec` after rc.22 has a top-level `Arc::ptr_eq` fast-path; UF/abductive `Vec<Term>` dedup containers after rc.23 are `IndexSet<Term>` / `HashSet<Term>`. Four measured incidents — CDCL String-keyed maps (rc.21: 5 955→1 923 ms, 67 %), `alpha_eq_rec` (rc.22: ~3 670→~50 ms predicted), `Type::eq` (rc.22: ~1 010→~30 ms predicted), UF iter().any(alpha_eq) (rc.23: ~3 600→~50 ms predicted). All four were the same shape — an O(1) handle existed in the codebase but the hot path did not use it.
 type: feedback
 ---
 
@@ -80,34 +80,96 @@ PartialEq is hand-rolled — keep them returning identical
 equivalence relations so `Eq`/`Hash` reflexivity stays
 intact.
 
-## 3. Outer linear-scan callers
+## 3. Container-shape: `Vec<T>` + `iter().any(custom_eq)` → `(Index)Set<T>::contains`
 
-`set.iter().any(|x| x.alpha_eq(t))` patterns become O(N²) on
-N-sized hot sets if the inner `alpha_eq` was O(depth × N).
-With the ptr-eq fast path the inner call drops to O(1) on
-the common case and the outer becomes O(N).  If that's
-still too slow on a prelude-sized workload, the linear scan
-itself is the next candidate (replace with a
-`HashSet<Term>` lookup).
+The third surface — and the one that bites *after* (1)
+and (2) land — is dedup-shaped containers.  Even with the
+inner alpha_eq fast-path at O(1) on the common case, an
+outer `set.iter().any(|x| x.alpha_eq(t))` is still O(N)
+per probe; in a hot loop that's invoked ~N times per
+`(check-sat)` the wall cost is O(N²).
 
-Audit locations (verus-fork grep 2026-06-06):
+```rust
+// Before — O(N²) over the loop body
+self.known: Vec<Term>;
+fn register(&mut self, t: &Term) {
+    if !self.known.iter().any(|kt| kt.alpha_eq(t)) {  // O(N) per call
+        self.known.push(t.clone());
+    }
+}
 
-- `adsmt-theory/src/uf.rs:66, 77, 88, 100, 106, 248,
-  274-275` — UF lookups via `.iter().any(alpha_eq)` per
-  theory propagation step
-- `adsmt-abduce/src/sld.rs:66, 136` — hypothesis dedup +
-  abducible pattern match
-- `adsmt-core/src/rule.rs:46, 88` — proof-rule
-  preconditions
+// After — O(N) over the loop body
+self.known: IndexSet<Term>;
+fn register(&mut self, t: &Term) {
+    self.known.insert(t.clone());                     // O(1) per call,
+                                                      // insert handles dedup
+}
+```
 
-**Why:** Three measured incidents, all the same shape — an
-O(1) handle existed but the hot path did not use it.
+### Picking the container
+
+| use case | container |
+|---|---|
+| dedup-only scratch set (never iterated, never indexed, never serialised) | `std::collections::HashSet<T>` — smallest per-entry overhead |
+| field that needs `truncate(n)` rollback, `for i in 0..N; for j in (i+1)..N` indexed pair scan, or reproducible iteration order | `indexmap::IndexSet<T>` — preserves insertion order, adds `get_index` + `truncate` |
+| keyed map needing reproducible value enumeration | `indexmap::IndexMap<K, V>` instead of `HashMap<K, V>` |
+
+`indexmap` is already a workspace dep (used in
+`adsmt-core` for substitution maps), so it carries no
+new-dependency cost.  The choice between `HashSet` and
+`IndexSet` is a per-call-site decision — UF's
+`pos_atoms` / `neg_atoms` / `known` needed `IndexSet` for
+rollback + indexed-loop preservation; the abductive
+`Candidate::merge` dedup scratch used a one-shot
+`HashSet` because it's never iterated.
+
+### Soundness checks
+
+- **Hash-cons coverage.**  `(Index)Set::contains` uses
+  `Hash` + `Eq`.  For `Term` (rc.10), `Hash` is
+  pointer-hash and `Eq` is `Arc::ptr_eq` — so structurally-
+  identical ground terms (same Arc) probe-hit, but two
+  open terms under different binder contexts could
+  share an Arc and falsely probe-hit.  In practice this
+  is non-issue because every UF / abductive caller
+  operates on closed (Skolemized) terms.
+- **Reproducibility.**  `HashSet` iteration order is
+  non-deterministic (`RandomState` seed per-process);
+  `IndexSet` preserves insertion order.  If the
+  container is iterated to emit certificate text,
+  union-find pair walks, or any sequence whose order
+  is observable downstream, use `IndexSet`.  If it's a
+  pure dedup scratch, `HashSet` is fine.
+- **Rollback shape.**  `IndexSet::truncate(n)` is the
+  drop-in replacement for `Vec::truncate(n)`.  `HashSet`
+  has no length-based truncate; rollback would need a
+  per-scope delta vec or snapshot clone.
+
+### Audit locations (verus-fork grep 2026-06-06)
+
+- `adsmt-theory/src/uf.rs:66, 77` — UF lookups via
+  `.iter().any(alpha_eq)` per theory propagation step.
+  **Fixed at rc.23 (e''.1)** — `known`/`pos_atoms`/
+  `neg_atoms` migrated to `IndexSet<Term>`.
+- `adsmt-abduce/src/sld.rs:66` — hypothesis dedup.
+  **Fixed at rc.23 (e''.2)** — `Candidate::merge` uses
+  a one-shot `HashSet<Term>` populated from
+  `self.hypotheses`.
+- `adsmt-abduce/src/sld.rs:136` — single comparison
+  inside `candidates_with_rules`; covered by (e.1)
+  α-eq fast path.
+- `adsmt-core/src/rule.rs:46, 88` — single comparisons
+  inside proof-rule constructors; covered by (e.1).
+
+**Why:** Four measured incidents, all the same shape —
+an O(1) handle existed but the hot path did not use it.
 
 | cycle | surface | wall before | wall after | commit |
 |---|---|---:|---:|---|
 | rc.21 | `CdclState` HashMap keys (`String → Term`) | 5 955 ms | 1 923 ms | `de0aedb` |
 | rc.22 | `Term::alpha_eq_rec` recursion (`Arc::ptr_eq` guard) | ~3 670 ms est | ~50 ms est | `c54e71c` |
 | rc.22 | `<Type as PartialEq>::eq` (hand-rolled `Arc::ptr_eq`-first) | ~1 010 ms est | ~30 ms est | `d01d78a` |
+| rc.23 | UF `Vec<Term>` + `iter().any(alpha_eq)` → `IndexSet<Term>::contains` | ~3 600 ms est | ~50 ms est | `5d347c2` |
 
 The rc.21 incident first surfaced as "+662 → +747 ms
 regression rc.15 → rc.20" the verus-fork side carried as a
