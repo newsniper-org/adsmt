@@ -759,6 +759,27 @@ fn alpha_eq_rec(
     a_bound: &mut Vec<Arc<Var>>,
     b_bound: &mut Vec<Arc<Var>>,
 ) -> bool {
+    // rc.22 (e.1) — hash-cons fast path.  Post-rc.10 `Term =
+    // Term(Arc<TermInner>)` with `scc::HashIndex` interning, so
+    // any two structurally-identical ground terms share one
+    // Arc.  When both `bound` stacks are empty we are comparing
+    // *closed* sub-terms in identical bound-variable contexts:
+    // `Arc::ptr_eq` implies α-equality with zero recursion.
+    //
+    // The `a_bound.is_empty() && b_bound.is_empty()` guard
+    // preserves soundness when the comparison sits *inside* a
+    // `Lam` scope — two open terms can share an Arc yet be
+    // semantically distinct under different bound-variable
+    // contexts.  Every fresh top-level `alpha_eq` entry hits
+    // this short-circuit; the verus_smoke flamegraph
+    // (2026-06-06) attributed 62.16 % of cycles to this
+    // function without the fast path.
+    if a_bound.is_empty()
+        && b_bound.is_empty()
+        && Arc::ptr_eq(&a.0, &b.0)
+    {
+        return true;
+    }
     match (a.kind(), b.kind()) {
         (TermInner::Var(va), TermInner::Var(vb)) => {
             let pos_a = a_bound.iter().rposition(|v| **v == **va);
