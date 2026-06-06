@@ -8,7 +8,7 @@
 > ~44 k lines of Rust across 31 workspace crates, 946 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.21` on 2026-06-05.
+> `1.0.0-rc.22` on 2026-06-06.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.21):**
+**Active consumers (rc.22):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -355,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.21` (2026-06-05) |
+| Workspace version | `1.0.0-rc.22` (2026-06-06) |
 
 ---
 
-## Roadmap snapshot (rc.21 → v1.0.0 stable)
+## Roadmap snapshot (rc.22 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -411,8 +411,12 @@ or proof-search strategies without touching the engine core.
 | (1) §3.5.J runtime gate — `cdcl::cdcl_solve_with_model_deadline_with_seed` + `Solver::prepare_cdcl_seed` (verus-fork rc.20 retry §1) | **landed** at rc.21 (`706b7bf`).  Inner-loop variant + Luby wrapper + sat-only wrapper consume a `CdclState` seed projected from the v1 artefact's `trail` / `vsids` / `saved_phase` records (atom_pool_idx → Term via new `Solver::aot_pool_terms: Vec<Term>` field).  Per-query CDCL now bypasses the prelude's BCP-fixpoint rerun — the missing half of the §3.5.J payoff |
 | (b''') Tracer Unknown / deadline-cancel coverage (verus-fork rc.20 retry §(b'')) | **landed** at rc.21 (`78eff65`).  Session-boundary fallback inside `Solver::check_sat_with_deadline` force-records Restart + verdict-shaped event when `tracer.is_empty()` after `check_sat_inner` returns; covers every CDCL path the inline recorder can't reach |
 | (c''') v0 `--aot-load` allocator-chain hotspot — `CdclState` String → Term migration (verus-fork rc.20 retry §(c''')) | **landed** at rc.21 (`e2eaec8` profile + `de0aedb` migration).  pacman-installed cargo-flamegraph localised ~12.6 % of cycles in the allocator chain driven by `cdcl::atom_key(lit) -> lit.atom.to_string()` per propagation step on String-keyed CdclState maps.  Migrated `TrailEntry::atom`, `CdclState::{assign, activity, saved_phase, watches}`, `HashSet seen`, `pick_vsids_atom` return + `evaluate_clause` arg from `String` to hash-consed `Term` (Arc::ptr_eq Hash/Eq O(1) post-rc.10 — same probe cost, zero per-step allocation).  `CdclOutcome::Sat`'s `HashMap<String, bool>` model + `CdclEventSink` trait `&str` preserved with one-shot boundary conversion.  **Verus_smoke-shaped wall-clock: 5 955 ms → 1 923 ms (≈ 67 % reduction)**; allocator chain absent from top-40 frames post-migration |
-| §3.5.J verus-fork 5-mode smoke retry against rc.21 (post-seed + post-hotspot) | verus-fork side; both prerequisites (`_with_seed` variant + allocator hotspot elimination) landed at rc.21.  Expected to drop Mode C' / F under `--rlimit 5 s` well below the previous 5.8 s wall.  If §3.5.J doesn't close, the next-largest hotspot is visible in `.claude-notes/profiling/2026-06-05-post-migration-flamegraph.txt` |
-| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.21 follow-up |
+| (e.1) `alpha_eq_rec` Arc::ptr_eq fast path (verus-fork rc.21 retry §(d) §5.1) | **landed** at rc.22 (`c54e71c`).  Five-line guard at the top of `adsmt-core/src/term.rs::alpha_eq_rec` gated by `a_bound.is_empty() && b_bound.is_empty()`; addresses 62.16 % of cycles attributed to the function on the verus_smoke flamegraph.  Soundness: empty-stack guard restricts the fast path to closed sub-terms in identical bound contexts.  Top-level entry points (mk_forall / nnf_pos / UF / SLD / proof-rule) all hit the short-circuit |
+| (e.2) `<Type as PartialEq>::eq` Arc::ptr_eq-first hand-roll (verus-fork rc.21 retry §(d) §5.2) | **landed** at rc.22 (`d01d78a`).  Drop `PartialEq` from `Type`'s `derive` list; hand-roll with `Arc::ptr_eq(a, b) || **a == **b` on every recursive arm; addresses 17.20 % of cycles.  Soundness-equivalent to the derive; `Hash` stays derived (structural) since the equivalence relation is unchanged |
+| (e.3) `feedback_hashcons_hot_paths.md` rule generalisation | **landed** at rc.22 (`d703956`).  Renamed from "HashMap key" rule to "Arc::ptr_eq short-circuit on hash-consed types in hot paths".  Three numbered sections: HashMap / HashSet keys (rc.21 surface), structural equality fast paths (rc.22 surfaces), outer linear-scan callers (uf.rs / sld.rs / rule.rs).  Diagnostic anchor: rc.21 Mode C' 23 ms variance signature (preserve → algorithmic fix; grow → new allocator churn) |
+| §3.5.J verus-fork 5-mode smoke retry against rc.22 (post-alpha_eq + post-Type::eq) | verus-fork side; verus-fork-predicted wall recovery on verus_smoke Mode C' 5 898 → ~1 300 ms (inside §3.5.J's `≤ 1 500 ms` window).  Adsmt-side direct wall measurement host-environment-limited (lu-smt direct invocation does not catch the in-flight `:rlimit 5 s` deadline inside the assert-stage hot path; verus-fork wall numbers were external-SIGTERM-driven through verus's own timeout wrapper) |
+| (3) Optional UF / abductive / proof-rule `iter().any(alpha_eq)` linear-scan replacement | deferred — landed (e.1) + (e.2) drop the inner alpha_eq to O(1) so the outer `iter().any` is O(N) instead of O(N²).  Only escalates to a `HashSet<Term>` lookup if the verus-fork rc.22 retry shows the wall doesn't drop the predicted ~4.6 s |
+| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.22 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
 
@@ -438,5 +442,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.21
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.22
   development arc.

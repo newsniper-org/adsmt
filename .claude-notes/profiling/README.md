@@ -121,3 +121,55 @@ The remaining cycle budget is now in the CDCL algorithm
 itself (VSIDS pick + clause evaluation + Arc::clone for
 hash-cons handles) — there is no further low-hanging-fruit
 allocator hotspot on the v0 `--aot-load` path.
+
+## verus_smoke fixture flamegraph (rc.21, verus-fork-side)
+
+The 5 000-Bool / 5 000-ternary-OR fixture above approximates
+verus_smoke's *size* but not its *shape* (pure SAT, no
+quantifiers / theories / datatypes).  verus-fork's rc.21
+retry against the real verus_smoke transcript (1063-line
+query extracted from `/tmp/verus-log-adsmt/root.smt_transcript`,
+85 forall quantifiers, 26 ground literals,
+`(_ partial-order 0)` theory, datatypes) showed Mode C''s
+23 ms variance signature (matching the adsmt-side 13 ms
+post-migration shape) but the wall stayed at 5 898 ms —
+the rc.21 fix engaged but the saved cycles got reabsorbed
+in a different, fully-deterministic hot path.
+
+A second `cargo-flamegraph` run on the verus-fork host
+(2026-06-06, capacity at `2026-06-06-verus_smoke-flamegraph-rc21.svg`
++ `2026-06-06-verus_smoke-perf-script-rc21.txt`) attributed:
+
+| % cycles | function | category |
+|---:|---|---|
+| **62.16 %** | `adsmt_core::term::alpha_eq_rec` | term α-equivalence |
+| **17.20 %** | `<adsmt_core::ty::Type as PartialEq>::eq` | type structural eq |
+| 18.24 % | libc / kernel / `[unknown]` | runtime |
+| 1.25 % | other `adsmt_core` | misc |
+
+Combined: **~79 % of cycles in two structural-comparison
+functions neither of which used the rc.10 hash-cons
+`Arc::ptr_eq` handle.**  Same pattern as the rc.21 incident,
+just one structural-eq layer up from the CdclState surface.
+
+## rc.22 (e.1) + (e.2)
+
+- `c54e71c` (e.1) — `alpha_eq_rec` 5-line `Arc::ptr_eq` fast
+  path gated by `a_bound.is_empty() && b_bound.is_empty()`.
+- `d01d78a` (e.2) — `<Type as PartialEq>::eq` dropped from
+  the `derive` list, hand-rolled with `Arc::ptr_eq(a, b) ||
+  **a == **b` on every recursive arm.
+
+Verus-fork-predicted recovery on the verus_smoke Mode C'
+wall: 5 898 → ~1 300 ms.  Adsmt-side direct wall
+measurement is host-environment-limited (verus-fork wall
+numbers were external-SIGTERM-driven through verus's own
+timeout wrapper); rc.22 retry against the verus-fork host
+is the path to direct confirmation.
+
+The diagnostic anchor going forward: the rc.21 Mode C'
+23 ms variance signature.  A successful post-rc.22 fix
+should **preserve** that spread (the algorithmic work
+shrinks but no new allocations are introduced); if the
+spread grows the fix introduced unanticipated allocator
+churn.
