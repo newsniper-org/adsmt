@@ -865,9 +865,85 @@ fn oxiz_pick_last<'a, I: Iterator<Item = &'a str>>(lines: I) -> Option<LastStatu
 /// returning the per-`check-sat` verdicts).  No subprocess.
 #[cfg(feature = "oxiz")]
 fn oxiz_inproc(history: &str) -> Option<LastStatus> {
+    // Feed the buffered SMT-LIB to a persistent OxiZ `Context` ONE
+    // top-level command at a time.  OxiZ's batch `parse_script`
+    // mis-parses some larger multi-command inputs ("expected ')',
+    // found LParen"); the per-command path matches the robust
+    // incremental parsing the OxiZ CLI uses over stdin.
+    let debug = std::env::var_os("ADSMT_OXIZ_DEBUG").is_some();
     let mut ctx = oxiz_solver::Context::new();
-    let outputs = ctx.execute_script(history).ok()?;
-    oxiz_pick_last(outputs.iter().map(String::as_str))
+    let mut last = None;
+    for cmd in split_top_level_sexprs(history) {
+        match ctx.execute_script(cmd) {
+            Ok(out) => {
+                if let Some(v) = oxiz_pick_last(out.iter().map(String::as_str)) {
+                    last = Some(v);
+                }
+            }
+            Err(e) => {
+                if debug {
+                    eprintln!("[oxiz_inproc] ERR on cmd ({}B): {e:?}", cmd.len());
+                }
+                return None;
+            }
+        }
+    }
+    if debug {
+        eprintln!("[oxiz_inproc] OK history={}B last={last:?}", history.len());
+    }
+    last
+}
+
+/// rc.30 — split an SMT-LIB transcript into its top-level
+/// S-expressions (balanced parens, respecting `"…"` strings and
+/// `;…` line comments).  Used to feed the OxiZ delegation one
+/// command at a time.
+#[cfg(feature = "oxiz")]
+fn split_top_level_sexprs(s: &str) -> Vec<&str> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0i32, 0usize);
+    let (mut in_str, mut esc, mut in_comment) = (false, false, false);
+    let mut started = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        let ch = b as char;
+        if in_comment {
+            if ch == '\n' {
+                in_comment = false;
+            }
+            continue;
+        }
+        if in_str {
+            if esc {
+                esc = false;
+            } else if ch == '\\' {
+                esc = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match ch {
+            ';' => in_comment = true,
+            '"' => in_str = true,
+            '(' => {
+                if depth == 0 {
+                    start = i;
+                    started = true;
+                }
+                depth += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 && started {
+                    out.push(&s[start..=i]);
+                    started = false;
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// rc.30 — subprocess OxiZ oracle (`ADSMT_OXIZ_PATH`), used when the
