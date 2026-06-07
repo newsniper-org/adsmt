@@ -56,7 +56,14 @@ to it; uncomment to consume adsmt via
 `Honey-Be/adsmt-private`, a *different* remote from the contrib
 git-pin's *public* `newsniper-org/adsmt` — publishing the
 git-pin form requires the public repo to carry the matching
-adsmt rev, which can't be verified from the AD1 working tree.
+adsmt rev. Verified at the rc.28 sync: the public
+`newsniper-org/adsmt` **`testing`** branch is at `bd6ffb1`
+(rc.28), so the contrib **`testing`** branch (git-pinned to
+adsmt `testing`, user commit `33349dc`) builds + tests green
+against it (`adsmt-core`/`adsmt-cert` resolve at
+`v1.0.0-rc.28`). Channel split: `main` uses local-path deps
+(dev, my `f5dfe50`); `testing` uses the git-pin to adsmt's
+`testing` branch (the channel-model published form).
 adsmt v0.18 landed the classical-axiom marker layer; the contrib
 backends ship matching changes in their own commits (see
 `adsmt-emit-rocq/src/lib.rs` and `adsmt-emit-isabelle/src/lib.rs`
