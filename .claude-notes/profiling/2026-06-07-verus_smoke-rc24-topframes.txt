@@ -1,0 +1,6 @@
+    81.35%  [.] adsmt_core::term::alpha_eq_rec                                                                 -      -            
+     9.86%  [.] <adsmt_theory::uf::Uf as adsmt_theory::trait_::Theory>::check                                  -      -            
+     2.56%  [.] core::hash::BuildHasher::hash_one                                                              -      -            
+     2.38%  [.] <core::hash::sip::Hasher<S> as core::hash::Hasher>::write                                      -      -            
+     1.63%  [.] adsmt_core::term::Term::alpha_eq                                                               -      -            
+     1.28%  [.] adsmt_theory::uf::Uf::find                                                                     -      -            
