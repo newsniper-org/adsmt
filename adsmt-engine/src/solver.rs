@@ -2660,25 +2660,44 @@ mod tests {
         );
     }
 
-    /// The same opaque assert *without* a contradiction must
-    /// downgrade to `Unknown` (the flattenable subset is sat but
-    /// the un-encoded assertion is unresolved) — never `Sat`.
+    /// rc.29 (S.2) — `(or P (and Q R))` was reported `Unknown` at
+    /// rc.27 (sound but incomplete: the OR-of-AND was opaque to the
+    /// flattener).  With the Tseitin transform it now flattens and
+    /// the genuinely-satisfiable formula resolves to `Sat`
+    /// (e.g. P = true).  This is the completeness win — what was
+    /// `Unknown` is now the correct definite verdict.
     #[test]
-    fn opaque_assert_alone_is_unknown_not_sat() {
+    fn or_of_and_alone_is_sat_via_tseitin() {
         let bool_ = Type::bool_();
         let p = Term::var("P", bool_.clone());
         let q = Term::var("Q", bool_.clone());
         let r = Term::var("R", bool_);
-        let or_of_and = Term::mk_or(
-            p,
-            Term::mk_and(q, r).unwrap(),
-        )
-        .unwrap();
+        let or_of_and = Term::mk_or(p, Term::mk_and(q, r).unwrap()).unwrap();
         let mut s = Solver::new();
         s.assert(or_of_and);
         assert!(
-            matches!(s.check_sat(), SatResult::Unknown { .. }),
-            "an un-encodable assertion must not be reported sat"
+            matches!(s.check_sat(), SatResult::Sat { .. }),
+            "(or P (and Q R)) is satisfiable; Tseitin (S.2) resolves it to Sat, not Unknown"
+        );
+    }
+
+    /// rc.29 (S.2) — the verus-fork canonical completeness witness:
+    /// `(or (and P (not P)) (and P (not P)))` is structurally unsat
+    /// (a contradiction buried inside an OR-of-AND with no companion
+    /// flattenable `false`).  Pre-rc.29 this was `Unknown` (z3:
+    /// `unsat`); the Tseitin aux makes the buried contradiction reach
+    /// the SAT solve and resolve to `Unsat`.
+    #[test]
+    fn or_of_and_buried_contradiction_is_unsat() {
+        let bool_ = Type::bool_();
+        let p = Term::var("P", bool_);
+        let pnp = || Term::mk_and(p.clone(), Term::mk_not(p.clone()).unwrap()).unwrap();
+        let witness = Term::mk_or(pnp(), pnp()).unwrap();
+        let mut s = Solver::new();
+        s.assert(witness);
+        assert!(
+            matches!(s.check_sat(), SatResult::Unsat { .. }),
+            "a contradiction buried in an OR-of-AND must resolve to Unsat via Tseitin (S.2)"
         );
     }
 

@@ -84,16 +84,27 @@ defence-in-depth.
   unsound — guard the constant-`false` (and
   `(not true)`) case before handing literals to a layer
   that only reasons about equalities.
-- **Completeness vs soundness**: (S.1) makes the engine
+- **Completeness vs soundness**: (S.1) made the engine
   *sound* (returns `Unknown` instead of wrong `Sat`) but
   *incomplete* on obligations whose contradiction lives
-  inside the un-encodable structure (it returns `Unknown`
+  inside the un-encodable structure (it returned `Unknown`
   where `Unsat` is the truth).  The completeness fix is
   a proper CNF transform (Tseitin auxiliary variables for
   OR-of-AND) so the structure is encodable in the first
-  place — rc.27 (S.2), a follow-up.  Ship the soundness
-  fix first; never let an incompleteness excuse a
-  soundness hole.
+  place — **(S.2), landed at rc.29** in
+  `adsmt-engine/src/cnf.rs`.  Two soundness-relevant
+  Tseitin pitfalls worth remembering: (1) aux atoms MUST be
+  globally unique across assertions — a per-call counter
+  (`aux!0`…) makes assertion A's and assertion B's `aux!0`
+  the *same* hash-consed `Term`, aliasing two different
+  sub-formulas under one contradictory definition (unsound);
+  content-name them (`!tseitin!<subterm>`) so identical
+  sub-formulas share one definition and distinct ones never
+  collide; (2) keep the empty clause sacred — the
+  aux-introduction path must never drop a genuine
+  contradiction, so the rc.27 repro + rc.28 divergence table
+  stay `unsat` after Tseitin lands.  Ship the soundness fix
+  first; never let an incompleteness excuse a soundness hole.
 
 **The same hole can exist on a *second* path that mirrors
 the first** — rc.28 (S.1-AOT, verus-fork rc.27 retry). The

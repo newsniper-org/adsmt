@@ -5,10 +5,10 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~44 k lines of Rust across 31 workspace crates, 951 tests
+> ~44 k lines of Rust across 31 workspace crates, 956 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.28` on 2026-06-07.
+> `1.0.0-rc.29` on 2026-06-07.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.28):**
+**Active consumers (rc.29):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -355,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.28` (2026-06-07) |
+| Workspace version | `1.0.0-rc.29` (2026-06-07) |
 
 ---
 
-## Roadmap snapshot (rc.28 → v1.0.0 stable)
+## Roadmap snapshot (rc.29 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -430,7 +430,8 @@ or proof-search strategies without touching the engine core.
 | (e⁗⁗.4) `Combination::check` Nelson-Oppen dedup → `HashSet<(Term,Term)>` | **landed** at rc.26.  The "already-seen equalities" `Vec`+`iter().any(…alpha_eq…)` (4.9 % of cycles) → `HashSet` keyed on `norm_pair`, mirroring the UF dedup.  O(|seen|·alpha_eq) → O(1) per probe |
 | (T0'''') E-matching deadline cascade | **landed** at rc.26.  `TermUniverse::extend_with_equalities_until` per-equality `expired` check, extending the rc.25 (T0''') UF cascade into the congruence-ematch phase.  **Milestone**: the SMT-solving hot path is fully de-quadratified — workspace grep clean of production `iter().any(.*alpha_eq` (only comments + tests + cold abduction) |
 | (S.1)+(S.3) CRITICAL soundness fix — opaque assert must not mask `false` into `sat` (verus-fork rc.26 retry P0) | **landed** at rc.27.  `check_ground`'s `flatten_to_clauses → None` arm now keeps the flattenable clause subset (empty clause included) + a `had_opaque` flag downgrades a final `Sat` → `Unknown`; propositional-`false` short-circuit in the theory route as defence-in-depth.  The 5-line repro (`(=> P (and Q R))` + `(assert false)`) returns `unsat`; verus_smoke now returns `unsat` (its `(assert (not true))` is flattenable).  3 regression tests, 949/949 green |
-| (S.2) Tseitin-encode OR-of-AND in `flatten_to_clauses` | next-cycle follow-up.  (S.1) makes the engine *sound* (returns `Unknown` where it can't encode) + yields `unsat` on verus_smoke; (S.2) extends *completeness* to obligations whose contradiction lives inside an opaque OR-of-AND (currently soundly `Unknown`) via Tseitin auxiliary variables — the proper CNF transform the `cnf.rs` "v0.5+" comment anticipated |
+| (S.2) Tseitin-encode OR-of-AND in `flatten_to_clauses` | **landed** at rc.29.  A conjunction appearing where a flat literal list is required is replaced by a fresh content-named aux Boolean `aux` (`!tseitin!<subterm>`) with defining clauses `aux ⟺ subformula`, so `flatten_to_clauses` returns `Some` (not `None`) on nested OR-of-AND.  Equisatisfiable, linear in term size, constants folded.  All three paths inherit completeness (the bake side now bakes real clauses, no `had_opaque` for these — it degrades to deadline/size cases only).  Witness `(or (and P (not P)) (and P (not P)))` → `unsat` (was `Unknown`) on baseline + AOT + JIT; `(or P (and Q R))` alone → `sat` (was `Unknown`); rc.27 repro + rc.28 divergence table stay `unsat`.  6 new tests, 951 → 956 green |
+| Full completeness/soundness audit + v1.0.0 stable cut | the v1.0 gate (verus-fork (S.2) request): (S.2) done; the explicit end-to-end sweep (no path returns sat-for-unsat or unsat-for-sat; previously-`Unknown` OR-of-AND contradictions now `unsat`; rc.26→28 regressions hold) + **explicit user sign-off** per `feedback_stable_signoff_user_approval.md` remain.  The §3.5.J functional success is NOT the v1.0 cut |
 | §3.5.J verus-fork retry against rc.27 (post-soundness-fix) | **DONE** (verus-fork rc.27 retry).  `verus -V adsmt` → `1 verified, 0 errors` in 511 ms (baseline verus_smoke `unsat` 8 ms) — three orders inside the `≤ 1 500 ms` window; the P-vb finish line + quantitative close of the verus-fork-driven performance arc |
 | (S.1-AOT) extend the rc.27 soundness fix to the `--aot-load` path (verus-fork rc.27 retry residual) | **landed** at rc.28, **CONFIRMED** by verus-fork rc.28 retry (mirror `6491a58`).  The rc.27 (S.1) fix lived only in `check_ground`; the AOT-prelude-bank path (`with_aot_cdcl` / `restore_cdcl_state_into` / `dump_cdcl_state`) still dropped the baked `(assert false)` empty clause → `sat`-for-unsat at every opaque-assert count.  Fix: `restore_cdcl_state_into` keeps genuine empty clauses (explicit `ok` flag vs the defensive out-of-range drop); a trailing v1.2 `CdclSection::had_opaque` wire field (`Cursor::at_end()`-gated, v1.0/v1.1 default `false`) carries the bake-time opaque flag through to a new `Solver::aot_prelude_had_opaque` that seeds `check_ground`'s `had_opaque`, mirroring the baseline `Sat`→`Unknown` downgrade.  Divergence table fully closed (baseline == `--aot-load` at 1/8/16/19/24 opaque asserts); 2 regression tests + 1 round-trip extension, 951/951 green.  verus-fork confirmed **all three paths sound**: full verus_smoke `--aot-load` → `unsat` 13 ms (was `unknown`), JIT-over-AOT → `unsat` |
 | §3.5.I AOT env-path argv threading (`VERUS_ADSMT_AOT_LUART` → `--aot-load`) | **DONE** (verus-fork rc.28 retry).  Driver through the env path → `verus -V adsmt` → `1 verified, 0 errors` 530 ms — §3.5.I proven sound end-to-end through the baked prelude bank, on top of (S.1-AOT) |
@@ -461,5 +462,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.28
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.29
   development arc.
