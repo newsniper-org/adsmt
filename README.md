@@ -307,13 +307,24 @@ swap the dep version via `cargo update` / `[patch.crates-io]`).
 
 ## Versioning + channels
 
-adsmt uses a Debian-style channel model:
+adsmt uses a Debian-style channel model.  The development tiers
+are single branches; the released tier is split by release cadence
+so consumers can pin exactly the stability they want:
 
-| Channel | Branch | Purpose |
-|---|---|---|
-| `unstable` (sid) | `main` | Active development; new commits land here first |
-| `testing` | `testing` | Stabilisation candidates promoted from `main` |
-| `stable` | `v1.0.0` (tag) | Released versions (the v1.0.0 tag is the first cut) |
+| Channel | Git ref | Cadence | Purpose |
+|---|---|---|---|
+| `unstable` (sid) | `main` branch | rolling | Active development; new commits land here first |
+| `testing` | `testing` branch | rolling | Stabilisation candidates promoted from `main` |
+| `stable` | `stable` branch | rolling | Always the latest stable release across *all* majors — moves forward through major bumps |
+| `stable-v<major>` | `stable-v1`, `stable-v2`, … branch | semi-rolling | Latest stable *within* one major (e.g. `stable-v1` tracks every `1.x` but never advances to `2.0`) — the long-term-support line for consumers that won't take a major bump automatically |
+| (point release) | `v<major>.<minor>.<patch>` tag | immutable | A single frozen release (`v1.0.0`, `v1.0.1`, …); never moves |
+
+Consumers pin by intent: the `stable` branch for "always newest
+stable" (accepts major bumps), a `stable-v<major>` branch for
+"newest within my major" (semi-rolling LTS), or an exact
+`v<major>.<minor>.<patch>` tag for a reproducible frozen build.
+The first stable cut places the `v1.0.0` tag and forks both the
+`stable` and `stable-v1` branches from it.
 
 The rc.7 → rc.29 arc has been driven by the verus-fork
 engine-refactor request (see

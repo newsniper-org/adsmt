@@ -85,18 +85,27 @@ mapping. The full policy lives in `prover_emit_policy.md`.
 
 ```bash
 cd ~/adsmt-contrib && cargo test
-# expect 13 passing across the two crates
+# expect 26 passing across the two crates (15 rocq + 11 isabelle)
 ```
 
-## Channel model (introduced 2026-05-31)
+## Channel model (introduced 2026-05-31; stable tier refined 2026-06-07)
 
-Mirrors adsmt main's Debian-style channels in lockstep:
+Mirrors adsmt main's Debian-style channels in lockstep — see
+[[release_channel_model]] for the full model.  Dev tiers are
+single rolling branches; the released tier is split by cadence:
 
 | Channel | Branch (this repo) | Aligned with adsmt main |
 |---|---|---|
 | `unstable` (sid) | `main` | `main` |
 | `testing` | `testing` (fork point `774edcf`, 2026-05-31) | `testing` (fork point `450b986`) |
-| `stable` | `v1.0.0` tag (cut *after* adsmt main `v1.0.0`) | `v1.0.0` tag |
+| `stable` | `stable` branch (rolling, latest across all majors) | `stable` branch |
+| `stable-v<major>` | `stable-v1`, … (semi-rolling LTS within one major) | `stable-v<major>` branch |
+| point release | `v<major>.<minor>.<patch>` tag (cut *after* adsmt main's) | matching `v…` tag |
+
+The `stable` / `stable-v<major>` branches + tags are cut *after*
+adsmt main's, against the matching adsmt git ref (the contrib
+README still shows the pre-refinement 3-row table — update it +
+fork the branches at the actual stable-cut window).
 
 The `testing` branch was forked from `main` HEAD `774edcf` on
 2026-05-31 per user instruction. Both branches received the
