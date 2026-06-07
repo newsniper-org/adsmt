@@ -35,13 +35,20 @@ pub fn conflict_instantiate(
 ) -> Vec<Term> {
     let v_arc = Arc::new(var.clone());
     let mut out = Vec::new();
+    // rc.24 (e'''.3) — dedup via a `HashSet<Term>` scratch
+    // rather than the prior `out.iter().any(alpha_eq)` linear
+    // scan.  O(1) probe on the rc.10 hash-cons handle; output
+    // `Vec` order preserved (the conflict-instantiation order
+    // is observable in the re-asserted ground literals).
+    let mut seen: std::collections::HashSet<Term> =
+        std::collections::HashSet::new();
     for (atom, polarity) in ground {
         if *polarity { continue; }  // we want NEGATIVE ground atoms to attack
         let mut sigma: IndexMap<Arc<Var>, Term> = IndexMap::new();
         if extend_match(body, atom, &v_arc, &mut sigma) {
             // Build the instantiated body using the discovered binding.
             if let Ok(instantiated) = body.subst(&sigma)
-                && !out.iter().any(|t: &Term| t.alpha_eq(&instantiated)) {
+                && seen.insert(instantiated.clone()) {
                     out.push(instantiated);
                 }
         }

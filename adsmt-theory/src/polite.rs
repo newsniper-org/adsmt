@@ -301,10 +301,20 @@ impl Combination {
 fn max_disequality_clique(pairs: &[(Term, Term)], limit: usize) -> usize {
     use std::collections::HashSet;
     // Vertex set: every term appearing in any pair.
+    //
+    // rc.24 (e'''.3) — dedup-on-build through a `HashSet<Term>`
+    // scratch rather than the prior
+    // `vertices.iter().any(|v| v.alpha_eq(a))` linear scan.
+    // `vertices` stays a `Vec<Term>` because the clique walk
+    // below indexes it positionally; only the dedup probe
+    // moves to O(1) on the rc.10 hash-cons handle.  Insertion
+    // order is unchanged, so the greedy clique traversal is
+    // bit-identical.
     let mut vertices: Vec<Term> = Vec::new();
+    let mut seen: HashSet<Term> = HashSet::new();
     for (a, b) in pairs {
-        if !vertices.iter().any(|v| v.alpha_eq(a)) { vertices.push(a.clone()); }
-        if !vertices.iter().any(|v| v.alpha_eq(b)) { vertices.push(b.clone()); }
+        if seen.insert(a.clone()) { vertices.push(a.clone()); }
+        if seen.insert(b.clone()) { vertices.push(b.clone()); }
     }
     // Adjacency check: are u, v in an asserted disequality?
     let adj = |u: &Term, v: &Term| -> bool {
