@@ -8,7 +8,7 @@
 > ~44 k lines of Rust across 31 workspace crates, 946 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.25` on 2026-06-07.
+> `1.0.0-rc.26` on 2026-06-07.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.25):**
+**Active consumers (rc.26):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -355,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.25` (2026-06-07) |
+| Workspace version | `1.0.0-rc.26` (2026-06-07) |
 
 ---
 
-## Roadmap snapshot (rc.25 → v1.0.0 stable)
+## Roadmap snapshot (rc.26 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -425,8 +425,12 @@ or proof-search strategies without touching the engine core.
 | (e⁗.2) Arc::ptr_eq union-find roots (verus-fork rc.24 retry §5) | **landed** at rc.25.  `find`/`union`/`same_class`/`derive_equalities` compare roots with `==` (Arc::ptr_eq post-rc.10), not recursive `alpha_eq`; roots are canonical Arcs.  Same hash-cons-hot-path family as rc.21/22, one layer into the congruence machinery |
 | (T0''') theory-phase deadline cascade | **landed** at rc.25.  `Theory::set_deadline` default-no-op trait method + `Combination::set_deadline` fan-out + `dpllt::run_once_with_deadline`; `Uf::close()` checks `expired` per signature-pass round → `Unknown` on a half-built closure (sound).  Extends the rc.16 T0' CDCL-phase deadline cascade into the theory-check phase |
 | (e⁗.3) `feedback_hashcons_hot_paths.md` throttle-unmask lesson | **landed** at rc.25.  "removing an O(N²) throttle can EXPOSE a masked downstream O(N²)" — "wall up after a correct optimization" = unblocked worse downstream cost, bisect + re-profile, don't revert.  Sixth incident row (first algorithmic, not container/key, member) |
-| §3.5.J verus-fork 5-mode smoke retry against rc.25 (post-signature-hashed-closure) | verus-fork side; verus-fork-predicted the 5 665-term closure drops ~22 s → tens of ms, Mode C' wall back below rc.23's 4.6 s and toward §3.5.J's `≤ 1 500 ms` window, rlimit ≥ 5 s timeout resolves.  Adsmt-side direct wall measurement host-environment-limited |
-| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.24 follow-up |
+| (rc.25-retry, user-landed) UF `derive_equalities` dedup → `HashSet<(Term,Term)>` norm_pair + deadline break | **landed** by the user (`6a3f0cd`/`6dc6f7c`).  verus-fork rc.25 retry confirmed (e⁗.*)+(T0''') made `:rlimit` EXACT but rlimit ≥ 5 s reached the next phase `UF::derive_equalities` (92.8 % of alpha_eq samples); the user fixed it directly, making the ∞ hang finite + taking `UF::*` off the flamegraph |
+| (e⁗⁗.3) E-matcher matcher-binding + substitute_in `alpha_eq` → `==` | **landed** at rc.26.  `ematch::extend_match` + `quant_conflict` Tier-2 binding `prev.alpha_eq(target)` → `*prev == *target`; `substitute_in` `t.alpha_eq(from)` → `t == from`.  Ground hash-cons-canonical → Arc::ptr_eq exact |
+| (e⁗⁗.4) `Combination::check` Nelson-Oppen dedup → `HashSet<(Term,Term)>` | **landed** at rc.26.  The "already-seen equalities" `Vec`+`iter().any(…alpha_eq…)` (4.9 % of cycles) → `HashSet` keyed on `norm_pair`, mirroring the UF dedup.  O(|seen|·alpha_eq) → O(1) per probe |
+| (T0'''') E-matching deadline cascade | **landed** at rc.26.  `TermUniverse::extend_with_equalities_until` per-equality `expired` check, extending the rc.25 (T0''') UF cascade into the congruence-ematch phase.  **Milestone**: the SMT-solving hot path is fully de-quadratified — workspace grep clean of production `iter().any(.*alpha_eq` (only comments + tests + cold abduction) |
+| §3.5.J verus-fork 5-mode smoke retry against rc.26 (post-full-de-quadratification) | verus-fork side; the qualitative ∞ → finite milestone is hit (every SMT-path O(N²) gone).  rc.26 retry to confirm rlimit ≥ 5 s resolves to a clean budget-bound `unknown` + the full Mode C' 3-run + variance lands in §3.5.J's `≤ 1 500 ms` window — the quantitative close of the rc.7 → rc.26 performance arc.  Adsmt-side direct wall measurement host-environment-limited |
+| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.26 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
 
@@ -452,5 +456,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.25
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.26
   development arc.

@@ -360,3 +360,58 @@ throttle can EXPOSE a masked downstream O(N²).  A correct
 optimization that makes the wall *worse* means you
 unblocked a slower phase — bisect to the commit, then
 profile the *new* hot path; don't revert the correct fix.
+
+## rc.25 retry — :rlimit EXACT + derive_equalities unmask
+
+verus-fork rc.25 retry confirmed (e⁗.1)+(e⁗.2)+(T0''')
+working: **`:rlimit` is now EXACT** (rlimit 1 s →
+1 011 ms, 3 s → 3 011 ms; vs rc.24's rlimit-independent
+~26 s) and `UF::close()` is off the flamegraph — the
+first time across the whole arc that the budget is
+binding.  But rlimit ≥ 5 s still hung: `close()` got fast
+enough to reach the next phase, `UF::derive_equalities`
+(92.8 % of alpha_eq-bearing samples), whose
+representative dedup was still
+`out.iter().any(…alpha_eq…)`.  rc.25 flamegraph
+(`2026-06-07-verus_smoke-flamegraph-rc25.svg`,
+`…-rc25-topframes.txt`): `alpha_eq_rec` 63.5 % +
+`Term::alpha_eq` 14.6 %; `Combination::check` 4.9 %.
+
+The **user landed the derive_equalities fix directly**
+(`HashSet<(Term,Term)>` norm_pair dedup + derive-loop
+deadline break + `Self::expired` lift); the verus-fork
+side prototype-validated it first (∞ hang → finite
+~25 s, `UF::*` entirely off the flamegraph).
+
+## rc.26 — E-matcher tail + chain termination
+
+The throttle-unmask chain's final layer: with UF
+de-quadratified, the residual was the E-matcher.
+
+- (e⁗⁗.3) `ematch::extend_match` + `quant_conflict`
+  Tier-2 matcher binding `prev.alpha_eq(target)` →
+  `*prev == *target`; `substitute_in` `t.alpha_eq(from)`
+  → `t == from`.  Ground universe terms → Arc::ptr_eq
+  exact.
+- (e⁗⁗.4) `Combination::check` Nelson-Oppen "seen"
+  `Vec<(Term,Term)>` + `iter().any(…alpha_eq…)` (4.9 %)
+  → `HashSet<(Term,Term)>` norm_pair.
+- (T0'''') `extend_with_equalities_until` per-equality
+  deadline.
+
+**Milestone**: the SMT-solving hot path (CDCL → theory
+combination → UF → quantifier E-matching) is fully
+de-quadratified.  A workspace-wide grep for production
+`iter().any(.*alpha_eq` comes back clean — only
+comments, tests, and 3 cold abduction sites (off the SMT
+path, deliberately left).  The throttle-unmask chain
+rc.21 → rc.26 — one phase deeper each cycle — terminates
+here.
+
+**Process lesson #3:** the throttle-unmask chain marches
+phase-by-phase; the terminating condition is a CLEAN
+WORKSPACE-WIDE GREP, not a flat wall.  The wall relocates
+(or moves up) at every intermediate step — only the grep
+tells you the pattern is actually gone.  rc.26 retry will
+confirm the wall finally drops into the budget window
+rather than relocating again.
