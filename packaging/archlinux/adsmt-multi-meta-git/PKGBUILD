@@ -48,7 +48,8 @@ build() {
 check() {
     cd "${srcdir}/${_repo}"
     export RUSTUP_TOOLCHAIN=stable
-    cargo test --release --frozen --no-default-features -p lu-multi -p adsmt-cli
+    cargo test --release --frozen --no-default-features -p lu-multi
+    cargo test --release --frozen --no-default-features --features oxiz -p adsmt-cli
 }
 
 # -------------------------------------------------------- logicutils-multi-git

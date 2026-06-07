@@ -54,7 +54,7 @@ build() {
 check() {
     cd "${srcdir}/${_repo}"
     export RUSTUP_TOOLCHAIN=stable
-    cargo test --release --frozen --workspace
+    cargo test --release --frozen --workspace --features adsmt-cli/oxiz
 }
 
 # ------------------------------------------------------------- logicutils-testing
