@@ -41,7 +41,8 @@ build() {
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --release --frozen --no-default-features -p lu-multi
-    cargo build --release --frozen --no-default-features -p adsmt-cli
+    # rc.30: in-process OxiZ delegation (see adsmt-meta) for the verus backend.
+    cargo build --release --frozen --no-default-features --features oxiz -p adsmt-cli
 }
 
 check() {

@@ -46,7 +46,8 @@ build() {
     # 1. multicall binary (lu-multi)
     cargo build --release --frozen --no-default-features -p lu-multi
     # 2. slim lu-smt (option B: separate binary, not absorbed into multicall)
-    cargo build --release --frozen --no-default-features -p adsmt-cli
+    # rc.30: in-process OxiZ delegation (see adsmt-meta) for the verus backend.
+    cargo build --release --frozen --no-default-features --features oxiz -p adsmt-cli
 }
 
 check() {

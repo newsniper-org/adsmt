@@ -19,7 +19,8 @@ source=("git+${url}.git#branch=main")
 sha256sums=('SKIP')
 
 _repo='adsmt'
-_features='lu-common/sha3,lu-queue/slurm,lu-queue/sge,lu-queue/pbs'
+# adsmt-cli/oxiz: in-process OxiZ delegation for the verus backend (rc.30).
+_features='lu-common/sha3,lu-queue/slurm,lu-queue/sge,lu-queue/pbs,adsmt-cli/oxiz'
 
 pkgver() {
     cd "${srcdir}/${_repo}"

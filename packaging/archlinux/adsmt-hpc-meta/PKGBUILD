@@ -24,7 +24,8 @@ sha256sums=('SKIP')
 
 _srcdir="adsmt-${pkgver}"
 # Cargo features compiled in for this variant.
-_features='lu-common/sha3,lu-queue/slurm,lu-queue/sge,lu-queue/pbs'
+# adsmt-cli/oxiz: in-process OxiZ delegation for the verus backend (rc.30).
+_features='lu-common/sha3,lu-queue/slurm,lu-queue/sge,lu-queue/pbs,adsmt-cli/oxiz'
 
 prepare() {
     cd "${_srcdir}"
