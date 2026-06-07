@@ -159,6 +159,17 @@ pub struct Solver {
     /// Empty (and therefore zero-cost) unless
     /// `restore_cdcl_state_into` ran.
     aot_prelude_clauses: Vec<crate::cnf::Clause>,
+    /// rc.28 (S.1-AOT) / verus-fork rc.27 retry — set when the
+    /// baked prelude contained at least one opaque assertion that
+    /// `flatten_to_clauses` could not encode (an OR-of-AND or
+    /// similar).  Mirrors `check_ground`'s baseline `had_opaque`
+    /// bookkeeping onto the `--aot-load` path: a later theory
+    /// `Sat` must downgrade to `Unknown` because the dropped
+    /// opaque structure might have constrained the model.  An
+    /// `Unsat` (empty clause survived into the baked subset) stays
+    /// `Unsat` — soundness asymmetry.  Loaded from
+    /// `CdclSection::had_opaque` by `restore_cdcl_state_into`.
+    aot_prelude_had_opaque: bool,
     /// rc.20 / verus-fork rc.19 retry — set of prelude
     /// assertion `Term`s.  `Term`'s `Hash` / `Eq` impls are
     /// `Arc::ptr_eq`-based (post-rc.10 hash-cons), so a
@@ -217,6 +228,7 @@ impl Default for Solver {
             proof_mode: ProofMode::Always,
             aot_cdcl_state: None,
             aot_prelude_clauses: Vec::new(),
+            aot_prelude_had_opaque: false,
             aot_prelude_term_set: std::collections::HashSet::new(),
             aot_pool_terms: Vec::new(),
             jit_tracer: None,
@@ -412,6 +424,18 @@ impl Solver {
         let mut clauses: Vec<crate::cnf::Clause> = Vec::with_capacity(section.clauses.len());
         for c in &section.clauses {
             let mut lits: Vec<crate::cnf::Lit> = Vec::with_capacity(c.lits.len());
+            // rc.28 (S.1-AOT): an empty `c.lits` is a *genuine*
+            // empty clause — the flattened `(assert false)` /
+            // `(assert (not true))` contradiction baked into the
+            // prelude — and MUST be kept so the seeded CDCL solve
+            // sees the conflict and returns `unsat`.  Only the
+            // defensive out-of-range case below drops the clause,
+            // tracked by `ok` so we never confuse "decode failure,
+            // drop" with "genuinely empty, keep".  Before rc.28 the
+            // blanket `if !lits.is_empty()` silently swallowed the
+            // empty clause, which is exactly the AOT-load
+            // `sat`-for-unsat soundness gap verus-fork reported.
+            let mut ok = true;
             for (atom_idx, polarity) in &c.lits {
                 let Some(atom) = pool_terms.get(*atom_idx as usize).cloned() else {
                     // Defence-in-depth: out-of-range atom
@@ -420,7 +444,7 @@ impl Solver {
                     // Lit; v1 readers already reject this
                     // shape on decode but the cross-check is
                     // cheap.
-                    lits.clear();
+                    ok = false;
                     break;
                 };
                 lits.push(crate::cnf::Lit {
@@ -428,11 +452,12 @@ impl Solver {
                     polarity: *polarity,
                 });
             }
-            if !lits.is_empty() {
+            if ok {
                 clauses.push(lits);
             }
         }
         self.aot_prelude_clauses = clauses;
+        self.aot_prelude_had_opaque = section.had_opaque;
     }
 
     /// rc.20 read-only borrow of the prelude clause-set cache
@@ -508,15 +533,27 @@ impl Solver {
     /// `String` rendering of `Lit::atom: Term` is what callers
     /// map to the `.luart` v0 pool index they own; the engine
     /// does not know about the pool layout.
-    pub fn dump_cdcl_state(&self) -> (Vec<crate::cnf::Clause>, crate::cdcl::CdclState) {
+    pub fn dump_cdcl_state(
+        &self,
+    ) -> (Vec<crate::cnf::Clause>, crate::cdcl::CdclState, bool) {
         let mut all_clauses: Vec<crate::cnf::Clause> = Vec::new();
+        // rc.28 (S.1-AOT) — track whether any assertion is
+        // un-encodable, so the baked section can carry the
+        // `had_opaque` flag the load-side `check_ground` needs to
+        // downgrade a `Sat` to `Unknown` (mirroring the baseline
+        // soundness fix).  An opaque assertion's clauses are
+        // dropped here (the `Some` arm only appends what flattens),
+        // exactly as the baseline drops them — but the flag
+        // records the drop so the verdict stays honest at load.
+        let mut had_opaque = false;
         for term in self.all_assertions() {
-            if let Some(mut cs) = crate::cnf::flatten_to_clauses(&term) {
-                all_clauses.append(&mut cs);
+            match crate::cnf::flatten_to_clauses(&term) {
+                Some(mut cs) => all_clauses.append(&mut cs),
+                None => had_opaque = true,
             }
         }
         let state = crate::cdcl::initial_bcp(&all_clauses);
-        (all_clauses, state)
+        (all_clauses, state, had_opaque)
     }
 
     /// §3.5.B / `--aot-include-cdcl` consumer — read-only
@@ -1248,7 +1285,12 @@ impl Solver {
         // an assertion we could not encode), while leaving `Unsat`
         // sound (the flattenable subset being unsat ⟹ the full,
         // larger constraint set is unsat).
-        let mut had_opaque = false;
+        // rc.28 (S.1-AOT): seed from the baked-prelude flag so an
+        // opaque assertion that was dropped at *bake* time still
+        // forces the `Sat`→`Unknown` downgrade on the `--aot-load`
+        // path, exactly as a per-query opaque assert does on the
+        // baseline path.  `false` for any non-AOT solve.
+        let mut had_opaque = self.aot_prelude_had_opaque;
         // rc.20 — prepend the prelude clause-set cache when
         // `restore_cdcl_state_into` has populated it.  v0.x
         // scope ships the clause vec only; trail / watches /
@@ -2488,9 +2530,10 @@ mod tests {
     #[test]
     fn dump_cdcl_state_empty_solver_produces_empty_clauses_and_state() {
         let s = Solver::default();
-        let (clauses, state) = s.dump_cdcl_state();
+        let (clauses, state, had_opaque) = s.dump_cdcl_state();
         assert!(clauses.is_empty());
         assert!(state.trail.is_empty());
+        assert!(!had_opaque);
     }
 
     #[test]
@@ -2499,11 +2542,12 @@ mod tests {
         let mut s = Solver::default();
         let p = Term::var("p", Type::bool_());
         s.assert(p.clone());
-        let (clauses, state) = s.dump_cdcl_state();
+        let (clauses, state, had_opaque) = s.dump_cdcl_state();
         assert_eq!(clauses.len(), 1);
         assert_eq!(state.trail.len(), 1);
         assert_eq!(state.trail[0].atom, p);
         assert!(state.trail[0].polarity);
+        assert!(!had_opaque);
     }
 
     #[test]
@@ -2649,5 +2693,56 @@ mod tests {
         s.assert(Term::mk_or(p, q).unwrap()); // satisfiable
         s.assert(Term::false_const());
         assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    /// rc.28 (S.1-AOT) — the AOT-load analogue of
+    /// `opaque_assert_does_not_mask_false_into_sat`.  A baked
+    /// prelude whose flattenable subset contains the empty clause
+    /// (the `(assert false)` / `(assert (not true))` contradiction)
+    /// must reach the seeded CDCL solve and produce `Unsat` — the
+    /// pre-rc.28 `restore_cdcl_state_into` swallowed the empty
+    /// clause via a blanket `if !lits.is_empty()`, which is exactly
+    /// the verus-fork-reported `sat`-for-unsat AOT soundness gap.
+    #[test]
+    fn restored_empty_clause_is_kept_and_yields_unsat() {
+        // A baked section carrying a single *genuine* empty clause.
+        let mut section = adsmt_aot::CdclSection::empty([0u8; 32], 0);
+        section.clauses.push(adsmt_aot::CdclClause { lits: Vec::new() });
+        let mut s = Solver::new();
+        // No pool atoms needed — the empty clause references none.
+        s.restore_cdcl_state_into(&section, &[]);
+        assert_eq!(
+            s.aot_prelude_clauses().len(),
+            1,
+            "the genuine empty clause must survive restore, not be dropped"
+        );
+        assert!(
+            s.aot_prelude_clauses()[0].is_empty(),
+            "the surviving clause is the empty (contradiction) clause"
+        );
+        // With the empty clause prepended, any check is unsat.
+        assert!(
+            matches!(s.check_sat(), SatResult::Unsat { .. }),
+            "a baked empty clause must make --aot-load report unsat"
+        );
+    }
+
+    /// rc.28 (S.1-AOT) — the AOT-load analogue of
+    /// `opaque_assert_alone_is_unknown_not_sat`.  When the baked
+    /// prelude dropped an opaque assertion (`had_opaque`), a later
+    /// theory `Sat` on load must downgrade to `Unknown`, never
+    /// `Sat` — mirroring the baseline `had_opaque` discipline.
+    #[test]
+    fn restored_had_opaque_downgrades_sat_to_unknown() {
+        let mut section = adsmt_aot::CdclSection::empty([0u8; 32], 0);
+        section.had_opaque = true; // bake-time dropped an opaque assert
+        let mut s = Solver::new();
+        s.restore_cdcl_state_into(&section, &[]);
+        // No clauses, no contradiction — theory would say Sat, but
+        // the opaque drop forces Unknown.
+        assert!(
+            matches!(s.check_sat(), SatResult::Unknown { .. }),
+            "a baked opaque assertion must not be reported sat under --aot-load"
+        );
     }
 }

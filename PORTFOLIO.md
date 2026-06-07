@@ -5,10 +5,10 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~44 k lines of Rust across 31 workspace crates, 946 tests
+> ~44 k lines of Rust across 31 workspace crates, 951 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.27` on 2026-06-07.
+> `1.0.0-rc.28` on 2026-06-07.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.27):**
+**Active consumers (rc.28):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -355,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.27` (2026-06-07) |
+| Workspace version | `1.0.0-rc.28` (2026-06-07) |
 
 ---
 
-## Roadmap snapshot (rc.27 → v1.0.0 stable)
+## Roadmap snapshot (rc.28 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -431,7 +431,9 @@ or proof-search strategies without touching the engine core.
 | (T0'''') E-matching deadline cascade | **landed** at rc.26.  `TermUniverse::extend_with_equalities_until` per-equality `expired` check, extending the rc.25 (T0''') UF cascade into the congruence-ematch phase.  **Milestone**: the SMT-solving hot path is fully de-quadratified — workspace grep clean of production `iter().any(.*alpha_eq` (only comments + tests + cold abduction) |
 | (S.1)+(S.3) CRITICAL soundness fix — opaque assert must not mask `false` into `sat` (verus-fork rc.26 retry P0) | **landed** at rc.27.  `check_ground`'s `flatten_to_clauses → None` arm now keeps the flattenable clause subset (empty clause included) + a `had_opaque` flag downgrades a final `Sat` → `Unknown`; propositional-`false` short-circuit in the theory route as defence-in-depth.  The 5-line repro (`(=> P (and Q R))` + `(assert false)`) returns `unsat`; verus_smoke now returns `unsat` (its `(assert (not true))` is flattenable).  3 regression tests, 949/949 green |
 | (S.2) Tseitin-encode OR-of-AND in `flatten_to_clauses` | next-cycle follow-up.  (S.1) makes the engine *sound* (returns `Unknown` where it can't encode) + yields `unsat` on verus_smoke; (S.2) extends *completeness* to obligations whose contradiction lives inside an opaque OR-of-AND (currently soundly `Unknown`) via Tseitin auxiliary variables — the proper CNF transform the `cnf.rs` "v0.5+" comment anticipated |
-| §3.5.J verus-fork retry against rc.27 (post-soundness-fix) | verus-fork side; with the verdict now correct (`unsat`) + the rc.26 budget-exact deadline + de-quadratified hot path, §3.5.J should finally measure a real `unsat` well inside the `≤ 1 500 ms` window — the quantitative close of the rc.7 → rc.27 verus-fork-driven arc, after which attention returns to §3.5.H/I vargo wiring + the v1.0 stable cut |
+| §3.5.J verus-fork retry against rc.27 (post-soundness-fix) | **DONE** (verus-fork rc.27 retry).  `verus -V adsmt` → `1 verified, 0 errors` in 511 ms (baseline verus_smoke `unsat` 8 ms) — three orders inside the `≤ 1 500 ms` window; the P-vb finish line + quantitative close of the verus-fork-driven performance arc |
+| (S.1-AOT) extend the rc.27 soundness fix to the `--aot-load` path (verus-fork rc.27 retry residual) | **landed** at rc.28.  The rc.27 (S.1) fix lived only in `check_ground`; the AOT-prelude-bank path (`with_aot_cdcl` / `restore_cdcl_state_into` / `dump_cdcl_state`) still dropped the baked `(assert false)` empty clause → `sat`-for-unsat at every opaque-assert count.  Fix: `restore_cdcl_state_into` keeps genuine empty clauses (explicit `ok` flag vs the defensive out-of-range drop); a trailing v1.2 `CdclSection::had_opaque` wire field (`Cursor::at_end()`-gated, v1.0/v1.1 default `false`) carries the bake-time opaque flag through to a new `Solver::aot_prelude_had_opaque` that seeds `check_ground`'s `had_opaque`, mirroring the baseline `Sat`→`Unknown` downgrade.  Divergence table fully closed (baseline == `--aot-load` at 1/8/16/19/24 opaque asserts); 2 regression tests + 1 round-trip extension, 951/951 green.  Unblocks §3.5.H/I prelude-bank wiring |
+| §3.5.H/I vargo wiring (`VERUS_ADSMT_AOT_LUART`) | verus-fork side; now unblocked by (S.1-AOT) — routes per-query Verus obligations through the baked prelude bank |
 | Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.26 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
@@ -458,5 +460,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.27
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.28
   development arc.

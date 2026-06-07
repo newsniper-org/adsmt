@@ -532,7 +532,7 @@ fn build_cdcl_section(
     builder: &mut adsmt_aot::PoolBuilder,
     atom_key_to_pool_idx: &mut std::collections::HashMap<String, u32>,
 ) -> adsmt_aot::CdclSection {
-    let (clauses, state) = driver.solver.dump_cdcl_state();
+    let (clauses, state, had_opaque) = driver.solver.dump_cdcl_state();
     // Phase 2 — intern every CNF-flattened atom into the
     // *shared* PoolBuilder so the v0 pool sees the same
     // entries the v1 section's atom indices will reference.
@@ -659,6 +659,12 @@ fn build_cdcl_section(
         vsids,
         saved_phase,
         stalmarck_edges,
+        // rc.28 (S.1-AOT) — propagate the bake-time opaque flag so
+        // the load-side `restore_cdcl_state_into` re-arms the
+        // `Sat`→`Unknown` downgrade.  Without this, a baked OR-of-AND
+        // alongside a flattenable `(assert false)` would return `sat`
+        // under `--aot-load` (the soundness gap verus-fork reported).
+        had_opaque,
     }
 }
 

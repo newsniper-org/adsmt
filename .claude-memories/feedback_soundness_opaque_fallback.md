@@ -1,6 +1,6 @@
 ---
 name: A fallback that drops constraints must never report sat/unsat
-description: When a solver path can't encode an assertion and falls back to another path, that fallback must NOT silently discard the constraints it couldn't handle and report a definite verdict. rc.27 P0 — `check_ground`'s opaque `flatten_to_clauses → None` arm re-routed through a theory path that dropped the whole clause accumulator (empty clause from `(assert false)` included), returning unsound `sat`. Rule: a path that ignored any assertion may return `Unsat` (a subset being unsat ⟹ the superset is unsat) or `Unknown`, but NEVER `Sat`.
+description: When a solver path can't encode an assertion and falls back to another path, that fallback must NOT silently discard the constraints it couldn't handle and report a definite verdict. rc.27 P0 — `check_ground`'s opaque `flatten_to_clauses → None` arm re-routed through a theory path that dropped the whole clause accumulator (empty clause from `(assert false)` included), returning unsound `sat`. rc.28 (S.1-AOT) — the SAME bug recurred on the `--aot-load` path (`restore_cdcl_state_into` dropped genuine empty clauses + `dump_cdcl_state` lost the opaque flag across serialization); fix = keep empty clauses via explicit `ok` flag + thread `had_opaque` across the wire. Rule: a path that ignored any assertion may return `Unsat` (a subset being unsat ⟹ the superset is unsat) or `Unknown`, but NEVER `Sat` — and grep every OTHER path (cache/AOT/JIT/restore) that re-implements the accumulate-and-verdict shape.
 type: feedback
 ---
 
@@ -95,7 +95,40 @@ defence-in-depth.
   fix first; never let an incompleteness excuse a
   soundness hole.
 
+**The same hole can exist on a *second* path that mirrors
+the first** — rc.28 (S.1-AOT, verus-fork rc.27 retry). The
+rc.27 fix lived only in `check_ground`. The AOT-prelude-bank
+path (`--aot-load`: `with_aot_cdcl` / `restore_cdcl_state_into`
+/ `dump_cdcl_state`) is a *separate* implementation of the
+same "fold assertions into a clause accumulator" logic, and
+it reproduced the identical bug two ways: (1)
+`restore_cdcl_state_into` dropped *genuine* empty clauses via a
+blanket `if !lits.is_empty()` — so the baked `(assert false)`
+contradiction never reached the seeded CDCL solve → `sat`; (2)
+`dump_cdcl_state` discarded opaque asserts at bake time with no
+record, so the load side couldn't know to downgrade. Fix: keep
+genuine empty clauses (distinguish from a defensive
+out-of-range drop with an explicit `ok` flag — *not* "is the
+result empty?", which conflates the two), and thread a
+bake-time `had_opaque` flag across the serialization boundary
+(a trailing `CdclSection::had_opaque` wire field, `at_end()`-
+gated for backward compat → `Solver::aot_prelude_had_opaque` →
+seeds `check_ground`'s `had_opaque`). Lesson: **when a
+soundness fix lands on one verdict path, grep for every *other*
+path that re-implements the same accumulate-and-verdict
+shape** (cache/AOT/JIT/incremental restore paths especially) —
+a serialized/restored clause set must preserve the empty clause
+exactly as the live one does, and any "dropped at bake time"
+must be carried as a flag across the wire so the load side can
+re-arm the `Sat`→`Unknown` downgrade. A blanket `if
+!lits.is_empty()` anywhere near a clause accumulator is a
+soundness smell: the empty clause IS the contradiction.
+
 Regression anchors (adsmt-engine `solver.rs::tests`):
 `opaque_assert_does_not_mask_false_into_sat`,
 `opaque_assert_alone_is_unknown_not_sat`,
-`false_alongside_satisfiable_prefix_is_unsat`.
+`false_alongside_satisfiable_prefix_is_unsat`,
+`restored_empty_clause_is_kept_and_yields_unsat` (rc.28 AOT),
+`restored_had_opaque_downgrades_sat_to_unknown` (rc.28 AOT);
++ `adsmt-aot reader.rs::read_luart_with_cdcl_round_trips_appended_v1_section`
+(now asserts the `had_opaque` wire field survives write→read).

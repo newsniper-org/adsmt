@@ -471,6 +471,16 @@ fn read_cdcl_section_inner<'a>(
         }
         v
     };
+    // rc.28 (S.1-AOT) v1.2 trailing soundness flag.  Absent in
+    // v1.0/v1.1 artefacts (cursor already at end) → defaults to
+    // `false`, which is the sound default (no opaque drop
+    // recorded means the older baker didn't track it; the load
+    // path keeps the genuine empty-clause `Unsat` regardless).
+    let had_opaque = if c.at_end() {
+        false
+    } else {
+        c.u8()? != 0
+    };
     Ok(CdclSection {
         binary_sha256,
         flatten_version,
@@ -480,6 +490,7 @@ fn read_cdcl_section_inner<'a>(
         vsids,
         saved_phase,
         stalmarck_edges,
+        had_opaque,
     })
 }
 
@@ -909,6 +920,8 @@ mod tests {
             atom_pool_idx: 0,
             activity: 0.5_f64,
         });
+        // rc.28 (S.1-AOT) — exercise the trailing v1.2 flag.
+        s.had_opaque = true;
         crate::cdcl::write_cdcl_section(&mut buf, &s).unwrap();
         let (file, section) = read_luart_with_cdcl(&buf).unwrap();
         let section = section.expect("v1 section should round-trip");
@@ -921,6 +934,8 @@ mod tests {
         assert_eq!(section.trail[0].reason_clause_idx, -1);
         assert_eq!(section.vsids.len(), 1);
         assert_eq!(section.vsids[0].activity, 0.5_f64);
+        // The trailing v1.2 `had_opaque` flag survives write→read.
+        assert!(section.had_opaque);
     }
 
     #[test]

@@ -159,6 +159,17 @@ pub struct CdclSection {
     /// Empty for v1.0 bakers and for v1.1 bakers that did not
     /// run [`adsmt_stalmarck`-style saturation].
     pub stalmarck_edges: Vec<StalmarckEdge>,
+    /// rc.28 (S.1-AOT) — set when *any* prelude assertion was
+    /// un-encodable by `flatten_to_clauses` at bake time (a
+    /// nested OR-of-AND etc.) and therefore dropped from the
+    /// baked clause set.  Mirrors the baseline `check_ground`
+    /// `had_opaque` flag: on load it forces a `Sat` verdict to
+    /// downgrade to `Unknown` (we cannot claim satisfiability
+    /// while ignoring an assertion we could not bake), while an
+    /// `Unsat` from the baked flattenable subset stays sound.
+    /// Trailing v1.2 field — v1.0/v1.1 readers stop before it
+    /// and default it to `false`.
+    pub had_opaque: bool,
 }
 
 impl CdclSection {
@@ -177,6 +188,7 @@ impl CdclSection {
             vsids: Vec::new(),
             saved_phase: Vec::new(),
             stalmarck_edges: Vec::new(),
+            had_opaque: false,
         }
     }
 }
@@ -245,6 +257,11 @@ pub fn write_cdcl_section<W: Write>(
         out.write_all(&edge.to_atom_pool_idx.to_le_bytes())?;
         out.write_all(&[if edge.to_polarity { 1u8 } else { 0u8 }])?;
     }
+    // rc.28 (S.1-AOT) v1.2 trailing soundness flag.  v1.0/v1.1
+    // readers stop after the Stålmarck section and default this
+    // to `false`; v1.2 readers pick it up when the cursor has
+    // not reached the buffer's end.
+    out.write_all(&[if section.had_opaque { 1u8 } else { 0u8 }])?;
     Ok(())
 }
 
@@ -266,8 +283,11 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         write_cdcl_section(&mut buf, &s).unwrap();
         // 32 (sha) + 4 (flatten) + 5 * 8 (each v1.0 Vec
-        // len = 0u64) + 8 (v1.1 Stålmarck Vec len = 0u64).
-        assert_eq!(buf.len(), 32 + 4 + 6 * 8);
+        // len = 0u64) + 8 (v1.1 Stålmarck Vec len = 0u64)
+        // + 1 (rc.28 v1.2 `had_opaque` flag byte).
+        assert_eq!(buf.len(), 32 + 4 + 6 * 8 + 1);
+        // The trailing v1.2 byte is the `had_opaque` flag, 0 here.
+        assert_eq!(buf[32 + 4 + 6 * 8], 0u8);
         assert_eq!(&buf[..32], &sha32());
         assert_eq!(
             u32::from_le_bytes(buf[32..36].try_into().unwrap()),
