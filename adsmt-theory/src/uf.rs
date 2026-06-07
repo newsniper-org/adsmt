@@ -44,6 +44,15 @@ pub struct Uf {
     known: IndexSet<Term>,
     conflict: Option<TheoryWitness>,
     scope_stack: Vec<UfSnapshot>,
+    /// rc.25 (T0''') — wall-clock budget for `close()`'s
+    /// congruence-closure fixpoint.  Set by the engine via
+    /// `Theory::set_deadline` before each `check`.  `None` =
+    /// unbudgeted (the inner loop never queries `Instant::now`).
+    deadline: Option<std::time::Instant>,
+    /// Set when `close()` bails out on `deadline`; turns the
+    /// next `check` verdict into `Unknown` rather than a
+    /// premature (and unsound) `Sat` on a half-closed universe.
+    timed_out: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +90,7 @@ impl Uf {
         self.parent.clear();
         self.known.clear();
         self.conflict = None;
+        self.timed_out = false;
     }
 
     /// Register `t` and all its sub-terms in the congruence universe.
@@ -151,6 +161,17 @@ impl Uf {
         for (a, b) in &eqs {
             self.union(a, b);
         }
+        // rc.25 (T0''') — how often the closure fixpoint queries
+        // the wall clock.  `Instant::now` is cheap but not free;
+        // checking once per signature-pass round (not per term)
+        // keeps the overhead negligible while still bounding a
+        // pathological prelude to ~one extra round past the
+        // deadline.  The signature pass is O(N), so a per-round
+        // check is fine-grained enough.
+        let expired = |dl: Option<std::time::Instant>| -> bool {
+            dl.is_some_and(|d| std::time::Instant::now() >= d)
+        };
+
         // Congruence closure via signature hashing (rc.25 e⁗.1).
         //
         // The pre-rc.25 loop was a naive O(N²·rounds) pairwise
@@ -175,6 +196,10 @@ impl Uf {
         // needed.  Each round is one O(N) pass over the known
         // App-terms; the loop runs to union-find fixpoint.
         loop {
+            if expired(self.deadline) {
+                self.timed_out = true;
+                return;
+            }
             let mut changed = false;
             // Snapshot the App-terms — the signature pass calls
             // `find` (which takes `&mut self` to path-compress),
@@ -285,12 +310,28 @@ impl Theory for Uf {
         }
         self.parent.clear();
         self.known.clear();
+        self.timed_out = false;
         self.close();
+        // rc.25 (T0''') — a deadline-aborted closure leaves the
+        // congruence relation half-built; reporting `Sat` off it
+        // would be unsound (a forced equality might still be
+        // pending).  Surface `Unknown` so the engine treats the
+        // budget as exhausted rather than trusting a partial
+        // closure.
+        if self.timed_out {
+            return CheckResult::Unknown {
+                reason: "UF congruence closure exceeded rlimit".into(),
+            };
+        }
         if let Some(w) = self.detect_diseq_conflict() {
             self.conflict = Some(w.clone());
             return CheckResult::Unsat { witness: w };
         }
         CheckResult::Sat
+    }
+
+    fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        self.deadline = deadline;
     }
 
     fn explain(&self) -> Option<TheoryWitness> { self.conflict.clone() }

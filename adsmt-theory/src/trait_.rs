@@ -86,6 +86,17 @@ pub trait Theory: Send {
     /// Is the current state consistent?
     fn check(&mut self) -> CheckResult;
 
+    /// rc.25 (T0''') — theory-phase deadline hook.  The engine
+    /// calls this before [`Self::check`] so a theory whose
+    /// `check` runs an unbounded internal fixpoint (e.g. UF
+    /// congruence closure) can yield to the wall-clock budget
+    /// and return [`CheckResult::Unknown`] instead of spinning
+    /// past the `:rlimit`.  Default no-op — only theories with a
+    /// genuinely unbounded inner loop need to observe it.  This
+    /// is the theory-phase extension of the rc.16 T0' deadline
+    /// cascade, which covered only the CDCL inner loop.
+    fn set_deadline(&mut self, _deadline: Option<std::time::Instant>) {}
+
     /// Conflict witness if the most recent [`Self::check`] returned `Unsat`.
     /// Stateless theories may return `None` if they have not been
     /// checked since the last reset.

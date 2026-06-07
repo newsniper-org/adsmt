@@ -45,6 +45,21 @@ pub enum LoopOutcome {
 /// theory reports a conflict during assertion routing — no further
 /// literals are broadcast, and no `check()` round runs.
 pub fn run_once(combo: &mut Combination, literals: &[(Term, bool)]) -> LoopOutcome {
+    run_once_with_deadline(combo, literals, None)
+}
+
+/// rc.25 (T0''') — deadline-aware variant of [`run_once`].  Fans
+/// the wall-clock budget out to every theory via
+/// [`Combination::set_deadline`] before the `check` round, so a
+/// theory with an unbounded internal fixpoint (UF congruence
+/// closure) yields `Unknown` instead of spinning past the
+/// `:rlimit`.  `deadline = None` is exactly the old unbudgeted
+/// behaviour.
+pub fn run_once_with_deadline(
+    combo: &mut Combination,
+    literals: &[(Term, bool)],
+    deadline: Option<std::time::Instant>,
+) -> LoopOutcome {
     for (atom, polarity) in literals {
         let lit = if *polarity {
             Literal::positive(atom.clone())
@@ -59,6 +74,7 @@ pub fn run_once(combo: &mut Combination, literals: &[(Term, bool)]) -> LoopOutco
             }
         }
     }
+    combo.set_deadline(deadline);
     match combo.check() {
         CombinedCheck::Sat => LoopOutcome::Sat,
         CombinedCheck::Unsat { theory, witness } => LoopOutcome::Unsat { theory, witness },

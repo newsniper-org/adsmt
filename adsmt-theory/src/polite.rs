@@ -32,6 +32,16 @@ impl Combination {
     pub fn theories(&self) -> &[Box<dyn Theory>] { &self.theories }
     pub fn theories_mut(&mut self) -> &mut [Box<dyn Theory>] { &mut self.theories }
 
+    /// rc.25 (T0''') — fan the wall-clock deadline out to every
+    /// registered theory before a [`Self::check`] round, so
+    /// theories with unbounded internal fixpoints (UF congruence
+    /// closure) can yield to the budget.
+    pub fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        for t in &mut self.theories {
+            t.set_deadline(deadline);
+        }
+    }
+
     /// Broadcast an assertion to every theory that handles its sort.
     ///
     /// For equality literals `(= a b)` the *operand* sort is the

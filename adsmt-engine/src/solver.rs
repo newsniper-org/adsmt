@@ -1402,7 +1402,7 @@ impl Solver {
                         reason: "rlimit exceeded".to_string(),
                     };
                 }
-                self.check_via_theories_with_model(&lits, model)
+                self.check_via_theories_with_model(&lits, model, deadline)
             }
             BoolResult::Unsat => {
                 let (encoded, drat) = crate::proof_bridge::extract_drat(&clauses);
@@ -1512,7 +1512,7 @@ impl Solver {
     /// Used as a fallback when the CNF flattener can't decompose a
     /// compound assertion.
     fn check_via_theories(&mut self, lits: &[(Term, bool)]) -> SatResult {
-        self.check_via_theories_with_model(lits, HashMap::new())
+        self.check_via_theories_with_model(lits, HashMap::new(), None)
     }
 
     /// Variant of [`Self::check_via_theories`] that threads the
@@ -1522,6 +1522,7 @@ impl Solver {
         &mut self,
         lits: &[(Term, bool)],
         bool_assignment: HashMap<String, bool>,
+        deadline: Option<std::time::Instant>,
     ) -> SatResult {
         self.theories.reset();
         // Strip compound asserts — only send shape-recognizable
@@ -1538,7 +1539,7 @@ impl Solver {
                 routable.push((t.clone(), *p));
             }
         }
-        match dpllt::run_once(&mut self.theories, &routable) {
+        match dpllt::run_once_with_deadline(&mut self.theories, &routable, deadline) {
             LoopOutcome::Sat => SatResult::Sat {
                 model: crate::result::Model::from_assignment(bool_assignment),
             },
