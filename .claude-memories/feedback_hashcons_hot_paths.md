@@ -1,6 +1,6 @@
 ---
 name: Take the Arc::ptr_eq short-circuit on hash-consed types in hot paths
-description: Whenever a hash-consed type (Term, Type, …) is compared / hashed / looked-up / stored in an inner loop, route the comparison through `Arc::ptr_eq` first AND prefer `(Index)Set<T>::contains` over `Vec<T>::iter().any(custom_eq)` for dedup-shaped containers. Post-rc.10 `Term::Hash/Eq` is pointer-based O(1); `Type` after rc.22 has hand-rolled `PartialEq` with `Arc::ptr_eq` short-circuit; `alpha_eq_rec` after rc.22 has a top-level `Arc::ptr_eq` fast-path; UF/abductive/ematch/quant `Vec<Term>` dedup containers after rc.23/rc.24 are `IndexSet<Term>` / `HashSet<Term>`. Five measured incidents — CDCL String-keyed maps (rc.21: 5 955→1 923 ms, 67 %), `alpha_eq_rec` (rc.22), `Type::eq` (rc.22), UF iter().any(alpha_eq) (rc.23), ematch+quant dedup sites (rc.24). CRITICAL PROCESS LESSON: grep for this pattern WORKSPACE-WIDE every cycle — rc.23 fixed the narrowly-grepped UF site and the wall held flat because the real 97.5%-of-cycles hot site was the identical pattern one crate over in `adsmt-quant/src/ematch.rs::TermUniverse::insert`; the pattern hides wherever the grep doesn't look. All five were the same shape — an O(1) handle existed in the codebase but the hot path did not use it.
+description: Whenever a hash-consed type (Term, Type, …) is compared / hashed / looked-up / stored in an inner loop, route the comparison through `Arc::ptr_eq` first AND prefer `(Index)Set<T>::contains` over `Vec<T>::iter().any(custom_eq)` for dedup-shaped containers. Post-rc.10 `Term::Hash/Eq` is pointer-based O(1); `Type` after rc.22 has hand-rolled `PartialEq` with `Arc::ptr_eq` short-circuit; `alpha_eq_rec` after rc.22 has a top-level `Arc::ptr_eq` fast-path; UF/abductive/ematch/quant `Vec<Term>` dedup containers after rc.23/rc.24 are `IndexSet<Term>` / `HashSet<Term>`. Six measured incidents — CDCL String-keyed maps (rc.21: 5 955→1 923 ms, 67 %), `alpha_eq_rec` (rc.22), `Type::eq` (rc.22), UF iter().any(alpha_eq) (rc.23), ematch+quant dedup sites (rc.24), UF close() naive O(N²) congruence → signature-hashed + Arc::ptr_eq roots (rc.25). TWO CRITICAL PROCESS LESSONS: (1) grep the pattern WORKSPACE-WIDE every cycle — rc.23 fixed the narrowly-grepped UF site and the wall held flat because the real hot site was the identical pattern one crate over in ematch.rs; (2) after removing an O(N²) bottleneck, ALWAYS re-profile from scratch even when the removal is correct — rc.24's correct ematch fix made the wall go UP 7× because the slow build had been an accidental throttle masking UF::close()'s downstream O(N²) congruence closure. The "wall went up after a correct optimization" signature means you unblocked a worse downstream cost — bisect + re-profile, don't revert.
 type: feedback
 ---
 
@@ -213,8 +213,43 @@ off the SMT solving path; converting would restructure a
 struct or break a slice-returning accessor for no
 measurable gain.
 
-**Why:** Five measured incidents, all the same shape —
-an O(1) handle existed but the hot path did not use it.
+### A throttle removal can EXPOSE a masked downstream O(N²)
+
+rc.24's (e'''.1) was *correct* — the `TermUniverse`
+`Vec → IndexSet` migration made `collect_universe` O(N),
+exactly as intended.  But the verus_smoke wall went **up
+7×** (Mode A 3 971 → 26 832 ms), because the slow O(N²)
+universe build had been an *accidental throttle*: the
+engine deadline-fired *inside* `collect_universe` at ~4 s
+and never reached the next phase.  Making the build fast
+let the engine fall into the phase the throttle was
+hiding — `UF::close()`'s pre-existing naive
+O(N²·rounds·alpha_eq) congruence closure over the now-
+fully-built ~5 665-term universe (rc.25 e⁗.1 fixed it
+with signature hashing).
+
+Lesson: **after removing an O(N²) bottleneck, always
+re-profile from scratch — even when the removal is
+provably correct.** A fast inner phase can surface a
+slow outer phase the bottleneck was masking. The "wall
+went *up* after a correct optimization" signature is the
+tell: it means the optimization unblocked a worse
+downstream cost, not that it regressed. Bisect to the
+commit, then profile the *new* hot path (which will be a
+different function/phase, not the one you just fixed).
+
+Corollary: a deadline check is not a substitute for a
+correct algorithm, but its *absence* turns an O(N²)
+inner loop into a wall-clock-unbounded one.  The rc.25
+(T0''') theory-phase deadline cascade (`Theory::set_deadline`
++ `Uf::close()` per-round `expired` check → `Unknown`)
+is the backstop: even if a future phase is accidentally
+O(N²) again, it yields to the budget instead of spinning.
+
+**Why:** Six measured incidents, all the same family —
+an O(1) handle (or a near-linear standard algorithm)
+existed but the hot path used a quadratic / allocating
+shape instead.
 
 | cycle | surface | wall before | wall after | commit |
 |---|---|---:|---:|---|
@@ -223,13 +258,20 @@ an O(1) handle existed but the hot path did not use it.
 | rc.22 | `<Type as PartialEq>::eq` (hand-rolled `Arc::ptr_eq`-first) | ~1 010 ms est | ~30 ms est | `d01d78a` |
 | rc.23 | UF `Vec<Term>` + `iter().any(alpha_eq)` → `IndexSet<Term>::contains` | ~3 600 ms est | ~50 ms est | `5d347c2` |
 | rc.24 | ematch `TermUniverse` + engine quant dedup sites (`Vec`→`IndexSet`/`HashSet`) | ~3 800 ms est | ~50 ms est | `e'''.1`+`e'''.2` |
+| rc.25 | UF `close()` naive O(N²) congruence → signature-hashed + `Arc::ptr_eq` roots | ~22 s est | tens of ms est | `e⁗.1`+`e⁗.2` |
 
-The rc.23 → rc.24 jump is the cautionary tale: rc.23
-fixed the site the narrow grep named, the wall held flat
-(Mode C' 4 635 → 4 581 ms, noise), and only the
-workspace-wide re-profile + re-grep surfaced the real
-hot site one crate over.  **The pattern hides wherever
-the grep doesn't look.**
+The rc.23 → rc.24 jump is the *narrow-grep* cautionary
+tale: rc.23 fixed the site the narrow grep named, the
+wall held flat (Mode C' 4 635 → 4 581 ms, noise), and
+only the workspace-wide re-profile + re-grep surfaced the
+real hot site one crate over.  **The pattern hides
+wherever the grep doesn't look.**
+
+The rc.24 → rc.25 jump is the *throttle-unmask*
+cautionary tale: a correct optimization made the wall
+7× *worse* by unblocking a masked downstream O(N²).
+**A correct fix that makes the wall worse means you
+unblocked something — re-profile, don't revert.**
 
 The rc.21 incident first surfaced as "+662 → +747 ms
 regression rc.15 → rc.20" the verus-fork side carried as a
