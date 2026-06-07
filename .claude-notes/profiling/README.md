@@ -291,3 +291,72 @@ grepped UF site, the wall held flat, and only the
 workspace-wide re-grep surfaced the real hot site one
 crate over.  The pattern hides wherever the grep doesn't
 look.
+
+## rc.24 retry — the wall went UP 7× (throttle-unmask tale)
+
+verus-fork's rc.24 retry on a quiet host (loadavg 0.89/16):
+Mode A **3 971 → 26 832 ms**, Mode C' 4 581 → 10 564 ms,
+**rlimit-independent** (rlimit 1 s also ~26 s).  All four
+rc.24 commits correct, workspace grep clean.
+
+- **Bisect**: the entire jump is at `27df7d2` (e'''.1
+  ematch) — the migration we both expected to *help*.
+- **Not a dedup regression**: instrumented
+  `collect_universe` →
+  `ptr_eq_dedup_size == alpha_eq_dedup_size == 5665`
+  (bloat 1.00×).  The universe is all-ground; hash-cons
+  canonicalises ground terms, so `Arc::ptr_eq == alpha_eq`.
+  The IndexSet migration is semantically exact.
+- **Mechanism**: rc.23's O(N²) `TermUniverse` build
+  (5 665² ≈ 3.2 × 10⁷ alpha_eq) was an *accidental
+  throttle* — the engine deadline-fired *inside*
+  `collect_universe` at ~4 s and never reached the next
+  phase.  (e'''.1) correctly made the build O(N), so the
+  engine falls into the phase the throttle hid:
+  `UF::close()`'s pre-existing **naive
+  O(N²·rounds·alpha_eq)** congruence closure over the
+  full 5 665-term `known` universe.
+
+rc.24 flamegraph
+(`2026-06-07-verus_smoke-flamegraph-rc24.svg`,
+`…-rc24-topframes.txt`):
+
+| % cycles | symbol |
+|---:|---|
+| **81.35 %** | `adsmt_core::term::alpha_eq_rec` |
+| **9.86 %** | `<Uf as Theory>::check` |
+| 2.56 % + 2.38 % | `hash_one` + sip `Hasher::write` |
+| 1.63 % | `Term::alpha_eq` |
+| 1.28 % | `Uf::find` |
+
+Entry-caller aggregation: UF is the **sole visible
+caller** (matcher / quant layers absent).  `close()`'s
+`same_class`/`find` use `alpha_eq` on union-find roots
+where `Arc::ptr_eq` would settle in one pointer compare;
+each of the ~1.6 × 10⁷ pairs × multiple rounds pays a
+deep recursive walk.
+
+## rc.25 (e⁗.1 + e⁗.2 + T0''') — signature-hashed closure
+
+- (e⁗.1) `UF::close()` O(N²) pairwise App-scan →
+  Downey–Sethi–Tarjan / Nelson–Oppen signature pass
+  (`HashMap<(find(f), find(x)), Term>`).
+  O(N²·rounds) → O(N·rounds·α(N)).
+- (e⁗.2) `find`/`union`/`same_class`/`derive_equalities`
+  roots compared with `==` (Arc::ptr_eq), not `alpha_eq`.
+- (T0''') `Theory::set_deadline` + `Uf::close()` per-round
+  `expired` check → `Unknown` on a half-built closure
+  (theory-phase extension of the rc.16 T0' CDCL cascade).
+
+Verus-fork-predicted: the 5 665-term closure drops ~22 s →
+tens of ms; Mode C' wall back below rc.23's 4.6 s and
+toward §3.5.J's `≤ 1 500 ms` window; rlimit ≥ 5 s timeout
+resolves.  rc.25 retry against the verus-fork host is the
+confirmation path.
+
+**Process lesson #2 (now in
+`feedback_hashcons_hot_paths.md`):** removing an O(N²)
+throttle can EXPOSE a masked downstream O(N²).  A correct
+optimization that makes the wall *worse* means you
+unblocked a slower phase — bisect to the commit, then
+profile the *new* hot path; don't revert the correct fix.
