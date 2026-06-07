@@ -10,8 +10,8 @@ build = "build.rs"
 # Build-time SAT verification of the shipped minimum table —
 # the translator hands the parsed module to oxiz-sat, the
 # verdict gates a successful build.
-lu-common = { version = "=1.0.0-rc.26", path = "../lu-common", default-features = false }
-logicutils-translator-to-oxiz-sat = { version = "=1.0.0-rc.26", path = "../logicutils-translator-to-oxiz-sat" }
+lu-common = { version = "=1.0.0-rc.27", path = "../lu-common", default-features = false }
+logicutils-translator-to-oxiz-sat = { version = "=1.0.0-rc.27", path = "../logicutils-translator-to-oxiz-sat" }
 oxiz-sat = { path = "../external/oxiz/oxiz-sat" }
 
 [dependencies]
@@ -20,11 +20,11 @@ adsmt-cert.workspace = true
 adsmt-theory.workspace = true
 # lu-common provides K12-256 for the frozen-hash safeguard and the
 # kb AST that user-extension heuristics are written in.
-lu-common = { version = "=1.0.0-rc.26", path = "../lu-common", default-features = false, features = ["k12"] }
+lu-common = { version = "=1.0.0-rc.27", path = "../lu-common", default-features = false, features = ["k12"] }
 # Proc-macro entry points for compile-time heuristic embedding.
 # Re-exported through the `macros` module so users see a single
 # import surface (`use adsmt_heuristic_checker::*`).
-adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.26", path = "../adsmt-heuristic-checker-macros" }
+adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.27", path = "../adsmt-heuristic-checker-macros" }
 thiserror.workspace = true
 
 # `breaking_changes_semver` attributes are tracked by the
