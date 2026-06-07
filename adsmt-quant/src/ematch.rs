@@ -12,23 +12,45 @@
 use std::sync::Arc;
 
 use adsmt_core::{Term, TermInner, Var};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use crate::trigger::{Trigger, TriggerKind};
 
+/// E-matching term universe.
+///
+/// rc.24 (e'''.1) — the backing store is an `IndexSet<Term>`,
+/// not a `Vec<Term>`.  Pre-rc.24 `insert` ran a
+/// `self.terms.iter().any(|x| x.alpha_eq(&t))` linear scan
+/// for dedup, which the verus-fork rc.23 retry flamegraph
+/// localised as **97.50 % of cycles** on verus_smoke: every
+/// `gather_subterms` walk calls `insert` ~N times against a
+/// universe of size ~N, so the build is O(N²·alpha_eq_depth).
+/// `IndexSet<Term>::insert` is O(1) (rc.10 hash-cons makes
+/// `Term::Hash` pointer-hash and `Term::Eq` `Arc::ptr_eq`),
+/// collapsing the build to O(N).
+///
+/// `IndexSet` (not `std::collections::HashSet`) because the
+/// universe is iterated (`iter()` feeds the matcher),
+/// `extend_with_equalities` snapshots it positionally, and
+/// downstream match order should stay reproducible run-to-run.
 #[derive(Default, Clone, Debug)]
 pub struct TermUniverse {
-    terms: Vec<Term>,
+    terms: IndexSet<Term>,
 }
 
 impl TermUniverse {
     pub fn new() -> Self { Self::default() }
 
     pub fn insert(&mut self, t: Term) {
-        if !self.terms.iter().any(|x| x.alpha_eq(&t)) {
-            self.terms.push(t);
-        }
+        // `IndexSet::insert` dedups in O(1) on the hash-cons
+        // handles — no pre-`iter().any(alpha_eq)` scan needed.
+        self.terms.insert(t);
     }
+
+    /// O(1) membership probe via the rc.10 hash-cons handles.
+    /// Replaces the `universe.iter().any(|t| q.alpha_eq(t))`
+    /// linear scans in the engine-side quantifier loop.
+    pub fn contains(&self, t: &Term) -> bool { self.terms.contains(t) }
 
     pub fn iter(&self) -> impl Iterator<Item = &Term> { self.terms.iter() }
     pub fn len(&self) -> usize { self.terms.len() }
@@ -56,7 +78,14 @@ impl TermUniverse {
         &mut self,
         equalities: &[(Term, Term)],
     ) {
-        let snapshot: Vec<Term> = self.terms.clone();
+        // Snapshot the universe before the mutating `insert`
+        // loop (which needs `&mut self`).  Collect into a
+        // `Vec<Term>` rather than cloning the `IndexSet` — a
+        // `Vec` of `Arc` handles is a cheap refcount-bump copy,
+        // whereas cloning the `IndexSet` would rebuild the
+        // hash table.  The `insert` calls below still dedup
+        // against the live `self.terms` in O(1).
+        let snapshot: Vec<Term> = self.terms.iter().cloned().collect();
         for (a, b) in equalities {
             for t in &snapshot {
                 if let Some(t_ab) = substitute_in(t, a, b) {
