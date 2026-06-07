@@ -70,7 +70,13 @@ fn extend_match(
                 return false;
             }
             if let Some(prev) = sigma.get(v) {
-                return prev.alpha_eq(target);
+                // rc.26 (e⁗⁗.3) — same matcher-binding consistency
+                // check as `ematch::extend_match`: `prev` and
+                // `target` are both ground atoms drawn from the
+                // asserted `ground` set, so `==` (`Arc::ptr_eq`
+                // post-rc.10) is the exact O(1) form of the
+                // recursive `alpha_eq` walk.
+                return *prev == *target;
             }
             sigma.insert(v.clone(), target.clone());
             true

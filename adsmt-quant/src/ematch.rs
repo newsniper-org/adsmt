@@ -78,6 +78,29 @@ impl TermUniverse {
         &mut self,
         equalities: &[(Term, Term)],
     ) {
+        self.extend_with_equalities_until(equalities, None);
+    }
+
+    /// rc.26 (T0'''') — deadline-aware variant of
+    /// [`Self::extend_with_equalities`].  The congruence
+    /// extension is O(|equalities| · |universe|) with a
+    /// `substitute_in` walk per term; on a verus_smoke-sized
+    /// universe (~5 665 terms) a single call can run for
+    /// seconds, so when this phase is wired into the engine's
+    /// quantifier loop it must yield to the `:rlimit` budget
+    /// rather than running to natural completion.  Checks
+    /// `expired(deadline)` once per `(a, b)` equality (the inner
+    /// per-term loop is O(N), so per-equality granularity bounds
+    /// the overrun to one equality's worth of work).  Extends
+    /// the rc.25 (T0''') `UF::close()` deadline cascade into the
+    /// E-matching phase.  `deadline = None` is the unbudgeted
+    /// path the test callers + the not-yet-wired production path
+    /// use today.
+    pub fn extend_with_equalities_until(
+        &mut self,
+        equalities: &[(Term, Term)],
+        deadline: Option<std::time::Instant>,
+    ) {
         // Snapshot the universe before the mutating `insert`
         // loop (which needs `&mut self`).  Collect into a
         // `Vec<Term>` rather than cloning the `IndexSet` — a
@@ -87,6 +110,9 @@ impl TermUniverse {
         // against the live `self.terms` in O(1).
         let snapshot: Vec<Term> = self.terms.iter().cloned().collect();
         for (a, b) in equalities {
+            if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                return;
+            }
             for t in &snapshot {
                 if let Some(t_ab) = substitute_in(t, a, b) {
                     self.insert(t_ab);
@@ -102,8 +128,20 @@ impl TermUniverse {
 /// Substitute every α-equivalent occurrence of `from` inside `t`
 /// with `to`. Returns `Some(new_t)` when at least one substitution
 /// happened, `None` when `t` doesn't contain `from`.
+///
+/// rc.26 (e⁗⁗.3) — the occurrence test is `t == from`
+/// (`Arc::ptr_eq` post-rc.10 hash-cons), not the recursive
+/// `t.alpha_eq(from)` walk.  The sole caller
+/// [`TermUniverse::extend_with_equalities`] feeds *ground* UF
+/// congruence equalities as `from`/`to` and walks *ground*
+/// universe terms as `t`, so every comparison is between
+/// hash-cons-canonical Arcs — `==` settles in one pointer
+/// compare what `alpha_eq` re-walked the full structure for.
+/// (verus-fork rc.25 retry §5.6: this is the E-matcher tail of
+/// the throttle-unmask chain once `UF::close()` /
+/// `derive_equalities` went near-linear.)
 fn substitute_in(t: &Term, from: &Term, to: &Term) -> Option<Term> {
-    if t.alpha_eq(from) {
+    if t == from {
         return Some(to.clone());
     }
     match t.kind() {
@@ -215,7 +253,15 @@ fn extend_match(
                 return false;
             }
             if let Some(prev) = sigma.get(v) {
-                return prev.alpha_eq(target);
+                // rc.26 (e⁗⁗.3) — non-linear-pattern consistency
+                // check: a flex var bound twice must bind the same
+                // term.  `prev` and `target` are both drawn from
+                // the (ground) universe, so `==` (`Arc::ptr_eq`
+                // post-rc.10) is the exact, O(1) form of the
+                // recursive `alpha_eq` walk.  This is the
+                // production-hot matcher tail of the verus-fork
+                // rc.25-retry throttle-unmask chain.
+                return *prev == *target;
             }
             sigma.insert(v.clone(), target.clone());
             true

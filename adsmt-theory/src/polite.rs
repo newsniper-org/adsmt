@@ -79,7 +79,34 @@ impl Combination {
     ///    clique exceeds the bound → unsat with a polite witness.
     pub fn check(&mut self) -> CombinedCheck {
         const PROP_BUDGET: usize = 8;
-        let mut seen: Vec<(Term, Term)> = Vec::new();
+        // rc.26 (e⁗⁗.4) — the Nelson-Oppen "already-seen
+        // equalities" set.  Was a `Vec<(Term, Term)>` dedup'd
+        // with `seen.iter().any(|(a,b)| a.alpha_eq(&eq.0) &&
+        // b.alpha_eq(&eq.1) || …)` — O(|seen|·alpha_eq) per
+        // gathered equality, quadratic across the round as
+        // `seen` grows to all the UF-derived equalities
+        // (`Combination::check` was 4.9 % of cycles on the
+        // verus-fork rc.25-retry verus_smoke flamegraph, the
+        // same `Vec`+`iter().any(custom_eq)` container pattern
+        // one layer up from `UF::derive_equalities`).  A
+        // `HashSet<(Term, Term)>` keyed on `norm_pair` (the two
+        // terms ordered by pointer-`Hash` so `(a,b) ≡ (b,a)`)
+        // makes the membership probe O(1); ground equalities
+        // are Arc-canonical so it is exact.
+        let norm_pair = |a: &Term, b: &Term| -> (Term, Term) {
+            use std::hash::{Hash, Hasher};
+            let mut ha = std::collections::hash_map::DefaultHasher::new();
+            a.hash(&mut ha);
+            let mut hb = std::collections::hash_map::DefaultHasher::new();
+            b.hash(&mut hb);
+            if ha.finish() <= hb.finish() {
+                (a.clone(), b.clone())
+            } else {
+                (b.clone(), a.clone())
+            }
+        };
+        let mut seen: std::collections::HashSet<(Term, Term)> =
+            std::collections::HashSet::new();
 
         for _round in 0..PROP_BUDGET {
             // (1) Individual theory checks first.
@@ -100,10 +127,7 @@ impl Combination {
             let mut gathered: Vec<(Term, Term)> = Vec::new();
             for t in &self.theories {
                 for eq in t.derive_equalities() {
-                    if !seen.iter().any(|(a, b)| {
-                        (a.alpha_eq(&eq.0) && b.alpha_eq(&eq.1))
-                            || (a.alpha_eq(&eq.1) && b.alpha_eq(&eq.0))
-                    }) {
+                    if !seen.contains(&norm_pair(&eq.0, &eq.1)) {
                         gathered.push(eq.clone());
                     }
                 }
@@ -120,7 +144,7 @@ impl Combination {
 
             // (3) Re-broadcast.
             for (a, b) in &gathered {
-                seen.push((a.clone(), b.clone()));
+                seen.insert(norm_pair(a, b));
                 if let Ok(eq_term) = Term::mk_eq(a.clone(), b.clone())
                     && let Ok(lit) = crate::trait_::Literal::positive(eq_term) {
                         let _ = self.assert(lit);
