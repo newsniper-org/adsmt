@@ -834,6 +834,45 @@ fn decode_sha_hex(hex: &str) -> Option<[u8; 32]> {
 /// (unset → unchanged native behaviour).  OxiZ is a 100%-Z3-parity
 /// reimplementation, so trusting its `sat`/`unsat` is sound.
 fn oxiz_fallback(history: &str) -> Option<LastStatus> {
+    // Prefer the in-process OxiZ engine (no subprocess) when the
+    // `oxiz` feature is compiled in; otherwise use the
+    // `ADSMT_OXIZ_PATH` subprocess oracle.
+    #[cfg(feature = "oxiz")]
+    if let Some(v) = oxiz_inproc(history) {
+        return Some(v);
+    }
+    oxiz_subprocess(history)
+}
+
+/// rc.30 — pick the last `sat`/`unsat`/`unknown` from OxiZ's output
+/// (it echoes one verdict per `(check-sat)` in the replayed prefix;
+/// the last is this query's).
+fn oxiz_pick_last<'a, I: Iterator<Item = &'a str>>(lines: I) -> Option<LastStatus> {
+    let mut found = None;
+    for l in lines {
+        match l.trim() {
+            "unsat" => found = Some(LastStatus::Unsat),
+            "sat" => found = Some(LastStatus::Sat),
+            "unknown" => found = Some(LastStatus::Unknown),
+            _ => {}
+        }
+    }
+    found
+}
+
+/// rc.30 — in-process OxiZ delegation via `Context::execute_script`
+/// (parse + run the buffered SMT-LIB on a fresh OxiZ context,
+/// returning the per-`check-sat` verdicts).  No subprocess.
+#[cfg(feature = "oxiz")]
+fn oxiz_inproc(history: &str) -> Option<LastStatus> {
+    let mut ctx = oxiz_solver::Context::new();
+    let outputs = ctx.execute_script(history).ok()?;
+    oxiz_pick_last(outputs.iter().map(String::as_str))
+}
+
+/// rc.30 — subprocess OxiZ oracle (`ADSMT_OXIZ_PATH`), used when the
+/// in-process `oxiz` feature is not compiled in.
+fn oxiz_subprocess(history: &str) -> Option<LastStatus> {
     use std::io::Write;
     use std::process::{Command as PCommand, Stdio};
     let path = std::env::var("ADSMT_OXIZ_PATH").ok()?;
@@ -849,19 +888,14 @@ fn oxiz_fallback(history: &str) -> Option<LastStatus> {
     } // drop → EOF
     let out = child.wait_with_output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
-    // The last verdict line is the one for *this* `(check-sat)`
-    // (OxiZ echoes one per check-sat in the replayed prefix).
-    text.lines().rev().find_map(|l| match l.trim() {
-        "unsat" => Some(LastStatus::Unsat),
-        "sat" => Some(LastStatus::Sat),
-        "unknown" => Some(LastStatus::Unknown),
-        _ => None,
-    })
+    oxiz_pick_last(text.lines())
 }
 
-/// rc.30 — is the OxiZ delegation backend configured?
+/// rc.30 — is the OxiZ delegation backend configured?  True when the
+/// in-process `oxiz` feature is compiled in, or the `ADSMT_OXIZ_PATH`
+/// subprocess oracle is set.
 fn oxiz_available() -> bool {
-    std::env::var_os("ADSMT_OXIZ_PATH").is_some()
+    cfg!(feature = "oxiz") || std::env::var_os("ADSMT_OXIZ_PATH").is_some()
 }
 
 fn dispatch_one(
@@ -885,7 +919,21 @@ fn dispatch_one(
             // verdict would then be UNSOUND, since OxiZ replays the
             // full, correct buffer).
             let status = if *degraded || matches!(status, LastStatus::Unknown) {
-                oxiz_fallback(history).unwrap_or(status)
+                let v = oxiz_fallback(history).unwrap_or(status);
+                // Keep the driver's `last_result` consistent with the
+                // delegated verdict, so a follow-up
+                // `(get-info :reason-unknown)` / `(get-model)` (which
+                // a front-end interleaves) doesn't contradict the
+                // printed line — otherwise Verus's error-discovery
+                // protocol reads a stale `(incomplete …)` after an
+                // `unsat` and panics (`discovered_error`).
+                if matches!(v, LastStatus::Unsat) {
+                    driver.last_result = Some(SatResult::Unsat {
+                        certificate: None,
+                        core: adsmt_engine::result::UnsatCore::new(),
+                    });
+                }
+                v
             } else {
                 status
             };

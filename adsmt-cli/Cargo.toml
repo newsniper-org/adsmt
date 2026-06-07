@@ -47,3 +47,16 @@ clap.workspace = true
 # JSON object per check-sat that returned `Abductive`.
 serde_json.workspace = true
 thiserror.workspace = true
+# rc.30 (Y4) — in-process OxiZ delegation backend.  When the native
+# engine can't decide an obligation (vstd-scale quantifier
+# encodings), the `oxiz` feature routes the buffered SMT-LIB through
+# `oxiz_solver::Context::execute_script` directly (no subprocess).
+# Path dep into the vendored OxiZ tree (external/oxiz, excluded from
+# the adsmt workspace).  Default-off so the lean build pulls nothing.
+oxiz-solver = { path = "../external/oxiz/oxiz-solver", optional = true }
+
+[features]
+# Build with `cargo build -p adsmt-cli --features oxiz` (or
+# `--release`) to get the in-process OxiZ delegation.  Without it,
+# delegation falls back to the `ADSMT_OXIZ_PATH` subprocess oracle.
+oxiz = ["dep:oxiz-solver"]
