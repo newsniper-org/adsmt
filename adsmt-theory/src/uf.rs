@@ -98,9 +98,22 @@ impl Uf {
         }
     }
 
+    // rc.25 (e⁗.2) — `find` / `union` / `same_class` compare
+    // union-find roots with `==` (which is `Arc::ptr_eq` post-rc.10
+    // hash-cons), not the recursive `alpha_eq` walk.  The `parent`
+    // map is keyed on hash-consed `Term`s, so every root is a
+    // canonical Arc; two terms share a class iff their roots are
+    // the same Arc.  The prior `alpha_eq` calls re-walked the full
+    // term structure on every find-chain step + every class
+    // comparison — the same hash-cons-hot-path violation as the
+    // rc.21 String-key and rc.22 alpha_eq cases, one layer into
+    // the congruence machinery (verus-fork rc.24 retry §5: these
+    // sit under the O(N²) `close()` loop, so each pair comparison
+    // paid a deep recursive `alpha_eq` that `Arc::ptr_eq` settles
+    // in one pointer compare).
     fn find(&mut self, t: &Term) -> Term {
         match self.parent.get(t).cloned() {
-            Some(p) if !p.alpha_eq(t) => {
+            Some(p) if p != *t => {
                 let root = self.find(&p);
                 self.parent.insert(t.clone(), root.clone());
                 root
@@ -112,13 +125,13 @@ impl Uf {
     fn union(&mut self, a: &Term, b: &Term) {
         let ra = self.find(a);
         let rb = self.find(b);
-        if !ra.alpha_eq(&rb) {
+        if ra != rb {
             self.parent.insert(ra, rb);
         }
     }
 
     fn same_class(&mut self, a: &Term, b: &Term) -> bool {
-        self.find(a).alpha_eq(&self.find(b))
+        self.find(a) == self.find(b)
     }
 
     /// Run congruence-closure to fixpoint over current eqs.
@@ -138,37 +151,62 @@ impl Uf {
         for (a, b) in &eqs {
             self.union(a, b);
         }
-        // Congruence closure: iterate until fixpoint.
+        // Congruence closure via signature hashing (rc.25 e⁗.1).
         //
-        // rc.23 (e''.1.a) — `snapshot` is now an `IndexSet`
-        // clone, so the `i < j` pair walk uses `get_index`
-        // instead of `&snapshot[i]`.  Insertion order is
-        // preserved (matching the pre-rc.23 `Vec` shape), so
-        // the union sequence + emitted equalities stay
-        // reproducible run-to-run.
+        // The pre-rc.25 loop was a naive O(N²·rounds) pairwise
+        // scan: for every unordered pair `(ti, tj)` of known
+        // App-terms it tested `same_class(f1,f2) &&
+        // same_class(x1,x2) && !same_class(ti,tj)`.  On the
+        // verus_smoke prelude the `known` universe reaches ~5 665
+        // terms (the rc.24 ematch fix removed the
+        // `collect_universe` O(N²) throttle that used to deadline-
+        // fire before this loop ran on a universe that large), so
+        // the pairwise scan ballooned to ~1.6 × 10⁷ pairs ×
+        // multiple rounds × deep `alpha_eq` per `same_class` —
+        // 81 % of cycles in the verus-fork rc.24 retry flamegraph.
+        //
+        // Standard congruence closure (Downey–Sethi–Tarjan /
+        // Nelson–Oppen) indexes each `App(f, x)` by the signature
+        // `(find(f), find(x))`.  Two App-terms are congruent iff
+        // their signatures collide.  `find` returns a canonical
+        // hash-consed root `Term` (Arc-unique per class), so the
+        // signature key is `(Term, Term)` with O(1) `Hash`/`Eq`
+        // via `Arc::ptr_eq` — no integer class-id indirection
+        // needed.  Each round is one O(N) pass over the known
+        // App-terms; the loop runs to union-find fixpoint.
         loop {
             let mut changed = false;
-            let snapshot: IndexSet<Term> = self.known.clone();
-            let n = snapshot.len();
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let ti = snapshot.get_index(i).expect("i < n");
-                    let tj = snapshot.get_index(j).expect("j < n");
-                    if let (TermInner::App(f1, x1), TermInner::App(f2, x2)) =
-                        (ti.kind(), tj.kind())
-                    {
-                        let f1c = f1.clone();
-                        let x1c = x1.clone();
-                        let f2c = f2.clone();
-                        let x2c = x2.clone();
-                        if self.same_class(&f1c, &f2c)
-                            && self.same_class(&x1c, &x2c)
-                            && !self.same_class(ti, tj)
-                        {
-                            let (a, b) = (ti.clone(), tj.clone());
-                            self.union(&a, &b);
+            // Snapshot the App-terms — the signature pass calls
+            // `find` (which takes `&mut self` to path-compress),
+            // so we can't hold an `iter()` borrow of `self.known`
+            // across it.  Insertion order is preserved (the
+            // snapshot is a `Vec` built from the `IndexSet`), so
+            // the union sequence stays reproducible run-to-run.
+            let known_apps: Vec<Term> = self
+                .known
+                .iter()
+                .filter(|t| matches!(t.kind(), TermInner::App(..)))
+                .cloned()
+                .collect();
+            let mut sig: HashMap<(Term, Term), Term> = HashMap::new();
+            for t in &known_apps {
+                let TermInner::App(f, x) = t.kind() else {
+                    continue;
+                };
+                let key = (self.find(f), self.find(x));
+                match sig.get(&key) {
+                    Some(prev) => {
+                        let prev = prev.clone();
+                        // Already-congruent App with the same
+                        // signature — merge their classes if not
+                        // already merged.
+                        if self.find(&prev) != self.find(t) {
+                            self.union(&prev, t);
                             changed = true;
                         }
+                    }
+                    None => {
+                        sig.insert(key, t.clone());
                     }
                 }
             }
@@ -266,11 +304,13 @@ impl Theory for Uf {
 
         // Group every known term by its union-find root (without
         // mutating the parent map — we just walk the chain).
+        // rc.25 (e⁗.2) — root chain walked with `==` (Arc::ptr_eq),
+        // not `alpha_eq`; same canonical-root reasoning as `find`.
         let find_root = |t: &Term| -> Term {
             let mut cur = t.clone();
             loop {
                 match self.parent.get(&cur) {
-                    Some(p) if !p.alpha_eq(&cur) => cur = p.clone(),
+                    Some(p) if *p != cur => cur = p.clone(),
                     _ => return cur,
                 }
             }
