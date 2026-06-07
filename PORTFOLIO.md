@@ -8,7 +8,7 @@
 > ~44 k lines of Rust across 31 workspace crates, 946 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.23` on 2026-06-07.
+> `1.0.0-rc.24` on 2026-06-07.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.23):**
+**Active consumers (rc.24):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -355,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.23` (2026-06-07) |
+| Workspace version | `1.0.0-rc.24` (2026-06-07) |
 
 ---
 
-## Roadmap snapshot (rc.23 → v1.0.0 stable)
+## Roadmap snapshot (rc.24 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -417,9 +417,13 @@ or proof-search strategies without touching the engine core.
 | (e''.1) UF `Vec<Term>` → `IndexSet<Term>` for `known` / `pos_atoms` / `neg_atoms` (verus-fork rc.22 retry §4 + §5) | **landed** at rc.23 (`5d347c2`).  `adsmt-theory/src/uf.rs` migrated; `IndexSet` over `HashSet` so `truncate(n)` rollback + `get_index(i)` indexed-pair scan in `close()` + insertion-deterministic certificate-emit order all survive without re-architecture.  Bonus reproducibility side-fix: `derive_equalities`'s `HashMap<Term, Vec<Term>>` → `IndexMap`.  Addresses 97.98 % alpha_eq_rec cycle concentration on the rc.22 verus_smoke flamegraph (driven by ~10⁴ × ~10³ UF `iter().any(alpha_eq)` cost model) |
 | (e''.2) abductive `Candidate::merge` `HashSet<Term>` dedup (verus-fork rc.22 retry §6) | **landed** at rc.23 (`e2c1761`).  `adsmt-abduce/src/sld.rs::Candidate::merge` pre-stages a one-shot `HashSet<Term>` from `self.hypotheses`; dedup keyed off `HashSet::insert`'s `bool` return.  Parallel `hypotheses` / `explanations` / `sources` `Vec` layout preserved.  `HashSet` over `IndexSet` since the scratch is never iterated / indexed / serialised |
 | (e''.3) `feedback_hashcons_hot_paths.md` container-shape rule extension | **landed** at rc.23 (`c97a3ba`).  §3 retitled "container-shape `Vec<T>` + `iter().any(custom_eq)` → `(Index)Set<T>::contains`" with picking-the-container matrix (HashSet for dedup-only scratch / IndexSet for rollback / indexed-loop / reproducibility) + soundness checks (hash-cons coverage on closed Skolemized terms, reproducibility, rollback shape) + rc.23 row in the measured-incidents table |
-| §3.5.J verus-fork 5-mode smoke retry against rc.23 (post-UF-IndexSet) | verus-fork side; verus-fork-predicted wall recovery on verus_smoke Mode C' 4 600 → ~1 100 ms (inside §3.5.J's `≤ 1 500 ms` window); variance signature 235 → ≤ 50 ms.  Adsmt-side direct wall measurement host-environment-limited |
-| Deadline-cascade extension into UF / SLD / quant phase-2 loops (T0''') | post-rc.23 follow-up if the rc.23 retry shows that rlimit ≥ 5 s still hits a deadline-uncatchable loop.  T0' commits (rc.16) covered `analyze_conflict_1uip` + learnt-clause insertion + post-backjump unit-prop; the phase-2 work the engine reaches after the rc.23 hot-path removal would need similar deadline checks |
-| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.23 follow-up |
+| (e'''.1) ematch `TermUniverse` `Vec<Term>` → `IndexSet<Term>` (verus-fork rc.23 retry §6) | **landed** at rc.24 (`27df7d2`).  `adsmt-quant/src/ematch.rs` — the actual 97.5 %-of-cycles hot site (`gather_subterms → insert`) the rc.22/rc.23 narrow greps both missed.  O(N²·depth) build → O(N); new O(1) `contains`; `extend_with_equalities` snapshots into an explicit `Vec` (cheap Arc-handle copy, not an IndexSet clone) so its loop drops O(M·N²) → O(M·N) |
+| (e'''.2) engine quant hot-path dedup sets → Term-keyed (verus-fork rc.23 retry §4) | **landed** at rc.24 (`f155c24`).  `quant.rs` Tier-classification `universe.contains`; `instantiate_one` seen-set `HashSet<String>`+`to_string()` → `HashSet<Term>` (rc.21 String-key incident recurring); `solver.rs` `instantiations` `Vec<Term>` → `IndexSet<Term>` across the three Tier-1/2/3 dedup sites |
+| (e'''.3) workspace-wide cold-path sweep | **landed** at rc.24 (`4e5b971`).  Same pattern via order-preserving parallel-`HashSet<Term>`-scratch in `theorem.rs::union_hyps` / `quant_conflict.rs::conflict_instantiate` / `polite.rs::max_disequality_clique`; subset-test `minimize.rs::subsumes` via `HashSet` from `b`.  Two abduction membership sites in `workflow.rs` deliberately left as `Vec` (cold + public-API constraint).  After this sweep the workspace is grep-clean of the `Vec<T>+iter().any(custom_eq)` pattern outside the two documented cold sites |
+| (e'''.4) `feedback_hashcons_hot_paths.md` "grep workspace-wide" lesson | **landed** at rc.24 (`e124fe3`).  New "ALWAYS grep workspace-wide, every cycle" subsection recording the rc.23 narrow-grep-held-the-wall-flat cautionary tale + canonical grep commands + the bar (clean workspace-wide run = "eliminated", not single-file); fifth incident row |
+| §3.5.J verus-fork 5-mode smoke retry against rc.24 (post-ematch-IndexSet) | verus-fork side; verus-fork-predicted wall recovery on verus_smoke Mode C' 4 580 → ~830 ms (inside §3.5.J's `≤ 1 500 ms` window); variance signature 305 → ≤ 50 ms.  Adsmt-side direct wall measurement host-environment-limited |
+| Deadline-cascade extension into UF / SLD / quant phase-2 loops (T0''') | post-rc.24 follow-up if the rc.24 retry shows that rlimit ≥ 5 s still hits a deadline-uncatchable loop.  T0' commits (rc.16) covered `analyze_conflict_1uip` + learnt-clause insertion + post-backjump unit-prop; the phase-2 work the engine reaches after the rc.24 hot-path removal would need similar deadline checks |
+| Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.24 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | gated on explicit user sign-off per `feedback_stable_signoff_user_approval.md` |
 
@@ -445,5 +449,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.23
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.24
   development arc.

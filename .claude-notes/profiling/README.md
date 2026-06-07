@@ -231,3 +231,63 @@ Verus-fork-predicted recovery on Mode C': 4 600 → ~1 100 ms
 (inside §3.5.J's `≤ 1 500 ms` window); predicted
 variance signature: 235 → ≤ 50 ms.  rc.23 retry against
 verus-fork host is the confirmation path.
+
+## rc.23 retry — the fix held the wall flat (narrow-grep tale)
+
+verus-fork's rc.23 retry: (e''.1)+(e''.2) landed verbatim
+but the verus_smoke wall **didn't move** — Mode C'
+4 635 → 4 581 ms (−54 ms, noise), Mode C' variance went
+*up* 235 → 305 ms.  rc.23 flamegraph
+(`2026-06-06-verus_smoke-{flamegraph,perf-script}-rc23.{svg,txt}`,
+captured rlimit 3 s) showed `alpha_eq_rec` *unchanged* at
+**97.50 %** of cycles.
+
+Entry-caller analysis (skip all `alpha_eq*` frames to
+surface the true caller): 19.26 % of samples enter
+through `adsmt_engine::quant::gather_subterms` →
+`TermUniverse::insert` at `adsmt-quant/src/ematch.rs:28`,
+which carried the **bit-for-bit identical**
+`Vec<Term> + iter().any(|x| x.alpha_eq(&t))` pattern the
+rc.22 reply flagged at `uf.rs` — different crate, missed
+by the rc.22 grep (scoped to `adsmt-theory`) and the
+rc.23 fix scope.  The rc.23 fix landed where the narrow
+grep pointed; the real hot site was one crate over.
+
+## rc.24 (e'''.1…4) — ematch + workspace-wide sweep
+
+A workspace-wide grep (`iter\(\)\.any\([^)]*\.alpha_eq`,
+excluding tests) at rc.23 HEAD found **eight more**
+production sites the per-reply greps never covered.
+
+- `27df7d2` (e'''.1) — `adsmt-quant/src/ematch.rs`
+  `TermUniverse::terms` `Vec<Term>` → `IndexSet<Term>`
+  + O(1) `contains`.  THE 97.5 %-of-cycles hot site.
+  `extend_with_equalities` snapshots into an explicit
+  `Vec` (cheap Arc-handle copy) rather than cloning the
+  IndexSet, so its loop drops O(M·N²) → O(M·N).
+- `f155c24` (e'''.2) — engine quant hot path:
+  `quant.rs` Tier-classification `universe.contains`;
+  `instantiate_one` seen-set `HashSet<String>`+`to_string()`
+  → `HashSet<Term>` (the rc.21 String-key incident
+  recurring on the quantifier path); `solver.rs`
+  `instantiations` `Vec<Term>` → `IndexSet<Term>`.
+- `4e5b971` (e'''.3) — cold-path sweep:
+  `theorem.rs::union_hyps`, `quant_conflict.rs`,
+  `polite.rs::max_disequality_clique`,
+  `minimize.rs::subsumes` (parallel HashSet scratch /
+  subset-test HashSet).  Two abduction membership sites
+  in `workflow.rs` deliberately left as `Vec`.
+
+Verus-fork-predicted recovery on Mode C': 4 580 → ~830 ms
+(inside §3.5.J's `≤ 1 500 ms` window); predicted variance
+signature: 305 → ≤ 50 ms; rlimit ≥ 5 s timeout should
+resolve.  rc.24 retry against the verus-fork host is the
+confirmation path.
+
+**Process lesson (now in
+`feedback_hashcons_hot_paths.md`):** grep the pattern
+WORKSPACE-WIDE every cycle.  rc.23 fixed the narrowly-
+grepped UF site, the wall held flat, and only the
+workspace-wide re-grep surfaced the real hot site one
+crate over.  The pattern hides wherever the grep doesn't
+look.
