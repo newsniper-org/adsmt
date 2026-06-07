@@ -1237,6 +1237,18 @@ impl Solver {
         };
         // (1) Decompose every asserted (term, polarity) into CNF clauses.
         let mut clauses: Vec<Clause> = Vec::new();
+        // rc.27 (S.1) — set when *some* assertion's boolean
+        // structure is not CNF-encodable by the v0.3 flattener
+        // (e.g. a nested OR-of-AND, or a term exceeding
+        // `MAX_FLATTEN_NODES`).  Such an assertion is *skipped*
+        // from the clause set rather than routed to a theory-only
+        // path that drops the whole accumulator — see the `None`
+        // arm below.  The flag downgrades a final `Sat` verdict to
+        // `Unknown` (we cannot claim satisfiability while ignoring
+        // an assertion we could not encode), while leaving `Unsat`
+        // sound (the flattenable subset being unsat ⟹ the full,
+        // larger constraint set is unsat).
+        let mut had_opaque = false;
         // rc.20 — prepend the prelude clause-set cache when
         // `restore_cdcl_state_into` has populated it.  v0.x
         // scope ships the clause vec only; trail / watches /
@@ -1272,10 +1284,28 @@ impl Solver {
                             reason: "rlimit exceeded".to_string(),
                         };
                     }
-                    // Compound shape not handled by v0.3 alpha CNF flattener.
-                    // Fall back to the theory-routing path below for the
-                    // sub-set of literals we can route.
-                    return self.check_via_theories(&lits);
+                    // rc.27 (S.1) — soundness fix.  Pre-rc.27 this
+                    // did `return self.check_via_theories(&lits)`,
+                    // which **abandoned the entire `clauses`
+                    // accumulator** (including the empty clause an
+                    // `(assert false)` contributes) and re-routed
+                    // through the theory path — and that path skips
+                    // every compound `and`/`or`/`=>` term and never
+                    // evaluates a bare propositional `false`, so it
+                    // returned an unsound `sat` whenever an
+                    // un-flattenable assertion co-occurred with a
+                    // contradiction (verus-fork rc.26 retry P0:
+                    // `(=> P (and Q R))` + `(assert false)` → `sat`).
+                    //
+                    // The sound behaviour: keep the flattenable
+                    // clauses (skip *only* this un-encodable
+                    // assertion) and mark `had_opaque`.  The SAT
+                    // solve below then runs on the flattenable
+                    // subset; if that is unsat the whole set is
+                    // unsat (sound), and if it is sat the verdict
+                    // downgrades to `Unknown` rather than claiming a
+                    // satisfiability we cannot justify.
+                    had_opaque = true;
                 }
             }
         }
@@ -1402,7 +1432,28 @@ impl Solver {
                         reason: "rlimit exceeded".to_string(),
                     };
                 }
-                self.check_via_theories_with_model(&lits, model, deadline)
+                let theory_result =
+                    self.check_via_theories_with_model(&lits, model, deadline);
+                // rc.27 (S.1) — never report `sat` when some
+                // assertion was un-encodable: the flattenable
+                // subset is satisfiable but the opaque remainder
+                // is unresolved, so the honest verdict is
+                // `Unknown`.  (`Unsat` / `Unknown` from the theory
+                // layer pass through unchanged — both are sound
+                // even with an ignored constraint.)
+                if had_opaque
+                    && matches!(theory_result, SatResult::Sat { .. })
+                {
+                    return SatResult::Unknown {
+                        reason: "assertion set contains a boolean structure \
+                                 the CNF flattener cannot encode (e.g. nested \
+                                 OR-of-AND); the flattenable subset is \
+                                 satisfiable but the un-encoded assertions are \
+                                 unresolved"
+                            .to_string(),
+                    };
+                }
+                theory_result
             }
             BoolResult::Unsat => {
                 let (encoded, drat) = crate::proof_bridge::extract_drat(&clauses);
@@ -1456,7 +1507,7 @@ impl Solver {
     /// attached. Both the SAT-level unsat path
     /// (`build_unsat_cert_opt_with_locs` called from
     /// [`check_ground`]) and the theory-unsat path (called from
-    /// [`check_via_theories`]) feed positions through
+    /// [`check_via_theories_with_model`]) feed positions through
     /// [`attach_locs`], so every `Assume` step that traces back to
     /// a parser-supplied `assert_at` carries a `:loc` annotation.
     ///
@@ -1508,16 +1559,16 @@ impl Solver {
         self.cert_builder.snapshot(conclusion)
     }
 
-    /// Legacy path: route raw literals straight to the theory layer.
-    /// Used as a fallback when the CNF flattener can't decompose a
-    /// compound assertion.
-    fn check_via_theories(&mut self, lits: &[(Term, bool)]) -> SatResult {
-        self.check_via_theories_with_model(lits, HashMap::new(), None)
-    }
-
-    /// Variant of [`Self::check_via_theories`] that threads the
+    /// Route raw literals through the theory layer, threading the
     /// boolean assignment from the SAT layer through to the
     /// verdict's `SatResult::Sat::model`.
+    ///
+    /// rc.27 (S.1) — the no-model `check_via_theories` wrapper was
+    /// removed when the opaque-flatten fallback that called it
+    /// (`return self.check_via_theories(&lits)`) was replaced by
+    /// the sound `had_opaque` path; this is the only theory-route
+    /// entry point now, always reached *after* the SAT solve on
+    /// the flattenable clause subset.
     fn check_via_theories_with_model(
         &mut self,
         lits: &[(Term, bool)],
@@ -1525,6 +1576,34 @@ impl Solver {
         deadline: Option<std::time::Instant>,
     ) -> SatResult {
         self.theories.reset();
+        // rc.27 (S.3) — defence-in-depth: the theory layer only
+        // reasons about equalities and never evaluates a bare
+        // propositional constant, so an asserted `false` (or
+        // `(not true)`) that reaches this path must short-circuit
+        // to `Unsat` *before* `dpllt::run_once` — otherwise the
+        // theory loop would return `Sat` for an obviously
+        // contradictory set.  With the (S.1) fix above this path
+        // no longer receives the empty-clause-bearing accumulator,
+        // but the guard is cheap and closes the hole independently.
+        for (t, p) in lits {
+            let asserts_false = (*p && t.is_false_const())
+                || (!*p && t.is_true_const());
+            if asserts_false {
+                let witness = TheoryWitness::Opaque {
+                    kind: "propositional".into(),
+                    notes: "asserted constant false".into(),
+                };
+                let lits_with_locs = self.attach_locs(lits);
+                let cert = self.build_unsat_cert_opt_with_locs(
+                    &lits_with_locs,
+                    "propositional",
+                    witness,
+                );
+                let core =
+                    crate::result::UnsatCore::from_assertions(&self.all_assertions());
+                return SatResult::Unsat { certificate: cert, core };
+            }
+        }
         // Strip compound asserts — only send shape-recognizable
         // literals (atom or `(not atom)`) to theories. Anything more
         // complex is opaque to v0.3 theories.
@@ -2044,7 +2123,7 @@ mod tests {
 
     #[test]
     fn theory_unsat_path_threads_source_loc_into_assume_steps() {
-        // UF congruence — falls through to `check_via_theories`
+        // UF congruence — falls through to `check_via_theories_with_model`
         // because the CNF flattener sees only flat equalities.
         // Each `assert_at` position must arrive at the
         // corresponding `Assume` cert step's `source_loc`.
@@ -2504,5 +2583,71 @@ mod tests {
         let registry = s.jit_registry().expect("registry was started");
         assert_eq!(registry.cached_traces(), 1);
         assert_eq!(registry.compiled_kernels(), 1);
+    }
+
+    // === rc.27 (S.1/S.3) — soundness: an opaque (un-flattenable)
+    // assertion must never mask a contradiction into `sat` ===
+
+    /// verus-fork rc.26 retry P0 reproducer: an OR-of-AND assert
+    /// (`(=> P (and Q R))`, which the v0.3 CNF flattener returns
+    /// `None` for) co-occurring with `(assert false)` must be
+    /// `Unsat`, not `Sat`.  Pre-rc.27 the `None` arm abandoned the
+    /// clause accumulator (empty clause included) and re-routed
+    /// through the theory path, which ignores propositional
+    /// `false` → unsound `sat`.
+    #[test]
+    fn opaque_assert_does_not_mask_false_into_sat() {
+        let bool_ = Type::bool_();
+        let p = Term::var("P", bool_.clone());
+        let q = Term::var("Q", bool_.clone());
+        let r = Term::var("R", bool_);
+        // (=> P (and Q R)) — nested OR-of-AND, opaque to the flattener.
+        let or_of_and = Term::mk_imp(
+            p,
+            Term::mk_and(q, r).unwrap(),
+        )
+        .unwrap();
+        let mut s = Solver::new();
+        s.assert(or_of_and);
+        s.assert(Term::false_const());
+        assert!(
+            matches!(s.check_sat(), SatResult::Unsat { .. }),
+            "asserting false alongside an opaque OR-of-AND must be unsat"
+        );
+    }
+
+    /// The same opaque assert *without* a contradiction must
+    /// downgrade to `Unknown` (the flattenable subset is sat but
+    /// the un-encoded assertion is unresolved) — never `Sat`.
+    #[test]
+    fn opaque_assert_alone_is_unknown_not_sat() {
+        let bool_ = Type::bool_();
+        let p = Term::var("P", bool_.clone());
+        let q = Term::var("Q", bool_.clone());
+        let r = Term::var("R", bool_);
+        let or_of_and = Term::mk_or(
+            p,
+            Term::mk_and(q, r).unwrap(),
+        )
+        .unwrap();
+        let mut s = Solver::new();
+        s.assert(or_of_and);
+        assert!(
+            matches!(s.check_sat(), SatResult::Unknown { .. }),
+            "an un-encodable assertion must not be reported sat"
+        );
+    }
+
+    /// Property-style guard: `false` asserted alongside an
+    /// arbitrary (here: satisfiable, flattenable) prefix is unsat.
+    #[test]
+    fn false_alongside_satisfiable_prefix_is_unsat() {
+        let bool_ = Type::bool_();
+        let p = Term::var("P", bool_.clone());
+        let q = Term::var("Q", bool_);
+        let mut s = Solver::new();
+        s.assert(Term::mk_or(p, q).unwrap()); // satisfiable
+        s.assert(Term::false_const());
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
     }
 }
