@@ -1,6 +1,6 @@
 ---
 name: Take the Arc::ptr_eq short-circuit on hash-consed types in hot paths
-description: Whenever a hash-consed type (Term, Type, …) is compared / hashed / looked-up / stored in an inner loop, route the comparison through `Arc::ptr_eq` first AND prefer `(Index)Set<T>::contains` over `Vec<T>::iter().any(custom_eq)` for dedup-shaped containers. Post-rc.10 `Term::Hash/Eq` is pointer-based O(1); `Type` after rc.22 has hand-rolled `PartialEq` with `Arc::ptr_eq` short-circuit; `alpha_eq_rec` after rc.22 has a top-level `Arc::ptr_eq` fast-path; UF/abductive/ematch/quant `Vec<Term>` dedup containers after rc.23/rc.24 are `IndexSet<Term>` / `HashSet<Term>`. Six measured incidents — CDCL String-keyed maps (rc.21: 5 955→1 923 ms, 67 %), `alpha_eq_rec` (rc.22), `Type::eq` (rc.22), UF iter().any(alpha_eq) (rc.23), ematch+quant dedup sites (rc.24), UF close() naive O(N²) congruence → signature-hashed + Arc::ptr_eq roots (rc.25). TWO CRITICAL PROCESS LESSONS: (1) grep the pattern WORKSPACE-WIDE every cycle — rc.23 fixed the narrowly-grepped UF site and the wall held flat because the real hot site was the identical pattern one crate over in ematch.rs; (2) after removing an O(N²) bottleneck, ALWAYS re-profile from scratch even when the removal is correct — rc.24's correct ematch fix made the wall go UP 7× because the slow build had been an accidental throttle masking UF::close()'s downstream O(N²) congruence closure. The "wall went up after a correct optimization" signature means you unblocked a worse downstream cost — bisect + re-profile, don't revert.
+description: Whenever a hash-consed type (Term, Type, …) is compared / hashed / looked-up / stored in an inner loop, route the comparison through `Arc::ptr_eq` first AND prefer `(Index)Set<T>::contains` over `Vec<T>::iter().any(custom_eq)` for dedup-shaped containers. Post-rc.10 `Term::Hash/Eq` is pointer-based O(1); `Type` after rc.22 has hand-rolled `PartialEq` with `Arc::ptr_eq` short-circuit; `alpha_eq_rec` after rc.22 has a top-level `Arc::ptr_eq` fast-path; UF/abductive/ematch/quant `Vec<Term>` dedup containers after rc.23/rc.24 are `IndexSet<Term>` / `HashSet<Term>`. Seven measured incidents — CDCL String-keyed maps (rc.21: 5 955→1 923 ms, 67 %), `alpha_eq_rec` (rc.22), `Type::eq` (rc.22), UF iter().any(alpha_eq) (rc.23), ematch+quant dedup sites (rc.24), UF close() naive O(N²) congruence → signature-hashed (rc.25), ematch extend_match/substitute_in + Combination::check Nelson-Oppen dedup (rc.26). After rc.26 the SMT-solving hot path is FULLY de-quadratified; the only remaining iter().any(alpha_eq) production sites are cold abduction (off the SMT path, deliberately left). TWO CRITICAL PROCESS LESSONS: (1) grep the pattern WORKSPACE-WIDE every cycle — rc.23 fixed the narrowly-grepped UF site and the wall held flat because the real hot site was the identical pattern one crate over in ematch.rs; (2) after removing an O(N²) bottleneck, ALWAYS re-profile from scratch even when the removal is correct — rc.24's correct ematch fix made the wall go UP 7× because the slow build had been an accidental throttle masking UF::close()'s downstream O(N²) congruence closure. The "wall went up after a correct optimization" signature means you unblocked a worse downstream cost — bisect + re-profile, don't revert.
 type: feedback
 ---
 
@@ -246,7 +246,36 @@ inner loop into a wall-clock-unbounded one.  The rc.25
 is the backstop: even if a future phase is accidentally
 O(N²) again, it yields to the budget instead of spinning.
 
-**Why:** Six measured incidents, all the same family —
+### The throttle-unmask chain marches layer by layer
+
+Each correct fix exposed the next-slowest phase, and the
+chain ran through the entire solving pipeline before it
+terminated:
+
+CDCL String keys (rc.21) → term/type α-eq (rc.22) → UF
+membership (rc.23) → ematch universe (rc.24) → UF
+congruence `close()` (rc.25) → UF `derive_equalities`
+dedup (rc.25-retry, user-landed) → ematch
+`extend_match` / `substitute_in` + `Combination::check`
+Nelson-Oppen dedup (rc.26).
+
+Each link was the *same* `Vec<T> + iter().any(custom_eq)`
+or recursive-`alpha_eq`-where-`==`-suffices shape, one
+phase deeper.  **The terminating condition is a clean
+workspace-wide grep, not a flat wall** — the wall stays
+high (or moves *up*) at every intermediate step because
+the throttle just relocated.  After rc.26 the
+SMT-solving hot path (CDCL → theory combination → UF →
+quantifier E-matching) is fully de-quadratified; the
+only remaining `iter().any(alpha_eq)` production sites
+are in **abduction** (`abducible.rs` abducible lookup,
+`workflow.rs` accept/reject membership), which is *off*
+the SMT solving path (it fires only on a stuck ground
+check when the caller asked for abductive output) and is
+deliberately left (cold + public-API / struct-field
+constraints).
+
+**Why:** Seven measured incidents, all the same family —
 an O(1) handle (or a near-linear standard algorithm)
 existed but the hot path used a quadratic / allocating
 shape instead.
@@ -259,6 +288,8 @@ shape instead.
 | rc.23 | UF `Vec<Term>` + `iter().any(alpha_eq)` → `IndexSet<Term>::contains` | ~3 600 ms est | ~50 ms est | `5d347c2` |
 | rc.24 | ematch `TermUniverse` + engine quant dedup sites (`Vec`→`IndexSet`/`HashSet`) | ~3 800 ms est | ~50 ms est | `e'''.1`+`e'''.2` |
 | rc.25 | UF `close()` naive O(N²) congruence → signature-hashed + `Arc::ptr_eq` roots | ~22 s est | tens of ms est | `e⁗.1`+`e⁗.2` |
+| rc.25-retry | UF `derive_equalities` dedup → `HashSet<(Term,Term)>` norm_pair (user-landed) | ∞ hang | ~finite | `6a3f0cd` |
+| rc.26 | ematch `extend_match`/`substitute_in` + `Combination::check` NO-dedup → `==` / `HashSet` | (E-matcher tail) | — | `e⁗⁗.3`+`e⁗⁗.4` |
 
 The rc.23 → rc.24 jump is the *narrow-grep* cautionary
 tale: rc.23 fixed the site the narrow grep named, the
@@ -272,6 +303,14 @@ cautionary tale: a correct optimization made the wall
 7× *worse* by unblocking a masked downstream O(N²).
 **A correct fix that makes the wall worse means you
 unblocked something — re-profile, don't revert.**
+
+The rc.25 → rc.26 span is the *chain-termination* note:
+the throttle-unmask marched through six more phases after
+the first fix; the signal that it's *done* is a clean
+workspace-wide grep (only comments + tests + cold
+off-path sites), confirmed once the verus-fork retry
+shows the wall finally drop into the budget window
+rather than relocating again.
 
 The rc.21 incident first surfaced as "+662 → +747 ms
 regression rc.15 → rc.20" the verus-fork side carried as a
