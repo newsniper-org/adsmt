@@ -11,5 +11,10 @@
 
 .DS_Store
 
-docs/upstream/*.mdperf.data
+docs/upstream/*.md
+
+# perf / flamegraph raw captures — large binaries, regenerated
+# per profiling run; only the .txt/.svg digests are committed.
+*.data
+perf.data
 perf.data.old
