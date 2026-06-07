@@ -33,6 +33,15 @@ pub struct TyConst {
 /// hand-rolled eq returns identical results to the derived
 /// shape; the `Arc::ptr_eq` branch is purely a performance
 /// short-circuit and does not change the equivalence relation.
+///
+/// `clippy::derived_hash_with_manual_eq` is allowed deliberately:
+/// the manual `PartialEq` is structurally identical to a derived
+/// one (the `Arc::ptr_eq` arm is a pure fast-path with a `||`
+/// structural fallback), so the `a == b ⟹ hash(a) == hash(b)`
+/// contract holds against the derived structural `Hash`.  Hashing
+/// the same way the derive already does keeps every existing
+/// `HashMap<Type, _>` / `HashSet<Type>` valid.
+#[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Clone, Debug, Eq, Hash)]
 pub enum Type {
     Var(Arc<TyVar>),
