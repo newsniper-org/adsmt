@@ -1,6 +1,6 @@
 ---
 name: Take the Arc::ptr_eq short-circuit on hash-consed types in hot paths
-description: Whenever a hash-consed type (Term, Type, …) is compared / hashed / looked-up / stored in an inner loop, route the comparison through `Arc::ptr_eq` first AND prefer `(Index)Set<T>::contains` over `Vec<T>::iter().any(custom_eq)` for dedup-shaped containers. Post-rc.10 `Term::Hash/Eq` is pointer-based O(1); `Type` after rc.22 has hand-rolled `PartialEq` with `Arc::ptr_eq` short-circuit; `alpha_eq_rec` after rc.22 has a top-level `Arc::ptr_eq` fast-path; UF/abductive `Vec<Term>` dedup containers after rc.23 are `IndexSet<Term>` / `HashSet<Term>`. Four measured incidents — CDCL String-keyed maps (rc.21: 5 955→1 923 ms, 67 %), `alpha_eq_rec` (rc.22: ~3 670→~50 ms predicted), `Type::eq` (rc.22: ~1 010→~30 ms predicted), UF iter().any(alpha_eq) (rc.23: ~3 600→~50 ms predicted). All four were the same shape — an O(1) handle existed in the codebase but the hot path did not use it.
+description: Whenever a hash-consed type (Term, Type, …) is compared / hashed / looked-up / stored in an inner loop, route the comparison through `Arc::ptr_eq` first AND prefer `(Index)Set<T>::contains` over `Vec<T>::iter().any(custom_eq)` for dedup-shaped containers. Post-rc.10 `Term::Hash/Eq` is pointer-based O(1); `Type` after rc.22 has hand-rolled `PartialEq` with `Arc::ptr_eq` short-circuit; `alpha_eq_rec` after rc.22 has a top-level `Arc::ptr_eq` fast-path; UF/abductive/ematch/quant `Vec<Term>` dedup containers after rc.23/rc.24 are `IndexSet<Term>` / `HashSet<Term>`. Five measured incidents — CDCL String-keyed maps (rc.21: 5 955→1 923 ms, 67 %), `alpha_eq_rec` (rc.22), `Type::eq` (rc.22), UF iter().any(alpha_eq) (rc.23), ematch+quant dedup sites (rc.24). CRITICAL PROCESS LESSON: grep for this pattern WORKSPACE-WIDE every cycle — rc.23 fixed the narrowly-grepped UF site and the wall held flat because the real 97.5%-of-cycles hot site was the identical pattern one crate over in `adsmt-quant/src/ematch.rs::TermUniverse::insert`; the pattern hides wherever the grep doesn't look. All five were the same shape — an O(1) handle existed in the codebase but the hot path did not use it.
 type: feedback
 ---
 
@@ -145,23 +145,75 @@ rollback + indexed-loop preservation; the abductive
   has no length-based truncate; rollback would need a
   per-scope delta vec or snapshot clone.
 
-### Audit locations (verus-fork grep 2026-06-06)
+### ALWAYS grep workspace-wide, every cycle
 
-- `adsmt-theory/src/uf.rs:66, 77` — UF lookups via
-  `.iter().any(alpha_eq)` per theory propagation step.
-  **Fixed at rc.23 (e''.1)** — `known`/`pos_atoms`/
-  `neg_atoms` migrated to `IndexSet<Term>`.
-- `adsmt-abduce/src/sld.rs:66` — hypothesis dedup.
-  **Fixed at rc.23 (e''.2)** — `Candidate::merge` uses
-  a one-shot `HashSet<Term>` populated from
-  `self.hypotheses`.
-- `adsmt-abduce/src/sld.rs:136` — single comparison
-  inside `candidates_with_rules`; covered by (e.1)
-  α-eq fast path.
-- `adsmt-core/src/rule.rs:46, 88` — single comparisons
-  inside proof-rule constructors; covered by (e.1).
+The single most expensive process mistake across this
+rule's history: **scoping the audit grep too narrowly**.
+The verus-fork rc.22 reply scoped its grep to
+`adsmt-theory/src/uf.rs` and reported it as the hot site;
+rc.23 fixed exactly that and the wall didn't move because
+the *actual* dominant caller was
+`adsmt-quant/src/ematch.rs::TermUniverse::insert` — the
+identical pattern in a different crate.  The rc.23
+verus-fork reply then claimed `ematch.rs:29` was the
+*only* remaining instance; a workspace-wide grep at rc.23
+HEAD found **eight more** in production code.
 
-**Why:** Four measured incidents, all the same shape —
+Run this every cycle, over the *entire* workspace, before
+declaring the pattern eliminated:
+
+```sh
+grep -rnE 'iter\(\)\.any\([^)]*\.alpha_eq' \
+    adsmt-*/src --include='*.rs' | grep -v test
+# and the String-key variant:
+grep -rnE 'HashMap<String|HashSet<String' \
+    adsmt-*/src --include='*.rs' | grep -v test
+```
+
+A clean run (only doc-comments + deliberately-cold sites)
+is the bar for "pattern eliminated", not a single-file
+grep.
+
+### Audit locations (workspace-wide grep, rc.24)
+
+Fixed:
+
+- `adsmt-theory/src/uf.rs` `known`/`pos_atoms`/`neg_atoms`
+  → `IndexSet<Term>` — **rc.23 (e''.1)** `5d347c2`.
+- `adsmt-abduce/src/sld.rs::Candidate::merge` → one-shot
+  `HashSet<Term>` — **rc.23 (e''.2)** `e2c1761`.
+- `adsmt-quant/src/ematch.rs::TermUniverse::terms` →
+  `IndexSet<Term>` + `contains` — **rc.24 (e'''.1)**
+  `c54e71c`-successor (the actual 97.5 %-of-cycles
+  hot site, missed by the rc.22/rc.23 greps).
+- `adsmt-engine/src/quant.rs` Tier-classification
+  `universe.contains` + `instantiate_one` seen-set
+  `HashSet<String>`→`HashSet<Term>`;
+  `adsmt-engine/src/solver.rs` `instantiations`
+  `Vec`→`IndexSet` — **rc.24 (e'''.2)**.
+- `adsmt-core/src/theorem.rs::union_hyps`,
+  `adsmt-engine/src/quant_conflict.rs::conflict_instantiate`,
+  `adsmt-theory/src/polite.rs::max_disequality_clique`
+  (parallel `HashSet` scratch, `Vec` accumulator order
+  preserved); `adsmt-abduce/src/minimize.rs::subsumes`
+  (subset test via `HashSet` from `b`) — **rc.24 (e'''.3)**.
+
+Covered by the (e.1) α-eq fast path (single comparisons,
+not dedup loops): `adsmt-abduce/src/sld.rs:136`,
+`adsmt-core/src/rule.rs:46, 88`,
+`adsmt-quant/src/ematch.rs:78` (`substitute_in`).
+
+Deliberately left as `Vec` (cold path + public-API
+constraint, documented in code):
+`adsmt-abduce/src/workflow.rs::is_accepted` (scans
+`Vec<AcceptedHypothesis>` struct field) /
+`is_rejected` (`rejected: Vec<Term>` exposed via the
+public `rejected() -> &[Term]` accessor).  Abduction is
+off the SMT solving path; converting would restructure a
+struct or break a slice-returning accessor for no
+measurable gain.
+
+**Why:** Five measured incidents, all the same shape —
 an O(1) handle existed but the hot path did not use it.
 
 | cycle | surface | wall before | wall after | commit |
@@ -170,6 +222,14 @@ an O(1) handle existed but the hot path did not use it.
 | rc.22 | `Term::alpha_eq_rec` recursion (`Arc::ptr_eq` guard) | ~3 670 ms est | ~50 ms est | `c54e71c` |
 | rc.22 | `<Type as PartialEq>::eq` (hand-rolled `Arc::ptr_eq`-first) | ~1 010 ms est | ~30 ms est | `d01d78a` |
 | rc.23 | UF `Vec<Term>` + `iter().any(alpha_eq)` → `IndexSet<Term>::contains` | ~3 600 ms est | ~50 ms est | `5d347c2` |
+| rc.24 | ematch `TermUniverse` + engine quant dedup sites (`Vec`→`IndexSet`/`HashSet`) | ~3 800 ms est | ~50 ms est | `e'''.1`+`e'''.2` |
+
+The rc.23 → rc.24 jump is the cautionary tale: rc.23
+fixed the site the narrow grep named, the wall held flat
+(Mode C' 4 635 → 4 581 ms, noise), and only the
+workspace-wide re-profile + re-grep surfaced the real
+hot site one crate over.  **The pattern hides wherever
+the grep doesn't look.**
 
 The rc.21 incident first surfaced as "+662 → +747 ms
 regression rc.15 → rc.20" the verus-fork side carried as a
