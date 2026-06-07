@@ -1,0 +1,20 @@
+    63.50%  [.] adsmt_core::term::alpha_eq_rec                                                                 -      -            
+    14.57%  [.] adsmt_core::term::Term::alpha_eq                                                               -      -            
+     2.50%  [.] adsmt_core::term::Term::collect_free                                                           -      -            
+     2.04%  [.] <adsmt_core::term::Term as core::fmt::Display>::fmt                                            -      -            
+     1.91%  [.] core::fmt::write                                                                               -      -            
+     1.59%  [.] core::ptr::drop_in_place<adsmt_core::term::TermInner>                                          -      -            
+     1.56%  [.] <alloc::string::String as core::fmt::Write>::write_str                                         -      -            
+     1.43%  [.] <core::hash::sip::Hasher<S> as core::hash::Hasher>::write                                      -      -            
+     0.80%  [.] adsmt_core::term::Term::subst_rec                                                              -      -            
+     0.69%  [.] adsmt_core::term::intern                                                                       -      -            
+     0.61%  [.] adsmt_theory::uf::Uf::register                                                                 -      -            
+     0.48%  [.] <alloc::string::String as core::fmt::Display>::fmt                                             -      -            
+     0.46%  [.] <core::hash::sip::Hasher<S> as core::hash::Hasher>::write                                      -      -            
+     0.46%  [.] adsmt_quant::ematch::match_one                                                                 -      -            
+     0.46%  [.] 0x00000000001a8bc4                                                                             -      -            
+     0.44%  [.] 0x00000000001a8bc0                                                                             -      -            
+     0.43%  [.] core::ptr::drop_in_place<adsmt_core::ty::Type>                                                 -      -            
+     0.34%  [.] <Q as scc::equivalent::Equivalent<K>>::equivalent                                              -      -            
+     0.33%  [.] adsmt_quant::ematch::extend_match                                                              -      -            
+     0.31%  [.] <&T as core::fmt::Display>::fmt                                                                -      -            

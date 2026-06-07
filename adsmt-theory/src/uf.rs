@@ -9,7 +9,7 @@
 //! v0.1 polarity-contradiction handling on plain Bool atoms is
 //! preserved as a fast path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
 use adsmt_core::{Term, TermInner, Type};
@@ -84,6 +84,10 @@ fn pick_representative(members: &[adsmt_core::Term]) -> usize {
 
 
 impl Uf {
+    fn expired(dl: Option<std::time::Instant>) -> bool {
+        dl.is_some_and(|d| std::time::Instant::now() >= d)
+    }
+
     pub fn new() -> Self { Self::default() }
 
     fn invalidate_cache(&mut self) {
@@ -168,9 +172,7 @@ impl Uf {
         // pathological prelude to ~one extra round past the
         // deadline.  The signature pass is O(N), so a per-round
         // check is fine-grained enough.
-        let expired = |dl: Option<std::time::Instant>| -> bool {
-            dl.is_some_and(|d| std::time::Instant::now() >= d)
-        };
+        // (moved to Self::expired(Option<std::time::Instant>) -> bool)
 
         // Congruence closure via signature hashing (rc.25 e⁗.1).
         //
@@ -196,7 +198,7 @@ impl Uf {
         // needed.  Each round is one O(N) pass over the known
         // App-terms; the loop runs to union-find fixpoint.
         loop {
-            if expired(self.deadline) {
+            if Self::expired(self.deadline) {
                 self.timed_out = true;
                 return;
             }
@@ -343,6 +345,30 @@ impl Theory for Uf {
     fn derive_equalities(&self) -> Vec<(Term, Term)> {
         let mut out = self.asserted_eqs.clone();
 
+        // (e⁗⁗.1) — O(1) membership dedup replacing the
+        // O(out²·alpha_eq) `out.iter().any(…alpha_eq…)` probe.
+        // Ground terms are Arc-canonical (rc.24 instrumentation
+        // proved ptr_eq == alpha_eq on this universe), so a
+        // `(Term, Term)` HashSet keyed on hash-cons identity is
+        // exact.  `norm_pair` orders the two terms by their
+        // `Hash` (pointer-hash post-rc.10) so `(a,b)` and `(b,a)`
+        // collapse to one key — capturing the symmetric
+        // `alpha_eq(&rep)&&alpha_eq(m) || alpha_eq(m)&&alpha_eq(&rep)`
+        // test the old probe did. 
+        let norm_pair = |a: &Term, b: &Term| -> (Term, Term) {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{Hash, Hasher};
+            a.hash(&mut h);
+            let ha = h.finish();
+            let mut h2 = std::collections::hash_map::DefaultHasher::new();
+            b.hash(&mut h2);
+            let hb = h2.finish();
+            if ha <= hb { (a.clone(), b.clone()) } else { (b.clone(), a.clone()) }                                                                                                                                                 
+        };
+        let mut seen: HashSet<(Term, Term)> =
+            out.iter().map(|(a, b)| norm_pair(a, b)).collect();
+
+
         // Group every known term by its union-find root (without
         // mutating the parent map — we just walk the chain).
         // rc.25 (e⁗.2) — root chain walked with `==` (Arc::ptr_eq),
@@ -377,17 +403,16 @@ impl Theory for Uf {
         // to every other member. Linear in class size instead of
         // quadratic; matches Nelson-Oppen's standard transmission
         // form.
+        
         for members in classes.values() {
+            if Self::expired(self.deadline) { break; }   // (e⁗⁗.2)
             if members.len() < 2 { continue; }
             let rep_idx = pick_representative(members);
             let rep = members[rep_idx].clone();
             for (i, m) in members.iter().enumerate() {
                 if i == rep_idx { continue; }
-                let dup = out.iter().any(|(x, y)| {
-                    (x.alpha_eq(&rep) && y.alpha_eq(m))
-                        || (x.alpha_eq(m) && y.alpha_eq(&rep))
-                });
-                if !dup {
+                let key = norm_pair(&rep, m);
+                if seen.insert(key) {
                     out.push((rep.clone(), m.clone()));
                 }
             }
