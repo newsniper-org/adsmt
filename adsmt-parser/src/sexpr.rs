@@ -136,6 +136,23 @@ pub fn lex_sexpr_positioned(input: &str) -> Result<Vec<(Token, usize)>, ParseErr
                 }
                 tokens.push((Token::Keyword(input[start..i].to_string()), tok_start));
             }
+            '#' => {
+                // rc.30 (Y4) — SMT-LIB v2 § 3.6 bit-vector literals:
+                // `#x<hex>` and `#b<bin>`.  Kept verbatim (prefix
+                // included) as a `Numeric` token; `convert_expr`
+                // builds the `Term::bv_lit` from the prefix + digits.
+                let start = i;
+                i += 1; // consume '#'
+                let radix_ok = i < bytes.len() && matches!(bytes[i], b'x' | b'b');
+                if !radix_ok {
+                    return Err(ParseError::UnexpectedChar { ch: '#', at: tok_start });
+                }
+                i += 1; // consume 'x' / 'b'
+                while i < bytes.len() && (bytes[i] as char).is_ascii_hexdigit() {
+                    i += 1;
+                }
+                tokens.push((Token::Numeric(input[start..i].to_string()), tok_start));
+            }
             c if c.is_ascii_digit() || (c == '-' && i + 1 < bytes.len()
                 && (bytes[i + 1] as char).is_ascii_digit()) => {
                 let start = i;
@@ -185,6 +202,10 @@ impl SExpr {
 
     pub fn as_list(&self) -> Option<&[SExpr]> {
         if let SExpr::List(xs) = self { Some(xs) } else { None }
+    }
+
+    pub fn as_numeric(&self) -> Option<&str> {
+        if let SExpr::Numeric(n) = self { Some(n) } else { None }
     }
 
     pub fn head_symbol(&self) -> Option<&str> {

@@ -5,10 +5,10 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~44 k lines of Rust across 31 workspace crates, 956 tests
+> ~44 k lines of Rust across 31 workspace crates, 970 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.29` on 2026-06-07.
+> `1.0.0-rc.30` on 2026-06-07.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.29):**
+**Active consumers (rc.30):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -355,11 +355,11 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.29` (2026-06-07) |
+| Workspace version | `1.0.0-rc.30` (2026-06-07) |
 
 ---
 
-## Roadmap snapshot (rc.29 → v1.0.0 stable)
+## Roadmap snapshot (rc.30 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -435,10 +435,10 @@ or proof-search strategies without touching the engine core.
 | §3.5.J verus-fork retry against rc.27 (post-soundness-fix) | **DONE** (verus-fork rc.27 retry).  `verus -V adsmt` → `1 verified, 0 errors` in 511 ms (baseline verus_smoke `unsat` 8 ms) — three orders inside the `≤ 1 500 ms` window; the P-vb finish line + quantitative close of the verus-fork-driven performance arc |
 | (S.1-AOT) extend the rc.27 soundness fix to the `--aot-load` path (verus-fork rc.27 retry residual) | **landed** at rc.28, **CONFIRMED** by verus-fork rc.28 retry (mirror `6491a58`).  The rc.27 (S.1) fix lived only in `check_ground`; the AOT-prelude-bank path (`with_aot_cdcl` / `restore_cdcl_state_into` / `dump_cdcl_state`) still dropped the baked `(assert false)` empty clause → `sat`-for-unsat at every opaque-assert count.  Fix: `restore_cdcl_state_into` keeps genuine empty clauses (explicit `ok` flag vs the defensive out-of-range drop); a trailing v1.2 `CdclSection::had_opaque` wire field (`Cursor::at_end()`-gated, v1.0/v1.1 default `false`) carries the bake-time opaque flag through to a new `Solver::aot_prelude_had_opaque` that seeds `check_ground`'s `had_opaque`, mirroring the baseline `Sat`→`Unknown` downgrade.  Divergence table fully closed (baseline == `--aot-load` at 1/8/16/19/24 opaque asserts); 2 regression tests + 1 round-trip extension, 951/951 green.  verus-fork confirmed **all three paths sound**: full verus_smoke `--aot-load` → `unsat` 13 ms (was `unknown`), JIT-over-AOT → `unsat` |
 | §3.5.I AOT env-path argv threading (`VERUS_ADSMT_AOT_LUART` → `--aot-load`) | **DONE** (verus-fork rc.28 retry).  Driver through the env path → `verus -V adsmt` → `1 verified, 0 errors` 530 ms — §3.5.I proven sound end-to-end through the baked prelude bank, on top of (S.1-AOT) |
-| §3.5.H AOT prelude-bank bake hook | **DONE** (verus-fork `5533adfe`).  Implemented as a **frontend-agnostic** `scripts/aot-bake-prelude.sh` + `just aot-bake-prelude` (NOT a vargo-internal hook — the Y4 unification goal keeps adsmt the common verification engine, so the AOT axiom/prelude bank stays Verus-independent): bakes the Verus prelude (`--from-verus`, default) or any SMT-LIB axiom set (`--from-smt2`), caches under `$VERUS_ADSMT_AOT_CACHE_DIR`, emits the §3.5.I activation line.  End-to-end: bake → activate → `verus -V adsmt` → `1 verified, 0 errors` 292 ms (vs 511 ms without the bank).  **With this, every technical item across the rc.7 → rc.29 arc is landed on both sides** |
+| §3.5.H AOT prelude-bank bake hook | **DONE** (verus-fork `5533adfe`).  Implemented as a **frontend-agnostic** `scripts/aot-bake-prelude.sh` + `just aot-bake-prelude` (NOT a vargo-internal hook — the Y4 unification goal keeps adsmt the common verification engine, so the AOT axiom/prelude bank stays Verus-independent): bakes the Verus prelude (`--from-verus`, default) or any SMT-LIB axiom set (`--from-smt2`), caches under `$VERUS_ADSMT_AOT_CACHE_DIR`, emits the §3.5.I activation line.  End-to-end: bake → activate → `verus -V adsmt` → `1 verified, 0 errors` 292 ms (vs 511 ms without the bank).  **With this, every technical item across the rc.7 → rc.30 arc is landed on both sides** |
 | Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.26 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
-| v1.0.0 stable cut | **the only remaining gate** — every technical item (rc.7 → rc.29 + §3.5.H/I/J) is landed; what's left is the formal completeness/soundness audit-sweep scope (rc.29 + verus-fork audits cover the key cases; a broader corpus — real Y4 obligations / adsmt-contrib Isabelle·Rocq emit round-trip — is the sign-off-holder's call) + **explicit user sign-off** per `feedback_stable_signoff_user_approval.md` |
+| v1.0.0 stable cut | **the only remaining gate** — every technical item (rc.7 → rc.30 + §3.5.H/I/J) is landed; what's left is the formal completeness/soundness audit-sweep scope (rc.29 + verus-fork audits cover the key cases; a broader corpus — real Y4 obligations / adsmt-contrib Isabelle·Rocq emit round-trip — is the sign-off-holder's call) + **explicit user sign-off** per `feedback_stable_signoff_user_approval.md` |
 
 ---
 
@@ -462,5 +462,5 @@ the upstream repo's license.
   governs the binding-freeze policy under
   `contributions/oxiz/bindings/`.
 - The verus-fork team for the engine-refactor + meta-compiler
-  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.29
+  proposal (`§3.1` … `§3.5`) that's driving the rc.7 → rc.30
   development arc.

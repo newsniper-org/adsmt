@@ -11,7 +11,7 @@ use adsmt_abduce::{minimize, rank_candidates, MinimizePolicy};
 use adsmt_cert::canonical::Sequent;
 use adsmt_cert::witness::TheoryWitness;
 use adsmt_cert::{CertBuilder, StepBody, StepId};
-use adsmt_core::Term;
+use adsmt_core::{Term, TermInner};
 use adsmt_theory::arrays::Arrays;
 use adsmt_theory::bv::Bv;
 use adsmt_theory::datatypes::Datatypes;
@@ -139,6 +139,18 @@ impl crate::cdcl::CdclEventSink for CdclTracerSink<'_> {
 pub struct Solver {
     scopes: Vec<Scope>,
     theories: Combination,
+    /// rc.30 (Y4) — selector name → (constructor name, arg index),
+    /// cached from every `declare_datatype` so the assert path can
+    /// apply the definitional rewrite `sel(C(a₁..aₙ)) → aᵢ` before
+    /// solving (a sound, unconditional selector-reduction pass).
+    datatype_selectors: std::collections::HashMap<String, (String, usize)>,
+    /// rc.30 (Y4) — tester name (`is-C`) → constructor name `C`, for
+    /// the definitional tester rewrite `is-C(D(…)) → (C == D)`.
+    datatype_testers: std::collections::HashMap<String, String>,
+    /// rc.30 (Y4) — every registered constructor name, so the tester
+    /// rewrite only fires when the argument is a *known* constructor
+    /// application (otherwise the tester stays uninterpreted).
+    datatype_ctors: std::collections::HashSet<String>,
     abducibles: AbducibleSet,
     abduction_state: AbductionState,
     cert_builder: CertBuilder,
@@ -218,6 +230,9 @@ impl Default for Solver {
         Self {
             scopes: vec![Scope::new()],
             theories,
+            datatype_selectors: std::collections::HashMap::new(),
+            datatype_testers: std::collections::HashMap::new(),
+            datatype_ctors: std::collections::HashSet::new(),
             abducibles: AbducibleSet::new(),
             abduction_state: AbductionState::new(),
             cert_builder: CertBuilder::new(),
@@ -831,6 +846,19 @@ impl Solver {
         &mut self,
         decl: adsmt_theory::datatypes::DatatypeDecl,
     ) -> bool {
+        // rc.30 — cache selectors / testers / constructor names for
+        // the engine-side normalization pass (assert_with_polarity_at).
+        for (ci, ctor) in decl.constructors.iter().enumerate() {
+            self.datatype_ctors.insert(ctor.clone());
+            self.datatype_testers
+                .insert(format!("is-{ctor}"), ctor.clone());
+            if let Some(sels) = decl.selectors.get(ci) {
+                for (si, sel) in sels.iter().enumerate() {
+                    self.datatype_selectors
+                        .insert(sel.clone(), (ctor.clone(), si));
+                }
+            }
+        }
         for t in self.theories.theories_mut() {
             if t.name() != "Datatypes" { continue; }
             if let Some(any) = t.as_any_mut()
@@ -888,12 +916,64 @@ impl Solver {
     /// short-circuit the rewrite and keep their original Term shape
     /// — useful for the cert and for tests that pattern-match the
     /// asserted form.
+    /// rc.30 (Y4) — definitional selector reduction:
+    /// rewrite every `sel(C(a₁..aₙ))` sub-term to `aᵢ` (where `sel`
+    /// is the `i`-th selector of constructor `C`).  This is the
+    /// selector axiom applied as an unconditional rewrite — sound
+    /// (the field value equals the selector applied to the
+    /// constructor) and it makes selector reasoning complete without
+    /// depending on which sort the enclosing literal routes to.
+    fn normalize_selectors(&self, t: &Term) -> Term {
+        if self.datatype_selectors.is_empty() && self.datatype_testers.is_empty() {
+            return t.clone();
+        }
+        match t.kind() {
+            TermInner::App(f, x) => {
+                let nf = self.normalize_selectors(f);
+                let nx = self.normalize_selectors(x);
+                let head_name = match nf.kind() {
+                    TermInner::Const(c) => Some(c.name.clone()),
+                    TermInner::Var(v) => Some(v.name.clone()),
+                    _ => None,
+                };
+                if let Some(name) = head_name {
+                    // `sel(C(args))` → `args[idx]`.
+                    if let Some((ctor, idx)) = self.datatype_selectors.get(&name)
+                        && let Some((cname, args)) = decompose_app(&nx)
+                        && &cname == ctor
+                        && *idx < args.len()
+                    {
+                        return args[*idx].clone();
+                    }
+                    // `is-C(D(args))` → `true`/`false` when `D` is a
+                    // known constructor (otherwise stays uninterpreted).
+                    if let Some(ctor) = self.datatype_testers.get(&name)
+                        && let Some((cname, _)) = decompose_app(&nx)
+                        && self.datatype_ctors.contains(&cname)
+                    {
+                        return if &cname == ctor {
+                            Term::true_const()
+                        } else {
+                            Term::false_const()
+                        };
+                    }
+                }
+                Term::app(nf, nx).unwrap_or_else(|_| t.clone())
+            }
+            // Ground assertions are quantifier-free post-skolemization;
+            // datatype apps under a binder are left to the (routed)
+            // theory-level reduction.
+            _ => t.clone(),
+        }
+    }
+
     pub fn assert_with_polarity_at(
         &mut self,
         t: Term,
         polarity: bool,
         loc: Option<adsmt_cert::SourceLoc>,
     ) {
+        let t = self.normalize_selectors(&t);
         let (final_term, final_polarity) =
             if adsmt_quant::skolemize::contains_quantifier(&t) {
                 let oriented = if polarity {
@@ -1727,6 +1807,27 @@ impl Solver {
     pub fn abduction_state(&self) -> &AbductionState { &self.abduction_state }
 }
 
+/// rc.30 (Y4) — decompose `App(App(…Const(name), a₁)…, aₙ)` into
+/// `(name, [a₁, …, aₙ])`; a bare `Const(name)` yields `(name, [])`.
+/// `None` for any other head shape.
+fn decompose_app(t: &Term) -> Option<(String, Vec<Term>)> {
+    let mut args: Vec<Term> = Vec::new();
+    let mut cur = t.clone();
+    loop {
+        match cur.kind() {
+            TermInner::App(f, x) => {
+                args.push(x.clone());
+                cur = f.clone();
+            }
+            TermInner::Const(c) => {
+                args.reverse();
+                return Some((c.name.clone(), args));
+            }
+            _ => return None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1746,6 +1847,34 @@ mod tests {
         s.assert(p.clone());
         s.assert_negated(p);
         assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    /// rc.30 (Y4) — the selector-normalization pass rewrites
+    /// `value(Some_int_ x)` to `x`, so `value(Some_int_ x) ≠ x` is
+    /// unsat end-to-end through the Solver.
+    #[test]
+    fn selector_normalization_makes_field_access_unsat() {
+        use adsmt_theory::datatypes::DatatypeDecl;
+        let opt = Type::const_("Option_int_", adsmt_core::Kind::Type);
+        let int = Type::const_("Int", adsmt_core::Kind::Type);
+        let mut s = Solver::new();
+        s.declare_datatype(
+            DatatypeDecl::inductive("Option_int_", vec!["None".into(), "Some_int_".into()])
+                .with_selectors(vec![vec![], vec!["value".into()]]),
+        );
+        let some = Term::const_("Some_int_", Type::fun(int.clone(), opt).unwrap());
+        let value = Term::var("value", Type::fun(opt_const(), int.clone()).unwrap());
+        let x = Term::var("x", int);
+        // value(Some_int_ x) ≠ x  → unsat (selector reduction)
+        let some_x = Term::app(some, x.clone()).unwrap();
+        let val = Term::app(value, some_x).unwrap();
+        let eq = Term::mk_eq(val, x).unwrap();
+        s.assert_negated(eq);
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    fn opt_const() -> Type {
+        Type::const_("Option_int_", adsmt_core::Kind::Type)
     }
 
     #[test]

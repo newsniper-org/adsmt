@@ -22,6 +22,25 @@ pub enum SmtLibError {
     Malformed { cmd: String, message: String },
 }
 
+/// One constructor in a datatype declaration: a name plus zero or
+/// more `(selector sort)` fields.  Nullary constructors (enum
+/// members) have an empty `selectors` list.  The selector sort is
+/// kept as a raw [`SExpr`] so the dispatcher can resolve it (it may
+/// reference a type parameter, a sibling datatype, or `(Seq T)`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConstructorDecl {
+    pub name: String,
+    pub selectors: Vec<(String, SExpr)>,
+}
+
+/// One datatype body: optional type parameters (SMT-LIB 2.6 `par`,
+/// or the legacy Z3 leading type-var list) + its constructors.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DatatypeGroup {
+    pub params: Vec<String>,
+    pub constructors: Vec<ConstructorDecl>,
+}
+
 /// A recognized SMT-LIB command.
 ///
 /// `Raw` preserves any command we don't yet pattern-match on so the
@@ -32,21 +51,22 @@ pub enum Command {
     SetOption { keyword: String, value: SExpr },
     SetInfo { keyword: String, value: SExpr },
     DeclareSort { name: String, arity: u32 },
-    /// `(declare-datatype Name ((Ctor1) (Ctor2) ...))` — v0.3 minimal
-    /// form supporting only nullary (enum) constructors.
-    DeclareDatatype { name: String, constructors: Vec<String> },
-    /// `(declare-datatypes ((Name1 0) (Name2 0) …)
-    ///                     (((Ctor1a) (Ctor1b) …)
-    ///                      ((Ctor2a) …) …))`
-    /// — SMT-LIB v2.6 § 4.2.3 parallel form.  v0.x minimal
-    /// supports nullary constructors and arity-0 sorts only; the
-    /// two lists must have equal length (one constructor group
-    /// per declared sort).  Front-ends like Verus's prelude emit
-    /// this form for every Z3-style enum (`fndef`, sub-mode tags
-    /// etc.).
+    /// `(declare-datatype Name (<ctor>...))` — single datatype.
+    /// Each `<ctor>` is a nullary symbol `Foo` / `(Foo)` or a
+    /// constructor with `(selector sort)` fields
+    /// `(Some (value Int))`.
+    DeclareDatatype { name: String, group: DatatypeGroup },
+    /// `(declare-datatypes ((Name1 arity1) …) (<group1> …))` —
+    /// SMT-LIB v2.6 § 4.2.3 parallel form (rc.30 / Y4 request):
+    /// supports per-constructor `(selector sort)` fields, sort
+    /// arities > 0, and parametric bodies (`(par (T) (<ctors>))`).
+    /// The legacy Z3 form `(declare-datatypes (T…) ((Name <ctors>)…))`
+    /// (leading type-var list, sort name inside each group) is also
+    /// accepted.  Each `DatatypeGroup` carries its own type params
+    /// (empty for monomorphic) and constructor list.
     DeclareDatatypes {
         sorts: Vec<(String, u32)>,
-        groups: Vec<Vec<String>>,
+        groups: Vec<DatatypeGroup>,
     },
     DeclareConst { name: String, sort: SExpr },
     DeclareFun { name: String, params: Vec<SExpr>, result: SExpr },
@@ -150,136 +170,99 @@ fn parse_command(s: SExpr) -> Result<Command, SmtLibError> {
         }
         "declare-datatype" => {
             let name = expect_symbol(list.get(1), "declare-datatype")?;
-            let ctors_sexpr = list.get(2).ok_or_else(|| SmtLibError::Malformed {
-                cmd: head.clone(),
-                message: "missing constructor list".into(),
-            })?;
-            let ctor_list = ctors_sexpr.as_list().ok_or_else(|| SmtLibError::Malformed {
-                cmd: head.clone(),
-                message: "expected constructor list".into(),
-            })?;
-            let mut constructors = Vec::with_capacity(ctor_list.len());
-            for c in ctor_list {
-                // Each constructor is either a bare symbol `Foo` or a
-                // list `(Foo)` (nullary). v0.3 supports nullary only.
-                let cname = match c {
-                    SExpr::Symbol(s) => s.clone(),
-                    SExpr::List(inner) if inner.len() == 1 => {
-                        inner[0].as_symbol().map(|s| s.to_string()).ok_or_else(|| {
-                            SmtLibError::Malformed {
-                                cmd: head.clone(),
-                                message: "constructor must be a symbol".into(),
-                            }
-                        })?
-                    }
-                    _ => {
-                        return Err(SmtLibError::Malformed {
-                            cmd: head.clone(),
-                            message: "v0.3 only supports nullary constructors".into(),
-                        });
-                    }
-                };
-                constructors.push(cname);
-            }
-            Ok(Command::DeclareDatatype { name, constructors })
+            let body = list
+                .get(2)
+                .ok_or_else(|| malformed(&head, "missing constructor list"))?;
+            let group = parse_datatype_group(body, &head)?;
+            Ok(Command::DeclareDatatype { name, group })
         }
         "declare-datatypes" => {
-            // SMT-LIB v2.6 § 4.2.3 parallel form:
-            //   (declare-datatypes ((Name1 0) ...) ((<ctors1>) ...))
-            // The two outer lists must have equal length; we
-            // validate the v0.x minimal shape (arity-0 sorts +
-            // nullary constructors) and bundle them as a single
-            // command so the dispatcher can register the sorts and
-            // their constructors as one atomic step.
-            let sorts_sexpr = list.get(1).ok_or_else(|| SmtLibError::Malformed {
-                cmd: head.clone(),
-                message: "missing sort declaration list".into(),
-            })?;
-            let sort_list = sorts_sexpr.as_list().ok_or_else(|| SmtLibError::Malformed {
-                cmd: head.clone(),
-                message: "expected sort declaration list".into(),
-            })?;
-            let groups_sexpr = list.get(2).ok_or_else(|| SmtLibError::Malformed {
-                cmd: head.clone(),
-                message: "missing datatype declaration list".into(),
-            })?;
-            let group_list = groups_sexpr.as_list().ok_or_else(|| SmtLibError::Malformed {
-                cmd: head.clone(),
-                message: "expected datatype declaration list".into(),
-            })?;
-            if sort_list.len() != group_list.len() {
-                return Err(SmtLibError::Malformed {
-                    cmd: head.clone(),
-                    message: format!(
-                        "sort list ({}) and datatype list ({}) must have equal length",
-                        sort_list.len(),
-                        group_list.len(),
-                    ),
-                });
-            }
-            let mut sorts = Vec::with_capacity(sort_list.len());
-            for sd in sort_list {
-                let sd_inner = sd.as_list().ok_or_else(|| SmtLibError::Malformed {
-                    cmd: head.clone(),
-                    message: "expected `(Name Arity)` sort declaration".into(),
-                })?;
-                if sd_inner.len() != 2 {
-                    return Err(SmtLibError::Malformed {
-                        cmd: head.clone(),
-                        message: "sort declaration must have two elements".into(),
+            // rc.30 (Y4) — full SMT-LIB 2.6 § 4.2.3 form plus the
+            // legacy Z3 form.
+            //   2.6:    (declare-datatypes ((Name arity)…) (<group>…))
+            //   legacy: (declare-datatypes (Tvar…)        ((Name <ctors>)…))
+            let list1 = list
+                .get(1)
+                .and_then(SExpr::as_list)
+                .ok_or_else(|| malformed(&head, "missing sort / type-parameter list"))?;
+            let list2 = list
+                .get(2)
+                .and_then(SExpr::as_list)
+                .ok_or_else(|| malformed(&head, "missing datatype declaration list"))?;
+            // Legacy iff the first list carries bare type-var symbols
+            // (or is empty while datatypes follow) — the 2.6 form's
+            // entries are always `(Name arity)` pairs.
+            let legacy = list1.iter().any(|e| matches!(e, SExpr::Symbol(_)))
+                || (list1.is_empty() && !list2.is_empty());
+            if legacy {
+                // Shared type-var list applies to every datatype.
+                let params: Vec<String> = list1
+                    .iter()
+                    .map(|p| {
+                        p.as_symbol()
+                            .map(str::to_string)
+                            .ok_or_else(|| malformed(&head, "type parameter must be a symbol"))
+                    })
+                    .collect::<Result<_, _>>()?;
+                let mut sorts = Vec::with_capacity(list2.len());
+                let mut groups = Vec::with_capacity(list2.len());
+                for d in list2 {
+                    // `(SortName <ctor>…)`
+                    let inner = d
+                        .as_list()
+                        .ok_or_else(|| malformed(&head, "expected `(SortName <ctors>)`"))?;
+                    let sname = inner
+                        .first()
+                        .and_then(SExpr::as_symbol)
+                        .ok_or_else(|| malformed(&head, "datatype name must be a symbol"))?
+                        .to_string();
+                    let constructors = inner
+                        .iter()
+                        .skip(1)
+                        .map(|c| parse_constructor_decl(c, &head))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    sorts.push((sname, params.len() as u32));
+                    groups.push(DatatypeGroup {
+                        params: params.clone(),
+                        constructors,
                     });
                 }
-                let sname = sd_inner[0].as_symbol().map(str::to_string).ok_or_else(|| {
-                    SmtLibError::Malformed {
-                        cmd: head.clone(),
-                        message: "sort name must be a symbol".into(),
-                    }
-                })?;
-                let arity = match &sd_inner[1] {
-                    SExpr::Numeric(n) => n.parse::<u32>().map_err(|_| {
-                        SmtLibError::Malformed {
-                            cmd: head.clone(),
-                            message: "sort arity must be a numeric literal".into(),
-                        }
-                    })?,
-                    _ => {
-                        return Err(SmtLibError::Malformed {
-                            cmd: head.clone(),
-                            message: "sort arity must be a numeric literal".into(),
-                        });
-                    }
-                };
-                sorts.push((sname, arity));
-            }
-            let mut groups: Vec<Vec<String>> = Vec::with_capacity(group_list.len());
-            for g in group_list {
-                let g_inner = g.as_list().ok_or_else(|| SmtLibError::Malformed {
-                    cmd: head.clone(),
-                    message: "expected constructor list per datatype".into(),
-                })?;
-                let mut ctors = Vec::with_capacity(g_inner.len());
-                for c in g_inner {
-                    let cname = match c {
-                        SExpr::Symbol(s) => s.clone(),
-                        SExpr::List(inner) if inner.len() == 1 => inner[0]
-                            .as_symbol()
-                            .map(str::to_string)
-                            .ok_or_else(|| SmtLibError::Malformed {
-                                cmd: head.clone(),
-                                message: "constructor must be a symbol".into(),
-                            })?,
-                        _ => {
-                            return Err(SmtLibError::Malformed {
-                                cmd: head.clone(),
-                                message: "v0.x only supports nullary constructors".into(),
-                            });
-                        }
-                    };
-                    ctors.push(cname);
+                Ok(Command::DeclareDatatypes { sorts, groups })
+            } else {
+                if list1.len() != list2.len() {
+                    return Err(malformed(
+                        &head,
+                        &format!(
+                            "sort list ({}) and datatype list ({}) must have equal length",
+                            list1.len(),
+                            list2.len(),
+                        ),
+                    ));
                 }
-                groups.push(ctors);
+                let mut sorts = Vec::with_capacity(list1.len());
+                for sd in list1 {
+                    let sd_inner = sd
+                        .as_list()
+                        .ok_or_else(|| malformed(&head, "expected `(Name Arity)` sort declaration"))?;
+                    if sd_inner.len() != 2 {
+                        return Err(malformed(&head, "sort declaration must have two elements"));
+                    }
+                    let sname = sd_inner[0]
+                        .as_symbol()
+                        .map(str::to_string)
+                        .ok_or_else(|| malformed(&head, "sort name must be a symbol"))?;
+                    let arity = sd_inner[1]
+                        .as_numeric()
+                        .and_then(|n| n.parse::<u32>().ok())
+                        .ok_or_else(|| malformed(&head, "sort arity must be a numeric literal"))?;
+                    sorts.push((sname, arity));
+                }
+                let groups = list2
+                    .iter()
+                    .map(|g| parse_datatype_group(g, &head))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Command::DeclareDatatypes { sorts, groups })
             }
-            Ok(Command::DeclareDatatypes { sorts, groups })
         }
         "declare-const" => {
             let name = expect_symbol(list.get(1), "declare-const")?;
@@ -377,6 +360,84 @@ fn expect_symbol(e: Option<&SExpr>, ctx: &str) -> Result<String, SmtLibError> {
     })
 }
 
+/// rc.30 (Y4) — short constructor for a `declare-datatype(s)` error.
+fn malformed(cmd: &str, msg: &str) -> SmtLibError {
+    SmtLibError::Malformed { cmd: cmd.to_string(), message: msg.to_string() }
+}
+
+/// rc.30 (Y4) — parse one constructor declaration: a nullary symbol
+/// `Foo` / `(Foo)` or a constructor with `(selector sort)` fields
+/// `(Some (value Int))`.
+fn parse_constructor_decl(c: &SExpr, cmd: &str) -> Result<ConstructorDecl, SmtLibError> {
+    match c {
+        SExpr::Symbol(s) => Ok(ConstructorDecl {
+            name: s.clone(),
+            selectors: Vec::new(),
+        }),
+        SExpr::List(inner) if !inner.is_empty() => {
+            let name = inner[0]
+                .as_symbol()
+                .ok_or_else(|| malformed(cmd, "constructor name must be a symbol"))?
+                .to_string();
+            let mut selectors = Vec::with_capacity(inner.len().saturating_sub(1));
+            for field in &inner[1..] {
+                let f = field
+                    .as_list()
+                    .ok_or_else(|| malformed(cmd, "constructor field must be `(selector sort)`"))?;
+                if f.len() != 2 {
+                    return Err(malformed(cmd, "constructor field must be `(selector sort)`"));
+                }
+                let sel = f[0]
+                    .as_symbol()
+                    .ok_or_else(|| malformed(cmd, "selector name must be a symbol"))?
+                    .to_string();
+                selectors.push((sel, f[1].clone()));
+            }
+            Ok(ConstructorDecl { name, selectors })
+        }
+        _ => Err(malformed(cmd, "malformed constructor declaration")),
+    }
+}
+
+/// rc.30 (Y4) — parse one datatype body: the SMT-LIB 2.6 parametric
+/// `(par (T…) (<ctors>))` form or a bare non-parametric `(<ctors>)`.
+fn parse_datatype_group(g: &SExpr, cmd: &str) -> Result<DatatypeGroup, SmtLibError> {
+    let inner = g
+        .as_list()
+        .ok_or_else(|| malformed(cmd, "expected a datatype body list"))?;
+    if inner.first().and_then(SExpr::as_symbol) == Some("par") {
+        let params = inner
+            .get(1)
+            .and_then(SExpr::as_list)
+            .ok_or_else(|| malformed(cmd, "`par` requires a type-parameter list"))?
+            .iter()
+            .map(|p| {
+                p.as_symbol()
+                    .map(str::to_string)
+                    .ok_or_else(|| malformed(cmd, "type parameter must be a symbol"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let ctors_list = inner
+            .get(2)
+            .and_then(SExpr::as_list)
+            .ok_or_else(|| malformed(cmd, "`par` requires a constructor list"))?;
+        let constructors = ctors_list
+            .iter()
+            .map(|c| parse_constructor_decl(c, cmd))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(DatatypeGroup { params, constructors })
+    } else {
+        let constructors = inner
+            .iter()
+            .map(|c| parse_constructor_decl(c, cmd))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(DatatypeGroup {
+            params: Vec::new(),
+            constructors,
+        })
+    }
+}
+
 fn expect_keyword(e: Option<&SExpr>, ctx: &str) -> Result<String, SmtLibError> {
     match e {
         Some(SExpr::Keyword(s)) => Ok(s.clone()),
@@ -394,6 +455,85 @@ fn expect_list(e: Option<&SExpr>, ctx: &str) -> Result<Vec<SExpr>, SmtLibError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // === rc.30 (Y4) — parameterized declare-datatypes ===
+
+    #[test]
+    fn parses_field_bearing_constructor() {
+        // `(Some (value Int))` — a constructor with one selector.
+        let cmds =
+            parse_smtlib("(declare-datatype Option ((None) (Some (value Int))))").unwrap();
+        match &cmds[0] {
+            Command::DeclareDatatype { name, group } => {
+                assert_eq!(name, "Option");
+                assert!(group.params.is_empty());
+                assert_eq!(group.constructors.len(), 2);
+                assert_eq!(group.constructors[0].name, "None");
+                assert!(group.constructors[0].selectors.is_empty());
+                assert_eq!(group.constructors[1].name, "Some");
+                assert_eq!(group.constructors[1].selectors.len(), 1);
+                assert_eq!(group.constructors[1].selectors[0].0, "value");
+            }
+            other => panic!("expected DeclareDatatype, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_parametric_par_form() {
+        // SMT-LIB 2.6 `(par (T) (<ctors>))`.
+        let cmds = parse_smtlib(
+            "(declare-datatypes ((Seq 1)) \
+             ((par (T) ((seq_empty) (seq_cons (head T) (tail (Seq T)))))))",
+        )
+        .unwrap();
+        match &cmds[0] {
+            Command::DeclareDatatypes { sorts, groups } => {
+                assert_eq!(sorts, &vec![("Seq".to_string(), 1)]);
+                assert_eq!(groups[0].params, vec!["T".to_string()]);
+                let cons = &groups[0].constructors[1];
+                assert_eq!(cons.name, "seq_cons");
+                assert_eq!(cons.selectors.len(), 2);
+                assert_eq!(cons.selectors[0].0, "head");
+                assert_eq!(cons.selectors[1].0, "tail");
+            }
+            other => panic!("expected DeclareDatatypes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_legacy_z3_form() {
+        // `(declare-datatypes () ((Name <ctors>)))` — empty type-var
+        // list, sort name inside the group.
+        let cmds = parse_smtlib(
+            "(declare-datatypes () ((Option_int_ (None) (Some_int_ (value Int)))))",
+        )
+        .unwrap();
+        match &cmds[0] {
+            Command::DeclareDatatypes { sorts, groups } => {
+                assert_eq!(sorts, &vec![("Option_int_".to_string(), 0)]);
+                assert_eq!(groups[0].constructors.len(), 2);
+                assert_eq!(groups[0].constructors[1].name, "Some_int_");
+                assert_eq!(groups[0].constructors[1].selectors[0].0, "value");
+            }
+            other => panic!("expected DeclareDatatypes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_legacy_z3_form_with_typevars() {
+        // `(declare-datatypes (T) ((Lst (nil) (cons (hd T) (tl Lst)))))`.
+        let cmds = parse_smtlib(
+            "(declare-datatypes (T) ((Lst (nil) (cons (hd T) (tl Lst)))))",
+        )
+        .unwrap();
+        match &cmds[0] {
+            Command::DeclareDatatypes { sorts, groups } => {
+                assert_eq!(sorts, &vec![("Lst".to_string(), 1)]);
+                assert_eq!(groups[0].params, vec!["T".to_string()]);
+            }
+            other => panic!("expected DeclareDatatypes, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parses_declare_check_pop_sequence() {

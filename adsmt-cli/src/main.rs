@@ -281,12 +281,24 @@ fn main() -> ExitCode {
                     return ExitCode::from(10);
                 }
             };
+            // File mode replays whole-file history per check-sat for
+            // the OxiZ fallback (correct for the common single-query
+            // file; the streaming path below is the Verus interop one).
+            let file_history = source.clone();
+            let mut degraded = false;
             if cli.aot_bake {
                 bake_input_source = Some(source);
             }
             for (cmd, pos) in commands {
-                if let Some(code) = dispatch_one(&mut driver, &mut last, &cli, cmd, pos)
-                {
+                if let Some(code) = dispatch_one(
+                    &mut driver,
+                    &mut last,
+                    &cli,
+                    cmd,
+                    pos,
+                    &file_history,
+                    &mut degraded,
+                ) {
                     return code;
                 }
             }
@@ -812,18 +824,71 @@ fn decode_sha_hex(hex: &str) -> Option<[u8; 32]> {
 /// non-zero exit code); otherwise `None` to let the caller keep
 /// going.  The function also takes care of flushing `stdout` so
 /// streaming consumers don't get stuck behind a write buffer.
+/// rc.30 (Y4) — OxiZ delegation backend.  adsmt's native engine
+/// (Path A+B) is the abductive + ITP layer; the heavy SAT / theory /
+/// quantifier solving is OxiZ's job.  When the native `(check-sat)`
+/// can't decide an obligation (`Unknown` — e.g. a vstd-scale query
+/// with the full Poly/fuel quantifier encoding), we replay the
+/// accumulated SMT-LIB `history` through the vendored OxiZ solver and
+/// take its verdict.  Opt-in + path-explicit via `ADSMT_OXIZ_PATH`
+/// (unset → unchanged native behaviour).  OxiZ is a 100%-Z3-parity
+/// reimplementation, so trusting its `sat`/`unsat` is sound.
+fn oxiz_fallback(history: &str) -> Option<LastStatus> {
+    use std::io::Write;
+    use std::process::{Command as PCommand, Stdio};
+    let path = std::env::var("ADSMT_OXIZ_PATH").ok()?;
+    let mut child = PCommand::new(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    {
+        let mut stdin = child.stdin.take()?;
+        stdin.write_all(history.as_bytes()).ok()?;
+    } // drop → EOF
+    let out = child.wait_with_output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    // The last verdict line is the one for *this* `(check-sat)`
+    // (OxiZ echoes one per check-sat in the replayed prefix).
+    text.lines().rev().find_map(|l| match l.trim() {
+        "unsat" => Some(LastStatus::Unsat),
+        "sat" => Some(LastStatus::Sat),
+        "unknown" => Some(LastStatus::Unknown),
+        _ => None,
+    })
+}
+
+/// rc.30 — is the OxiZ delegation backend configured?
+fn oxiz_available() -> bool {
+    std::env::var_os("ADSMT_OXIZ_PATH").is_some()
+}
+
 fn dispatch_one(
     driver: &mut Driver,
     last: &mut LastStatus,
     cli: &Cli,
     cmd: Command,
     pos: Position,
+    history: &str,
+    degraded: &mut bool,
 ) -> Option<ExitCode> {
     use std::io::Write;
     let result = driver.dispatch(cmd, pos);
     let outcome = match result {
         DispatchResult::Continue => None,
         DispatchResult::CheckSat(status) => {
+            // rc.30 — OxiZ delegation.  Delegate when the native
+            // engine couldn't decide (`Unknown`) OR the session is
+            // `degraded` (a constraint was skipped natively because
+            // it used an unsupported construct — trusting the native
+            // verdict would then be UNSOUND, since OxiZ replays the
+            // full, correct buffer).
+            let status = if *degraded || matches!(status, LastStatus::Unknown) {
+                oxiz_fallback(history).unwrap_or(status)
+            } else {
+                status
+            };
             *last = status.clone();
             println!("{}", status.label());
             // Abductive verdicts always emit a single-line JSON
@@ -858,8 +923,21 @@ fn dispatch_one(
         }
         DispatchResult::Exit => Some(ExitCode::from(last.exit_code())),
         DispatchResult::Error(code, msg) => {
-            eprintln!("lu-smt: {msg}");
-            Some(ExitCode::from(code))
+            // rc.30 — when OxiZ delegation is configured, a semantic /
+            // convert error (codes 11 / 13 — an unsupported construct,
+            // e.g. `ite`) is NON-fatal: skip the command natively,
+            // mark the session `degraded` so the next `(check-sat)`
+            // delegates to OxiZ (which replays the full buffer
+            // including the skipped command), and keep the stream
+            // alive.  IO / fatal errors still abort.
+            if oxiz_available() && (code == 11 || code == 13) {
+                eprintln!("lu-smt: (native-skip, deferred to OxiZ) {msg}");
+                *degraded = true;
+                None
+            } else {
+                eprintln!("lu-smt: {msg}");
+                Some(ExitCode::from(code))
+            }
         }
     };
     // Flush after every dispatch so any `(echo)` / verdict output
@@ -885,6 +963,11 @@ fn run_stdin_streaming(
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let mut accumulator = String::new();
+    // rc.30 — full SMT-LIB transcript so far, for the OxiZ fallback,
+    // and a session-`degraded` flag (set when a command was skipped
+    // natively → check-sat must delegate to OxiZ for soundness).
+    let mut history = String::new();
+    let mut degraded = false;
     let mut line = String::new();
     let mut depth: i32 = 0;
     let mut in_string = false;
@@ -938,6 +1021,10 @@ fn run_stdin_streaming(
                 accumulator.push_str(&line);
                 if depth == 0 && !accumulator.trim().is_empty() {
                     let chunk = std::mem::take(&mut accumulator);
+                    // rc.30 — grow the full SMT-LIB history so the
+                    // OxiZ fallback can replay the prefix up to each
+                    // `(check-sat)`.
+                    history.push_str(&chunk);
                     let commands = match parse_smtlib_positioned(&chunk) {
                         Ok(c) => c,
                         Err(e) => {
@@ -946,9 +1033,9 @@ fn run_stdin_streaming(
                         }
                     };
                     for (cmd, pos) in commands {
-                        if let Some(code) =
-                            dispatch_one(driver, last, cli, cmd, pos)
-                        {
+                        if let Some(code) = dispatch_one(
+                            driver, last, cli, cmd, pos, &history, &mut degraded,
+                        ) {
                             return Err(code);
                         }
                     }
@@ -1302,36 +1389,18 @@ impl Driver {
                 );
                 DispatchResult::Continue
             }
-            Command::DeclareDatatype { name, constructors } => {
-                use adsmt_theory::datatypes::DatatypeDecl;
-                let sort = Type::const_(&name, adsmt_core::Kind::Type);
-                for ctor in &constructors {
-                    self.symbols.declare_constructor(ctor.clone(), sort.clone());
+            Command::DeclareDatatype { name, group } => {
+                let arity = group.params.len() as u32;
+                match self.register_datatypes(vec![(name, arity)], vec![group]) {
+                    Ok(()) => DispatchResult::Continue,
+                    Err(msg) => DispatchResult::Error(11, msg),
                 }
-                self.symbols.declare_sort(name.clone(), sort);
-                self.registry.sorts.insert(name.clone(), 0);
-                self.solver
-                    .declare_datatype(DatatypeDecl::finite_enum(name, constructors));
-                DispatchResult::Continue
             }
             Command::DeclareDatatypes { sorts, groups } => {
-                use adsmt_theory::datatypes::DatatypeDecl;
-                // Parser already enforced `sorts.len() == groups.len()`
-                // and rejected non-arity-0 sorts / non-nullary ctors,
-                // so this loop is just the per-sort version of the
-                // singular `DeclareDatatype` arm above.
-                for ((name, _arity), constructors) in sorts.into_iter().zip(groups.into_iter())
-                {
-                    let sort = Type::const_(&name, adsmt_core::Kind::Type);
-                    for ctor in &constructors {
-                        self.symbols.declare_constructor(ctor.clone(), sort.clone());
-                    }
-                    self.symbols.declare_sort(name.clone(), sort);
-                    self.registry.sorts.insert(name.clone(), 0);
-                    self.solver
-                        .declare_datatype(DatatypeDecl::finite_enum(name, constructors));
+                match self.register_datatypes(sorts, groups) {
+                    Ok(()) => DispatchResult::Continue,
+                    Err(msg) => DispatchResult::Error(11, msg),
                 }
-                DispatchResult::Continue
             }
             Command::Assert(expr) => match self.assert_expr(&expr, pos) {
                 Ok(()) => DispatchResult::Continue,
@@ -1628,6 +1697,97 @@ impl Driver {
         Ok(acc)
     }
 
+    /// rc.30 (Y4) — register a (possibly parametric, possibly mutually
+    /// recursive) bundle of datatypes: their sorts, every
+    /// constructor (`C : f₁ × … × fₙ → DT`), and every selector
+    /// (`sel : DT → fᵢ`), then hand a [`DatatypeDecl`] (with arities +
+    /// selector names + type params) to the engine's datatype theory.
+    ///
+    /// Sorts are registered in a first pass so constructor field
+    /// sorts can reference the datatype itself (`(seq_cons (tail
+    /// (Seq T)))`) and any sibling in the same bundle.
+    fn register_datatypes(
+        &mut self,
+        sorts: Vec<(String, u32)>,
+        groups: Vec<adsmt_parser::smtlib::DatatypeGroup>,
+    ) -> Result<(), String> {
+        use adsmt_core::Kind;
+        use adsmt_theory::datatypes::DatatypeDecl;
+        if sorts.len() != groups.len() {
+            return Err("datatype sort/group count mismatch".into());
+        }
+        // Pass 1 — register every sort constructor first.
+        for (name, arity) in &sorts {
+            let kind = if *arity == 0 {
+                Kind::Type
+            } else {
+                Kind::first_order(*arity as usize)
+            };
+            self.symbols
+                .declare_sort(name.clone(), Type::const_(name, kind));
+            self.registry.sorts.insert(name.clone(), *arity);
+        }
+        // Pass 2 — constructors, selectors, and the theory decl.
+        for ((name, arity), group) in sorts.iter().zip(groups.iter()) {
+            let kind = if *arity == 0 {
+                Kind::Type
+            } else {
+                Kind::first_order(*arity as usize)
+            };
+            // The datatype's own type, applied to its params:
+            // `DT` for arity 0, `(App (App DT T1) …)` otherwise.
+            let mut dt_ty = Type::const_(name, kind);
+            for p in &group.params {
+                dt_ty = Type::app(dt_ty, Type::var(p, Kind::Type))
+                    .map_err(|e| format!("datatype `{name}` self-type failed: {e:?}"))?;
+            }
+            let mut ctor_names = Vec::with_capacity(group.constructors.len());
+            let mut selectors_per_ctor: Vec<Vec<String>> =
+                Vec::with_capacity(group.constructors.len());
+            for ctor in &group.constructors {
+                let mut field_tys = Vec::with_capacity(ctor.selectors.len());
+                let mut sel_names = Vec::with_capacity(ctor.selectors.len());
+                for (sel, sort_sexpr) in &ctor.selectors {
+                    let fty = resolve_sort_ctx(sort_sexpr, &self.registry, &group.params)?;
+                    // selector : DT → field
+                    let sel_ty = Type::fun(dt_ty.clone(), fty.clone())
+                        .map_err(|e| format!("selector `{sel}` type failed: {e:?}"))?;
+                    self.symbols.declare(sel.clone(), sel_ty);
+                    field_tys.push(fty);
+                    sel_names.push(sel.clone());
+                }
+                // constructor : field₁ → … → fieldₙ → DT
+                let mut ctor_ty = dt_ty.clone();
+                for fty in field_tys.iter().rev() {
+                    ctor_ty = Type::fun(fty.clone(), ctor_ty)
+                        .map_err(|e| format!("constructor `{}` type failed: {e:?}", ctor.name))?;
+                }
+                self.symbols
+                    .declare_constructor(ctor.name.clone(), ctor_ty);
+                // rc.30 (Y4) — the constructor's tester `is-C : DT → Bool`
+                // (Verus's SMT naming convention).
+                let tester_ty = Type::fun(dt_ty.clone(), Type::bool_())
+                    .map_err(|e| format!("tester `is-{}` type failed: {e:?}", ctor.name))?;
+                self.symbols
+                    .declare(format!("is-{}", ctor.name), tester_ty);
+                ctor_names.push(ctor.name.clone());
+                selectors_per_ctor.push(sel_names);
+            }
+            // Finite enum iff monomorphic with all-nullary constructors.
+            let all_nullary = group.params.is_empty()
+                && group.constructors.iter().all(|c| c.selectors.is_empty());
+            let decl = if all_nullary {
+                DatatypeDecl::finite_enum(name.clone(), ctor_names)
+            } else {
+                DatatypeDecl::inductive(name.clone(), ctor_names)
+            }
+            .with_selectors(selectors_per_ctor)
+            .with_params(group.params.clone());
+            self.solver.declare_datatype(decl);
+        }
+        Ok(())
+    }
+
     fn assert_expr(&mut self, e: &SExpr, pos: Position) -> Result<(), String> {
         let qid = extract_qid(e);
         let expanded = inline_defines(e, &self.registry);
@@ -1749,6 +1909,15 @@ impl Driver {
                 // and aborts the verification, so it's important
                 // to land in one of those two buckets when an
                 // engine-side rlimit or quantifier limit fires.
+                // INVARIANT (Verus interop): the reply MUST be either
+                // `"canceled"` or start with `"(incomplete"`.  Verus's
+                // `air::smt_verify` maps exactly those two; ANY other
+                // string becomes `UnexpectedOutput` and *panics* the
+                // driver mid-run.  So every Unknown reason routes into
+                // one of the two buckets — cancellation (rlimit /
+                // deadline / timeout) vs. incompleteness (the opaque-
+                // flatten fallback, SAT-backend give-up, quantifier
+                // limits, or anything else).
                 let reason = match &self.last_result {
                     Some(SatResult::Unknown { reason }) => {
                         let r = reason.as_str();
@@ -1758,17 +1927,21 @@ impl Driver {
                             || r.contains("canceled")
                         {
                             "canceled".to_string()
-                        } else if r.contains("quantifier")
-                            || r.contains("instantiation")
-                            || r.contains("budget")
-                            || r.contains("incomplete")
-                        {
-                            "(incomplete quantifiers)".to_string()
                         } else {
-                            r.to_string()
+                            // Everything else is an incompleteness.
+                            // Keep a sanitised one-line detail (no
+                            // quotes/parens) after the `(incomplete`
+                            // prefix Verus matches on.
+                            let detail = r
+                                .replace(['"', '(', ')', '\\'], " ")
+                                .split_whitespace()
+                                .take(8)
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            format!("(incomplete {detail})")
                         }
                     }
-                    _ => "unknown".to_string(),
+                    _ => "(incomplete unknown)".to_string(),
                 };
                 println!("(:reason-unknown \"{}\")", reason.replace('"', "\\\""));
             }
@@ -1810,20 +1983,82 @@ fn param_sort(param: &SExpr, registry: &SymbolRegistry) -> Result<Type, String> 
 /// against the built-in mappings; everything else must have been
 /// declared via `declare-sort` / `declare-datatype`.
 fn sort_from_sexpr(sort: &SExpr, registry: &SymbolRegistry) -> Result<Type, String> {
-    let name = sort.to_string();
-    match name.as_str() {
-        "Bool" => Ok(Type::bool_()),
-        "Int" => Ok(Type::const_("Int", adsmt_core::Kind::Type)),
-        "Real" => Ok(Type::const_("Real", adsmt_core::Kind::Type)),
-        other => {
-            if registry.sorts.contains_key(other) {
-                Ok(Type::const_(other, adsmt_core::Kind::Type))
-            } else {
-                Err(format!(
-                    "unknown sort `{other}` — declare it with `declare-sort` or `declare-datatype` first"
-                ))
+    resolve_sort_ctx(sort, registry, &[])
+}
+
+/// rc.30 (Y4) — resolve a sort `SExpr` to a [`Type`], handling
+/// primitives, declared (possibly parametric, arity > 0) sorts, type
+/// **parameters** (`params`, bound to `Type::var`s — used while
+/// resolving a parametric datatype's field sorts), and parametric
+/// **applications** `(Seq Int)` / `(Map Int Bool)`.
+fn resolve_sort_ctx(
+    sort: &SExpr,
+    registry: &SymbolRegistry,
+    params: &[String],
+) -> Result<Type, String> {
+    use adsmt_core::Kind;
+    match sort {
+        SExpr::Symbol(s) => {
+            if params.iter().any(|p| p == s) {
+                return Ok(Type::var(s, Kind::Type));
+            }
+            match s.as_str() {
+                "Bool" => Ok(Type::bool_()),
+                "Int" => Ok(Type::const_("Int", Kind::Type)),
+                "Real" => Ok(Type::const_("Real", Kind::Type)),
+                other => match registry.sorts.get(other).copied() {
+                    Some(0) => Ok(Type::const_(other, Kind::Type)),
+                    Some(arity) => Err(format!(
+                        "sort `{other}` has arity {arity}; used without type arguments"
+                    )),
+                    None => Err(format!(
+                        "unknown sort `{other}` — declare it with `declare-sort` / `declare-datatype` first"
+                    )),
+                },
             }
         }
+        SExpr::List(items) if !items.is_empty() => {
+            // `(Head arg1 … argN)` — parametric sort application.
+            let head = items[0]
+                .as_symbol()
+                .ok_or_else(|| "parametric sort head must be a symbol".to_string())?;
+            // rc.30 (Y4) — SMT-LIB indexed identifier `(_ BitVec N)`.
+            if head == "_" {
+                if items.len() == 3
+                    && items[1].as_symbol() == Some("BitVec")
+                    && let Some(n) = items[2].as_numeric().and_then(|x| x.parse::<u32>().ok())
+                {
+                    return Ok(adsmt_core::Term::bv_sort(n));
+                }
+                let idx = items
+                    .iter()
+                    .skip(1)
+                    .filter_map(SExpr::as_symbol)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                return Err(format!("unsupported indexed sort `(_ {idx} …)`"));
+            }
+            let arity = registry
+                .sorts
+                .get(head)
+                .copied()
+                .ok_or_else(|| format!("unknown parametric sort `{head}`"))?;
+            let args = &items[1..];
+            if arity as usize != args.len() {
+                return Err(format!(
+                    "sort `{head}` expects {arity} type argument(s), got {}",
+                    args.len()
+                ));
+            }
+            let mut acc = Type::const_(head, Kind::first_order(arity as usize));
+            for a in args {
+                let at = resolve_sort_ctx(a, registry, params)?;
+                acc = Type::app(acc, at)
+                    .map_err(|e| format!("sort application `{head}` failed: {e:?}"))?;
+            }
+            Ok(acc)
+        }
+        _ => Err(format!("malformed sort: {sort}")),
     }
 }
 

@@ -34,6 +34,14 @@ pub struct DatatypeDecl {
     /// argument-bearing constructors (`Succ Nat` → 1,
     /// `Cons head tail` → 2).
     pub arities: Vec<u32>,
+    /// rc.30 (Y4) — per-constructor selector (field-accessor) names.
+    /// `selectors[i]` aligns with `constructors[i]` and has length
+    /// `arities[i]`. Empty inner vecs for nullary constructors.
+    /// Drives selector-reduction `sel_j(C(x_1..x_n)) = x_j`.
+    pub selectors: Vec<Vec<String>>,
+    /// rc.30 (Y4) — type parameters for a parametric datatype
+    /// (`(Seq T)` → `["T"]`). Empty for monomorphic datatypes.
+    pub params: Vec<String>,
 }
 
 impl DatatypeDecl {
@@ -44,6 +52,8 @@ impl DatatypeDecl {
             constructors,
             is_finite: true,
             arities: vec![0u32; len],
+            selectors: vec![Vec::new(); len],
+            params: Vec::new(),
         }
     }
 
@@ -56,6 +66,8 @@ impl DatatypeDecl {
             // Inductive constructors default to 0 (nullary); use
             // `with_arities` to populate.
             arities: vec![0u32; len],
+            selectors: vec![Vec::new(); len],
+            params: Vec::new(),
         }
     }
 
@@ -70,24 +82,92 @@ impl DatatypeDecl {
         self.arities = arities;
         self
     }
+
+    /// rc.30 (Y4) — set per-constructor selector names (positional).
+    /// Must match `constructors.len()`; each inner vec's length is
+    /// taken as that constructor's arity.
+    pub fn with_selectors(mut self, selectors: Vec<Vec<String>>) -> Self {
+        assert_eq!(
+            self.constructors.len(),
+            selectors.len(),
+            "selectors length must match constructors length",
+        );
+        self.arities = selectors.iter().map(|s| s.len() as u32).collect();
+        self.selectors = selectors;
+        self
+    }
+
+    /// rc.30 (Y4) — set the datatype's type parameters.
+    pub fn with_params(mut self, params: Vec<String>) -> Self {
+        self.params = params;
+        self
+    }
 }
 
 #[derive(Default)]
 pub struct Datatypes {
     /// Registered datatype declarations, keyed by sort name.
     decls: HashMap<String, DatatypeDecl>,
+    /// rc.30 (Y4) — selector name → (constructor name, arg index),
+    /// built from every declared datatype's `selectors`. Drives the
+    /// selector-reduction `sel_j(C(x_1..x_n)) = x_j`.
+    selector_map: HashMap<String, (String, usize)>,
     /// Asserted equalities between *constructor* terms and other terms.
-    /// For v0.3 we just track them; full case-split reasoning is v0.5.
     asserted_eqs: Vec<(Term, Term)>,
+    /// rc.30 (Y4) — every asserted literal term, mined for
+    /// selector-application subterms in `derive_equalities`. Scoped
+    /// alongside `asserted_eqs`.
+    asserted_terms: Vec<Term>,
     conflict: Option<TheoryWitness>,
-    scope_stack: Vec<usize>,
+    /// Push/pop snapshot of `(asserted_eqs.len(), asserted_terms.len())`.
+    scope_stack: Vec<(usize, usize)>,
 }
 
 impl Datatypes {
     pub fn new() -> Self { Self::default() }
 
     pub fn declare(&mut self, decl: DatatypeDecl) {
+        // rc.30 — index this datatype's selectors for reduction.
+        for (ci, ctor) in decl.constructors.iter().enumerate() {
+            if let Some(sels) = decl.selectors.get(ci) {
+                for (si, sel) in sels.iter().enumerate() {
+                    self.selector_map.insert(sel.clone(), (ctor.clone(), si));
+                }
+            }
+        }
         self.decls.insert(decl.sort_name.clone(), decl);
+    }
+
+    /// rc.30 (Y4) — atom (Const/Var) name, if `t` is one.
+    fn atom_name(t: &Term) -> Option<String> {
+        match t.kind() {
+            TermInner::Const(c) => Some(c.name.clone()),
+            TermInner::Var(v) => Some(v.name.clone()),
+            _ => None,
+        }
+    }
+
+    /// rc.30 (Y4) — walk `t`'s subterms, emitting the selector
+    /// reduction `sel_j(C(x_1..x_n)) = x_j` for every selector
+    /// application whose argument is a matching constructor app.
+    fn collect_selector_reductions(&self, t: &Term, out: &mut Vec<(Term, Term)>) {
+        if let TermInner::App(f, x) = t.kind()
+            && let Some(sel) = Self::atom_name(f)
+            && let Some((ctor, idx)) = self.selector_map.get(&sel)
+            && let Some((cname, args)) = Self::dest_constructor_app(x)
+            && &cname == ctor
+            && *idx < args.len()
+        {
+            out.push((t.clone(), args[*idx].clone()));
+        }
+        match t.kind() {
+            TermInner::App(f, x) => {
+                self.collect_selector_reductions(f, out);
+                self.collect_selector_reductions(x, out);
+            }
+            TermInner::Lam(_, body) => self.collect_selector_reductions(body, out),
+            _ => {}
+        }
     }
 
     pub fn is_constructor_of(&self, ctor_name: &str) -> Option<&DatatypeDecl> {
@@ -124,15 +204,15 @@ impl Datatypes {
         }
     }
 
-    /// Recognize whether `t` is one of the registered constructor
-    /// constants. Used to short-circuit disjointness checks.
+    /// Recognize whether `t` is a registered constructor — either a
+    /// bare nullary constant (`None`) or an application
+    /// (`(Some_int_ 5)`). Returns `(sort_name, constructor_name)`.
+    /// rc.30 (Y4): extended to applied constructors so disjointness
+    /// fires for argument-bearing constructors, not only enums.
     fn constructor_id(&self, t: &Term) -> Option<(String, String)> {
-        if let TermInner::Const(c) = t.kind()
-            && let Some(d) = self.is_constructor_of(&c.name)
-        {
-            return Some((d.sort_name.clone(), c.name.clone()));
-        }
-        None
+        let (cname, _args) = Self::dest_constructor_app(t)?;
+        let d = self.is_constructor_of(&cname)?;
+        Some((d.sort_name.clone(), cname))
     }
 }
 
@@ -140,11 +220,27 @@ impl Theory for Datatypes {
     fn name(&self) -> &'static str { "Datatypes" }
 
     /// Handle any sort that has a registered datatype declaration.
+    /// rc.30 (Y4) — also matches an *applied* parametric datatype
+    /// (`(Seq Int)`) by its head constructor name (`Seq`).
     fn handles_sort(&self, ty: &Type) -> bool {
-        self.decls.contains_key(&ty.to_string())
+        if self.decls.contains_key(&ty.to_string()) {
+            return true;
+        }
+        // Walk the leftmost head of a nested type application.
+        let mut cur = ty.clone();
+        loop {
+            match &cur {
+                Type::Const(c) => return self.decls.contains_key(&c.name),
+                Type::App(f, _) => cur = (**f).clone(),
+                Type::Var(_) => return false,
+            }
+        }
     }
 
     fn assert(&mut self, lit: Literal) -> AssertResult {
+        // rc.30 — record the literal term for selector-reduction
+        // subterm mining in `derive_equalities`.
+        self.asserted_terms.push(lit.term.clone());
         if let Some((a, b)) = lit.term.dest_eq() {
             // Constructor disjointness: a, b are *distinct* concrete
             // constructors of the same datatype, so asserting `a = b`
@@ -203,6 +299,11 @@ impl Theory for Datatypes {
                 }
             }
         }
+        // rc.30 (Y4) — selector reduction `sel_j(C(x_1..x_n)) = x_j`
+        // mined from every asserted literal's subterms.
+        for t in &self.asserted_terms {
+            self.collect_selector_reductions(t, &mut out);
+        }
         out
     }
 
@@ -220,13 +321,15 @@ impl Theory for Datatypes {
     }
 
     fn push(&mut self) {
-        self.scope_stack.push(self.asserted_eqs.len());
+        self.scope_stack
+            .push((self.asserted_eqs.len(), self.asserted_terms.len()));
     }
 
     fn pop(&mut self, levels: u32) {
         for _ in 0..levels {
-            if let Some(n) = self.scope_stack.pop() {
-                self.asserted_eqs.truncate(n);
+            if let Some((neq, nterms)) = self.scope_stack.pop() {
+                self.asserted_eqs.truncate(neq);
+                self.asserted_terms.truncate(nterms);
             }
         }
         self.conflict = None;
@@ -234,6 +337,7 @@ impl Theory for Datatypes {
 
     fn reset(&mut self) {
         self.asserted_eqs.clear();
+        self.asserted_terms.clear();
         self.conflict = None;
         self.scope_stack.clear();
         // `decls` is structural data, kept across reset to mirror
@@ -432,5 +536,88 @@ mod tests {
             vec!["A".into(), "B".into()],
         )
         .with_arities(vec![1]);
+    }
+
+    // === rc.30 (Y4) — selectors, parametric, applied disjointness ===
+
+    /// `Option_int_` with a `value` selector on `Some_int_`.
+    fn opt_registered() -> Datatypes {
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("Option_int_", vec!["None".into(), "Some_int_".into()])
+                .with_selectors(vec![vec![], vec!["value".into()]]),
+        );
+        dt
+    }
+
+    fn opt_ty() -> Type {
+        Type::const_("Option_int_", Kind::Type)
+    }
+    fn int_ty() -> Type {
+        Type::const_("Int", Kind::Type)
+    }
+    fn some_int() -> Term {
+        Term::const_("Some_int_", Type::fun(int_ty(), opt_ty()).unwrap())
+    }
+    fn value_sel() -> Term {
+        Term::var("value", Type::fun(opt_ty(), int_ty()).unwrap())
+    }
+
+    #[test]
+    fn with_selectors_sets_arities_and_names() {
+        let decl =
+            DatatypeDecl::inductive("Opt", vec!["None".into(), "Some".into()])
+                .with_selectors(vec![vec![], vec!["value".into()]]);
+        assert_eq!(decl.arities, vec![0, 1]);
+        assert_eq!(decl.selectors[1], vec!["value".to_string()]);
+    }
+
+    #[test]
+    fn selector_reduction_emits_field_equality() {
+        // value(Some_int_ x) should reduce to x.
+        let mut dt = opt_registered();
+        let x = Term::var("x", int_ty());
+        let some_x = Term::app(some_int(), x.clone()).unwrap();
+        let val_some_x = Term::app(value_sel(), some_x).unwrap();
+        let y = Term::var("y", int_ty());
+        // Assert a literal whose subterm carries the selector app.
+        let eq = Term::mk_eq(val_some_x.clone(), y).unwrap();
+        let _ = dt.assert(Literal::positive(eq).unwrap());
+        let derived = dt.derive_equalities();
+        assert!(
+            derived
+                .iter()
+                .any(|(a, b)| a.alpha_eq(&val_some_x) && b.alpha_eq(&x)),
+            "expected selector reduction value(Some_int_ x) = x, got {derived:?}"
+        );
+    }
+
+    #[test]
+    fn applied_constructor_disjointness_is_unsat() {
+        // (Some_int_ x) = None — distinct constructors → conflict.
+        let mut dt = opt_registered();
+        let x = Term::var("x", int_ty());
+        let some_x = Term::app(some_int(), x).unwrap();
+        let none = Term::const_("None", opt_ty());
+        let eq = Term::mk_eq(some_x, none).unwrap();
+        match dt.assert(Literal::positive(eq).unwrap()) {
+            AssertResult::Conflict { .. } => {}
+            other => panic!("expected Conflict for applied-ctor disjointness, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parametric_datatype_handles_applied_sort() {
+        // A `Seq` of arity 1 should be `handles_sort`-recognised both
+        // bare and applied (`(Seq Int)`).
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("Seq", vec!["seq_empty".into(), "seq_cons".into()])
+                .with_selectors(vec![vec![], vec!["head".into(), "tail".into()]])
+                .with_params(vec!["T".into()]),
+        );
+        let seq_head = Type::const_("Seq", Kind::first_order(1));
+        let applied = Type::app(seq_head, int_ty()).unwrap();
+        assert!(dt.handles_sort(&applied), "applied (Seq Int) must be handled");
     }
 }

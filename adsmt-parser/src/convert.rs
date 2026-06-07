@@ -9,8 +9,10 @@
 //! theories plug in here as their built-ins land.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use adsmt_core::{Term, Type};
+use adsmt_core::{Term, TermInner, Type, Var};
+use indexmap::IndexMap;
 use thiserror::Error;
 
 use crate::sexpr::SExpr;
@@ -92,12 +94,20 @@ pub fn convert_expr(e: &SExpr, table: &SymbolTable) -> Result<Term, ConvertError
         SExpr::Symbol(s) => convert_symbol(s, table),
         SExpr::List(items) => convert_list(items, table),
         SExpr::Numeric(n) => {
-            // SMT-LIB v2 § 3.6 — bare integer literal at sort Int.
-            // The engine treats it as an opaque Int constant
-            // (engine-side arithmetic decides equality between
-            // literals).  Front-ends that emit Z3-style preludes
-            // (Verus's machine-int bounds, sub-mode size tables)
-            // pass through here.
+            // rc.30 (Y4) — SMT-LIB v2 § 3.6 bit-vector literals.
+            if let Some(hex) = n.strip_prefix("#x") {
+                let value = u128::from_str_radix(hex, 16)
+                    .map_err(|_| ConvertError::Malformed(format!("bad hex BV literal {n}")))?;
+                return Ok(Term::bv_lit(value, hex.len() as u32 * 4));
+            }
+            if let Some(bin) = n.strip_prefix("#b") {
+                let value = u128::from_str_radix(bin, 2)
+                    .map_err(|_| ConvertError::Malformed(format!("bad binary BV literal {n}")))?;
+                return Ok(Term::bv_lit(value, bin.len() as u32));
+            }
+            // Bare integer literal at sort Int. The engine treats it
+            // as an opaque Int constant (engine-side arithmetic
+            // decides equality between literals).
             Ok(Term::const_(n, Type::const_("Int", adsmt_core::Kind::Type)))
         }
         other => Err(ConvertError::Malformed(format!("expected expression, got literal {other}"))),
@@ -122,11 +132,20 @@ fn convert_symbol(s: &str, table: &SymbolTable) -> Result<Term, ConvertError> {
 }
 
 fn convert_list(items: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertError> {
-    let head = items
+    let head_expr = items
         .first()
-        .and_then(|e| e.as_symbol())
-        .ok_or_else(|| ConvertError::Malformed("expected operator symbol at head".into()))?;
+        .ok_or_else(|| ConvertError::Malformed("empty application".into()))?;
     let args = &items[1..];
+    // rc.30 (Y4) — indexed-identifier application
+    // `((_ name idx…) args…)` (e.g. Z3's `(_ partial-order 0)`).
+    if let SExpr::List(h) = head_expr
+        && h.first().and_then(SExpr::as_symbol) == Some("_")
+    {
+        return convert_indexed_app(h, args, table);
+    }
+    let head = head_expr
+        .as_symbol()
+        .ok_or_else(|| ConvertError::Malformed("expected operator symbol at head".into()))?;
     match head {
         "not" => {
             if args.len() != 1 {
@@ -155,6 +174,7 @@ fn convert_list(items: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertErr
         }
         "forall" => convert_quantifier("forall", args, table),
         "exists" => convert_quantifier("exists", args, table),
+        "let" => convert_let(args, table),
         "!" => convert_annotation(args, table),
         // SMT-LIB v2 § 3.6 linear-arithmetic builtins.  The engine
         // already routes `(+ x y)` etc. through `adsmt-theory::arith`
@@ -183,8 +203,61 @@ fn convert_list(items: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertErr
         // | i<j)` so the engine handles it through the existing
         // `=` / `and` / `not` arms.
         "distinct" => convert_distinct(args, table),
+        // rc.30 (Y4) — SMT-LIB v2 § 3.8 fixed-size bit-vector ops.
+        // Width is inferred from the operand sort (`BV<N>`).
+        "bvand" | "bvor" | "bvxor" | "bvadd" | "bvsub" | "bvmul" => {
+            convert_bv_binop(head, args, table)
+        }
+        "bvnot" | "bvneg" => convert_bv_unop(head, args, table),
         _ => convert_application(head, args, table),
     }
+}
+
+/// rc.30 (Y4) — build a binary bit-vector operation, inferring the
+/// width from the first operand's `BV<N>` sort.
+fn convert_bv_binop(
+    op: &str,
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    if args.len() != 2 {
+        return Err(ConvertError::Arity { op: op.into(), expected: 2, got: args.len() });
+    }
+    let a = convert_expr(&args[0], table)?;
+    let b = convert_expr(&args[1], table)?;
+    let width = Term::bv_sort_width(&a.type_of())
+        .or_else(|| Term::bv_sort_width(&b.type_of()))
+        .ok_or_else(|| ConvertError::Malformed(format!("`{op}` operands are not bit-vectors")))?;
+    let r = match op {
+        "bvand" => Term::mk_bvand(a, b, width),
+        "bvor" => Term::mk_bvor(a, b, width),
+        "bvxor" => Term::mk_bvxor(a, b, width),
+        "bvadd" => Term::mk_bvadd(a, b, width),
+        "bvsub" => Term::mk_bvsub(a, b, width),
+        "bvmul" => Term::mk_bvmul(a, b, width),
+        _ => unreachable!(),
+    };
+    r.map_err(|e| ConvertError::Malformed(e.to_string()))
+}
+
+/// rc.30 (Y4) — build a unary bit-vector operation.
+fn convert_bv_unop(
+    op: &str,
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    if args.len() != 1 {
+        return Err(ConvertError::Arity { op: op.into(), expected: 1, got: args.len() });
+    }
+    let a = convert_expr(&args[0], table)?;
+    let width = Term::bv_sort_width(&a.type_of())
+        .ok_or_else(|| ConvertError::Malformed(format!("`{op}` operand is not a bit-vector")))?;
+    let r = match op {
+        "bvnot" => Term::mk_bvnot(a, width),
+        "bvneg" => Term::mk_bvneg(a, width),
+        _ => unreachable!(),
+    };
+    r.map_err(|e| ConvertError::Malformed(e.to_string()))
 }
 
 /// Build the left-folded binary application form for an n-ary
@@ -391,21 +464,153 @@ fn convert_application(
             found: head_ty.to_string(),
         });
     }
+    // rc.30 (Y4) — instantiate a *polymorphic* head (a parametric
+    // datatype constructor `Some : T -> Option T`, applied to a
+    // concrete arg) by unifying its declared domain types with the
+    // actual argument types, then rebuild it at the monomorphic
+    // instance so the exact-match `Term::app` succeeds.  Monomorphic
+    // heads (no type variables) leave `head_ty` unchanged.
+    let arg_terms: Vec<Term> = args
+        .iter()
+        .map(|a| convert_expr(a, table))
+        .collect::<Result<_, _>>()?;
+    let mut subst: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+    let mut cursor = head_ty.clone();
+    for arg in &arg_terms {
+        let Some((dom, cod)) = cursor.dest_fun() else { break };
+        ty_unify(&dom, &arg.type_of(), &mut subst);
+        cursor = cod;
+    }
+    let inst_ty = ty_subst(&head_ty, &subst);
     let mut acc = if table.is_constructor(head) {
-        Term::const_(head, head_ty)
+        Term::const_(head, inst_ty)
     } else {
-        Term::var(head, head_ty)
+        Term::var(head, inst_ty)
     };
-    for a in args {
-        let arg = convert_expr(a, table)?;
+    for arg in arg_terms {
         acc = Term::app(acc, arg).map_err(|e| ConvertError::Malformed(e.to_string()))?;
     }
     Ok(acc)
 }
 
-/// Resolve a sort `SExpr` — either a primitive (`Bool`/`Int`/`Real`)
-/// or a user-declared sort registered via [`SymbolTable::declare_sort`].
+/// rc.30 (Y4) — SMT-LIB v2 § 3.6.1 `(let ((x e₁) (y e₂)…) body)`.
+/// Parallel binding: each `eᵢ` is evaluated in the *outer* scope.
+/// Implemented by substitution — convert the values, then replace
+/// the bound variables in the converted body via `Term::subst`.
+fn convert_let(args: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertError> {
+    if args.len() != 2 {
+        return Err(ConvertError::Arity { op: "let".into(), expected: 2, got: args.len() });
+    }
+    let bindings = args[0]
+        .as_list()
+        .ok_or_else(|| ConvertError::Malformed("let bindings must be a list".into()))?;
+    let mut body_table = table.clone();
+    let mut sigma: IndexMap<Arc<Var>, Term> = IndexMap::new();
+    for b in bindings {
+        let pair = b
+            .as_list()
+            .ok_or_else(|| ConvertError::Malformed("let binding must be `(name expr)`".into()))?;
+        if pair.len() != 2 {
+            return Err(ConvertError::Malformed("let binding must be `(name expr)`".into()));
+        }
+        let name = pair[0]
+            .as_symbol()
+            .ok_or_else(|| ConvertError::Malformed("let-bound name must be a symbol".into()))?;
+        // Parallel `let`: the value is evaluated in the outer scope.
+        let value = convert_expr(&pair[1], table)?;
+        let ty = value.type_of();
+        body_table.declare(name, ty.clone());
+        if let TermInner::Var(v) = Term::var(name, ty).kind() {
+            sigma.insert(v.clone(), value);
+        }
+    }
+    let body = convert_expr(&args[1], &body_table)?;
+    body.subst(&sigma)
+        .map_err(|e| ConvertError::Malformed(e.to_string()))
+}
+
+/// rc.30 (Y4) — convert an indexed-identifier application
+/// `((_ name idx…) args…)`.  The Verus/Z3 encoding uses these for
+/// built-in relations like `(_ partial-order 0)` (a binary order
+/// predicate).  We synthesise an uninterpreted Boolean predicate
+/// `_name_idx…` of the arity given by the call site and apply it —
+/// sound EUF treatment (the order axioms, if any, arrive as separate
+/// asserted formulas; absent them the relation is simply
+/// uninterpreted, which never makes an unsat set sat).
+fn convert_indexed_app(
+    idx_head: &[SExpr],
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    // `(_ name idx…)` → flat symbol `_name_idx…`.
+    let name = std::iter::once("_".to_string())
+        .chain(idx_head.iter().skip(1).map(|e| match e {
+            SExpr::Symbol(s) => s.clone(),
+            SExpr::Numeric(n) => n.clone(),
+            _ => "?".into(),
+        }))
+        .collect::<Vec<_>>()
+        .join("_");
+    let arg_terms: Vec<Term> = args
+        .iter()
+        .map(|a| convert_expr(a, table))
+        .collect::<Result<_, _>>()?;
+    // Build `arg₁ → … → argₙ → Bool` and apply.
+    let mut fn_ty = Type::bool_();
+    for at in arg_terms.iter().rev() {
+        fn_ty = Type::fun(at.type_of(), fn_ty)
+            .map_err(|e| ConvertError::Malformed(e.to_string()))?;
+    }
+    let mut acc = Term::var(&name, fn_ty);
+    for arg in arg_terms {
+        acc = Term::app(acc, arg).map_err(|e| ConvertError::Malformed(e.to_string()))?;
+    }
+    Ok(acc)
+}
+
+/// rc.30 (Y4) — best-effort first-order type unification: bind the
+/// type variables in `pat` so it matches `act`.  Inconsistent
+/// bindings are dropped (left for the exact-match `Term::app` to
+/// reject); this only needs to *discover* the monomorphic instance.
+fn ty_unify(pat: &Type, act: &Type, subst: &mut std::collections::HashMap<String, Type>) {
+    
+    match pat {
+        Type::Var(v) => {
+            subst.entry(v.name.clone()).or_insert_with(|| act.clone());
+        }
+        Type::App(pf, px) => {
+            if let Type::App(af, ax) = act {
+                ty_unify(pf, af, subst);
+                ty_unify(px, ax, subst);
+            }
+        }
+        Type::Const(_) => {}
+    }
+}
+
+/// rc.30 (Y4) — apply a type-variable substitution to a type.
+fn ty_subst(ty: &Type, subst: &std::collections::HashMap<String, Type>) -> Type {
+    
+    match ty {
+        Type::Var(v) => subst.get(&v.name).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Const(_) => ty.clone(),
+        Type::App(f, x) => Type::app(ty_subst(f, subst), ty_subst(x, subst))
+            .unwrap_or_else(|_| ty.clone()),
+    }
+}
+
+/// Resolve a sort `SExpr` — a primitive (`Bool`/`Int`/`Real`), the
+/// indexed bit-vector sort `(_ BitVec N)`, or a user-declared sort.
 fn resolve_sort(s: &SExpr, table: &SymbolTable) -> Result<Type, ConvertError> {
+    // rc.30 (Y4) — `(_ BitVec N)` indexed bit-vector sort.
+    if let SExpr::List(items) = s
+        && items.len() == 3
+        && items[0].as_symbol() == Some("_")
+        && items[1].as_symbol() == Some("BitVec")
+        && let Some(n) = items[2].as_numeric().and_then(|x| x.parse::<u32>().ok())
+    {
+        return Ok(Term::bv_sort(n));
+    }
     let name = s.to_string();
     table.lookup_sort(&name).cloned().ok_or_else(|| {
         ConvertError::Malformed(format!(
@@ -541,6 +746,56 @@ mod tests {
         let s = parse_sexpr("p").unwrap();
         let t = convert_expr(&s, &table).unwrap();
         assert_eq!(t, Term::var("p", Type::bool_()));
+    }
+
+    // === rc.30 (Y4) — bit-vector surface + polymorphic ctor app ===
+
+    #[test]
+    fn converts_hex_bv_literal() {
+        let t = convert_expr(&parse_sexpr("#x0F").unwrap(), &SymbolTable::new()).unwrap();
+        assert_eq!(t.type_of(), Term::bv_sort(8));
+        assert_eq!(Term::dest_bv_lit(&t), Some((15, 8)));
+    }
+
+    #[test]
+    fn converts_binary_bv_literal() {
+        let t = convert_expr(&parse_sexpr("#b101").unwrap(), &SymbolTable::new()).unwrap();
+        assert_eq!(t.type_of(), Term::bv_sort(3));
+        assert_eq!(Term::dest_bv_lit(&t), Some((5, 3)));
+    }
+
+    #[test]
+    fn converts_bvand_inferring_width() {
+        let mut table = SymbolTable::new();
+        table.declare("w", Term::bv_sort(8));
+        let t = convert_expr(
+            &parse_sexpr("(bvand w #xFF)").unwrap(),
+            &table,
+        )
+        .unwrap();
+        assert_eq!(t.type_of(), Term::bv_sort(8));
+    }
+
+    #[test]
+    fn resolves_bitvec_sort() {
+        let ty = resolve_sort(&parse_sexpr("(_ BitVec 16)").unwrap(), &SymbolTable::new()).unwrap();
+        assert_eq!(ty, Term::bv_sort(16));
+    }
+
+    #[test]
+    fn polymorphic_constructor_instantiates_at_concrete_arg() {
+        // Some : T -> Option T, applied to an Int → Option Int.
+        let mut table = SymbolTable::new();
+        let int = Type::const_("Int", adsmt_core::Kind::Type);
+        let opt = Type::const_("Option", adsmt_core::Kind::first_order(1));
+        let opt_t = Type::app(opt.clone(), Type::var("T", adsmt_core::Kind::Type)).unwrap();
+        // Some : T -> Option T
+        table.declare_constructor("Some", Type::fun(Type::var("T", adsmt_core::Kind::Type), opt_t).unwrap());
+        table.declare("a", int.clone());
+        let t = convert_expr(&parse_sexpr("(Some a)").unwrap(), &table).unwrap();
+        // Result type must be the *instantiated* `Option Int`.
+        let opt_int = Type::app(opt, int).unwrap();
+        assert_eq!(t.type_of(), opt_int);
     }
 
     #[test]
