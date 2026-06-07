@@ -91,7 +91,13 @@ pub fn instantiate_with_tier(
         // pattern-matching step over universe terms whose shape
         // mirrors the body, classify as Tier One; otherwise the
         // fallback enumeration produced it (Tier Three).
-        if universe.iter().any(|t| body.alpha_eq(t)) {
+        //
+        // rc.24 (e'''.2) — was
+        // `universe.iter().any(|t| body.alpha_eq(t))`, an O(N)
+        // scan per `instantiate_with_tier` call.  `TermUniverse`
+        // is an `IndexSet<Term>` since (e'''.1), so the
+        // membership probe is O(1) via `contains`.
+        if universe.contains(body) {
             Tier::One
         } else {
             Tier::Three
@@ -117,7 +123,14 @@ pub fn instantiate_one(
     // `not`, but the universe (collected from ground assertions)
     // stores both polarities, so matching against the positive
     // form lifts existing trigger machinery to handle `∀x. ¬φ(x)`.
-    let mut seen = HashSet::new();
+    //
+    // rc.24 (e'''.2) — the dedup `seen` set is keyed on `Term`,
+    // not `Term::to_string()`.  The prior `HashSet<String>` paid
+    // a fresh `to_string()` allocation per matched binding (the
+    // rc.21 CdclState String-key incident recurring on the
+    // quantifier hot path); `Term`'s rc.10 hash-cons makes the
+    // `HashSet<Term>` probe O(1) with zero allocation.
+    let mut seen: HashSet<Term> = HashSet::new();
     let mut out = Vec::new();
     let matcher = EMatcher::new(universe);
     for pattern in collect_trigger_patterns(body, &v_arc) {
@@ -127,11 +140,9 @@ pub fn instantiate_one(
                 if **sub_v != *var {
                     continue;
                 }
-                let key = sub_t.to_string();
-                if seen.contains(&key) {
+                if !seen.insert(sub_t.clone()) {
                     continue;
                 }
-                seen.insert(key);
 
                 // Always instantiate the *full* body (not the trigger
                 // sub-pattern) so the resulting assertion carries the

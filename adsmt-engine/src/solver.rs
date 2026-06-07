@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use indexmap::IndexSet;
+
 use adsmt_abduce::abducible::AbducibleSet;
 use adsmt_abduce::sld::SldEngine;
 use adsmt_abduce::workflow::AbductionState;
@@ -1066,7 +1068,18 @@ impl Solver {
         // solver. If Sat, run a Miller-pattern E-matching pass and
         // add fresh instantiations as ground assertions; loop again
         // until either fixpoint or the round budget is exhausted.
-        let mut instantiations: Vec<Term> = Vec::new();
+        // rc.24 (e'''.2) — `instantiations` is an
+        // `IndexSet<Term>`, not a `Vec<Term>`.  The three
+        // dedup sites below were each
+        // `if !instantiations.iter().any(|t| t.alpha_eq(&inst))`
+        // — an O(N) scan per candidate instantiation, quadratic
+        // across the quantifier loop on a verus_smoke-sized
+        // prelude.  `IndexSet::insert` dedups in O(1) on the
+        // rc.10 hash-cons handles while preserving insertion
+        // order (the `for inst in &instantiations` rebuild of
+        // `combined` + the `instantiations.len()` fixpoint check
+        // both stay deterministic).
+        let mut instantiations: IndexSet<Term> = IndexSet::new();
         for _round in 0..QUANTIFIER_ROUNDS {
             if expired(deadline) {
                 return SatResult::Unknown {
@@ -1099,17 +1112,13 @@ impl Solver {
                         let before_tier1 = instantiations.len();
                         // Tier 1: Miller-pattern E-matching.
                         for inst in crate::quant::instantiate_one(var, body, &universe) {
-                            if !instantiations.iter().any(|t| t.alpha_eq(&inst)) {
-                                instantiations.push(inst);
-                            }
+                            instantiations.insert(inst);
                         }
                         // Tier 2: conflict-based — pick instantiations
                         // that directly contradict an existing negative
                         // ground assertion.
                         for inst in crate::quant_conflict::conflict_instantiate(var, body, &rest) {
-                            if !instantiations.iter().any(|t| t.alpha_eq(&inst)) {
-                                instantiations.push(inst);
-                            }
+                            instantiations.insert(inst);
                         }
                         // Tier 3: bounded enumeration. Fires only when
                         // Tier 1 and Tier 2 produced nothing new for
@@ -1127,9 +1136,7 @@ impl Solver {
                                         reason: "rlimit exceeded".to_string(),
                                     };
                                 }
-                                if !instantiations.iter().any(|t| t.alpha_eq(&inst)) {
-                                    instantiations.push(inst);
-                                }
+                                instantiations.insert(inst);
                             }
                         }
                     }
