@@ -129,6 +129,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-env"
+version = "1.0.0-rc.30"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "adsmt-ffi"
 version = "1.0.0-rc.30"
 dependencies = [

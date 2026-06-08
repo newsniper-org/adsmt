@@ -15,11 +15,17 @@
 //! main     = "."
 //! summary  = "Rocq (Coq) backend for adsmt certificates"
 //! ---
-//! #!/usr/bin/env python3
+//! #!/usr/bin/env adsmt-env python3
 //! import sys, json
 //! cert = json.load(sys.stdin)
 //! print(emit(cert))
 //! ```
+//!
+//! The recommended shebang launcher is `adsmt-env` (a managed
+//! `/usr/bin/env` replacement): it resolves the interpreter from
+//! `$ADSMT_TOOLCHAIN/bin` before `$PATH` and handles multi-argument
+//! interpreters robustly. A plain `#!/usr/bin/env python3` also
+//! works.
 //!
 //! Two execution tiers (the `(b')` dual-tier design):
 //! - **Script** (`main = "."`): the body *is* the emitter; the

@@ -1,0 +1,17 @@
+[package]
+name = "adsmt-env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A dedicated `/usr/bin/env` replacement for emitter-package shebangs: robust multi-argument handling + adsmt-managed interpreter resolution."
+
+[lib]
+name = "adsmt_env"
+path = "src/lib.rs"
+
+[[bin]]
+name = "adsmt-env"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3.27"
