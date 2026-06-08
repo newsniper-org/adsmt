@@ -160,7 +160,7 @@ impl<'a> SldEngine<'a> {
         &self,
         goal: &Term,
         budget: usize,
-        visiting: &mut HashSet<String>,
+        visiting: &mut HashSet<Term>,
     ) -> Vec<Candidate> {
         let mut out = Vec::new();
 
@@ -185,10 +185,12 @@ impl<'a> SldEngine<'a> {
             return out;
         }
 
-        // Cycle guard: tag goals by their string form. Recursing
-        // back into a goal currently being expanded would loop.
-        let goal_key = format!("{goal}");
-        if !visiting.insert(goal_key.clone()) {
+        // Cycle guard: tag the goal being expanded by its hash-consed
+        // identity (post-rc.10 `Term` Hash/Eq is `Arc::ptr_eq`, so
+        // this is O(1) and allocation-free — the prior `format!` per
+        // recursion both allocated and risked Display collisions).
+        // Recursing back into an in-progress goal would loop.
+        if !visiting.insert(goal.clone()) {
             return out;
         }
 
@@ -225,7 +227,7 @@ impl<'a> SldEngine<'a> {
             }
         }
 
-        visiting.remove(&goal_key);
+        visiting.remove(goal);
         out
     }
 
@@ -237,7 +239,7 @@ impl<'a> SldEngine<'a> {
         &self,
         atoms: &[Term],
         budget: usize,
-        visiting: &mut HashSet<String>,
+        visiting: &mut HashSet<Term>,
     ) -> Option<Vec<Candidate>> {
         let mut joint = vec![Candidate::empty()];
         for atom in atoms {
