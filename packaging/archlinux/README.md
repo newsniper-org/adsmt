@@ -20,7 +20,7 @@ Each cell is a single `pkgbase` producing multiple split packages.
 
 ### Default pkgbase (per channel) — 6 split packages
 - `logicutils[-testing|-git]` — lu-* / freshcheck / stamp utilities
-- `adsmt-cli[-testing|-git]` — lu-smt SMT solver CLI
+- `adsmt-cli[-testing|-git]` — lu-smt SMT solver CLI + adsmt-emit (WASM emitter package manager) + adsmt-env (build trampoline)
 - `adsmt-lsp[-testing|-git]` — tower-lsp server (no variant — owned only here)
 - `adsmt-ffi[-testing|-git]` — C ABI: libadsmt_ffi.{so,a} + adsmt.h (no variant)
 - `adsmt-src[-testing|-git]` — workspace source tree (no variant)

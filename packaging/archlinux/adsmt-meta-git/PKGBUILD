@@ -107,7 +107,7 @@ package_logicutils-git() {
 package_adsmt-cli-git() {
     pkgdesc='lu-smt — adsmt SMT solver CLI (unstable / main-branch git build, default features)'
     depends=('gcc-libs')
-    provides=('lu-smt')
+    provides=('lu-smt' 'adsmt-emit' 'adsmt-env')
     conflicts=(
         'adsmt-cli' 'adsmt-cli-hpc' 'adsmt-cli-multi'
         'adsmt-cli-testing' 'adsmt-cli-hpc-testing' 'adsmt-cli-multi-testing'
@@ -116,6 +116,10 @@ package_adsmt-cli-git() {
 
     cd "${srcdir}/${_repo}"
     install -Dm755 target/release/lu-smt "${pkgdir}/usr/bin/lu-smt"
+    # rc.32: WASM emitter package manager (adsmt-emit) + build-env
+    # trampoline (adsmt-env) — companions to `lu-smt --emit-cert`.
+    install -Dm755 target/release/adsmt-emit "${pkgdir}/usr/bin/adsmt-emit"
+    install -Dm755 target/release/adsmt-env  "${pkgdir}/usr/bin/adsmt-env"
     install -Dm644 docs/man/lu-smt.1 "${pkgdir}/usr/share/man/man1/lu-smt.1"
     install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
 
