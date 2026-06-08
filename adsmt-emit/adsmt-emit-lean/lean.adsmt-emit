@@ -1,7 +1,7 @@
 ---
 name = "lean"
 target = "lean"
-version = "1.0.0-rc.30"
+version = "1.0.0-rc.31"
 contract = "0.1.0"
 main = "lean.wasm"
 wire = "cbor"
