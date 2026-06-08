@@ -40,3 +40,27 @@ fn version_flag_succeeds() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("adsmt-env"));
 }
+
+#[test]
+fn injects_build_vars_under_build_root() {
+    let out = adsmt_env()
+        .env("ADSMT_EMIT_BUILD_ROOT", "/tmp/adsmt-build-xyz")
+        .args(["/bin/sh", "-c", "printf '%s|%s' \"$srcdir\" \"$pkgdir\""])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "/tmp/adsmt-build-xyz/src|/tmp/adsmt-build-xyz/pkg"
+    );
+}
+
+#[test]
+fn no_build_vars_without_build_root() {
+    let out = adsmt_env()
+        .env_remove("ADSMT_EMIT_BUILD_ROOT")
+        .args(["/bin/sh", "-c", "printf '%s' \"${pkgdir:-unset}\""])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "unset");
+}

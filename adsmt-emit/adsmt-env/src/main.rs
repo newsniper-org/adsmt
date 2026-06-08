@@ -13,7 +13,7 @@
 
 use std::process::ExitCode;
 
-use adsmt_env::{resolve_program, split_invocation, toolchain_bin};
+use adsmt_env::{build_env_vars, resolve_program, split_invocation, toolchain_bin};
 
 const USAGE: &str = "\
 adsmt-env — env replacement for adsmt emitter-package shebangs
@@ -66,14 +66,21 @@ fn run(program: &std::path::Path, args: &[String]) -> ExitCode {
     use std::os::unix::process::CommandExt;
     // exec replaces this process on success; it only returns on
     // error.
-    let err = std::process::Command::new(program).args(args).exec();
+    let err = std::process::Command::new(program)
+        .args(args)
+        .envs(build_env_vars())
+        .exec();
     eprintln!("adsmt-env: exec {}: {err}", program.display());
     ExitCode::from(126)
 }
 
 #[cfg(not(unix))]
 fn run(program: &std::path::Path, args: &[String]) -> ExitCode {
-    match std::process::Command::new(program).args(args).status() {
+    match std::process::Command::new(program)
+        .args(args)
+        .envs(build_env_vars())
+        .status()
+    {
         Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
         Err(err) => {
             eprintln!("adsmt-env: spawn {}: {err}", program.display());

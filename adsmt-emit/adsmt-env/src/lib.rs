@@ -69,6 +69,28 @@ pub fn toolchain_bin() -> Option<PathBuf> {
     std::env::var_os("ADSMT_TOOLCHAIN").map(|t| Path::new(&t).join("bin"))
 }
 
+/// Build-environment shell variables injected when adsmt-env runs
+/// inside a package build (signaled by `$ADSMT_EMIT_BUILD_ROOT`).
+///
+/// These are the makepkg-style `srcdir` / `pkgdir` variables a
+/// package build script relies on — and they are provided **only**
+/// through adsmt-env, so a build script that doesn't launch via the
+/// adsmt-env shebang sees neither. `srcdir` is where sources are
+/// fetched/unpacked; `pkgdir` is the staging root that becomes the
+/// redistributable package's `contents/` directory.
+pub fn build_env_vars() -> Vec<(String, String)> {
+    match std::env::var_os("ADSMT_EMIT_BUILD_ROOT") {
+        Some(root) => {
+            let root = Path::new(&root);
+            vec![
+                ("srcdir".to_string(), root.join("src").to_string_lossy().into_owned()),
+                ("pkgdir".to_string(), root.join("pkg").to_string_lossy().into_owned()),
+            ]
+        }
+        None => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
