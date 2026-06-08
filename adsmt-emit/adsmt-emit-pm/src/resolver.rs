@@ -5,15 +5,14 @@
 //! copies the executable bytes into the content-addressed
 //! [`Store`], and records a [`LockedPackage`].
 //!
-//! Wired today:
-//! - `path` sources, **Script tier** (`main = "."`): the script
-//!   body (shebang-first) is stored verbatim.
+//! Wired today (`path` sources):
+//! - **Script tier** (`main = "."`): the shebang-first script body
+//!   is stored verbatim.
+//! - **Wasm tier** (`main = "<path>.wasm"`): the sibling wasm
+//!   artifact is stored by content address.
 //!
-//! Deferred — every gap is an explicit error, never a silent skip:
+//! Deferred — an explicit error, never a silent skip:
 //! - `git` / `registry` sources → [`ResolveError::UnsupportedSource`].
-//! - **Wasm tier** (`main = "<path>.wasm"`) →
-//!   [`ResolveError::WasmTierDeferred`] (lands with the wasmtime
-//!   backend).
 
 use std::path::Path;
 
@@ -29,9 +28,6 @@ use crate::store::Store;
 pub enum ResolveError {
     #[error("emitter `{name}`: source not yet supported ({kind})")]
     UnsupportedSource { name: String, kind: &'static str },
-
-    #[error("emitter `{name}`: wasm-tier resolution lands with the wasmtime backend")]
-    WasmTierDeferred { name: String },
 
     #[error("emitter `{name}`: invalid version requirement `{req}`: {err}")]
     BadRequirement { name: String, req: String, err: semver::Error },
@@ -132,7 +128,34 @@ fn resolve_path(
                 interpreter: Some(interpreter),
             })
         }
-        ExecKind::Wasm => Err(ResolveError::WasmTierDeferred { name: name.to_string() }),
+        ExecKind::Wasm => {
+            // `main` points to a sibling wasm component/module,
+            // relative to the package file's directory. Store its
+            // bytes verbatim; the wasm runtime loads them by content
+            // address.
+            let rel = pkg.meta.wasm_artifact().expect("Wasm tier has a main path");
+            let dir = pkg_file.parent().unwrap_or_else(|| Path::new("."));
+            let wasm_path = dir.join(&rel);
+            let bytes = std::fs::read(&wasm_path).map_err(|err| ResolveError::Io {
+                name: name.to_string(),
+                path: wasm_path.display().to_string(),
+                err,
+            })?;
+            let sha = store.add(&bytes).map_err(|err| ResolveError::Io {
+                name: name.to_string(),
+                path: store.root().display().to_string(),
+                err,
+            })?;
+            Ok(LockedPackage {
+                name: name.to_string(),
+                target: pkg.meta.target,
+                version: pkg.meta.version,
+                source: format!("path+file://{}", pkg_file.display()),
+                artifact_sha256: sha,
+                kind: ExecKind::Wasm,
+                interpreter: None,
+            })
+        }
     }
 }
 
@@ -183,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn wasm_tier_is_explicitly_deferred() {
+    fn resolves_wasm_tier_package() {
         let tmp = tempfile::tempdir().unwrap();
         let pkg_file = tmp.path().join("lean.adsmt-emit");
         std::fs::write(
@@ -191,16 +214,19 @@ mod tests {
             "---\nname=\"lean\"\ntarget=\"lean\"\nversion=\"0.1.0\"\ncontract=\"0.1.0\"\nmain=\"emitter.wasm\"\n---\n#!/usr/bin/env adsmt-emit-wasm\n",
         )
         .unwrap();
+        // sibling wasm artifact next to the package file
+        std::fs::write(tmp.path().join("emitter.wasm"), b"\0asm\x01\0\0\0fake").unwrap();
         let store = Store::at(tmp.path().join("store"));
         let manifest = Manifest::from_toml(&format!(
             "[emitters]\nlean = {{ version = \"0.1\", path = \"{}\" }}\n",
             pkg_file.display()
         ))
         .unwrap();
-        assert!(matches!(
-            resolve(&manifest, &store).unwrap_err(),
-            ResolveError::WasmTierDeferred { .. }
-        ));
+        let lf = resolve(&manifest, &store).unwrap();
+        let p = lf.get("lean").unwrap();
+        assert_eq!(p.kind, ExecKind::Wasm);
+        assert!(p.interpreter.is_none());
+        assert_eq!(store.read(&p.artifact_sha256).unwrap(), b"\0asm\x01\0\0\0fake");
     }
 
     #[test]

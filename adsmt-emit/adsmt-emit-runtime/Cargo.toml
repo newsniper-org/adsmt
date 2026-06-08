@@ -9,6 +9,18 @@ description = "The dedicated emitter runtime: resolves a target to its package a
 adsmt-emit-contract = { path = "../adsmt-emit-contract" }
 adsmt-emit-pm = { path = "../adsmt-emit-pm" }
 thiserror.workspace = true
+# Wasm tier (feature `wasm`): pure-Rust wasmi interpreter + WASI
+# Preview 1, so the Wasm tier shares the Script tier's stdin/stdout
+# protocol. No Cranelift / C toolchain.
+wasmi = { version = "1", optional = true }
+wasmi_wasi = { version = "1", optional = true }
+
+[features]
+default = []
+wasm = ["dep:wasmi", "dep:wasmi_wasi"]
 
 [dev-dependencies]
 tempfile = "3.27"
+# Assemble tiny WASI Preview 1 modules from WAT for the wasm-tier
+# tests without needing an external wasm toolchain.
+wat = "1"

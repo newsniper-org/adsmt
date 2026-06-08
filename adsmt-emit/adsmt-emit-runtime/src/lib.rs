@@ -22,6 +22,8 @@
 //! [`emit`]: Emitter::emit
 
 pub mod script;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 use adsmt_emit_contract::{EmitResult, EmitterInfo};
 use adsmt_emit_pm::{ExecKind, Lockfile, Store};
@@ -45,8 +47,11 @@ pub enum RuntimeError {
     #[error("no emitter resolved for target `{target}`")]
     NoEmitterForTarget { target: String },
 
-    #[error("emitter `{name}`: the wasm backend is not yet wired")]
+    #[error("emitter `{name}`: the wasm backend is not built in (enable the `wasm` feature)")]
     WasmBackendNotWired { name: String },
+
+    #[error("emitter `{name}`: wasm backend error: {detail}")]
+    Wasm { name: String, detail: String },
 
     #[error("emitter `{name}`: expected a Script-tier package")]
     WrongTier { name: String },
@@ -89,7 +94,14 @@ impl Runtime {
                 Ok(Box::new(ScriptEmitter::from_locked(pkg, &self.store)?))
             }
             ExecKind::Wasm => {
-                Err(RuntimeError::WasmBackendNotWired { name: pkg.name.clone() })
+                #[cfg(feature = "wasm")]
+                {
+                    Ok(Box::new(wasm::WasmEmitter::from_locked(pkg, &self.store)?))
+                }
+                #[cfg(not(feature = "wasm"))]
+                {
+                    Err(RuntimeError::WasmBackendNotWired { name: pkg.name.clone() })
+                }
             }
         }
     }
@@ -142,6 +154,7 @@ mod tests {
         ));
     }
 
+    #[cfg(not(feature = "wasm"))]
     #[test]
     fn wasm_tier_is_explicitly_not_wired() {
         let tmp = tempfile::tempdir().unwrap();
