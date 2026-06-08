@@ -108,8 +108,8 @@ impl Emitter for WasmEmitter {
         &self.info
     }
 
-    fn emit(&self, cert: &str) -> EmitResult {
-        let stdin = ReadPipe::from(cert.as_bytes().to_vec());
+    fn emit(&self, cert: &[u8]) -> EmitResult {
+        let stdin = ReadPipe::from(cert.to_vec());
         let stdout = WritePipe::new_in_memory();
 
         let wasi = WasiCtxBuilder::new()
@@ -192,6 +192,7 @@ mod tests {
             source: "path+file:///x".into(),
             contents_sha256: sha,
             main: "emitter.wasm".into(),
+            wire: adsmt_emit_pm::Wire::Cbor,
         }
     }
 
@@ -222,7 +223,7 @@ mod tests {
         let store = Store::at(tmp.path());
         let pkg = wasm_pkg(&store, WRITER);
         let em = WasmEmitter::from_locked(&pkg, &store).unwrap();
-        let out = em.emit("(certificate ...)").unwrap();
+        let out = em.emit(b"(certificate ...)").unwrap();
         assert_eq!(out.text, "Lemma ok.");
         assert_eq!(em.info().target, "rocq");
     }
@@ -233,7 +234,7 @@ mod tests {
         let store = Store::at(tmp.path());
         let pkg = wasm_pkg(&store, EXITER);
         let em = WasmEmitter::from_locked(&pkg, &store).unwrap();
-        match em.emit("x") {
+        match em.emit(b"x") {
             Err(EmitError::Unsupported(_)) => {}
             other => panic!("expected Unsupported, got {other:?}"),
         }
@@ -246,6 +247,6 @@ mod tests {
         let pkg = wasm_pkg(&store, WRITER);
         // A generous limit still lets the small writer succeed.
         let em = WasmEmitter::from_locked(&pkg, &store).unwrap().with_memory_limit(64 * 1024 * 1024);
-        assert_eq!(em.emit("x").unwrap().text, "Lemma ok.");
+        assert_eq!(em.emit(b"x").unwrap().text, "Lemma ok.");
     }
 }

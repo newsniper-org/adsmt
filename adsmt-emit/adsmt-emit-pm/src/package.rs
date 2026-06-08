@@ -28,6 +28,7 @@
 //! `/usr/bin/env` replacement) so the build sees `$srcdir`/`$pkgdir`
 //! and multi-argument interpreters work.
 
+use adsmt_emit_contract::Wire;
 use serde::Deserialize;
 
 /// The frontmatter metadata of a package. Most fields mirror the
@@ -46,6 +47,10 @@ pub struct PackageMeta {
     /// relative to `$pkgdir` (== the package's `contents/` root).
     #[serde(default = "default_main")]
     pub main: String,
+    /// The certificate wire encoding this emitter expects (default
+    /// CBOR). The producer encodes the certificate to this format.
+    #[serde(default)]
+    pub wire: Wire,
     /// One-line human-readable description.
     #[serde(default)]
     pub summary: String,
@@ -193,6 +198,7 @@ mod tests {
             true\n";
         let p = Package::parse(text).unwrap();
         assert_eq!(p.meta.main, "emitter.wasm");
+        assert_eq!(p.meta.wire, Wire::Cbor); // defaulted
     }
 
     #[test]

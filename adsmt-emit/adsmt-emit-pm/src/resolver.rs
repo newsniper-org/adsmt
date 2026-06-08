@@ -145,6 +145,7 @@ fn resolve_path(
         source: format!("path+file://{}", pkg_file.display()),
         contents_sha256: contents_sha,
         main: pkg.meta.main,
+        wire: pkg.meta.wire,
     })
 }
 

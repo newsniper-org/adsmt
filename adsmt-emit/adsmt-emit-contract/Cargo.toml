@@ -8,4 +8,6 @@ description = "The language-neutral emitter contract: the WIT world every adsmt 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Compact, language-neutral binary cert wire (the default).
+ciborium = "0.2"
 thiserror.workspace = true

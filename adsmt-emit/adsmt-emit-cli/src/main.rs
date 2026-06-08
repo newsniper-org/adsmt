@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use adsmt_emit_contract::{EmitError, EmitOutput, EmitResult};
+use adsmt_emit_contract::{encode, EmitError, EmitOutput, EmitResult};
 use adsmt_emit_pm::{
     codec_for_extension, default_adsmt_env, pack_dir, resolve, stage_and_build, Lockfile, Manifest,
     Package, Store,
@@ -56,6 +56,11 @@ enum Cmd {
         /// Parallel jobs (0 = number of CPUs).
         #[arg(short = 'j', long, default_value_t = 0)]
         jobs: usize,
+        /// Treat the input as canonical JSON and re-encode the
+        /// certificate to each emitter's wire (e.g. CBOR). Without
+        /// this, the input bytes are forwarded as-is.
+        #[arg(long)]
+        from_json: bool,
     },
     /// List the resolved emitters from the lockfile.
     List,
@@ -88,8 +93,8 @@ fn fail(msg: impl std::fmt::Display) -> ExitCode {
 fn main() -> ExitCode {
     match Cli::parse().cmd {
         Cmd::Install { manifest } => install(&manifest),
-        Cmd::Run { targets, cert, out, out_dir, jobs } => {
-            run(&targets, jobs, cert.as_deref(), out.as_deref(), out_dir.as_deref())
+        Cmd::Run { targets, cert, out, out_dir, jobs, from_json } => {
+            run(&targets, jobs, from_json, cert.as_deref(), out.as_deref(), out_dir.as_deref())
         }
         Cmd::List => list(),
         Cmd::Pack { package, out, codec } => pack(&package, out.as_deref(), &codec),
@@ -152,6 +157,7 @@ fn classify(res: &Result<EmitResult, RuntimeError>) -> Result<&EmitOutput, (u8, 
 fn run(
     targets: &[String],
     jobs: usize,
+    from_json: bool,
     cert_path: Option<&Path>,
     out_path: Option<&Path>,
     out_dir: Option<&Path>,
@@ -160,21 +166,47 @@ fn run(
         Ok(l) => l,
         Err(code) => return code,
     };
-    let runtime = Runtime::new(lockfile, Store::at(store_root()));
 
-    let cert = match cert_path {
-        Some(p) => match std::fs::read_to_string(p) {
-            Ok(c) => c,
+    let cert_bytes = match cert_path {
+        Some(p) => match std::fs::read(p) {
+            Ok(b) => b,
             Err(e) => return fail(format!("reading {}: {e}", p.display())),
         },
-        None => match std::io::read_to_string(std::io::stdin()) {
-            Ok(c) => c,
-            Err(e) => return fail(format!("reading stdin: {e}")),
-        },
+        None => {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
+                return fail(format!("reading stdin: {e}"));
+            }
+            buf
+        }
     };
 
-    let job_list: Vec<(String, String)> =
-        targets.iter().map(|t| (t.clone(), cert.clone())).collect();
+    // Build the per-target certificate bytes. With --from-json the
+    // input is the canonical JSON certificate, re-encoded to each
+    // emitter's declared wire; otherwise the input is forwarded as-is.
+    let job_list: Vec<(String, Vec<u8>)> = if from_json {
+        let cert: adsmt_cert::Certificate = match serde_json::from_slice(&cert_bytes) {
+            Ok(c) => c,
+            Err(e) => return fail(format!("parsing JSON certificate: {e}")),
+        };
+        targets
+            .iter()
+            .map(|t| {
+                let wire = lockfile
+                    .packages
+                    .iter()
+                    .find(|p| p.target == *t)
+                    .map(|p| p.wire)
+                    .unwrap_or_default();
+                (t.clone(), encode(&cert, wire))
+            })
+            .collect()
+    } else {
+        targets.iter().map(|t| (t.clone(), cert_bytes.clone())).collect()
+    };
+
+    let runtime = Runtime::new(lockfile, Store::at(store_root()));
     let results = runtime.emit_many(&job_list, jobs);
 
     // Single target, no out-dir → stdout (or --out).

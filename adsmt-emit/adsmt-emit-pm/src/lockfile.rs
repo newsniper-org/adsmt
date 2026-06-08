@@ -6,6 +6,7 @@
 //! lockfile, so resolution is reproducible and the runtime loads
 //! by content address rather than re-resolving.
 
+use adsmt_emit_contract::Wire;
 use serde::{Deserialize, Serialize};
 
 /// Current lockfile schema version.
@@ -38,6 +39,9 @@ pub struct LockedPackage {
     pub contents_sha256: String,
     /// Runtime entry: the emitter `.wasm`, relative to `contents/`.
     pub main: String,
+    /// The certificate wire encoding the emitter expects.
+    #[serde(default)]
+    pub wire: Wire,
 }
 
 impl Default for Lockfile {
@@ -83,6 +87,7 @@ mod tests {
                 source: "path+file:///pkgs/rocq".into(),
                 contents_sha256: "aa".repeat(32),
                 main: "rocq.wasm".into(),
+                wire: Wire::Cbor,
             },
             LockedPackage {
                 name: "isabelle".into(),
@@ -91,6 +96,7 @@ mod tests {
                 source: "path+file:///pkgs/isabelle".into(),
                 contents_sha256: "bb".repeat(32),
                 main: "lib/isabelle.wasm".into(),
+                wire: Wire::Json,
             },
         ])
     }

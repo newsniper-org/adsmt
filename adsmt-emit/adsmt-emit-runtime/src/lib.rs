@@ -37,8 +37,9 @@ pub use wasm::WasmEmitter;
 pub trait Emitter: Send + Sync {
     /// Describe this emitter.
     fn info(&self) -> &EmitterInfo;
-    /// Emit prover source for the given serialized certificate.
-    fn emit(&self, cert: &str) -> EmitResult;
+    /// Emit prover source for the given serialized certificate
+    /// (bytes — the wire encoding may be binary CBOR or JSON text).
+    fn emit(&self, cert: &[u8]) -> EmitResult;
 }
 
 /// A runtime error — distinct from an [`EmitError`], which is an
@@ -86,19 +87,19 @@ impl Runtime {
     /// Resolve the emitter for `target` and emit `cert`. The outer
     /// `Result` is a runtime failure (no such emitter, …); the
     /// inner [`EmitResult`] is the emitter's own verdict.
-    pub fn emit(&self, target: &str, cert: &str) -> Result<EmitResult, RuntimeError> {
+    pub fn emit(&self, target: &str, cert: &[u8]) -> Result<EmitResult, RuntimeError> {
         Ok(self.emitter_for(target)?.emit(cert))
     }
 
-    /// Emit a batch of `(target, certificate)` jobs concurrently with
-    /// up to `parallelism` worker threads (the `-j N` knob; `0` →
+    /// Emit a batch of `(target, certificate-bytes)` jobs concurrently
+    /// with up to `parallelism` worker threads (the `-j N` knob; `0` →
     /// [`std::thread::available_parallelism`]). Each distinct target's
     /// emitter is built once and shared across its jobs (the compiled
     /// wasm module is shared; each job gets its own `Store`). Results
     /// are returned in input order.
     pub fn emit_many(
         &self,
-        jobs: &[(String, String)],
+        jobs: &[(String, Vec<u8>)],
         parallelism: usize,
     ) -> Vec<Result<EmitResult, RuntimeError>> {
         use std::collections::HashMap;
@@ -191,6 +192,7 @@ mod tests {
             source: "path+file:///x".into(),
             contents_sha256: sha,
             main: "emitter.wasm".into(),
+            wire: adsmt_emit_pm::Wire::Cbor,
         }
     }
 
@@ -201,7 +203,7 @@ mod tests {
         let pkg = wasm_pkg(&store, "rocq");
         let rt = Runtime::new(Lockfile::new(vec![pkg]), store);
         assert_eq!(rt.targets(), vec!["rocq"]);
-        let out = rt.emit("rocq", "(cert)").unwrap().unwrap();
+        let out = rt.emit("rocq", b"(cert)").unwrap().unwrap();
         assert_eq!(out.text, "Qed.");
     }
 
@@ -211,7 +213,7 @@ mod tests {
         let store = Store::at(tmp.path());
         let rt = Runtime::new(Lockfile::default(), store);
         assert!(matches!(
-            rt.emit("lean", "x").unwrap_err(),
+            rt.emit("lean", b"x").unwrap_err(),
             RuntimeError::NoEmitterForTarget { .. }
         ));
     }
@@ -225,10 +227,10 @@ mod tests {
         let rt = Runtime::new(Lockfile::new(vec![rocq, isabelle]), store);
 
         let jobs = vec![
-            ("rocq".to_string(), "(cert-a)".to_string()),
-            ("isabelle".to_string(), "(cert-b)".to_string()),
-            ("lean".to_string(), "(cert-c)".to_string()), // unresolved target
-            ("rocq".to_string(), "(cert-d)".to_string()),
+            ("rocq".to_string(), b"(cert-a)".to_vec()),
+            ("isabelle".to_string(), b"(cert-b)".to_vec()),
+            ("lean".to_string(), b"(cert-c)".to_vec()), // unresolved target
+            ("rocq".to_string(), b"(cert-d)".to_vec()),
         ];
         let results = rt.emit_many(&jobs, 2);
         assert_eq!(results.len(), 4);
@@ -249,6 +251,7 @@ mod tests {
             source: "path+file:///x".into(),
             contents_sha256: "00".repeat(32),
             main: "emitter.wasm".into(),
+            wire: adsmt_emit_pm::Wire::Cbor,
         };
         let rt = Runtime::new(Lockfile::new(vec![pkg]), store);
         assert!(matches!(

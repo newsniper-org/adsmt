@@ -127,6 +127,40 @@ fn run_multiple_targets_parallel_to_dir() {
 }
 
 #[test]
+fn run_from_json_transcodes_to_emitter_wire() {
+    use adsmt_cert::{CertBuilder, Sequent, StepBody};
+    use adsmt_core::{Term, Type};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path();
+    let stub = write_stub_adsmt_env(proj);
+    write_manifest(proj, &["rocq"]); // wire defaults to CBOR
+    install(proj, &stub);
+
+    // a minimal canonical certificate, serialized to JSON
+    let mut b = CertBuilder::new();
+    let x = Term::var("x", Type::bool_());
+    let s0 = b.add(
+        StepBody::Refl(x.clone()),
+        Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+    );
+    let cert = b.finalize(s0);
+    let cert_json = proj.join("cert.json");
+    std::fs::write(&cert_json, serde_json::to_string(&cert).unwrap()).unwrap();
+
+    // --from-json deserializes the JSON cert and re-encodes to CBOR for
+    // the emitter (which here ignores the bytes and prints "Qed.").
+    let out = adsmt_emit()
+        .current_dir(proj)
+        .args(["run", "rocq", "--from-json", "--cert"])
+        .arg(&cert_json)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "from-json run failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Qed.");
+}
+
+#[test]
 fn run_without_lockfile_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let out = adsmt_emit()

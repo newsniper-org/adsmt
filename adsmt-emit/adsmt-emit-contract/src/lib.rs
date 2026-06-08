@@ -11,12 +11,65 @@
 //! The certificate crosses the boundary as a JSON string (the
 //! canonical `adsmt-cert` shape); see [`WIT`] for the rationale.
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The canonical WIT contract, embedded for tooling and
 /// discoverability. Wasm guests are generated against this exact
 /// source; host bindings mirror it.
 pub const WIT: &str = include_str!("../wit/emitter.wit");
+
+/// The on-the-wire encoding of the certificate handed to an emitter.
+///
+/// The certificate has a fixed schema (`adsmt-cert`'s serde shape),
+/// so a self-describing text format is unnecessary: the default is
+/// the compact, language-neutral binary **CBOR**, which is smaller
+/// and cheaper to parse (and easier on memory) than JSON. JSON stays
+/// available for human-debuggable pipelines. A package declares which
+/// it wants; the producer encodes the certificate accordingly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Wire {
+    /// Compact binary (CBOR / RFC 8949). The default.
+    #[default]
+    Cbor,
+    /// Self-describing JSON text.
+    Json,
+}
+
+/// A certificate decode failure.
+#[derive(Debug, thiserror::Error)]
+#[error("certificate decode error ({wire:?}): {detail}")]
+pub struct WireError {
+    /// The wire format that failed to decode.
+    pub wire: Wire,
+    /// The underlying decoder message.
+    pub detail: String,
+}
+
+/// Encode a serde value to the given wire format. Serialization of a
+/// well-formed certificate is infallible.
+pub fn encode<T: Serialize>(value: &T, wire: Wire) -> Vec<u8> {
+    match wire {
+        Wire::Json => serde_json::to_vec(value).expect("json serialize"),
+        Wire::Cbor => {
+            let mut buf = Vec::new();
+            ciborium::into_writer(value, &mut buf).expect("cbor serialize");
+            buf
+        }
+    }
+}
+
+/// Decode a serde value from the given wire format. The bytes are
+/// untrusted, so this returns a [`WireError`] on malformed input.
+pub fn decode<T: DeserializeOwned>(bytes: &[u8], wire: Wire) -> Result<T, WireError> {
+    match wire {
+        Wire::Json => serde_json::from_slice(bytes)
+            .map_err(|e| WireError { wire, detail: e.to_string() }),
+        Wire::Cbor => ciborium::from_reader(bytes)
+            .map_err(|e| WireError { wire, detail: e.to_string() }),
+    }
+}
 
 /// Contract semantic version, matching the `@x.y.z` in [`WIT`].
 pub const CONTRACT_VERSION: &str = "0.1.0";
@@ -102,5 +155,38 @@ mod tests {
         let out: EmitOutput = serde_json::from_str(j).unwrap();
         assert!(out.missing_imports.is_empty());
         assert_eq!(out, EmitOutput::new("Lemma foo."));
+    }
+
+    #[test]
+    fn wire_default_is_cbor() {
+        assert_eq!(Wire::default(), Wire::Cbor);
+    }
+
+    #[test]
+    fn wire_roundtrips_both_formats() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Sample {
+            steps: Vec<u32>,
+            text: String,
+        }
+        let v = Sample { steps: vec![1, 2, 3], text: "hello".into() };
+        for wire in [Wire::Cbor, Wire::Json] {
+            let bytes = encode(&v, wire);
+            let back: Sample = decode(&bytes, wire).unwrap();
+            assert_eq!(v, back);
+        }
+        // CBOR is more compact than JSON for this value.
+        assert!(encode(&v, Wire::Cbor).len() < encode(&v, Wire::Json).len());
+    }
+
+    #[test]
+    fn wire_kind_serializes_lowercase() {
+        assert_eq!(serde_json::to_string(&Wire::Cbor).unwrap(), "\"cbor\"");
+        assert_eq!(serde_json::to_string(&Wire::Json).unwrap(), "\"json\"");
+    }
+
+    #[test]
+    fn decode_rejects_garbage() {
+        assert!(decode::<EmitOutput>(b"\xff\xff not cbor", Wire::Cbor).is_err());
     }
 }

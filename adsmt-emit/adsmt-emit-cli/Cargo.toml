@@ -14,8 +14,14 @@ clap = { workspace = true }
 adsmt-emit-contract = { path = "../adsmt-emit-contract" }
 adsmt-emit-pm = { path = "../adsmt-emit-pm" }
 adsmt-emit-runtime = { path = "../adsmt-emit-runtime" }
+# For `run --from-json`: deserialize the canonical JSON certificate and
+# re-encode it to each emitter's wire format.
+adsmt-cert = { path = "../../adsmt-cert" }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.27"
 # Assemble a tiny wasip1 emitter from WAT for the end-to-end test.
 wat = "1"
+# Build a minimal certificate for the --from-json test.
+adsmt-core = { path = "../../adsmt-core" }
