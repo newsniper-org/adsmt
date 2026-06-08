@@ -81,6 +81,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-emit-cli"
+version = "1.0.0-rc.30"
+dependencies = [
+ "adsmt-emit-contract",
+ "adsmt-emit-pm",
+ "adsmt-emit-runtime",
+ "clap",
+ "tempfile",
+ "wat",
+]
+
+[[package]]
 name = "adsmt-emit-contract"
 version = "1.0.0-rc.30"
 dependencies = [

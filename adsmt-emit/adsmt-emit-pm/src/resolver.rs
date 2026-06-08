@@ -118,32 +118,13 @@ fn resolve_path(
         });
     }
 
-    // Stage a build root, seed $srcdir with the package's source
-    // tree (the package file's directory), build, then content-
-    // address the staged $pkgdir tree.
-    let build_root = tempfile::tempdir().map_err(|err| ResolveError::Io {
-        name: name.to_string(),
-        path: "<build-root>".to_string(),
-        err,
-    })?;
-    let srcdir = build_root.path().join("src");
-    std::fs::create_dir_all(&srcdir).map_err(|err| ResolveError::Io {
-        name: name.to_string(),
-        path: srcdir.display().to_string(),
-        err,
-    })?;
-    if let Some(src) = pkg_file.parent() {
-        copy_dir(src, &srcdir).map_err(|err| ResolveError::Io {
-            name: name.to_string(),
-            path: src.display().to_string(),
-            err,
-        })?;
-    }
-
-    let pkgdir = build::build(&pkg, build_root.path(), adsmt_env)
+    // Build (seed $srcdir with the package file's directory), then
+    // content-address the staged $pkgdir tree.
+    let source_dir = pkg_file.parent().unwrap_or_else(|| Path::new("."));
+    let staged = build::stage_and_build(&pkg, source_dir, adsmt_env)
         .map_err(|err| ResolveError::Build { name: name.to_string(), err })?;
 
-    let main_path = pkgdir.join(&pkg.meta.main);
+    let main_path = staged.pkgdir.join(&pkg.meta.main);
     if !main_path.is_file() {
         return Err(ResolveError::MissingMain {
             name: name.to_string(),
@@ -151,7 +132,7 @@ fn resolve_path(
         });
     }
 
-    let contents_sha = store.add_tree(&pkgdir).map_err(|err| ResolveError::Io {
+    let contents_sha = store.add_tree(&staged.pkgdir).map_err(|err| ResolveError::Io {
         name: name.to_string(),
         path: store.root().display().to_string(),
         err,
@@ -165,25 +146,6 @@ fn resolve_path(
         contents_sha256: contents_sha,
         main: pkg.meta.main,
     })
-}
-
-/// Recursively copy `src`'s contents into `dst`.
-fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            std::fs::create_dir_all(&to)?;
-            copy_dir(&from, &to)?;
-        } else {
-            if let Some(parent) = to.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

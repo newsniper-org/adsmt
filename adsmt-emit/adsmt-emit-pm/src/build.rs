@@ -76,6 +76,49 @@ pub fn build(pkg: &Package, build_root: &Path, adsmt_env: &Path) -> Result<PathB
     Ok(pkgdir)
 }
 
+/// A staged build: the staged `$pkgdir` plus the temp build root it
+/// lives in (kept alive for as long as the value is held).
+pub struct StagedBuild {
+    _root: tempfile::TempDir,
+    /// The staged `$pkgdir` — the package's `contents/`.
+    pub pkgdir: PathBuf,
+}
+
+/// Stage a fresh build root, seed `$srcdir` with `source_dir`, run
+/// the build script, and return the staged `$pkgdir`. The temp root
+/// is cleaned when the returned [`StagedBuild`] is dropped.
+pub fn stage_and_build(
+    pkg: &Package,
+    source_dir: &Path,
+    adsmt_env: &Path,
+) -> Result<StagedBuild, BuildError> {
+    let root = tempfile::tempdir()?;
+    let srcdir = root.path().join("src");
+    std::fs::create_dir_all(&srcdir)?;
+    copy_dir(source_dir, &srcdir)?;
+    let pkgdir = build(pkg, root.path(), adsmt_env)?;
+    Ok(StagedBuild { pkgdir, _root: root })
+}
+
+/// Recursively copy `src`'s contents into `dst`.
+fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            std::fs::create_dir_all(&to)?;
+            copy_dir(&from, &to)?;
+        } else {
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

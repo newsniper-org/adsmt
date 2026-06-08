@@ -23,7 +23,7 @@ pub mod package;
 pub mod resolver;
 pub mod store;
 
-pub use build::{build, default_adsmt_env, BuildError};
+pub use build::{build, default_adsmt_env, stage_and_build, BuildError, StagedBuild};
 pub use codec::{codec_for_extension, pack_dir, unpack_into, Codec, ZstdCodec};
 pub use lockfile::{Lockfile, LockedPackage, LOCKFILE_VERSION};
 pub use manifest::{Dependency, Manifest, Source};

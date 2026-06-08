@@ -1,0 +1,21 @@
+[package]
+name = "adsmt-emit-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The `adsmt-emit` CLI: install, run, list, and pack emitter packages (build → .adsmt-emitters/ → wasmi runtime)."
+
+[[bin]]
+name = "adsmt-emit"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+adsmt-emit-contract = { path = "../adsmt-emit-contract" }
+adsmt-emit-pm = { path = "../adsmt-emit-pm" }
+adsmt-emit-runtime = { path = "../adsmt-emit-runtime" }
+
+[dev-dependencies]
+tempfile = "3.27"
+# Assemble a tiny wasip1 emitter from WAT for the end-to-end test.
+wat = "1"
