@@ -15,7 +15,10 @@
 //! the [`crate::SldEngine`]; mutation is restricted to insertion at
 //! load time.
 
-use adsmt_core::{Term, TermInner};
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use adsmt_core::{Term, TermInner, Var};
 
 /// A single Horn clause `head :- body₁ … bodyₙ`.
 ///
@@ -124,6 +127,39 @@ impl SchematicHornRule {
         schematic: &[String],
         subst: &mut Vec<(String, Term)>,
     ) -> bool {
+        // Higher-order (flexible) head: if the pattern's spine head is
+        // a schematic variable and it is applied to ≥1 argument, only
+        // the Miller pattern fragment (Lλ — **distinct** variable
+        // arguments) is solvable. The MGU against a goal `t` is then
+        // `F ↦ λb₁ … bₙ. t` (occurs-checked; SLD goals are top-level
+        // so no escaping-bound-variable scope check is needed). A
+        // flexible head that is *not* a pattern (non-distinct or
+        // non-variable arguments) lies outside the decidable fragment
+        // and does not match — crucially, it must NOT fall through to
+        // the structural descent below, which would spuriously match a
+        // partial sub-spine (e.g. read `F(x, x)` as `(F x) x`).
+        if let TermInner::Var(h) = spine_head(pattern).kind()
+            && schematic.iter().any(|s| s == &h.name)
+            && matches!(pattern.kind(), TermInner::App(..))
+        {
+            return match flex_pattern(pattern, schematic) {
+                Some((f, spine)) => {
+                    if goal.free_vars().iter().any(|v| v.name == f) {
+                        return false; // occurs check
+                    }
+                    let lambda = build_lambda(&spine, goal);
+                    match subst.iter().find(|(name, _)| name == &f) {
+                        Some((_, existing)) => existing.alpha_eq(&lambda),
+                        None => {
+                            subst.push((f, lambda));
+                            true
+                        }
+                    }
+                }
+                None => false,
+            };
+        }
+
         match pattern.kind() {
             TermInner::Var(v) => {
                 if schematic.iter().any(|s| s == &v.name) {
@@ -156,6 +192,59 @@ impl SchematicHornRule {
             TermInner::Lam(_, _) => pattern.alpha_eq(goal),
         }
     }
+}
+
+/// The head of an applicative spine: peel `App(App(…(h, a₁)…), aₙ)`
+/// down to `h`.
+fn spine_head(t: &Term) -> &Term {
+    let mut cur = t;
+    while let TermInner::App(f, _) = cur.kind() {
+        cur = f;
+    }
+    cur
+}
+
+/// Recognise a higher-order pattern flexible head: a term
+/// `F b₁ … bₙ` (n ≥ 1) whose spine head `F` is a schematic variable
+/// and whose arguments `b₁ … bₙ` are **distinct** variables. Returns
+/// `(F's name, [b₁ … bₙ])` in application order, or `None` when the
+/// term is not such a pattern.
+fn flex_pattern(pattern: &Term, schematic: &[String]) -> Option<(String, Vec<Arc<Var>>)> {
+    let mut spine: Vec<Arc<Var>> = Vec::new();
+    let mut cur = pattern;
+    loop {
+        match cur.kind() {
+            TermInner::App(f, x) => {
+                match x.kind() {
+                    TermInner::Var(v) => spine.push(v.clone()),
+                    _ => return None, // arg is not a variable → not a pattern
+                }
+                cur = f;
+            }
+            TermInner::Var(v)
+                if !spine.is_empty() && schematic.iter().any(|s| s == &v.name) =>
+            {
+                spine.reverse();
+                let mut seen = HashSet::new();
+                for b in &spine {
+                    if !seen.insert(b.name.clone()) {
+                        return None; // spine variables must be distinct
+                    }
+                }
+                return Some((v.name.clone(), spine));
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Build `λb₁ … bₙ. body`.
+fn build_lambda(spine: &[Arc<Var>], body: &Term) -> Term {
+    let mut t = body.clone();
+    for v in spine.iter().rev() {
+        t = Term::lam((**v).clone(), t);
+    }
+    t
 }
 
 /// Owned collection of Horn rules. Insertion-only at load time;
@@ -351,6 +440,59 @@ mod tests {
             "test",
         );
         assert!(!rule.head_matches(&goal));
+        assert!(rule.head_unify(&goal).is_none());
+    }
+
+    #[test]
+    fn higher_order_pattern_flex_head_binds_lambda() {
+        // Pattern `F(x)` (F a schematic predicate var, x a distinct
+        // var) unifies with `g(a)` by the Miller MGU `F ↦ λx. g(a)`.
+        use adsmt_core::Kind;
+        let int_ty = Type::const_("Int", Kind::Type);
+        let pred_ty = Type::fun(int_ty.clone(), Type::bool_()).unwrap();
+        let big_f = Term::var("F", pred_ty.clone());
+        let x = Term::var("x", int_ty.clone());
+        let head = Term::app(big_f, x).unwrap(); // F(x)
+        let g = Term::const_("g", pred_ty);
+        let a = Term::const_("a", int_ty.clone());
+        let goal = Term::app(g, a).unwrap(); // g(a)
+
+        let rule = SchematicHornRule::new(head, vec![], vec!["F".into(), "x".into()], "ho");
+        let subst = rule.head_unify(&goal).expect("HO pattern unifies");
+        let f_bind = subst
+            .iter()
+            .find(|(n, _)| n == "F")
+            .map(|(_, t)| t.clone())
+            .expect("F is bound");
+        // Applying the binding to any argument β-reduces to g(a).
+        let z = Term::const_("z", int_ty);
+        let reduced = Term::app(f_bind, z).unwrap().beta_reduce().unwrap();
+        assert!(reduced.alpha_eq(&goal));
+    }
+
+    #[test]
+    fn higher_order_non_pattern_repeated_arg_falls_back() {
+        // `F(x, x)` is NOT a higher-order pattern (args not distinct),
+        // so it does not take the flex-head path; structural
+        // unification applies and the type-clashing goal fails.
+        use adsmt_core::Kind;
+        let int_ty = Type::const_("Int", Kind::Type);
+        let pred2_ty = Type::fun(
+            int_ty.clone(),
+            Type::fun(int_ty.clone(), Type::bool_()).unwrap(),
+        )
+        .unwrap();
+        let big_f = Term::var("F", pred2_ty.clone());
+        let x = Term::var("x", int_ty.clone());
+        let head =
+            Term::app(Term::app(big_f, x.clone()).unwrap(), x).unwrap(); // F(x, x)
+        let g = Term::const_("g", pred2_ty);
+        let a = Term::const_("a", int_ty.clone());
+        let b = Term::const_("b", int_ty);
+        let goal = Term::app(Term::app(g, a).unwrap(), b).unwrap(); // g(a, b), a ≠ b
+        let rule =
+            SchematicHornRule::new(head, vec![], vec!["F".into(), "x".into()], "ho");
+        // Not a pattern → structural; F↦g then x↦a vs x↦b inconsistent.
         assert!(rule.head_unify(&goal).is_none());
     }
 

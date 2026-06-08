@@ -278,7 +278,11 @@ fn apply_subst(t: &Term, subst: &[(String, Term)]) -> Term {
         TermInner::App(f, x) => {
             let nf = apply_subst(f, subst);
             let nx = apply_subst(x, subst);
-            Term::app(nf, nx).unwrap_or_else(|_| t.clone())
+            let applied = Term::app(nf, nx).unwrap_or_else(|_| t.clone());
+            // A higher-order binding (`F ↦ λ…`) landing in an applied
+            // position creates a β-redex; reduce it so the body atom
+            // is instantiated. Non-redexes are returned unchanged.
+            applied.beta_reduce().unwrap_or(applied)
         }
         TermInner::Lam(v, body) => {
             let inner: Vec<(String, Term)> =
@@ -493,6 +497,40 @@ mod tests {
         let cs2 = eng.candidates(&g2);
         assert_eq!(cs2.len(), 1);
         assert!(cs2[0].hypotheses[0].alpha_eq(&ab2));
+    }
+
+    #[test]
+    fn higher_order_pattern_flex_head_fact_discharges_goal() {
+        // A *fact* with a higher-order flexible head `F(x)` (F a
+        // schematic predicate variable, x a distinct argument
+        // variable) unifies with the goal `g(a)` via the Miller MGU
+        // `F ↦ λx. g(a)`, discharging it with no hypotheses. Exercises
+        // the engine's higher-order pattern path. (Such an
+        // unconstrained flexible head is *universal* — it matches any
+        // goal; a real rule constrains it via its body or context.)
+        use crate::rule_base::{SchematicHornRule, SchematicHornRuleBase};
+        use adsmt_core::Kind;
+        let int_ty = Type::const_("Int", Kind::Type);
+        let pred_ty = Type::fun(int_ty.clone(), Type::bool_()).unwrap();
+        let big_f = Term::var("F", pred_ty.clone());
+        let x = Term::var("x", int_ty.clone());
+        let head = Term::app(big_f, x).unwrap(); // F(x)
+        let mut sch = SchematicHornRuleBase::new();
+        sch.insert(SchematicHornRule::new(
+            head,
+            vec![],
+            vec!["F".into(), "x".into()],
+            "kb::ho-fact",
+        ));
+
+        let g = Term::const_("g", pred_ty);
+        let a = Term::const_("a", int_ty);
+        let goal = Term::app(g, a).unwrap();
+        let set = AbducibleSet::new();
+
+        let cs = SldEngine::with_schematic_rules(&set, &sch).candidates(&goal);
+        assert_eq!(cs.len(), 1);
+        assert!(cs[0].is_empty());
     }
 
     #[test]
