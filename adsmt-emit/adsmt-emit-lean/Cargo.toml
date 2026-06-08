@@ -1,0 +1,22 @@
+[package]
+name = "adsmt-emit-lean"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reference Lean 4 emitter as a wasip1 command: CBOR certificate on stdin, Lean source on stdout. The canonical example of porting an emitter to a wasm package."
+
+[[bin]]
+name = "lean"
+path = "src/main.rs"
+
+[dependencies]
+adsmt-cert = { path = "../../adsmt-cert" }
+adsmt-emit-contract = { path = "../adsmt-emit-contract" }
+
+[dev-dependencies]
+adsmt-core = { path = "../../adsmt-core" }
+# For the (ignored) end-to-end wasm test: load the built lean.wasm via
+# the runtime and emit through wasmi.
+adsmt-emit-pm = { path = "../adsmt-emit-pm" }
+adsmt-emit-runtime = { path = "../adsmt-emit-runtime" }
+tempfile = "3.27"

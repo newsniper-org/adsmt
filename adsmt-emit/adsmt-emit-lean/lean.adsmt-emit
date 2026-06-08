@@ -1,0 +1,22 @@
+---
+name = "lean"
+target = "lean"
+version = "1.0.0-rc.30"
+contract = "0.1.0"
+main = "lean.wasm"
+wire = "cbor"
+summary = "Lean 4 reference emitter for adsmt certificates"
+license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
+source-lang = "rust"
+---
+#!/usr/bin/env adsmt-env sh
+# Compile the `lean` emitter wrapper to a wasip1 command and install
+# it as the package's `main` artifact. $srcdir holds the wrapper
+# crate (this package's directory); $pkgdir is the staged contents/.
+#
+# NOTE: an in-tree crate uses workspace path dependencies, which only
+# resolve inside the full workspace; a self-contained package (the
+# out-of-tree Rocq/Isabelle emitters) uses git/registry deps so the
+# isolated $srcdir build resolves. Build from the workspace root here:
+cargo build --release --target wasm32-wasip1 --bin lean
+install -Dm644 "target/wasm32-wasip1/release/lean.wasm" "$pkgdir/lean.wasm"

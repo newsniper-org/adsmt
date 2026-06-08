@@ -106,6 +106,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-emit-lean"
+version = "1.0.0-rc.30"
+dependencies = [
+ "adsmt-cert",
+ "adsmt-core",
+ "adsmt-emit-contract",
+ "adsmt-emit-pm",
+ "adsmt-emit-runtime",
+ "tempfile",
+]
+
+[[package]]
 name = "adsmt-emit-pm"
 version = "1.0.0-rc.30"
 dependencies = [

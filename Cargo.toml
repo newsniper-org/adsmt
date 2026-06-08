@@ -47,6 +47,7 @@ members = [
     "adsmt-emit/adsmt-emit-pm",
     "adsmt-emit/adsmt-emit-runtime",
     "adsmt-emit/adsmt-emit-cli",
+    "adsmt-emit/adsmt-emit-lean",
     "adsmt-emit/adsmt-env",
     "adsmt-heuristic-checker",
     "adsmt-heuristic-checker-macros",
