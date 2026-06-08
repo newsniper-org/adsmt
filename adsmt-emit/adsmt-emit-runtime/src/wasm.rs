@@ -23,8 +23,10 @@
 //! abort. Emitters are also encouraged to *stream* the certificate
 //! and keep their working set small.
 
+use std::path::Path;
+
 use adsmt_emit_contract::{EmitError, EmitOutput, EmitResult, EmitterInfo};
-use adsmt_emit_pm::{ExecKind, LockedPackage, Store};
+use adsmt_emit_pm::{LockedPackage, Store};
 use wasmi::{Config, Engine, Linker, Module, StoreLimits, StoreLimitsBuilder};
 use wasmi_wasi::wasi_common::pipe::{ReadPipe, WritePipe};
 use wasmi_wasi::{WasiCtx, WasiCtxBuilder};
@@ -52,20 +54,19 @@ pub struct WasmEmitter {
 }
 
 impl WasmEmitter {
-    /// Build a wasm emitter from a resolved Wasm-tier package.
+    /// Build a wasm emitter from a resolved package: load its `main`
+    /// `.wasm` from the package's stored `contents/` tree.
     pub fn from_locked(pkg: &LockedPackage, store: &Store) -> Result<Self, RuntimeError> {
-        if pkg.kind != ExecKind::Wasm {
-            return Err(RuntimeError::WrongTier { name: pkg.name.clone() });
-        }
-        if !store.contains(&pkg.artifact_sha256) {
+        if !store.contains_tree(&pkg.contents_sha256) {
             return Err(RuntimeError::ArtifactMissing {
                 name: pkg.name.clone(),
-                sha256: pkg.artifact_sha256.clone(),
+                sha256: pkg.contents_sha256.clone(),
             });
         }
-        let bytes = store.read(&pkg.artifact_sha256).map_err(|e| RuntimeError::Wasm {
+        let wasm_path = store.tree_path(&pkg.contents_sha256, Path::new(&pkg.main));
+        let bytes = std::fs::read(&wasm_path).map_err(|e| RuntimeError::Wasm {
             name: pkg.name.clone(),
-            detail: format!("reading artifact: {e}"),
+            detail: format!("reading {}: {e}", wasm_path.display()),
         })?;
 
         let mut config = Config::default();
@@ -180,15 +181,17 @@ mod tests {
 
     fn wasm_pkg(store: &Store, wat: &str) -> LockedPackage {
         let bytes = wat::parse_str(wat).unwrap();
-        let sha = store.add(&bytes).unwrap();
+        // stage a contents/ tree holding the built .wasm
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::write(staged.path().join("emitter.wasm"), &bytes).unwrap();
+        let sha = store.add_tree(staged.path()).unwrap();
         LockedPackage {
             name: "rocq".into(),
             target: "rocq".into(),
             version: "0.1.0".into(),
             source: "path+file:///x".into(),
-            artifact_sha256: sha,
-            kind: ExecKind::Wasm,
-            interpreter: None,
+            contents_sha256: sha,
+            main: "emitter.wasm".into(),
         }
     }
 

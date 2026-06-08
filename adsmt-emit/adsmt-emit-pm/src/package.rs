@@ -1,10 +1,13 @@
-//! Per-package format — a single self-describing file.
+//! Per-package format — a single self-describing source file
+//! (makepkg's PKGBUILD analogue).
 //!
-//! An emitter package is one file: a TOML frontmatter block
-//! delimited by `---` lines, followed by a script whose first line
-//! is a mandatory shebang. The dedicated runtime strips the
-//! frontmatter and executes the body; because the body's first
-//! line is the shebang, the extracted body is directly runnable.
+//! A package is one file: a TOML frontmatter block delimited by
+//! `---` lines, followed by a **build script** whose first line is
+//! a mandatory shebang. The build script runs at install time
+//! (through adsmt-env, which provides `$srcdir` / `$pkgdir`) and
+//! installs the built emitter `.wasm` into `$pkgdir`. `main` is the
+//! runtime entry: the `.wasm`'s path relative to `$pkgdir` (== the
+//! package's `contents/` root).
 //!
 //! ```text
 //! ---
@@ -12,30 +15,18 @@
 //! target   = "rocq"
 //! version  = "0.1.0"
 //! contract = "0.1.0"
-//! main     = "."
+//! main     = "rocq.wasm"
 //! summary  = "Rocq (Coq) backend for adsmt certificates"
 //! ---
-//! #!/usr/bin/env adsmt-env python3
-//! import sys, json
-//! cert = json.load(sys.stdin)
-//! print(emit(cert))
+//! #!/usr/bin/env adsmt-env sh
+//! # compile the emitter source (in $srcdir) to wasm, install to $pkgdir
+//! cargo build --release --target wasm32-wasip1
+//! install -Dm644 target/wasm32-wasip1/release/rocq.wasm "$pkgdir/rocq.wasm"
 //! ```
 //!
-//! The recommended shebang launcher is `adsmt-env` (a managed
-//! `/usr/bin/env` replacement): it resolves the interpreter from
-//! `$ADSMT_TOOLCHAIN/bin` before `$PATH` and handles multi-argument
-//! interpreters robustly. A plain `#!/usr/bin/env python3` also
-//! works.
-//!
-//! Two execution tiers (the `(b')` dual-tier design):
-//! - **Script** (`main = "."`): the body *is* the emitter; the
-//!   runtime runs it via its shebang interpreter (cert JSON on
-//!   stdin → prover text on stdout).
-//! - **Wasm** (`main = "<path>.wasm"`): the body is a thin launcher
-//!   and the real artifact is a sandboxed wasm component. Wasm-tier
-//!   *resolution* lands with the wasmtime backend.
-
-use std::path::PathBuf;
+//! The shebang must route through `adsmt-env` (the managed
+//! `/usr/bin/env` replacement) so the build sees `$srcdir`/`$pkgdir`
+//! and multi-argument interpreters work.
 
 use serde::Deserialize;
 
@@ -51,8 +42,8 @@ pub struct PackageMeta {
     pub version: String,
     /// The `adsmt:emitter` WIT world version implemented.
     pub contract: String,
-    /// Entry. `"."` = the inline script body is the implementation
-    /// (Script tier); a `<path>.wasm` = the Wasm tier artifact.
+    /// The runtime entry: the built emitter `.wasm`, as a path
+    /// relative to `$pkgdir` (== the package's `contents/` root).
     #[serde(default = "default_main")]
     pub main: String,
     /// One-line human-readable description.
@@ -70,41 +61,17 @@ pub struct PackageMeta {
 }
 
 fn default_main() -> String {
-    ".".to_string()
+    "emitter.wasm".to_string()
 }
 
-/// Which execution tier a package resolves to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ExecKind {
-    /// Inline script run via its shebang interpreter.
-    Script,
-    /// Sandboxed wasm component.
-    Wasm,
-}
-
-impl PackageMeta {
-    /// The execution tier implied by `main`.
-    pub fn exec_kind(&self) -> ExecKind {
-        if self.main == "." { ExecKind::Script } else { ExecKind::Wasm }
-    }
-
-    /// For the Wasm tier, the artifact path relative to the package
-    /// file's directory. `None` for the Script tier.
-    pub fn wasm_artifact(&self) -> Option<PathBuf> {
-        match self.exec_kind() {
-            ExecKind::Wasm => Some(PathBuf::from(&self.main)),
-            ExecKind::Script => None,
-        }
-    }
-}
-
-/// A parsed package file: frontmatter + executable body.
+/// A parsed package file: frontmatter + build script.
 #[derive(Clone, Debug)]
 pub struct Package {
     /// The frontmatter metadata.
     pub meta: PackageMeta,
-    /// The script body, shebang-first (line 1 is `#!…`).
+    /// The build-script body, shebang-first (line 1 is `#!…`). Run
+    /// at install time (through adsmt-env) to produce the emitter
+    /// artifact into `$pkgdir`; not run at emit time.
     pub body: String,
 }
 
@@ -195,38 +162,37 @@ mod tests {
         target = \"rocq\"\n\
         version = \"0.1.0\"\n\
         contract = \"0.1.0\"\n\
+        main = \"rocq.wasm\"\n\
         summary = \"Rocq backend\"\n\
         ---\n\
-        #!/usr/bin/env python3\n\
-        import sys\n\
-        print(\"Lemma foo.\")\n";
+        #!/usr/bin/env adsmt-env sh\n\
+        cargo build --release --target wasm32-wasip1\n\
+        install -Dm644 out.wasm \"$pkgdir/rocq.wasm\"\n";
 
     #[test]
-    fn parses_frontmatter_and_body() {
+    fn parses_frontmatter_and_build_script() {
         let p = Package::parse(SAMPLE).unwrap();
         assert_eq!(p.meta.name, "rocq");
         assert_eq!(p.meta.contract, "0.1.0");
-        assert_eq!(p.meta.main, "."); // defaulted
-        assert_eq!(p.meta.exec_kind(), ExecKind::Script);
-        assert_eq!(p.shebang(), "#!/usr/bin/env python3");
-        assert_eq!(p.interpreter(), "/usr/bin/env python3");
-        assert!(p.body.starts_with("#!/usr/bin/env python3\n"));
-        assert!(p.body.contains("Lemma foo."));
+        assert_eq!(p.meta.main, "rocq.wasm");
+        assert_eq!(p.shebang(), "#!/usr/bin/env adsmt-env sh");
+        assert_eq!(p.interpreter(), "/usr/bin/env adsmt-env sh");
+        assert!(p.body.starts_with("#!/usr/bin/env adsmt-env sh\n"));
+        assert!(p.body.contains("$pkgdir/rocq.wasm"));
     }
 
     #[test]
-    fn wasm_tier_from_main_path() {
+    fn main_defaults_to_emitter_wasm() {
         let text = "---\n\
             name = \"rocq\"\n\
             target = \"rocq\"\n\
             version = \"0.1.0\"\n\
             contract = \"0.1.0\"\n\
-            main = \"emitter.wasm\"\n\
             ---\n\
-            #!/usr/bin/env adsmt-emit-wasm\n";
+            #!/usr/bin/env adsmt-env sh\n\
+            true\n";
         let p = Package::parse(text).unwrap();
-        assert_eq!(p.meta.exec_kind(), ExecKind::Wasm);
-        assert_eq!(p.meta.wasm_artifact(), Some(PathBuf::from("emitter.wasm")));
+        assert_eq!(p.meta.main, "emitter.wasm");
     }
 
     #[test]

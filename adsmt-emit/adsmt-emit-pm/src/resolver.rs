@@ -1,26 +1,24 @@
-//! Resolver — manifest + sources → lockfile, populating the store.
+//! Resolver — manifest + sources → lockfile, building each package
+//! and storing its `contents/` tree.
 //!
-//! For each requested emitter, the resolver reads the single-file
+//! For each requested emitter, the resolver: reads the single-file
 //! package, checks its version satisfies the manifest requirement,
-//! copies the executable bytes into the content-addressed
-//! [`Store`], and records a [`LockedPackage`].
+//! **builds** it (the build script runs through adsmt-env, staging
+//! into `$pkgdir`), stores the resulting `contents/` tree by content
+//! address, and records a [`LockedPackage`] pointing at the built
+//! `.wasm` (`main`, relative to `contents/`).
 //!
-//! Wired today (`path` sources):
-//! - **Script tier** (`main = "."`): the shebang-first script body
-//!   is stored verbatim.
-//! - **Wasm tier** (`main = "<path>.wasm"`): the sibling wasm
-//!   artifact is stored by content address.
-//!
-//! Deferred — an explicit error, never a silent skip:
-//! - `git` / `registry` sources → [`ResolveError::UnsupportedSource`].
+//! Only `path` sources are wired; `git` / `registry` return an
+//! explicit [`ResolveError::UnsupportedSource`].
 
 use std::path::Path;
 
 use semver::{Version, VersionReq};
 
+use crate::build;
 use crate::lockfile::{Lockfile, LockedPackage};
 use crate::manifest::{Manifest, Source};
-use crate::package::{ExecKind, Package};
+use crate::package::Package;
 use crate::store::Store;
 
 /// A resolution failure for a specific emitter.
@@ -48,11 +46,22 @@ pub enum ResolveError {
 
     #[error("emitter `{name}`: parsing package file: {err}")]
     BadPackage { name: String, err: crate::package::PackageParseError },
+
+    #[error("emitter `{name}`: building: {err}")]
+    Build { name: String, err: build::BuildError },
+
+    #[error("emitter `{name}`: built package has no `{main}` (the `main` artifact)")]
+    MissingMain { name: String, main: String },
 }
 
-/// Resolve every emitter in `manifest` into a [`Lockfile`], copying
-/// each artifact into `store`.
-pub fn resolve(manifest: &Manifest, store: &Store) -> Result<Lockfile, ResolveError> {
+/// Resolve every emitter in `manifest` into a [`Lockfile`], building
+/// each and populating `store`. `adsmt_env` is the build driver
+/// binary (see [`build::default_adsmt_env`]).
+pub fn resolve(
+    manifest: &Manifest,
+    store: &Store,
+    adsmt_env: &Path,
+) -> Result<Lockfile, ResolveError> {
     let mut locked = Vec::new();
     for (name, dep) in &manifest.emitters {
         let req = VersionReq::parse(&dep.version).map_err(|err| {
@@ -60,7 +69,7 @@ pub fn resolve(manifest: &Manifest, store: &Store) -> Result<Lockfile, ResolveEr
         })?;
         match &dep.source {
             Source::Path(path) => {
-                locked.push(resolve_path(name, &req, &dep.version, path, store)?);
+                locked.push(resolve_path(name, &req, &dep.version, path, store, adsmt_env)?);
             }
             Source::Git { .. } => {
                 return Err(ResolveError::UnsupportedSource { name: name.clone(), kind: "git" });
@@ -82,6 +91,7 @@ fn resolve_path(
     req_text: &str,
     pkg_file: &Path,
     store: &Store,
+    adsmt_env: &Path,
 ) -> Result<LockedPackage, ResolveError> {
     let text = std::fs::read_to_string(pkg_file).map_err(|err| ResolveError::Io {
         name: name.to_string(),
@@ -108,85 +118,122 @@ fn resolve_path(
         });
     }
 
-    match pkg.meta.exec_kind() {
-        ExecKind::Script => {
-            // Store the shebang-first body verbatim; it is directly
-            // executable once materialized.
-            let interpreter = pkg.interpreter().to_string();
-            let sha = store.add(pkg.body.as_bytes()).map_err(|err| ResolveError::Io {
-                name: name.to_string(),
-                path: store.root().display().to_string(),
-                err,
-            })?;
-            Ok(LockedPackage {
-                name: name.to_string(),
-                target: pkg.meta.target,
-                version: pkg.meta.version,
-                source: format!("path+file://{}", pkg_file.display()),
-                artifact_sha256: sha,
-                kind: ExecKind::Script,
-                interpreter: Some(interpreter),
-            })
-        }
-        ExecKind::Wasm => {
-            // `main` points to a sibling wasm component/module,
-            // relative to the package file's directory. Store its
-            // bytes verbatim; the wasm runtime loads them by content
-            // address.
-            let rel = pkg.meta.wasm_artifact().expect("Wasm tier has a main path");
-            let dir = pkg_file.parent().unwrap_or_else(|| Path::new("."));
-            let wasm_path = dir.join(&rel);
-            let bytes = std::fs::read(&wasm_path).map_err(|err| ResolveError::Io {
-                name: name.to_string(),
-                path: wasm_path.display().to_string(),
-                err,
-            })?;
-            let sha = store.add(&bytes).map_err(|err| ResolveError::Io {
-                name: name.to_string(),
-                path: store.root().display().to_string(),
-                err,
-            })?;
-            Ok(LockedPackage {
-                name: name.to_string(),
-                target: pkg.meta.target,
-                version: pkg.meta.version,
-                source: format!("path+file://{}", pkg_file.display()),
-                artifact_sha256: sha,
-                kind: ExecKind::Wasm,
-                interpreter: None,
-            })
+    // Stage a build root, seed $srcdir with the package's source
+    // tree (the package file's directory), build, then content-
+    // address the staged $pkgdir tree.
+    let build_root = tempfile::tempdir().map_err(|err| ResolveError::Io {
+        name: name.to_string(),
+        path: "<build-root>".to_string(),
+        err,
+    })?;
+    let srcdir = build_root.path().join("src");
+    std::fs::create_dir_all(&srcdir).map_err(|err| ResolveError::Io {
+        name: name.to_string(),
+        path: srcdir.display().to_string(),
+        err,
+    })?;
+    if let Some(src) = pkg_file.parent() {
+        copy_dir(src, &srcdir).map_err(|err| ResolveError::Io {
+            name: name.to_string(),
+            path: src.display().to_string(),
+            err,
+        })?;
+    }
+
+    let pkgdir = build::build(&pkg, build_root.path(), adsmt_env)
+        .map_err(|err| ResolveError::Build { name: name.to_string(), err })?;
+
+    let main_path = pkgdir.join(&pkg.meta.main);
+    if !main_path.is_file() {
+        return Err(ResolveError::MissingMain {
+            name: name.to_string(),
+            main: pkg.meta.main.clone(),
+        });
+    }
+
+    let contents_sha = store.add_tree(&pkgdir).map_err(|err| ResolveError::Io {
+        name: name.to_string(),
+        path: store.root().display().to_string(),
+        err,
+    })?;
+
+    Ok(LockedPackage {
+        name: name.to_string(),
+        target: pkg.meta.target,
+        version: pkg.meta.version,
+        source: format!("path+file://{}", pkg_file.display()),
+        contents_sha256: contents_sha,
+        main: pkg.meta.main,
+    })
+}
+
+/// Recursively copy `src`'s contents into `dst`.
+fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            std::fs::create_dir_all(&to)?;
+            copy_dir(&from, &to)?;
+        } else {
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&from, &to)?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn write_script_pkg(path: &Path, name: &str, version: &str) {
+    /// Stand-in adsmt-env (derives srcdir/pkgdir, execs the rest).
+    fn stub_adsmt_env(dir: &Path) -> std::path::PathBuf {
+        let p = dir.join("stub-adsmt-env");
         std::fs::write(
-            path,
+            &p,
+            "#!/bin/sh\nexport srcdir=\"$ADSMT_EMIT_BUILD_ROOT/src\"\nexport pkgdir=\"$ADSMT_EMIT_BUILD_ROOT/pkg\"\nexec \"$@\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    }
+
+    /// Write a package whose build script installs a fake .wasm.
+    fn write_pkg(dir: &Path, name: &str, version: &str) -> std::path::PathBuf {
+        let pkg_file = dir.join(format!("{name}.adsmt-emit"));
+        std::fs::write(
+            &pkg_file,
             format!(
                 "---\n\
                  name = \"{name}\"\n\
                  target = \"{name}\"\n\
                  version = \"{version}\"\n\
                  contract = \"0.1.0\"\n\
-                 summary = \"x\"\n\
+                 main = \"{name}.wasm\"\n\
                  ---\n\
-                 #!/usr/bin/env python3\n\
-                 import sys, json\n\
-                 print(json.load(sys.stdin))\n"
+                 #!/usr/bin/env adsmt-env sh\n\
+                 printf '%s' 'wasm:{name}' > \"$pkgdir/{name}.wasm\"\n"
             ),
         )
         .unwrap();
+        pkg_file
     }
 
     #[test]
-    fn resolves_script_package_into_lockfile_and_store() {
+    fn builds_and_stores_contents_tree() {
         let tmp = tempfile::tempdir().unwrap();
-        let pkg_file = tmp.path().join("rocq.adsmt-emit");
-        write_script_pkg(&pkg_file, "rocq", "0.1.3");
+        let stub = stub_adsmt_env(tmp.path());
+        let pkg_dir = tmp.path().join("emit-rocq");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let pkg_file = write_pkg(&pkg_dir, "rocq", "0.1.3");
         let store = Store::at(tmp.path().join("store"));
 
         let manifest = Manifest::from_toml(&format!(
@@ -195,45 +242,45 @@ mod tests {
         ))
         .unwrap();
 
-        let lf = resolve(&manifest, &store).unwrap();
+        let lf = resolve(&manifest, &store, &stub).unwrap();
         let p = lf.get("rocq").unwrap();
         assert_eq!(p.version, "0.1.3");
-        assert_eq!(p.kind, ExecKind::Script);
-        assert_eq!(p.interpreter.as_deref(), Some("/usr/bin/env python3"));
-        // stored body is shebang-first and executable
-        let body = store.read(&p.artifact_sha256).unwrap();
-        assert!(body.starts_with(b"#!/usr/bin/env python3\n"));
+        assert_eq!(p.main, "rocq.wasm");
+        assert!(store.contains_tree(&p.contents_sha256));
+        assert_eq!(
+            std::fs::read(store.tree_path(&p.contents_sha256, Path::new("rocq.wasm"))).unwrap(),
+            b"wasm:rocq"
+        );
     }
 
     #[test]
-    fn resolves_wasm_tier_package() {
+    fn missing_main_artifact_is_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let pkg_file = tmp.path().join("lean.adsmt-emit");
+        let stub = stub_adsmt_env(tmp.path());
+        let pkg_file = tmp.path().join("bad.adsmt-emit");
+        // build script installs nothing, but main points at a .wasm
         std::fs::write(
             &pkg_file,
-            "---\nname=\"lean\"\ntarget=\"lean\"\nversion=\"0.1.0\"\ncontract=\"0.1.0\"\nmain=\"emitter.wasm\"\n---\n#!/usr/bin/env adsmt-emit-wasm\n",
+            "---\nname=\"bad\"\ntarget=\"bad\"\nversion=\"0.1.0\"\ncontract=\"0.1.0\"\nmain=\"bad.wasm\"\n---\n#!/usr/bin/env adsmt-env sh\ntrue\n",
         )
         .unwrap();
-        // sibling wasm artifact next to the package file
-        std::fs::write(tmp.path().join("emitter.wasm"), b"\0asm\x01\0\0\0fake").unwrap();
         let store = Store::at(tmp.path().join("store"));
         let manifest = Manifest::from_toml(&format!(
-            "[emitters]\nlean = {{ version = \"0.1\", path = \"{}\" }}\n",
+            "[emitters]\nbad = {{ version = \"0.1\", path = \"{}\" }}\n",
             pkg_file.display()
         ))
         .unwrap();
-        let lf = resolve(&manifest, &store).unwrap();
-        let p = lf.get("lean").unwrap();
-        assert_eq!(p.kind, ExecKind::Wasm);
-        assert!(p.interpreter.is_none());
-        assert_eq!(store.read(&p.artifact_sha256).unwrap(), b"\0asm\x01\0\0\0fake");
+        assert!(matches!(
+            resolve(&manifest, &store, &stub).unwrap_err(),
+            ResolveError::MissingMain { .. }
+        ));
     }
 
     #[test]
     fn version_mismatch_is_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let pkg_file = tmp.path().join("rocq.adsmt-emit");
-        write_script_pkg(&pkg_file, "rocq", "0.2.0");
+        let stub = stub_adsmt_env(tmp.path());
+        let pkg_file = write_pkg(tmp.path(), "rocq", "0.2.0");
         let store = Store::at(tmp.path().join("store"));
         let manifest = Manifest::from_toml(&format!(
             "[emitters]\nrocq = {{ version = \"^0.1\", path = \"{}\" }}\n",
@@ -241,26 +288,28 @@ mod tests {
         ))
         .unwrap();
         assert!(matches!(
-            resolve(&manifest, &store).unwrap_err(),
+            resolve(&manifest, &store, &stub).unwrap_err(),
             ResolveError::VersionMismatch { .. }
         ));
     }
 
     #[test]
     fn git_and_registry_are_explicit_unsupported() {
-        let store = Store::at(std::env::temp_dir().join("adsmt-emit-pm-unused"));
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = stub_adsmt_env(tmp.path());
+        let store = Store::at(tmp.path().join("store"));
         let m = Manifest::from_toml(
             "[emitters]\nx = { version = \"0.1\", git = \"https://ex/r\" }\n",
         )
         .unwrap();
         assert!(matches!(
-            resolve(&m, &store).unwrap_err(),
+            resolve(&m, &store, &stub).unwrap_err(),
             ResolveError::UnsupportedSource { kind: "git", .. }
         ));
 
         let m = Manifest::from_toml("[emitters]\ny = \"0.1\"\n").unwrap();
         assert!(matches!(
-            resolve(&m, &store).unwrap_err(),
+            resolve(&m, &store, &stub).unwrap_err(),
             ResolveError::UnsupportedSource { kind: "registry", .. }
         ));
     }

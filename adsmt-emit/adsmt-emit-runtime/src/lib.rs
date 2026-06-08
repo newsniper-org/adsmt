@@ -1,35 +1,32 @@
 //! The dedicated emitter runtime.
 //!
 //! Given a resolved [`Lockfile`] and a [`Store`], the [`Runtime`]
-//! maps a requested target prover to its package and executes it,
-//! feeding the serialized certificate in and returning the emitted
-//! prover source.
+//! maps a requested target prover to its built package and runs the
+//! emitter — feeding the serialized certificate in and returning the
+//! emitted prover source.
 //!
-//! Every emitter — whatever its tier — presents the same
-//! [`Emitter`] surface, identical to the WIT contract: [`info`]
-//! plus [`emit`]. Two tiers:
-//! - **Script** (wired): [`script::ScriptEmitter`] runs the package
-//!   body as a shebang subprocess.
-//! - **Wasm** (deferred): a wasmtime-backed component loader — the
-//!   next backend. The runtime returns an explicit
-//!   [`RuntimeError::WasmBackendNotWired`] until it lands.
+//! There is a single backend: [`wasm::WasmEmitter`], the pure-Rust
+//! `wasmi` interpreter under WASI Preview 1. The emitter is a
+//! `wasm32-wasip1` / `wasm64` command that reads the certificate on
+//! stdin and writes the prover source to stdout (exit code: `0` ok,
+//! `2` unsupported, `3` malformed-cert, else internal). Every
+//! emitter presents the same [`Emitter`] surface — [`info`] +
+//! [`emit`] — identical to the WIT contract.
 //!
 //! The runtime is certificate-format-agnostic: it passes the
-//! certificate string straight through to the emitter, so the
-//! JSON-vs-S-expression wire decision lives above it.
+//! certificate bytes straight through, so the wire-encoding decision
+//! lives above it.
 //!
 //! [`info`]: Emitter::info
 //! [`emit`]: Emitter::emit
 
-pub mod script;
-#[cfg(feature = "wasm")]
 pub mod wasm;
 
 use adsmt_emit_contract::{EmitResult, EmitterInfo};
-use adsmt_emit_pm::{ExecKind, Lockfile, Store};
+use adsmt_emit_pm::{Lockfile, Store};
 
 pub use adsmt_emit_contract::{EmitError, EmitOutput};
-pub use script::ScriptEmitter;
+pub use wasm::WasmEmitter;
 
 /// The uniform host-side surface of an emitter, mirroring the WIT
 /// `emitter` world.
@@ -47,19 +44,10 @@ pub enum RuntimeError {
     #[error("no emitter resolved for target `{target}`")]
     NoEmitterForTarget { target: String },
 
-    #[error("emitter `{name}`: the wasm backend is not built in (enable the `wasm` feature)")]
-    WasmBackendNotWired { name: String },
-
     #[error("emitter `{name}`: wasm backend error: {detail}")]
     Wasm { name: String, detail: String },
 
-    #[error("emitter `{name}`: expected a Script-tier package")]
-    WrongTier { name: String },
-
-    #[error("emitter `{name}`: Script tier package has no interpreter")]
-    MissingInterpreter { name: String },
-
-    #[error("emitter `{name}`: artifact {sha256} is not in the store")]
+    #[error("emitter `{name}`: contents tree {sha256} is not in the store")]
     ArtifactMissing { name: String, sha256: String },
 }
 
@@ -88,22 +76,7 @@ impl Runtime {
             .iter()
             .find(|p| p.target == target)
             .ok_or_else(|| RuntimeError::NoEmitterForTarget { target: target.to_string() })?;
-
-        match pkg.kind {
-            ExecKind::Script => {
-                Ok(Box::new(ScriptEmitter::from_locked(pkg, &self.store)?))
-            }
-            ExecKind::Wasm => {
-                #[cfg(feature = "wasm")]
-                {
-                    Ok(Box::new(wasm::WasmEmitter::from_locked(pkg, &self.store)?))
-                }
-                #[cfg(not(feature = "wasm"))]
-                {
-                    Err(RuntimeError::WasmBackendNotWired { name: pkg.name.clone() })
-                }
-            }
-        }
+        Ok(Box::new(WasmEmitter::from_locked(pkg, &self.store)?))
     }
 
     /// Resolve the emitter for `target` and emit `cert`. The outer
@@ -119,16 +92,31 @@ mod tests {
     use super::*;
     use adsmt_emit_pm::LockedPackage;
 
-    fn script_pkg(store: &Store, target: &str, body: &str) -> LockedPackage {
-        let sha = store.add(body.as_bytes()).unwrap();
+    // A wasip1 command that writes "Qed." to stdout.
+    const WRITER: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "fd_write"
+            (func $fd_write (param i32 i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 100) "Qed.")
+          (func (export "_start")
+            (i32.store (i32.const 0) (i32.const 100))
+            (i32.store (i32.const 4) (i32.const 4))
+            (drop (call $fd_write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 200)))))
+    "#;
+
+    fn wasm_pkg(store: &Store, target: &str) -> LockedPackage {
+        let bytes = wat::parse_str(WRITER).unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::write(staged.path().join("emitter.wasm"), &bytes).unwrap();
+        let sha = store.add_tree(staged.path()).unwrap();
         LockedPackage {
             name: target.into(),
             target: target.into(),
             version: "0.1.0".into(),
             source: "path+file:///x".into(),
-            artifact_sha256: sha,
-            kind: ExecKind::Script,
-            interpreter: Some("/bin/sh".into()),
+            contents_sha256: sha,
+            main: "emitter.wasm".into(),
         }
     }
 
@@ -136,7 +124,7 @@ mod tests {
     fn runtime_emits_via_target() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::at(tmp.path());
-        let pkg = script_pkg(&store, "rocq", "#!/bin/sh\ncat >/dev/null\nprintf 'Qed.'\n");
+        let pkg = wasm_pkg(&store, "rocq");
         let rt = Runtime::new(Lockfile::new(vec![pkg]), store);
         assert_eq!(rt.targets(), vec!["rocq"]);
         let out = rt.emit("rocq", "(cert)").unwrap().unwrap();
@@ -154,25 +142,22 @@ mod tests {
         ));
     }
 
-    #[cfg(not(feature = "wasm"))]
     #[test]
-    fn wasm_tier_is_explicitly_not_wired() {
+    fn missing_contents_is_artifact_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::at(tmp.path());
-        let sha = store.add(b"wasm bytes").unwrap();
         let pkg = LockedPackage {
             name: "lean".into(),
             target: "lean".into(),
             version: "0.1.0".into(),
             source: "path+file:///x".into(),
-            artifact_sha256: sha,
-            kind: ExecKind::Wasm,
-            interpreter: None,
+            contents_sha256: "00".repeat(32),
+            main: "emitter.wasm".into(),
         };
         let rt = Runtime::new(Lockfile::new(vec![pkg]), store);
         assert!(matches!(
             rt.emitter_for("lean"),
-            Err(RuntimeError::WasmBackendNotWired { .. })
+            Err(RuntimeError::ArtifactMissing { .. })
         ));
     }
 }

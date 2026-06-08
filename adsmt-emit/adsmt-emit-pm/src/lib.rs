@@ -27,6 +27,6 @@ pub use build::{build, default_adsmt_env, BuildError};
 pub use codec::{codec_for_extension, pack_dir, unpack_into, Codec, ZstdCodec};
 pub use lockfile::{Lockfile, LockedPackage, LOCKFILE_VERSION};
 pub use manifest::{Dependency, Manifest, Source};
-pub use package::{ExecKind, Package, PackageMeta, PackageParseError};
+pub use package::{Package, PackageMeta, PackageParseError};
 pub use resolver::{resolve, ResolveError};
 pub use store::{content_address, Store};

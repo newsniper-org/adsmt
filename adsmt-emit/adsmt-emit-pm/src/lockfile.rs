@@ -8,8 +8,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::package::ExecKind;
-
 /// Current lockfile schema version.
 pub const LOCKFILE_VERSION: u32 = 1;
 
@@ -35,14 +33,11 @@ pub struct LockedPackage {
     /// Canonical source string, e.g. `path+file:///…` or
     /// `git+https://…#<rev>`.
     pub source: String,
-    /// SHA-256 content address of the stored artifact (the script
-    /// body for the Script tier, or the wasm component for Wasm).
-    pub artifact_sha256: String,
-    /// Execution tier.
-    pub kind: ExecKind,
-    /// Shebang interpreter for the Script tier; `None` for Wasm.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interpreter: Option<String>,
+    /// SHA-256 content address of the package's `contents/` tree in
+    /// the store (the build's staged `$pkgdir`).
+    pub contents_sha256: String,
+    /// Runtime entry: the emitter `.wasm`, relative to `contents/`.
+    pub main: String,
 }
 
 impl Default for Lockfile {
@@ -86,18 +81,16 @@ mod tests {
                 target: "rocq".into(),
                 version: "0.1.0".into(),
                 source: "path+file:///pkgs/rocq".into(),
-                artifact_sha256: "aa".repeat(32),
-                kind: ExecKind::Script,
-                interpreter: Some("/usr/bin/env python3".into()),
+                contents_sha256: "aa".repeat(32),
+                main: "rocq.wasm".into(),
             },
             LockedPackage {
                 name: "isabelle".into(),
                 target: "isabelle".into(),
                 version: "0.1.0".into(),
                 source: "path+file:///pkgs/isabelle".into(),
-                artifact_sha256: "bb".repeat(32),
-                kind: ExecKind::Wasm,
-                interpreter: None,
+                contents_sha256: "bb".repeat(32),
+                main: "lib/isabelle.wasm".into(),
             },
         ])
     }

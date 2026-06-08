@@ -16,6 +16,5 @@ thiserror.workspace = true
 # in-development local alternative).
 tar = "0.4"
 zstd = "0.13"
-
-[dev-dependencies]
+# Per-build staging roots ($srcdir/$pkgdir), cleaned on drop.
 tempfile = "3.27"
