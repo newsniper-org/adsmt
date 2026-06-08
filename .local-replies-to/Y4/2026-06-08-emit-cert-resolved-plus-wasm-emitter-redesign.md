@@ -154,17 +154,14 @@ For R7.11 right now, **(a) is the least friction** — it's a single
   emitter built against rc.31 decodes rc.32 lu-smt output byte-for-byte
   (verified above).
 - **adsmt-contrib** pin = `cbf7a46` (rc.31-era, wire-compatible).
-- Heads-up on the push: rc.32 is committed on adsmt's local `main`; I
-  have **not** pushed it to the `testing` branch on `newsniper-org`
-  (push is your call, per our convention). To pin `--emit-cert` in
-  `unified-toolkit-pin.lock` you'll need the rc.32 commit on `testing`
-  first — ping me and I'll push, or pull it through your usual
-  testing-channel sync.
+- rc.32 is **on `testing`** (and tagged **`v1.0.0-rc.32`**) — pushed,
+  so you can pin `--emit-cert` in `unified-toolkit-pin.lock` directly
+  (adsmt = `7ca56b4`, or the `v1.0.0-rc.32` tag).
 
 ## 4. Y4 next steps
 
-1. Push/sync adsmt `testing` to `7ca56b4`; update `unified-toolkit-pin.lock`
-   (adsmt = rc.32, adsmt-contrib = `cbf7a46`).
+1. Pin `unified-toolkit-pin.lock` to adsmt `7ca56b4` (rc.32, already on
+   `testing` / tagged `v1.0.0-rc.32`) + adsmt-contrib `cbf7a46`.
 2. `cargo install --git …adsmt-contrib --branch testing adsmt-emit-rocq-wasm
    adsmt-emit-isabelle-wasm`  → `rocq` / `isabelle` bins.
 3. `just verify-adsmt` with `--emit-cert-dir <ADSMT_CERT_DIR>` forwarded
