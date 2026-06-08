@@ -166,7 +166,7 @@ impl Store {
 /// Recursively collect files under `dir` as
 /// `(forward-slash relative path from root, absolute path)`,
 /// visiting entries in a deterministic (name-sorted) order.
-fn collect_files(
+pub(crate) fn collect_files(
     root: &Path,
     dir: &Path,
     out: &mut Vec<(String, PathBuf)>,

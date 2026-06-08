@@ -15,12 +15,14 @@
 //! artifact-agnostic — it manages opaque sha256-addressed bytes,
 //! so it has no dependency on wasmtime or the emitter contract.
 
+pub mod codec;
 pub mod lockfile;
 pub mod manifest;
 pub mod package;
 pub mod resolver;
 pub mod store;
 
+pub use codec::{codec_for_extension, pack_dir, unpack_into, Codec, ZstdCodec};
 pub use lockfile::{Lockfile, LockedPackage, LOCKFILE_VERSION};
 pub use manifest::{Dependency, Manifest, Source};
 pub use package::{ExecKind, Package, PackageMeta, PackageParseError};
