@@ -40,6 +40,10 @@ members = [
     "adsmt-parsers/adsmt-parser-lu-kb",
     # Shim group — adsmt-side bridges over the pure parsers.
     "adsmt-shims/adsmt-shim-lu-kb",
+    # Emit runtime group — language-neutral WASM emitter contract,
+    # pnpm-style package manager, and the host runtime that loads
+    # emitter packages and feeds them certificates.
+    "adsmt-emit/adsmt-emit-contract",
     "adsmt-heuristic-checker",
     "adsmt-heuristic-checker-macros",
     "adsmt-lints",

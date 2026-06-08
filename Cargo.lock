@@ -77,6 +77,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-emit-contract"
+version = "1.0.0-rc.30"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "adsmt-engine"
 version = "1.0.0-rc.30"
 dependencies = [

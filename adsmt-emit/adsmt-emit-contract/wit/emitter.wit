@@ -1,0 +1,61 @@
+package adsmt:emitter@0.1.0;
+
+/// The language-neutral contract every adsmt emitter package
+/// implements. An emitter turns an adsmt proof certificate
+/// (canonical JSON) into a target prover's source text.
+///
+/// This world is the *only* coupling point between the host
+/// runtime and an emitter package. A package may be authored in
+/// any language that compiles to a wasm32-wasip2 component
+/// (Rust, TinyGo, componentize-py, jco, …); the host knows
+/// nothing of the source language.
+///
+/// The certificate crosses the boundary as a JSON *string*
+/// (the canonical `adsmt-cert` shape) rather than a fully-typed
+/// WIT record: the certificate is a deeply recursive structure
+/// whose schema evolves, and a string keeps the contract small
+/// while letting each guest deserialize with its own JSON
+/// tooling. Authors who want static types generate them from the
+/// published JSON Schema.
+world emitter {
+    /// Metadata describing what this emitter produces. Returned
+    /// by `info` so the host can match a package to a requested
+    /// target without instantiating `emit`.
+    record emitter-info {
+        /// Target prover identifier, e.g. "rocq", "isabelle",
+        /// "lean".
+        target: string,
+        /// Semantic version of the emitter package.
+        version: string,
+        /// Human-readable one-line description.
+        summary: string,
+    }
+
+    /// Successful emission result.
+    record emit-output {
+        /// The emitted prover source text.
+        text: string,
+        /// Import lines / modules the output requires but the
+        /// emitter could not resolve itself. Purely diagnostic —
+        /// a non-empty list does not mean failure.
+        missing-imports: list<string>,
+    }
+
+    /// Why an emission failed.
+    variant emit-error {
+        /// The cert JSON did not parse as a canonical certificate.
+        malformed-cert(string),
+        /// The cert used a construct this emitter cannot translate.
+        unsupported(string),
+        /// Any other internal failure.
+        internal(string),
+    }
+
+    /// Describe this emitter. Pure; callable without side effects.
+    export info: func() -> emitter-info;
+
+    /// Emit prover source for the given canonical certificate
+    /// JSON. Deterministic and side-effect-free: the guest is
+    /// sandboxed and has no filesystem or network access.
+    export emit: func(cert-json: string) -> result<emit-output, emit-error>;
+}
