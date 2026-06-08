@@ -13,7 +13,7 @@ path = "src/main.rs"
 adsmt-core.workspace = true
 adsmt-cert.workspace = true
 adsmt-engine.workspace = true
-adsmt-parser.workspace = true
+adsmt-parser-smtlib2.workspace = true
 adsmt-theory.workspace = true
 # §3.4 GF(2) Gröbner-basis theory sibling — opt-in via
 # `--finite-field-periodic N` / `--finite-field-budget-exhaustion`

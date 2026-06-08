@@ -1,6 +1,6 @@
 //! `lu-smt` — command-line driver for adsmt.
 //!
-//! Routes SMT-LIB v2 expressions through [`adsmt_parser::convert_expr`]
+//! Routes SMT-LIB v2 expressions through [`adsmt_parser_smtlib2::convert_expr`]
 //! into the engine's CNF + DPLL(T) layer. The dispatcher honours every
 //! command shape `adsmt-parser` produces; commands with no semantic
 //! effect on the engine (`set-info`, `get-info`, …) are accepted per
@@ -55,9 +55,9 @@ use clap::Parser as ClapParser;
 use adsmt_abduce::rank::RankedCandidate;
 use adsmt_core::{Term, TermInner, Type};
 use adsmt_engine::{SatResult, Solver};
-use adsmt_parser::sexpr::{Position, SExpr};
-use adsmt_parser::smtlib::Command;
-use adsmt_parser::{convert_expr, parse_smtlib_positioned, ConvertError, SymbolTable};
+use adsmt_parser_smtlib2::sexpr::{Position, SExpr};
+use adsmt_parser_smtlib2::smtlib::Command;
+use adsmt_parser_smtlib2::{convert_expr, parse_smtlib_positioned, ConvertError, SymbolTable};
 
 #[derive(ClapParser)]
 #[command(name = "lu-smt", version)]
@@ -1833,7 +1833,7 @@ impl Driver {
     fn register_datatypes(
         &mut self,
         sorts: Vec<(String, u32)>,
-        groups: Vec<adsmt_parser::smtlib::DatatypeGroup>,
+        groups: Vec<adsmt_parser_smtlib2::smtlib::DatatypeGroup>,
     ) -> Result<(), String> {
         use adsmt_core::Kind;
         use adsmt_theory::datatypes::DatatypeDecl;

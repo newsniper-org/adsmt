@@ -1,0 +1,9 @@
+[package]
+name = "adsmt-parser-lu-kb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "lu-kb knowledge-base language parser (AST + lexer + recursive-descent parser). Pure leaf — depends only on thiserror."
+
+[dependencies]
+thiserror.workspace = true

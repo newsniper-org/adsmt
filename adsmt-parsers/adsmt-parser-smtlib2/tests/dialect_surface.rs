@@ -4,7 +4,7 @@
 //! command set + every canonical round-trip shape so any
 //! accidental surface drift fails the test suite.
 
-use adsmt_parser::smtlib::{parse_smtlib, Command};
+use adsmt_parser_smtlib2::smtlib::{parse_smtlib, Command};
 
 /// Hardcoded list of every `Command` variant name. Aligned
 /// with `DIALECT_POLICY.md` and `src/smtlib.rs`. A future edit

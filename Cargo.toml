@@ -33,7 +33,13 @@ members = [
     "adsmt-quant",
     "adsmt-abduce",
     "adsmt-engine",
-    "adsmt-parser",
+    # Parser group — pure grammars, no adsmt-core coupling beyond
+    # smtlib2's term conversion.
+    "adsmt-parsers/adsmt-parser-smtlib2",
+    "adsmt-parsers/adsmt-parser-lfsc-drat",
+    "adsmt-parsers/adsmt-parser-lu-kb",
+    # Shim group — adsmt-side bridges over the pure parsers.
+    "adsmt-shims/adsmt-shim-lu-kb",
     "adsmt-heuristic-checker",
     "adsmt-heuristic-checker-macros",
     "adsmt-lints",
@@ -101,7 +107,10 @@ adsmt-class = { path = "adsmt-class" }
 adsmt-quant = { path = "adsmt-quant" }
 adsmt-abduce = { path = "adsmt-abduce" }
 adsmt-engine = { path = "adsmt-engine" }
-adsmt-parser = { path = "adsmt-parser" }
+adsmt-parser-smtlib2 = { path = "adsmt-parsers/adsmt-parser-smtlib2" }
+adsmt-parser-lfsc-drat = { path = "adsmt-parsers/adsmt-parser-lfsc-drat" }
+adsmt-parser-lu-kb = { path = "adsmt-parsers/adsmt-parser-lu-kb" }
+adsmt-shim-lu-kb = { path = "adsmt-shims/adsmt-shim-lu-kb" }
 # v1.0.0-rc.1 RC1.4.A — absorbed lu-* path entries. lu-common
 # is the most-shared; the rest are consumed by the lu-* CLI
 # binary surface preserved under option 2-A'.

@@ -1,0 +1,9 @@
+[package]
+name = "adsmt-parser-lfsc-drat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure proof-format parsers: LFSC byte-stream reader + DRAT proof representation/parser. No internal dependencies."
+
+[dependencies]
+thiserror.workspace = true

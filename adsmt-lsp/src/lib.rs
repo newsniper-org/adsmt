@@ -26,7 +26,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 /// Re-export the LSP types-side `Position` under a less ambiguous
-/// alias so call sites that also touch `adsmt_parser::sexpr::Position`
+/// alias so call sites that also touch `adsmt_parser_smtlib2::sexpr::Position`
 /// don't have to deal with name collisions.
 pub use tower_lsp::lsp_types::Position as LspPosition;
 
@@ -309,7 +309,7 @@ impl Backend {
 /// already get a diagnostic via `parse_diagnostics` in that
 /// case.
 pub fn build_symbol_index(text: &str) -> HashMap<String, Range> {
-    use adsmt_parser::smtlib::{parse_smtlib_positioned, Command};
+    use adsmt_parser_smtlib2::smtlib::{parse_smtlib_positioned, Command};
     let mut out = HashMap::new();
     let Ok(positioned) = parse_smtlib_positioned(text) else {
         return out;
@@ -325,7 +325,7 @@ pub fn build_symbol_index(text: &str) -> HashMap<String, Range> {
         };
         if let Some(name) = name {
             // `pos` is 1-based from
-            // `adsmt_parser::sexpr::byte_offset_to_position`;
+            // `adsmt_parser_smtlib2::sexpr::byte_offset_to_position`;
             // LSP `Position` is 0-based.
             let line0 = pos.line.saturating_sub(1);
             let col0 = pos.column.saturating_sub(1);
@@ -539,7 +539,7 @@ pub fn hover_content(
 /// Exposed at module scope so the integration tests can call it
 /// without constructing a `Backend`.
 pub fn parse_diagnostics(text: &str) -> Vec<Diagnostic> {
-    use adsmt_parser::smtlib::parse_smtlib;
+    use adsmt_parser_smtlib2::smtlib::parse_smtlib;
     match parse_smtlib(text) {
         Ok(_) => Vec::new(),
         Err(e) => {

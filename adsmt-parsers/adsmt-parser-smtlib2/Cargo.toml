@@ -1,0 +1,12 @@
+[package]
+name = "adsmt-parser-smtlib2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SMT-LIB v2 parser/emitter (S-expression layer, command grammar, term conversion)"
+
+[dependencies]
+adsmt-core.workspace = true
+thiserror.workspace = true
+indexmap.workspace = true
+adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.30", path = "../../adsmt-heuristic-checker-macros" }

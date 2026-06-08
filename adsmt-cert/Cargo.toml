@@ -11,6 +11,10 @@ thiserror.workspace = true
 indexmap.workspace = true
 oxiz-proof = { version = "0.2", optional = true }
 adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.30", path = "../adsmt-heuristic-checker-macros" }
+# Pure LFSC + DRAT parsers (DratProof/DratStep data model + LFSC
+# reader), extracted into a dependency-free leaf crate; `drat`
+# and `prover_emit::lfsc_parse` re-export it.
+adsmt-parser-lfsc-drat = { path = "../adsmt-parsers/adsmt-parser-lfsc-drat" }
 
 [features]
 default = []

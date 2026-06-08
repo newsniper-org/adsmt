@@ -11,5 +11,5 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 adsmt-core.workspace = true
 adsmt-engine.workspace = true
-adsmt-parser.workspace = true
+adsmt-parser-smtlib2.workspace = true
 adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.30", path = "../adsmt-heuristic-checker-macros" }

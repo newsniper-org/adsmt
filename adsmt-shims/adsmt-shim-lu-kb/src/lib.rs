@@ -1,40 +1,40 @@
-//! lu-kb surface parser.
+//! lu-kb → adsmt-core bridge (shim).
 //!
-//! Thin re-export layer over `lu_common::kb`'s grammar from the
-//! `external/logicutils` submodule. The lu-common crate is the
-//! authoritative parser for the lu-kb language; this module
-//! adapts its surface to adsmt's conventions and provides the
-//! conversion glue from the lu-kb AST to adsmt-core terms.
+//! Thin adsmt-side adaptation layer over the pure
+//! [`adsmt_parser_lu_kb`] grammar crate. The parser itself is
+//! dependency-free and language-neutral; this shim adds the two
+//! pieces that need `adsmt-core`:
 //!
-//! Surface (current):
-//! - [`KbModule`] — re-export of `lu_common::kb::Module`, the
-//!   parsed AST root.
-//! - [`KbItem`] — re-export of `lu_common::kb::Item`.
-//! - [`KbParseError`] — re-export of `lu_common::kb::ParseError`.
-//! - [`parse_kb`] — re-export of `lu_common::kb::parse`.
+//! - a re-export surface ([`KbModule`], [`KbItem`],
+//!   [`KbParseError`], [`parse_kb`]) so adsmt callers get a
+//!   single adsmt-namespaced entry point, and
+//! - the conversion glue from the lu-kb AST to adsmt-core terms
+//!   ([`convert_to_adsmt_terms`]).
 //!
-//! Conversion from lu-kb AST entries (fact blocks, rule decls,
-//! abduce decls) to adsmt-core terms is sketched in
-//! [`convert_to_adsmt_terms`]. That layer is intentionally a
-//! best-effort translator — lu-kb's surface is richer than what
-//! the v0.17 cert pipeline currently models, so unsupported
-//! constructs produce `Err(KbConversionError::Unsupported(...))`
-//! rather than silently dropping information.
+//! Keeping the `adsmt-core` coupling here (rather than in
+//! `adsmt-parser-lu-kb`) means the logicutils-side consumers of
+//! the parser do not transitively pull the solver stack.
+//!
+//! The conversion is intentionally a best-effort translator —
+//! lu-kb's surface is richer than what the current cert pipeline
+//! models, so unsupported constructs produce
+//! `Err(KbConversionError::Unsupported(...))` rather than
+//! silently dropping information.
 
-pub use lu_common::kb::{Module as KbModule, Item as KbItem, ParseError as KbParseError};
+pub use adsmt_parser_lu_kb::{Module as KbModule, Item as KbItem, ParseError as KbParseError};
 
 /// Parse a lu-kb source string into a [`KbModule`]. Thin wrapper
-/// around `lu_common::kb::parse` so adsmt callers don't need to
-/// reach into the submodule path directly.
+/// around `adsmt_parser_lu_kb::parse` so adsmt callers don't need
+/// to reach into the grammar crate directly.
 pub fn parse_kb(input: &str) -> Result<KbModule, KbParseError> {
-    lu_common::kb::parse(input)
+    adsmt_parser_lu_kb::parse(input)
 }
 
 /// Best-effort conversion of lu-kb top-level [`KbItem`]s into
 /// adsmt-core assertions. Currently lifts:
 /// - **Fact** blocks → one positive Boolean assertion per entry,
 ///   modelled as `Term::var("<block_name>::<target>::<dep>", Bool)`.
-///   v0.17 cert tracks the raw atom; richer typed-fact reflection
+///   The cert tracks the raw atom; richer typed-fact reflection
 ///   lands when the adsmt-class layer wires lu-kb's typed-arg
 ///   surface.
 ///
@@ -44,7 +44,7 @@ pub fn parse_kb(input: &str) -> Result<KbModule, KbParseError> {
 ///   consume rule heads/bodies meaningfully.
 /// - Abduce — needs the abductive engine's `Abducible` bridge.
 /// - Constraint / Fn / Import / Export / TypeAlias / DataDef /
-///   EnumDef / Relation / Instance — out of v0.17 scope.
+///   EnumDef / Relation / Instance — out of current scope.
 pub fn convert_to_adsmt_terms(
     module: &KbModule,
 ) -> Result<Vec<adsmt_core::Term>, KbConversionError> {
@@ -82,7 +82,7 @@ pub fn convert_to_adsmt_terms(
             | KbItem::Relation(_)
             | KbItem::Instance(_) => {
                 return Err(KbConversionError::Unsupported(
-                    "constraint / function / import / export / type / data / enum / relation / instance decls are out of v0.17 scope",
+                    "constraint / function / import / export / type / data / enum / relation / instance decls are out of current scope",
                 ));
             }
         }

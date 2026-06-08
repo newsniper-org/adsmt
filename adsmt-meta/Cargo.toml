@@ -14,7 +14,7 @@ adsmt-class = { version = "=1.0.0-rc.30", path = "../adsmt-class" }
 adsmt-quant = { version = "=1.0.0-rc.30", path = "../adsmt-quant" }
 adsmt-abduce = { version = "=1.0.0-rc.30", path = "../adsmt-abduce" }
 adsmt-engine.workspace = true
-adsmt-parser.workspace = true
+adsmt-parser-smtlib2.workspace = true
 adsmt-heuristic-checker = { version = "=1.0.0-rc.30", path = "../adsmt-heuristic-checker", optional = true }
 adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.30", path = "../adsmt-heuristic-checker-macros", optional = true }
 adsmt-lints = { version = "=1.0.0-rc.30", path = "../adsmt-lints", optional = true }

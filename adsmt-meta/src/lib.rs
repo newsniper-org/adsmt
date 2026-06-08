@@ -21,7 +21,7 @@ pub use adsmt_cert;
 pub use adsmt_class;
 pub use adsmt_core;
 pub use adsmt_engine;
-pub use adsmt_parser;
+pub use adsmt_parser_smtlib2;
 pub use adsmt_quant;
 pub use adsmt_theory;
 pub use lu_common;

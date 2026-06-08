@@ -51,7 +51,11 @@
 
 pub mod common;
 pub mod drat_payload;
-pub mod lfsc_parse;
+/// LFSC byte-stream reader, re-exported from the dependency-free
+/// `adsmt-parser-lfsc-drat` grammar crate. Preserves the
+/// `crate::prover_emit::lfsc_parse` path consumed by the per-ITP
+/// emit backends.
+pub use adsmt_parser_lfsc_drat::lfsc_parse;
 
 pub use common::{
     aggregate_allow, aggregate_required, aggregate_should,

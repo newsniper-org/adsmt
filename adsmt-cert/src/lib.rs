@@ -15,7 +15,11 @@
 const _BREAKING_MARKER_1_0_0: () = ();
 
 pub mod canonical;
-pub mod drat;
+/// DRAT proof representation + parser, re-exported from the
+/// dependency-free `adsmt-parser-lfsc-drat` grammar crate.
+/// Preserves the `adsmt_cert::drat::*` path used by the engine
+/// and the `TheoryWitness::Drat` payload.
+pub use adsmt_parser_lfsc_drat::drat;
 pub mod emit;
 pub mod lean_emit;
 pub mod oxiz_drat_bridge;

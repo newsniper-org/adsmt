@@ -1,0 +1,11 @@
+[package]
+name = "adsmt-shim-lu-kb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "adsmt-side bridge over the lu-kb grammar: re-export surface + lu-kb AST → adsmt-core term conversion."
+
+[dependencies]
+adsmt-core.workspace = true
+adsmt-parser-lu-kb = { path = "../../adsmt-parsers/adsmt-parser-lu-kb" }
+thiserror.workspace = true
