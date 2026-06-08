@@ -45,6 +45,7 @@ members = [
     # emitter packages and feeds them certificates.
     "adsmt-emit/adsmt-emit-contract",
     "adsmt-emit/adsmt-emit-pm",
+    "adsmt-emit/adsmt-emit-runtime",
     "adsmt-heuristic-checker",
     "adsmt-heuristic-checker-macros",
     "adsmt-lints",

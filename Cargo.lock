@@ -98,6 +98,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-emit-runtime"
+version = "1.0.0-rc.30"
+dependencies = [
+ "adsmt-emit-contract",
+ "adsmt-emit-pm",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "adsmt-engine"
 version = "1.0.0-rc.30"
 dependencies = [
