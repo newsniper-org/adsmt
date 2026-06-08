@@ -756,7 +756,7 @@ pub fn intern_external(t: &Term) -> Term {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::{Assertion, PoolBuilder};
+    use crate::pool::Assertion;
     use crate::writer::write_header;
     use crate::{format::LuartHeader, write_luart};
 
