@@ -86,6 +86,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-emit-pm"
+version = "1.0.0-rc.30"
+dependencies = [
+ "semver",
+ "serde",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "adsmt-engine"
 version = "1.0.0-rc.30"
 dependencies = [

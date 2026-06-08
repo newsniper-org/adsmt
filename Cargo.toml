@@ -44,6 +44,7 @@ members = [
     # pnpm-style package manager, and the host runtime that loads
     # emitter packages and feeds them certificates.
     "adsmt-emit/adsmt-emit-contract",
+    "adsmt-emit/adsmt-emit-pm",
     "adsmt-heuristic-checker",
     "adsmt-heuristic-checker-macros",
     "adsmt-lints",
@@ -123,6 +124,9 @@ lu-common = { path = "lu-common" }
 thiserror = "2.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+# Semantic-version requirement matching for the emit package
+# manager (adsmt-emit-pm).
+semver = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 smallvec = "1.13"
 indexmap = "2.6"
