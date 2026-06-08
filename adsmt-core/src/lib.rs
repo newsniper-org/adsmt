@@ -11,6 +11,9 @@ pub mod term;
 pub mod theorem;
 pub mod rule;
 
+#[cfg(feature = "serde")]
+mod serde_impl;
+
 pub use error::{KernelError, KernelResult};
 pub use kind::Kind;
 pub use ty::{TyConst, TyVar, Type};

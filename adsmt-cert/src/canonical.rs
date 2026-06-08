@@ -12,7 +12,7 @@ use adsmt_core::{Term, Theorem, TyVar, Type, Var};
 use crate::witness::{InstanceWitness, TheoryWitness};
 
 /// Identifier referring to a previously emitted step within a certificate.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct StepId(pub u32);
 
 impl StepId {
@@ -24,7 +24,7 @@ impl StepId {
 /// A sequent `Γ ⊢ φ`. Mirrors [`Theorem`] but is publicly constructable
 /// because certificate data is untrusted by definition — the checker
 /// re-verifies each step.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sequent {
     pub hyps: Vec<Term>,
     pub concl: Term,
@@ -45,7 +45,7 @@ impl From<&Theorem> for Sequent {
 /// 1-based line / column, matching what most parsers (and editors)
 /// report. `None` for cert steps that have no natural source
 /// position — internal kernel applications, theory deductions, etc.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceLoc {
     pub line: u32,
     pub column: u32,
@@ -61,7 +61,7 @@ impl SourceLoc {
 /// discussion). Each variant maps to a precise per-ITP module
 /// (Rocq `Classical_Prop`, Lean `Classical.em`, Isabelle no-op,
 /// etc.) by per-backend table in `prover_emit`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ClassicalModuleFamily {
     /// Propositional classical reasoning (LEM, NNPP). Rocq:
     /// `Classical_Prop`. Lean: built-in `Classical.em`. Isabelle:
@@ -83,9 +83,26 @@ pub enum ClassicalModuleFamily {
 /// A set of [`ClassicalModuleFamily`] values, kept as a small
 /// sorted-deduplicated `Vec` for stable comparison and emit
 /// determinism.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+// Serialize/deserialize as a bare list; `from` routes through
+// `FromIterator` so a deserialized set is re-sorted and
+// deduplicated, preserving the canonical-order invariant against
+// untrusted JSON.
+#[serde(from = "Vec<ClassicalModuleFamily>", into = "Vec<ClassicalModuleFamily>")]
 pub struct ClassicalSet {
     members: Vec<ClassicalModuleFamily>,
+}
+
+impl From<Vec<ClassicalModuleFamily>> for ClassicalSet {
+    fn from(v: Vec<ClassicalModuleFamily>) -> Self {
+        ClassicalSet::from_iter(v)
+    }
+}
+
+impl From<ClassicalSet> for Vec<ClassicalModuleFamily> {
+    fn from(s: ClassicalSet) -> Self {
+        s.members
+    }
 }
 
 impl FromIterator<ClassicalModuleFamily> for ClassicalSet {
@@ -177,7 +194,7 @@ fn family_sort_key(fam: &ClassicalModuleFamily) -> u8 {
 /// Multiple markers with identical `(allowlist, lazy, scan)`
 /// collapse to one (allowlist union); different-options markers
 /// coexist and evaluate independently.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AllowMarker {
     pub allowlist: ClassicalSet,
     pub lazy: bool,
@@ -217,7 +234,7 @@ impl AllowMarker {
 /// that don't yet emit classical-axiom witnesses see no change
 /// (the default empty sets contribute nothing to emit-time
 /// import resolution).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Step {
     pub id: StepId,
     pub body: StepBody,
@@ -254,7 +271,7 @@ pub struct Step {
 }
 
 /// Which rule produced this step.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum StepBody {
     Assume(Term),
     Refl(Term),
@@ -287,7 +304,7 @@ pub enum StepBody {
 /// A discriminator tag for [`StepBody`], used by
 /// [`StepPattern::Kind`] to pattern-match steps by their kernel
 /// rule without inspecting the body's payload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum StepKindTag {
     Assume,
     Refl,
@@ -328,7 +345,7 @@ impl StepKindTag {
 /// expressive completeness; [`StepPattern::xor`],
 /// [`StepPattern::at_most_one`], and [`StepPattern::exactly_one`]
 /// are desugar helpers built on top of the core constructors.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StepPattern {
     /// Matches every `Theory` step whose `name` field equals
     /// the given string.
@@ -412,7 +429,7 @@ impl StepPattern {
 /// Cert producers that want their dead-pattern warnings to land
 /// in editor squiggles should populate `source_loc` from their
 /// parser-supplied position.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PatternMarker {
     pub pattern: StepPattern,
     pub local_markers: ClassicalMarkerSet,
@@ -426,7 +443,7 @@ pub struct PatternMarker {
 
 /// A `should ∪ allow` marker bundle, used by both mid-blocks
 /// and pattern markers as the contribution unit.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ClassicalMarkerSet {
     pub should: ClassicalSet,
     pub allow: Vec<AllowMarker>,
@@ -445,7 +462,7 @@ impl ClassicalMarkerSet {
 
 /// One item inside a [`MidBlock`]'s `contents`: either a leaf
 /// reference to a step id, or a nested sub-block.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MidBlockItem {
     Step(StepId),
     NestedBlock(Box<MidBlock>),
@@ -456,7 +473,7 @@ pub enum MidBlockItem {
 /// inside the block) and exported markers (re-contributed to
 /// the enclosing scope) plus the sequence of step refs and
 /// sub-blocks the block covers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MidBlock {
     pub name: Option<String>,
     pub contents: Vec<MidBlockItem>,
@@ -505,7 +522,7 @@ impl Default for MidBlock {
 /// Kind / IdRange / And / Or / Not`. Convenience helpers
 /// (`StepPattern::xor`, `at_most_one`, `exactly_one`) desugar
 /// via standard boolean equivalences.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Certificate {
     pub steps: Vec<Step>,
     pub conclusion: StepId,
@@ -687,7 +704,7 @@ impl CertBuilder {
 }
 
 /// Opaque marker for [`CertBuilder::steps_since`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Checkpoint(pub usize);
 
 impl Checkpoint {
@@ -697,7 +714,7 @@ impl Checkpoint {
 /// A delta-form certificate: a contiguous slice of steps plus the
 /// conclusion id within the wider proof. The emitter renders these
 /// as `(proof-delta :since <prev-id> ... (conclude ...))` per sec 30.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CertificateDelta {
     /// Step index where this delta begins.
     pub since: usize,
@@ -740,6 +757,54 @@ mod tests {
         let cert = b.finalize(s0);
         assert_eq!(cert.conclusion, s0);
         assert!(cert.final_sequent().is_some());
+    }
+
+    #[test]
+    fn certificate_roundtrips_through_json() {
+        let mut b = CertBuilder::new();
+        let x = Term::var("x", int_());
+        let p = Term::var("p", Type::bool_());
+        let _ = b.add(
+            StepBody::Refl(x.clone()),
+            Sequent { hyps: vec![], concl: Term::mk_eq(x.clone(), x).unwrap() },
+        );
+        // an abductive (Assumed) step, exercising Term + Option<String>
+        let s1 = b.add(
+            StepBody::Assumed { formula: p.clone(), explain: Some("hint".into()) },
+            Sequent { hyps: vec![], concl: p.clone() },
+        );
+        let cert = b.finalize(s1);
+
+        let json = serde_json::to_string(&cert).unwrap();
+        let back: Certificate = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.steps.len(), cert.steps.len());
+        assert_eq!(back.conclusion, cert.conclusion);
+        assert_eq!(back.final_sequent(), cert.final_sequent());
+        assert!(back.is_abductive());
+        // re-serialization is byte-identical: the deserialized cert
+        // is structurally the same (and Terms re-interned).
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn theory_witness_with_drat_roundtrips() {
+        use crate::drat::DratProof;
+        use crate::witness::TheoryWitness;
+        let mut proof = DratProof::new();
+        proof.add(vec![1, -2]);
+        proof.add(vec![]);
+        let w = TheoryWitness::Drat {
+            clauses: vec![vec![1, 2], vec![-1]],
+            proof,
+            dimacs_bytes: vec![],
+            alethe_bytes: vec![],
+            lfsc_bytes: vec![],
+            coq_bytes: vec![],
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        let back: TheoryWitness = serde_json::from_str(&json).unwrap();
+        assert_eq!(w, back);
     }
 
     #[test]

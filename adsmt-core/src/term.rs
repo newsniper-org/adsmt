@@ -10,6 +10,7 @@ use crate::error::{KernelError, KernelResult};
 use crate::ty::{TyVar, Type};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Var {
     pub name: String,
     pub ty: Type,

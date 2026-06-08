@@ -6,15 +6,23 @@ license.workspace = true
 description = "S-expression proof certificate format + Lean4 source reflection. ITP emits to other targets (Rocq, Isabelle, …) live in out-of-tree projects"
 
 [dependencies]
-adsmt-core.workspace = true
+adsmt-core = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 indexmap.workspace = true
+# `rc` enables Deserialize for the `Arc<Var>` / `Arc<TyVar>`
+# substitution fields in `StepBody::{Inst,InstType}`. Var/TyVar are
+# plain (non-hash-consed) data, so fresh-Arc deserialization is
+# correct.
+serde = { workspace = true, features = ["rc"] }
 oxiz-proof = { version = "0.2", optional = true }
 adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.30", path = "../adsmt-heuristic-checker-macros" }
 # Pure LFSC + DRAT parsers (DratProof/DratStep data model + LFSC
 # reader), extracted into a dependency-free leaf crate; `drat`
 # and `prover_emit::lfsc_parse` re-export it.
-adsmt-parser-lfsc-drat = { path = "../adsmt-parsers/adsmt-parser-lfsc-drat" }
+adsmt-parser-lfsc-drat = { path = "../adsmt-parsers/adsmt-parser-lfsc-drat", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [features]
 default = []

@@ -30,6 +30,8 @@ dependencies = [
  "adsmt-parser-lfsc-drat",
  "indexmap",
  "oxiz-proof",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -72,6 +74,8 @@ version = "1.0.0-rc.30"
 dependencies = [
  "indexmap",
  "scc",
+ "serde",
+ "serde_json",
  "smallvec",
  "thiserror 2.0.18",
 ]
@@ -238,6 +242,7 @@ dependencies = [
 name = "adsmt-parser-lfsc-drat"
 version = "1.0.0-rc.30"
 dependencies = [
+ "serde",
  "thiserror 2.0.18",
 ]
 

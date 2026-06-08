@@ -15,7 +15,7 @@ use adsmt_core::Term;
 use crate::canonical::StepId;
 
 /// Witness accompanying a `Theory` step.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TheoryWitness {
     /// Equality reasoning via congruence and transitivity.
     Euf(EufWitness),
@@ -59,12 +59,12 @@ pub enum TheoryWitness {
 }
 
 /// Congruence-closure witness.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EufWitness {
     pub steps: Vec<EufStep>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EufStep {
     /// `t = t` is built in.
     Reflexivity(Term),
@@ -79,7 +79,7 @@ pub enum EufStep {
 }
 
 /// Farkas-style witness for linear arithmetic.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LinArithWitness {
     pub bounds: Vec<LinearBound>,
     /// Nonnegative multipliers; their dot product with `bounds` must
@@ -87,22 +87,22 @@ pub struct LinArithWitness {
     pub farkas: Vec<i64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LinearBound {
     pub coeffs: Vec<(String, i64)>,
     pub op: BoundOp,
     pub rhs: i64,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BoundOp { Le, Lt, Eq, Ne, Ge, Gt }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArrayWitness {
     pub chain: Vec<ArrayStep>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ArrayStep {
     /// `select(a, i)` term.
     Select { array: Term, index: Term },
@@ -119,14 +119,14 @@ pub enum ArrayStep {
     Extensionality(Term),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DatatypeWitness {
     pub kind: DatatypeReason,
     pub constructors: Vec<String>,
     pub focused: Option<Term>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DatatypeReason {
     /// `C_i(...) ≠ C_j(...)` for distinct constructors.
     Disjointness,
@@ -139,7 +139,7 @@ pub enum DatatypeReason {
 }
 
 /// Polite combination cardinality witness.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PoliteWitness {
     pub sort: String,
     /// `None` means ω (stably infinite).
@@ -147,7 +147,7 @@ pub struct PoliteWitness {
 }
 
 /// Type-class instance resolution witness.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct InstanceWitness {
     /// Constant name from the instance database, e.g. `Functor_List`.
     pub instance_id: String,

@@ -10,3 +10,16 @@ thiserror.workspace = true
 smallvec.workspace = true
 indexmap.workspace = true
 scc.workspace = true
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+# Serde support for the kernel value types (Kind / Type / Term).
+# Deserialization rebuilds through the hash-cons constructors, so a
+# deserialized Term is properly interned in the deserializing
+# process. `Theorem` is intentionally NOT deserializable — it is a
+# kernel-only trust token.
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json = { workspace = true }

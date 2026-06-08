@@ -7,6 +7,7 @@ use crate::error::{KernelError, KernelResult};
 use crate::kind::Kind;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TyVar {
     pub name: String,
     pub kind: Kind,

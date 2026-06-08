@@ -7,3 +7,10 @@ description = "Pure proof-format parsers: LFSC byte-stream reader + DRAT proof r
 
 [dependencies]
 thiserror.workspace = true
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+# Serde derives for the DRAT proof representation (carried by
+# adsmt-cert's TheoryWitness::Drat).
+serde = ["dep:serde"]

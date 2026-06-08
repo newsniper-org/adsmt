@@ -11,6 +11,7 @@
 //! negation, terminated implicitly). Variables are dense u32 ids.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DratStep {
     /// Add a clause that follows from the current formula by RUP.
     Add(Vec<i32>),
@@ -19,6 +20,7 @@ pub enum DratStep {
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DratProof {
     pub steps: Vec<DratStep>,
 }
