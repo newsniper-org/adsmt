@@ -1,10 +1,10 @@
-//! End-to-end: install a package, then run its emitter.
+//! End-to-end: install package(s), then run their emitter(s).
 //!
 //! The "build" here just copies a pre-assembled wasip1 module into
 //! `$pkgdir` (no wasm toolchain needed in the test). adsmt-env is
 //! stubbed so the test needs nothing on PATH.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn adsmt_emit() -> Command {
@@ -24,7 +24,7 @@ const WRITER: &str = r#"
         (drop (call $fd_write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 200)))))
 "#;
 
-fn write_stub_adsmt_env(dir: &Path) -> std::path::PathBuf {
+fn write_stub_adsmt_env(dir: &Path) -> PathBuf {
     let p = dir.join("stub-adsmt-env");
     std::fs::write(
         &p,
@@ -39,39 +39,51 @@ fn write_stub_adsmt_env(dir: &Path) -> std::path::PathBuf {
     p
 }
 
-#[test]
-fn install_then_run() {
-    let tmp = tempfile::tempdir().unwrap();
-    let proj = tmp.path();
-    let stub = write_stub_adsmt_env(proj);
-
-    // package source: the pre-built wasm + a build script that installs it
-    let pkg_src = proj.join("pkg-src");
-    std::fs::create_dir_all(&pkg_src).unwrap();
-    std::fs::write(pkg_src.join("emitter.wasm"), wat::parse_str(WRITER).unwrap()).unwrap();
-    let pkg_file = pkg_src.join("rocq.adsmt-emit");
+/// Create a package source for `target` under `proj`; return the
+/// package file path.
+fn write_package(proj: &Path, target: &str) -> PathBuf {
+    let src = proj.join(format!("{target}-src"));
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("emitter.wasm"), wat::parse_str(WRITER).unwrap()).unwrap();
+    let pkg_file = src.join(format!("{target}.adsmt-emit"));
     std::fs::write(
         &pkg_file,
-        "---\nname=\"rocq\"\ntarget=\"rocq\"\nversion=\"0.1.0\"\ncontract=\"0.1.0\"\nmain=\"rocq.wasm\"\n---\n#!/usr/bin/env adsmt-env sh\ncp \"$srcdir/emitter.wasm\" \"$pkgdir/rocq.wasm\"\n",
+        format!(
+            "---\nname=\"{target}\"\ntarget=\"{target}\"\nversion=\"0.1.0\"\ncontract=\"0.1.0\"\nmain=\"{target}.wasm\"\n---\n#!/usr/bin/env adsmt-env sh\ncp \"$srcdir/emitter.wasm\" \"$pkgdir/{target}.wasm\"\n"
+        ),
     )
     .unwrap();
+    pkg_file
+}
 
-    // manifest at project root
-    std::fs::write(
-        proj.join("adsmt-emit.toml"),
-        format!("[emitters]\nrocq = {{ version = \"^0.1\", path = \"{}\" }}\n", pkg_file.display()),
-    )
-    .unwrap();
+fn write_manifest(proj: &Path, targets: &[&str]) {
+    let mut s = String::from("[emitters]\n");
+    for t in targets {
+        let pkg = write_package(proj, t);
+        s.push_str(&format!("{t} = {{ version = \"^0.1\", path = \"{}\" }}\n", pkg.display()));
+    }
+    std::fs::write(proj.join("adsmt-emit.toml"), s).unwrap();
+}
 
-    // install
+fn install(proj: &Path, stub: &Path) {
     let out = adsmt_emit()
         .current_dir(proj)
-        .env("ADSMT_ENV_BIN", &stub)
+        .env("ADSMT_ENV_BIN", stub)
         .env_remove("ADSMT_EMIT_STORE")
         .arg("install")
         .output()
         .unwrap();
     assert!(out.status.success(), "install failed: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn install_then_run_single() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path();
+    let stub = write_stub_adsmt_env(proj);
+    write_manifest(proj, &["rocq"]);
+    install(proj, &stub);
+
     assert!(proj.join("adsmt-emit.lock").is_file());
     assert!(proj.join(".adsmt-emitters").is_dir());
 
@@ -94,6 +106,24 @@ fn install_then_run() {
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout), "Qed.");
+}
+
+#[test]
+fn run_multiple_targets_parallel_to_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path();
+    let stub = write_stub_adsmt_env(proj);
+    write_manifest(proj, &["rocq", "isabelle"]);
+    install(proj, &stub);
+
+    let out = adsmt_emit()
+        .current_dir(proj)
+        .args(["run", "rocq", "isabelle", "-j", "2", "--out-dir", "out", "--cert", "/dev/null"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "run failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_to_string(proj.join("out/rocq")).unwrap(), "Qed.");
+    assert_eq!(std::fs::read_to_string(proj.join("out/isabelle")).unwrap(), "Qed.");
 }
 
 #[test]

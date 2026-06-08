@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use adsmt_emit_contract::EmitError;
+use adsmt_emit_contract::{EmitError, EmitOutput, EmitResult};
 use adsmt_emit_pm::{
     codec_for_extension, default_adsmt_env, pack_dir, resolve, stage_and_build, Lockfile, Manifest,
     Package, Store,
@@ -34,17 +34,28 @@ enum Cmd {
         #[arg(long, default_value = "adsmt-emit.toml")]
         manifest: PathBuf,
     },
-    /// Emit prover source for a target, reading the certificate from
-    /// stdin (or `--cert`) and writing to stdout (or `--out`).
+    /// Emit prover source for one or more targets from a single
+    /// certificate (stdin or `--cert`). One target writes to stdout
+    /// (or `--out`); multiple targets run in parallel (`-j`) and
+    /// write to `--out-dir/<target>`.
     Run {
-        /// Target prover identifier (e.g. `rocq`).
-        target: String,
+        /// Target prover identifiers (e.g. `rocq isabelle`).
+        #[arg(required = true, num_args = 1..)]
+        targets: Vec<String>,
         /// Read the certificate from this file instead of stdin.
         #[arg(long)]
         cert: Option<PathBuf>,
-        /// Write the emitted source here instead of stdout.
+        /// Write the emitted source here instead of stdout
+        /// (single target only).
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Write each target's output to `<dir>/<target>`
+        /// (required for multiple targets).
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Parallel jobs (0 = number of CPUs).
+        #[arg(short = 'j', long, default_value_t = 0)]
+        jobs: usize,
     },
     /// List the resolved emitters from the lockfile.
     List,
@@ -77,7 +88,9 @@ fn fail(msg: impl std::fmt::Display) -> ExitCode {
 fn main() -> ExitCode {
     match Cli::parse().cmd {
         Cmd::Install { manifest } => install(&manifest),
-        Cmd::Run { target, cert, out } => run(&target, cert.as_deref(), out.as_deref()),
+        Cmd::Run { targets, cert, out, out_dir, jobs } => {
+            run(&targets, jobs, cert.as_deref(), out.as_deref(), out_dir.as_deref())
+        }
         Cmd::List => list(),
         Cmd::Pack { package, out, codec } => pack(&package, out.as_deref(), &codec),
     }
@@ -124,7 +137,25 @@ fn load_lockfile() -> Result<Lockfile, ExitCode> {
     Lockfile::from_toml(&text).map_err(|e| fail(format!("{LOCKFILE}: {e}")))
 }
 
-fn run(target: &str, cert_path: Option<&Path>, out_path: Option<&Path>) -> ExitCode {
+/// Classify one job's result into either its output or an
+/// (exit-code, message) pair.
+fn classify(res: &Result<EmitResult, RuntimeError>) -> Result<&EmitOutput, (u8, String)> {
+    match res {
+        Ok(Ok(o)) => Ok(o),
+        Ok(Err(EmitError::Unsupported(m))) => Err((2, format!("unsupported: {m}"))),
+        Ok(Err(EmitError::MalformedCert(m))) => Err((3, format!("malformed certificate: {m}"))),
+        Ok(Err(EmitError::Internal(m))) => Err((1, format!("emitter error: {m}"))),
+        Err(e) => Err((1, e.to_string())),
+    }
+}
+
+fn run(
+    targets: &[String],
+    jobs: usize,
+    cert_path: Option<&Path>,
+    out_path: Option<&Path>,
+    out_dir: Option<&Path>,
+) -> ExitCode {
     let lockfile = match load_lockfile() {
         Ok(l) => l,
         Err(code) => return code,
@@ -142,34 +173,63 @@ fn run(target: &str, cert_path: Option<&Path>, out_path: Option<&Path>) -> ExitC
         },
     };
 
-    match runtime.emit(target, &cert) {
-        Ok(Ok(output)) => {
-            for imp in &output.missing_imports {
-                eprintln!("adsmt-emit: missing import: {imp}");
-            }
-            if let Some(p) = out_path {
-                if let Err(e) = std::fs::write(p, output.text.as_bytes()) {
-                    return fail(format!("writing {}: {e}", p.display()));
+    let job_list: Vec<(String, String)> =
+        targets.iter().map(|t| (t.clone(), cert.clone())).collect();
+    let results = runtime.emit_many(&job_list, jobs);
+
+    // Single target, no out-dir → stdout (or --out).
+    if targets.len() == 1 && out_dir.is_none() {
+        return match classify(&results[0]) {
+            Ok(output) => {
+                for imp in &output.missing_imports {
+                    eprintln!("adsmt-emit: missing import: {imp}");
                 }
-            } else {
-                let _ = std::io::stdout().write_all(output.text.as_bytes());
+                if let Some(p) = out_path {
+                    if let Err(e) = std::fs::write(p, output.text.as_bytes()) {
+                        return fail(format!("writing {}: {e}", p.display()));
+                    }
+                } else {
+                    let _ = std::io::stdout().write_all(output.text.as_bytes());
+                }
+                ExitCode::SUCCESS
             }
-            ExitCode::SUCCESS
-        }
-        Ok(Err(EmitError::Unsupported(m))) => {
-            eprintln!("adsmt-emit: unsupported: {m}");
-            ExitCode::from(2)
-        }
-        Ok(Err(EmitError::MalformedCert(m))) => {
-            eprintln!("adsmt-emit: malformed certificate: {m}");
-            ExitCode::from(3)
-        }
-        Ok(Err(EmitError::Internal(m))) => fail(format!("emitter error: {m}")),
-        Err(RuntimeError::NoEmitterForTarget { target }) => {
-            fail(format!("no emitter for target `{target}` (is it in the lockfile?)"))
-        }
-        Err(e) => fail(e),
+            Err((code, msg)) => {
+                eprintln!("adsmt-emit: {}: {msg}", targets[0]);
+                ExitCode::from(code)
+            }
+        };
     }
+
+    // Multiple targets → write each to <out-dir>/<target>.
+    let dir = match out_dir {
+        Some(d) => d,
+        None => return fail("multiple targets require --out-dir"),
+    };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return fail(format!("creating {}: {e}", dir.display()));
+    }
+    let mut worst = 0u8;
+    for (target, res) in targets.iter().zip(&results) {
+        match classify(res) {
+            Ok(output) => {
+                let path = dir.join(target);
+                if let Err(e) = std::fs::write(&path, output.text.as_bytes()) {
+                    eprintln!("adsmt-emit: writing {}: {e}", path.display());
+                    worst = worst.max(1);
+                } else {
+                    println!("{target} -> {}", path.display());
+                }
+                for imp in &output.missing_imports {
+                    eprintln!("adsmt-emit: {target}: missing import: {imp}");
+                }
+            }
+            Err((code, msg)) => {
+                eprintln!("adsmt-emit: {target}: {msg}");
+                worst = worst.max(code);
+            }
+        }
+    }
+    ExitCode::from(worst)
 }
 
 fn list() -> ExitCode {

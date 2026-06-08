@@ -30,7 +30,11 @@ pub use wasm::WasmEmitter;
 
 /// The uniform host-side surface of an emitter, mirroring the WIT
 /// `emitter` world.
-pub trait Emitter {
+///
+/// `Send + Sync` so a single (shared, compiled) emitter can be
+/// driven concurrently by a `-j N` job pool: `emit` builds a fresh
+/// wasm `Store` per call and holds no shared mutable state.
+pub trait Emitter: Send + Sync {
     /// Describe this emitter.
     fn info(&self) -> &EmitterInfo;
     /// Emit prover source for the given serialized certificate.
@@ -39,7 +43,7 @@ pub trait Emitter {
 
 /// A runtime error — distinct from an [`EmitError`], which is an
 /// emitter *result*. These are failures to *reach* an emitter.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("no emitter resolved for target `{target}`")]
     NoEmitterForTarget { target: String },
@@ -84,6 +88,76 @@ impl Runtime {
     /// inner [`EmitResult`] is the emitter's own verdict.
     pub fn emit(&self, target: &str, cert: &str) -> Result<EmitResult, RuntimeError> {
         Ok(self.emitter_for(target)?.emit(cert))
+    }
+
+    /// Emit a batch of `(target, certificate)` jobs concurrently with
+    /// up to `parallelism` worker threads (the `-j N` knob; `0` →
+    /// [`std::thread::available_parallelism`]). Each distinct target's
+    /// emitter is built once and shared across its jobs (the compiled
+    /// wasm module is shared; each job gets its own `Store`). Results
+    /// are returned in input order.
+    pub fn emit_many(
+        &self,
+        jobs: &[(String, String)],
+        parallelism: usize,
+    ) -> Vec<Result<EmitResult, RuntimeError>> {
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        use std::sync::Arc;
+
+        // Build one shared emitter per distinct target.
+        let mut emitters: HashMap<&str, Result<Arc<dyn Emitter>, RuntimeError>> = HashMap::new();
+        for (target, _) in jobs {
+            emitters.entry(target.as_str()).or_insert_with(|| {
+                self.lockfile
+                    .packages
+                    .iter()
+                    .find(|p| p.target == *target)
+                    .ok_or_else(|| RuntimeError::NoEmitterForTarget { target: target.clone() })
+                    .and_then(|pkg| {
+                        WasmEmitter::from_locked(pkg, &self.store)
+                            .map(|e| Arc::new(e) as Arc<dyn Emitter>)
+                    })
+            });
+        }
+
+        let workers = match parallelism {
+            0 => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+            n => n,
+        }
+        .min(jobs.len().max(1));
+
+        let next = AtomicUsize::new(0);
+        let (tx, rx) = mpsc::channel();
+        std::thread::scope(|s| {
+            for _ in 0..workers {
+                let tx = tx.clone();
+                let emitters = &emitters;
+                let next = &next;
+                s.spawn(move || loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= jobs.len() {
+                        break;
+                    }
+                    let (target, cert) = &jobs[i];
+                    let res = match emitters.get(target.as_str()) {
+                        Some(Ok(em)) => Ok(em.emit(cert)),
+                        Some(Err(e)) => Err(e.clone()),
+                        None => Err(RuntimeError::NoEmitterForTarget { target: target.clone() }),
+                    };
+                    let _ = tx.send((i, res));
+                });
+            }
+            drop(tx);
+        });
+
+        let mut out: Vec<Option<Result<EmitResult, RuntimeError>>> =
+            (0..jobs.len()).map(|_| None).collect();
+        for (i, r) in rx {
+            out[i] = Some(r);
+        }
+        out.into_iter().map(|o| o.expect("every job reported")).collect()
     }
 }
 
@@ -140,6 +214,28 @@ mod tests {
             rt.emit("lean", "x").unwrap_err(),
             RuntimeError::NoEmitterForTarget { .. }
         ));
+    }
+
+    #[test]
+    fn emit_many_runs_jobs_in_parallel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::at(tmp.path());
+        let rocq = wasm_pkg(&store, "rocq");
+        let isabelle = wasm_pkg(&store, "isabelle");
+        let rt = Runtime::new(Lockfile::new(vec![rocq, isabelle]), store);
+
+        let jobs = vec![
+            ("rocq".to_string(), "(cert-a)".to_string()),
+            ("isabelle".to_string(), "(cert-b)".to_string()),
+            ("lean".to_string(), "(cert-c)".to_string()), // unresolved target
+            ("rocq".to_string(), "(cert-d)".to_string()),
+        ];
+        let results = rt.emit_many(&jobs, 2);
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0].as_ref().unwrap().as_ref().unwrap().text, "Qed.");
+        assert_eq!(results[1].as_ref().unwrap().as_ref().unwrap().text, "Qed.");
+        assert!(matches!(results[2], Err(RuntimeError::NoEmitterForTarget { .. })));
+        assert_eq!(results[3].as_ref().unwrap().as_ref().unwrap().text, "Qed.");
     }
 
     #[test]
