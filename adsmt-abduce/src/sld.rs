@@ -27,7 +27,7 @@ use std::collections::HashSet;
 use adsmt_core::{Term, TermInner};
 
 use crate::abducible::{Abducible, AbducibleSet};
-use crate::rule_base::HornRuleBase;
+use crate::rule_base::{HornRuleBase, SchematicHornRuleBase};
 
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -102,18 +102,39 @@ pub const DEFAULT_MAX_DEPTH: usize = 8;
 pub struct SldEngine<'a> {
     abducibles: &'a AbducibleSet,
     rules: Option<&'a HornRuleBase>,
+    schematic: Option<&'a SchematicHornRuleBase>,
 }
 
 impl<'a> SldEngine<'a> {
     pub fn new(abducibles: &'a AbducibleSet) -> Self {
-        Self { abducibles, rules: None }
+        Self { abducibles, rules: None, schematic: None }
     }
 
     pub fn with_rules(
         abducibles: &'a AbducibleSet,
         rules: &'a HornRuleBase,
     ) -> Self {
-        Self { abducibles, rules: Some(rules) }
+        Self { abducibles, rules: Some(rules), schematic: None }
+    }
+
+    /// Attach a first-order (schematic) Horn-rule base: rule heads
+    /// **unify** with the goal and the resulting substitution
+    /// instantiates the body before resolution. Composes with the
+    /// propositional base via [`Self::with_all`].
+    pub fn with_schematic_rules(
+        abducibles: &'a AbducibleSet,
+        schematic: &'a SchematicHornRuleBase,
+    ) -> Self {
+        Self { abducibles, rules: None, schematic: Some(schematic) }
+    }
+
+    /// Attach both a propositional and a first-order rule base.
+    pub fn with_all(
+        abducibles: &'a AbducibleSet,
+        rules: &'a HornRuleBase,
+        schematic: &'a SchematicHornRuleBase,
+    ) -> Self {
+        Self { abducibles, rules: Some(rules), schematic: Some(schematic) }
     }
 
     /// Generate candidate hypothesis sets for `goal`.
@@ -157,8 +178,12 @@ impl<'a> SldEngine<'a> {
         // body. Empty-body (fact) rules emit the empty candidate;
         // upstream uses that to recognise goals already provable
         // from the deductive base without further hypotheses.
-        if budget == 0 { return out; }
-        let Some(rules) = self.rules else { return out; };
+        if budget == 0 {
+            return out;
+        }
+        if self.rules.is_none() && self.schematic.is_none() {
+            return out;
+        }
 
         // Cycle guard: tag goals by their string form. Recursing
         // back into a goal currently being expanded would loop.
@@ -167,41 +192,97 @@ impl<'a> SldEngine<'a> {
             return out;
         }
 
-        for rule in rules.rules_matching(goal) {
-            // Empty body: rule fact discharges the goal with no
-            // hypotheses needed.
-            if rule.body.is_empty() {
-                out.push(Candidate::empty());
-                continue;
-            }
-            // Multi-body: cross-product over each body atom's
-            // candidate sets, then merge.
-            let mut joint = vec![Candidate::empty()];
-            let mut all_resolved = true;
-            for body_atom in &rule.body {
-                let sub =
-                    self.candidates_inner(body_atom, budget - 1, visiting);
-                if sub.is_empty() {
-                    all_resolved = false;
-                    break;
+        // Branch 2: propositional Horn-rule chaining (heads match by
+        // α-equivalence, bodies resolved as-is).
+        if let Some(rules) = self.rules {
+            for rule in rules.rules_matching(goal) {
+                if rule.body.is_empty() {
+                    out.push(Candidate::empty());
+                    continue;
                 }
-                let mut next = Vec::new();
-                for j in &joint {
-                    for s in &sub {
-                        let mut merged = j.clone();
-                        merged.merge(s);
-                        next.push(merged);
-                    }
+                if let Some(joint) = self.resolve_body(&rule.body, budget, visiting) {
+                    out.extend(joint);
                 }
-                joint = next;
             }
-            if all_resolved {
-                out.extend(joint);
+        }
+
+        // Branch 3: first-order (schematic) Horn-rule chaining — the
+        // head **unifies** with the goal, and the resulting
+        // substitution instantiates each body atom before it is
+        // resolved. This lets a rule like `parent(X,Y) :- father(X,Y)`
+        // discharge the goal `parent(a,b)` by resolving `father(a,b)`.
+        if let Some(schematic) = self.schematic {
+            for (rule, subst) in schematic.rules_matching(goal) {
+                if rule.body.is_empty() {
+                    out.push(Candidate::empty());
+                    continue;
+                }
+                let body: Vec<Term> =
+                    rule.body.iter().map(|atom| apply_subst(atom, &subst)).collect();
+                if let Some(joint) = self.resolve_body(&body, budget, visiting) {
+                    out.extend(joint);
+                }
             }
         }
 
         visiting.remove(&goal_key);
         out
+    }
+
+    /// Resolve every atom in a (already-instantiated) rule body,
+    /// taking the cross-product of each atom's candidate sets and
+    /// merging. Returns `None` as soon as any atom is unresolvable
+    /// (the whole rule firing fails).
+    fn resolve_body(
+        &self,
+        atoms: &[Term],
+        budget: usize,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Vec<Candidate>> {
+        let mut joint = vec![Candidate::empty()];
+        for atom in atoms {
+            let sub = self.candidates_inner(atom, budget - 1, visiting);
+            if sub.is_empty() {
+                return None;
+            }
+            let mut next = Vec::new();
+            for j in &joint {
+                for s in &sub {
+                    let mut merged = j.clone();
+                    merged.merge(s);
+                    next.push(merged);
+                }
+            }
+            joint = next;
+        }
+        Some(joint)
+    }
+}
+
+/// Apply a name-keyed substitution (from
+/// [`SchematicHornRule::head_unify`](crate::rule_base::SchematicHornRule::head_unify))
+/// to a term, replacing each schematic variable by its binding.
+/// Substitution does not descend under a binder that shadows the
+/// schematic name. The substitution is type-consistent (the unifier
+/// checked types), so the rebuilt applications are well-typed.
+fn apply_subst(t: &Term, subst: &[(String, Term)]) -> Term {
+    match t.kind() {
+        TermInner::Var(v) => subst
+            .iter()
+            .find(|(name, _)| name == &v.name)
+            .map(|(_, replacement)| replacement.clone())
+            .unwrap_or_else(|| t.clone()),
+        TermInner::Const(_) => t.clone(),
+        TermInner::App(f, x) => {
+            let nf = apply_subst(f, subst);
+            let nx = apply_subst(x, subst);
+            Term::app(nf, nx).unwrap_or_else(|_| t.clone())
+        }
+        TermInner::Lam(v, body) => {
+            let inner: Vec<(String, Term)> =
+                subst.iter().filter(|(name, _)| name != &v.name).cloned().collect();
+            Term::lam((**v).clone(), apply_subst(body, &inner))
+        }
     }
 }
 
@@ -322,6 +403,94 @@ mod tests {
         // Abducible branch still fires; rule branch suppressed.
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].hypotheses.len(), 1);
+    }
+
+    #[test]
+    fn first_order_rule_resolves_via_unification() {
+        // parent(X,Y) :- father(X,Y).   goal parent(a,b).
+        // father(a,b) abducible  ⊢  candidate {father(a,b)}.
+        use crate::rule_base::{SchematicHornRule, SchematicHornRuleBase};
+        use adsmt_core::Kind;
+        let int_ty = Type::const_("Int", Kind::Type);
+        let pred_ty = Type::fun(
+            int_ty.clone(),
+            Type::fun(int_ty.clone(), Type::bool_()).unwrap(),
+        )
+        .unwrap();
+        let parent = Term::const_("parent", pred_ty.clone());
+        let father = Term::const_("father", pred_ty);
+        let x = Term::var("X", int_ty.clone());
+        let y = Term::var("Y", int_ty.clone());
+        let a = Term::const_("a", int_ty.clone());
+        let b = Term::const_("b", int_ty);
+
+        let app2 = |f: &Term, u: Term, v: Term| {
+            Term::app(Term::app(f.clone(), u).unwrap(), v).unwrap()
+        };
+        let head = app2(&parent, x.clone(), y.clone());
+        let body_atom = app2(&father, x, y);
+        let mut sch = SchematicHornRuleBase::new();
+        sch.insert(SchematicHornRule::new(
+            head,
+            vec![body_atom],
+            vec!["X".into(), "Y".into()],
+            "kb::parent",
+        ));
+
+        let goal = app2(&parent, a.clone(), b.clone());
+        let father_ab = app2(&father, a, b);
+        let mut set = AbducibleSet::new();
+        set.insert(Abducible::new(father_ab.clone(), "ab"));
+
+        let cs = SldEngine::with_schematic_rules(&set, &sch).candidates(&goal);
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].hypotheses.len(), 1);
+        assert!(cs[0].hypotheses[0].alpha_eq(&father_ab));
+    }
+
+    #[test]
+    fn first_order_rule_distinct_goals_share_one_schema() {
+        // parent(X,Y) :- father(X,Y).  Two distinct goals reuse the
+        // same schema with different bindings.
+        use crate::rule_base::{SchematicHornRule, SchematicHornRuleBase};
+        use adsmt_core::Kind;
+        let int_ty = Type::const_("Int", Kind::Type);
+        let pred_ty = Type::fun(
+            int_ty.clone(),
+            Type::fun(int_ty.clone(), Type::bool_()).unwrap(),
+        )
+        .unwrap();
+        let parent = Term::const_("parent", pred_ty.clone());
+        let father = Term::const_("father", pred_ty);
+        let app2 = |f: &Term, u: Term, v: Term| {
+            Term::app(Term::app(f.clone(), u).unwrap(), v).unwrap()
+        };
+        let x = Term::var("X", int_ty.clone());
+        let y = Term::var("Y", int_ty.clone());
+        let mut sch = SchematicHornRuleBase::new();
+        sch.insert(SchematicHornRule::new(
+            app2(&parent, x.clone(), y.clone()),
+            vec![app2(&father, x, y)],
+            vec!["X".into(), "Y".into()],
+            "kb::parent",
+        ));
+        let mut set = AbducibleSet::new();
+        let mk = |n: &str| Term::const_(n, int_ty.clone());
+        let ab1 = app2(&father, mk("a"), mk("b"));
+        let ab2 = app2(&father, mk("c"), mk("d"));
+        set.insert(Abducible::new(ab1.clone(), "ab1"));
+        set.insert(Abducible::new(ab2.clone(), "ab2"));
+        let eng = SldEngine::with_schematic_rules(&set, &sch);
+
+        let g1 = app2(&parent, mk("a"), mk("b"));
+        let cs1 = eng.candidates(&g1);
+        assert_eq!(cs1.len(), 1);
+        assert!(cs1[0].hypotheses[0].alpha_eq(&ab1));
+
+        let g2 = app2(&parent, mk("c"), mk("d"));
+        let cs2 = eng.candidates(&g2);
+        assert_eq!(cs2.len(), 1);
+        assert!(cs2[0].hypotheses[0].alpha_eq(&ab2));
     }
 
     #[test]

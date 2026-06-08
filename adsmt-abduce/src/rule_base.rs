@@ -186,6 +186,45 @@ impl HornRuleBase {
     }
 }
 
+/// Owned collection of schematic (first-order) Horn rules — the
+/// unifying counterpart to [`HornRuleBase`]. The SLD engine attaches
+/// one alongside (or instead of) the propositional base.
+#[derive(Default, Clone, Debug)]
+pub struct SchematicHornRuleBase {
+    rules: Vec<SchematicHornRule>,
+}
+
+impl SchematicHornRuleBase {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, r: SchematicHornRule) {
+        self.rules.push(r);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &SchematicHornRule> {
+        self.rules.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.rules.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    /// Every rule whose head unifies with `goal`, paired with the
+    /// head→goal substitution (so the caller can instantiate the
+    /// rule's body before resolving it).
+    pub fn rules_matching<'a>(
+        &'a self,
+        goal: &'a Term,
+    ) -> impl Iterator<Item = (&'a SchematicHornRule, Vec<(String, Term)>)> + 'a {
+        self.rules.iter().filter_map(move |r| r.head_unify(goal).map(|s| (r, s)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
