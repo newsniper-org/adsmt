@@ -228,7 +228,7 @@ impl<'a> SldEngine<'a> {
         }
 
         visiting.remove(goal);
-        out
+        dedup_candidates(out)
     }
 
     /// Resolve every atom in a (already-instantiated) rule body,
@@ -259,6 +259,41 @@ impl<'a> SldEngine<'a> {
         }
         Some(joint)
     }
+}
+
+/// Collapse candidates that assume the **same set** of hypotheses.
+///
+/// Several derivations can bottom out at an identical hypothesis set:
+/// a fact rule and a flexible (higher-order) head can both discharge
+/// the goal with no hypotheses; two schematic rules whose pattern
+/// heads each cover the goal can resolve to the same single
+/// abducible; a goal can be both directly abducible and reachable via
+/// a unit rule. Abductively these are one hypothesis — keeping the
+/// duplicates only inflates the downstream cross-product in
+/// [`SldEngine::resolve_body`] and the ranked output. (Subsumption in
+/// [`crate::minimize`] does *not* fold them: its subset test is
+/// strict on cardinality, so equal-length identical sets survive.)
+///
+/// The comparison is order-independent — keyed off the rc.10
+/// hash-consed hypothesis identities (`Term` `Hash`/`Eq` is
+/// `Arc::ptr_eq`), so `{p, q}` and `{q, p}` collapse — and keeps the
+/// first occurrence, preserving its `explanations`/`sources`. This is
+/// the cold abduction path, so the linear `seen` scan (small candidate
+/// counts) is left simple rather than hashed.
+fn dedup_candidates(cands: Vec<Candidate>) -> Vec<Candidate> {
+    let mut seen: Vec<HashSet<Term>> = Vec::with_capacity(cands.len());
+    let mut out = Vec::with_capacity(cands.len());
+    'next: for c in cands {
+        let key: HashSet<Term> = c.hypotheses.iter().cloned().collect();
+        for s in &seen {
+            if *s == key {
+                continue 'next;
+            }
+        }
+        seen.push(key);
+        out.push(c);
+    }
+    out
 }
 
 /// Apply a name-keyed substitution (from
@@ -522,6 +557,36 @@ mod tests {
             vec!["F".into(), "x".into()],
             "kb::ho-fact",
         ));
+
+        let g = Term::const_("g", pred_ty);
+        let a = Term::const_("a", int_ty);
+        let goal = Term::app(g, a).unwrap();
+        let set = AbducibleSet::new();
+
+        let cs = SldEngine::with_schematic_rules(&set, &sch).candidates(&goal);
+        assert_eq!(cs.len(), 1);
+        assert!(cs[0].is_empty());
+    }
+
+    #[test]
+    fn duplicate_candidates_are_collapsed() {
+        // Two distinct schematic *facts* whose flexible heads both
+        // cover the goal each emit the empty candidate. They assume
+        // the same (empty) hypothesis set, so the engine returns a
+        // single candidate rather than two identical ones.
+        use crate::rule_base::{SchematicHornRule, SchematicHornRuleBase};
+        use adsmt_core::Kind;
+        let int_ty = Type::const_("Int", Kind::Type);
+        let pred_ty = Type::fun(int_ty.clone(), Type::bool_()).unwrap();
+        let mk_fact = |name: &str, src: &str| {
+            let big_f = Term::var(name, pred_ty.clone());
+            let x = Term::var("x", int_ty.clone());
+            let head = Term::app(big_f, x).unwrap();
+            SchematicHornRule::new(head, vec![], vec![name.into(), "x".into()], src)
+        };
+        let mut sch = SchematicHornRuleBase::new();
+        sch.insert(mk_fact("F", "kb::fact-a"));
+        sch.insert(mk_fact("G", "kb::fact-b"));
 
         let g = Term::const_("g", pred_ty);
         let a = Term::const_("a", int_ty);
