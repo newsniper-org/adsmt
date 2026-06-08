@@ -59,6 +59,24 @@ use adsmt_parser_smtlib2::sexpr::{Position, SExpr};
 use adsmt_parser_smtlib2::smtlib::Command;
 use adsmt_parser_smtlib2::{convert_expr, parse_smtlib_positioned, ConvertError, SymbolTable};
 
+/// Wire encoding for `--emit-cert` / `--emit-cert-dir`.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum CertFormat {
+    /// Compact binary CBOR (the adsmt-emit emitters' default wire).
+    Cbor,
+    /// Human-readable JSON.
+    Json,
+}
+
+impl CertFormat {
+    fn wire(self) -> adsmt_emit_contract::Wire {
+        match self {
+            CertFormat::Cbor => adsmt_emit_contract::Wire::Cbor,
+            CertFormat::Json => adsmt_emit_contract::Wire::Json,
+        }
+    }
+}
+
 #[derive(ClapParser)]
 #[command(name = "lu-smt", version)]
 struct Cli {
@@ -71,6 +89,22 @@ struct Cli {
     /// post-processor.
     #[arg(long)]
     audit_json: bool,
+    /// Write the proof certificate of each `unsat` `(check-sat)` to
+    /// this path (last one wins), in the wire format the adsmt-emit
+    /// emitters read. The certificate is the canonical
+    /// `adsmt-cert::Certificate`; pair with `--emit-cert-format`.
+    #[arg(long, value_name = "PATH")]
+    emit_cert: Option<String>,
+    /// Like `--emit-cert`, but write one file per `unsat`
+    /// `(check-sat)` as `<DIR>/<seq>.cert.<ext>` (the verus-fork
+    /// `ADSMT_CERT_DIR` hook target).
+    #[arg(long, value_name = "DIR")]
+    emit_cert_dir: Option<String>,
+    /// Encoding for `--emit-cert` / `--emit-cert-dir`. `cbor` (the
+    /// default, the emitters' default wire) is compact; `json` is
+    /// human-readable.
+    #[arg(long, value_enum, default_value_t = CertFormat::Cbor)]
+    emit_cert_format: CertFormat,
     /// Reject unrecognised SMT-LIB commands instead of warning +
     /// continuing. Maps to exit code 13 when a `Raw` command is
     /// encountered.
@@ -241,6 +275,9 @@ fn main() -> ExitCode {
             no_autodeclare: cli.no_autodeclare,
             finite_field,
             aot_bake: cli.aot_bake,
+            emit_cert: cli.emit_cert.as_deref().map(std::path::PathBuf::from),
+            emit_cert_dir: cli.emit_cert_dir.as_deref().map(std::path::PathBuf::from),
+            emit_cert_wire: cli.emit_cert_format.wire(),
         },
         aot_prelude,
     );
@@ -1295,6 +1332,14 @@ struct DriverConfig {
     /// the resulting ledger after EOF and emits the `.luart`
     /// artifact via `bake_to_path`.
     aot_bake: bool,
+    /// `--emit-cert PATH` — write each unsat cert to this single path
+    /// (last one wins).
+    emit_cert: Option<std::path::PathBuf>,
+    /// `--emit-cert-dir DIR` — write each unsat cert as
+    /// `<DIR>/<seq>.cert.<ext>`.
+    emit_cert_dir: Option<std::path::PathBuf>,
+    /// Encoding for the `--emit-cert*` outputs.
+    emit_cert_wire: adsmt_emit_contract::Wire,
 }
 
 /// Recognised `set-option` keys. The presence of a key in this map
@@ -1390,6 +1435,9 @@ struct Driver {
     /// preserve the per-axiom `qid` per the verus-fork ack §8.4 of
     /// the §3.1 counter-proposal.
     assertion_qids: Vec<Option<String>>,
+    /// `(check-sat)` sequence number, for `--emit-cert-dir` file
+    /// naming.
+    check_sat_seq: usize,
 }
 
 impl Driver {
@@ -1434,6 +1482,7 @@ impl Driver {
             last_result: None,
             assertions,
             assertion_qids,
+            check_sat_seq: 0,
         }
     }
 
@@ -1756,10 +1805,14 @@ impl Driver {
     }
 
     fn record_result(&mut self, r: SatResult) -> LastStatus {
+        self.check_sat_seq += 1;
         let status = match &r {
             SatResult::Sat { .. } => LastStatus::Sat,
             SatResult::Unsat { certificate, .. } => {
                 self.last_cert = certificate.clone();
+                if let Some(cert) = certificate {
+                    self.write_emit_cert(cert);
+                }
                 LastStatus::Unsat
             }
             SatResult::Unknown { .. } => LastStatus::Unknown,
@@ -1767,6 +1820,31 @@ impl Driver {
         };
         self.last_result = Some(r);
         status
+    }
+
+    /// Write the proof certificate per `--emit-cert` / `--emit-cert-dir`
+    /// in the configured wire format. No-op when neither is set.
+    fn write_emit_cert(&self, cert: &adsmt_cert::Certificate) {
+        if self.cfg.emit_cert.is_none() && self.cfg.emit_cert_dir.is_none() {
+            return;
+        }
+        let bytes = adsmt_emit_contract::encode(cert, self.cfg.emit_cert_wire);
+        let ext = match self.cfg.emit_cert_wire {
+            adsmt_emit_contract::Wire::Cbor => "cbor",
+            adsmt_emit_contract::Wire::Json => "json",
+        };
+        if let Some(path) = &self.cfg.emit_cert {
+            if let Err(e) = std::fs::write(path, &bytes) {
+                eprintln!("(error \"emit-cert: writing {}: {e}\")", path.display());
+            }
+        }
+        if let Some(dir) = &self.cfg.emit_cert_dir {
+            let _ = std::fs::create_dir_all(dir);
+            let p = dir.join(format!("{}.cert.{ext}", self.check_sat_seq));
+            if let Err(e) = std::fs::write(&p, &bytes) {
+                eprintln!("(error \"emit-cert: writing {}: {e}\")", p.display());
+            }
+        }
     }
 
     fn resolve_sort(&self, sort: &SExpr) -> Result<Type, String> {

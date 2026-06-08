@@ -54,6 +54,7 @@ dependencies = [
  "adsmt-aot",
  "adsmt-cert",
  "adsmt-core",
+ "adsmt-emit-contract",
  "adsmt-engine",
  "adsmt-jit",
  "adsmt-lints",
