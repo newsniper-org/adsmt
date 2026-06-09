@@ -706,18 +706,35 @@ impl Solver {
             let _ = unsafe { kernel.invoke() };
         }
 
+        // §3.5.F real event replay — re-fire the recorded
+        // `Decide`/`Propagate`/`Backjump`/`Restart`/`Conflict` stream
+        // onto a fresh CDCL state (`cdcl::replay_events`), reconstructing
+        // the prior solve's trail instead of re-running the search. This
+        // replaces the v0.x heuristic scan, whose
+        // `Conflict`-without-`Restart` ⇒ Unsat rule mis-read a
+        // mid-search conflict that a later backjump resolved; threading
+        // `decision_level` through the events makes a *level-0* terminal
+        // conflict the only thing that means Unsat.
         if trace.events.is_empty() {
             return ReplayOutcome::Replayed {
                 verdict: SatResult::Sat { model: crate::result::Model::new() },
             };
         }
-        let has_conflict = trace.events.iter().any(|e| {
-            matches!(e, adsmt_jit::CdclTraceEvent::Conflict { .. })
-        });
-        let has_restart = trace.events.iter().any(|e| {
-            matches!(e, adsmt_jit::CdclTraceEvent::Restart)
-        });
-        if has_conflict && !has_restart {
+        let replayed = crate::cdcl::replay_events(&trace.events, &self.aot_pool_terms);
+        if replayed.diverged {
+            // A trace atom fell outside the current pool — the trace
+            // does not fit this query, so it can't be trusted.
+            return ReplayOutcome::GuardsPassed;
+        }
+        if replayed.root_conflict
+            && self.level0_falsifies_prelude_clause(&replayed.state)
+        {
+            // The recorded level-0 conflict is independently confirmed:
+            // an *original* prelude clause is fully falsified by the
+            // reconstructed decision-free assignment. So the Unsat rests
+            // on the original clauses, never on a recorded learnt
+            // clause's (untrusted) derivation — sound even before the
+            // GF(2) guard delegation.
             return ReplayOutcome::Replayed {
                 verdict: SatResult::Unsat {
                     certificate: None,
@@ -725,7 +742,34 @@ impl Solver {
                 },
             };
         }
+        // Consistent prelude replay (or a conflict not confirmable
+        // against an original clause): the reconstructed trail seeds the
+        // per-query CDCL the caller runs — fall through.
         ReplayOutcome::GuardsPassed
+    }
+
+    /// §3.5.F soundness backstop — true iff some **original** prelude
+    /// clause is fully falsified by the level-0 (decision-free) prefix
+    /// of `state`'s trail. Confirms a replayed root conflict against the
+    /// original clause set, so a trace-driven `Unsat` never rests on a
+    /// recorded learnt clause's derivation (an empty clause — a baked
+    /// `(assert false)` — falsifies vacuously, the genuine-empty-clause
+    /// contradiction).
+    fn level0_falsifies_prelude_clause(&self, state: &crate::cdcl::CdclState) -> bool {
+        let level0: std::collections::HashMap<&Term, bool> = state
+            .trail
+            .iter()
+            .filter(|e| e.decision_level == 0)
+            .map(|e| (&e.atom, e.polarity))
+            .collect();
+        self.aot_prelude_clauses.iter().any(|clause| {
+            clause.iter().all(|lit| {
+                level0
+                    .get(&lit.atom)
+                    .map(|&v| v != lit.polarity)
+                    .unwrap_or(false)
+            })
+        })
     }
 
     /// Internal helper — depth-3 skeleton hash of the
@@ -2931,19 +2975,51 @@ mod tests {
     }
 
     #[test]
-    fn replay_returns_replayed_unsat_when_conflict_event_present_and_no_restart() {
-        let s = Solver::default();
+    fn replay_returns_replayed_unsat_on_confirmed_level0_conflict() {
+        // §3.5.F real replay: `p` propagated true at level 0, then a
+        // level-0 conflict; the prelude clause `[¬p]` is falsified by
+        // that assignment, so the replay is independently confirmed
+        // Unsat (not merely trusted from the trace).
+        let mut s = Solver::default();
+        let p = Term::var("p", Type::bool_());
+        s.aot_pool_terms = vec![p.clone()];
+        s.aot_prelude_clauses = vec![vec![crate::cnf::Lit { atom: p, polarity: false }]];
         let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
-        trace.events.push(adsmt_jit::CdclTraceEvent::Decide { atom: 1, polarity: true });
+        trace.events.push(adsmt_jit::CdclTraceEvent::Propagate {
+            atom: 0,
+            polarity: true,
+            antecedent: -1,
+        });
+        trace.events.push(adsmt_jit::CdclTraceEvent::Conflict { learnt: vec![], lbd: 0 });
+        match s.replay_aot_cdcl_trace(&trace, &[]) {
+            ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } } => {}
+            other => panic!("expected Replayed{{Unsat}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_does_not_unsat_on_a_non_root_conflict() {
+        // A conflict that fires *after a decision* (level 1) is a
+        // mid-search conflict, not a terminal root conflict; the old
+        // heuristic wrongly reported Unsat here. The real replay falls
+        // through (GuardsPassed) — the per-query CDCL decides it.
+        let mut s = Solver::default();
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        s.aot_pool_terms = vec![p, q];
+        let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+        trace.events.push(adsmt_jit::CdclTraceEvent::Decide { atom: 0, polarity: true });
         trace.events.push(adsmt_jit::CdclTraceEvent::Conflict {
             learnt: vec![(1, false)],
             lbd: 1,
         });
-        let outcome = s.replay_aot_cdcl_trace(&trace, &[]);
-        match outcome {
-            ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } } => {}
-            other => panic!("expected Replayed{{Unsat}}, got {other:?}"),
-        }
+        assert!(
+            !matches!(
+                s.replay_aot_cdcl_trace(&trace, &[]),
+                ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } }
+            ),
+            "a non-root conflict must not be reported Unsat"
+        );
     }
 
     #[test]

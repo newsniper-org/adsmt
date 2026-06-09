@@ -397,6 +397,99 @@ impl CdclState {
     }
 }
 
+/// §3.5.F — outcome of replaying a recorded CDCL trace's event stream
+/// onto a fresh [`CdclState`].
+#[derive(Debug)]
+pub struct ReplayedTrail {
+    /// The reconstructed engine state (trail / assignment / decision
+    /// level / learnt clauses), ready to seed the per-query CDCL.
+    pub state: CdclState,
+    /// A `Conflict` event fired while `decision_level == 0` — a
+    /// terminal, search-independent contradiction in the prelude.
+    pub root_conflict: bool,
+    /// A trace atom index fell outside the supplied pool: the trace
+    /// does not fit the current atom set, so the replay can't be
+    /// trusted and the caller must fall through to full CDCL.
+    pub diverged: bool,
+}
+
+/// §3.5.F real event replay — re-fire a recorded trace's
+/// `Decide`/`Propagate`/`Backjump`/`Restart`/`Conflict` events onto a
+/// fresh [`CdclState`], reconstructing the prior solve's trail without
+/// re-running the search (the JIT-replay payoff). Atom indices map to
+/// hash-consed [`Term`]s through `pool` (the engine's
+/// `aot_pool_terms`); an out-of-range index marks the trace as not
+/// fitting the current pool (`diverged`).
+///
+/// This replaces the v0.x heuristic event *scan* (which read any
+/// `Conflict`-without-`Restart` as Unsat — wrong for a mid-search
+/// conflict later resolved by a backjump). Faithfully threading the
+/// `Decide`/`Backjump`/`Restart` events through `decision_level` means
+/// `root_conflict` is set only for a genuine **level-0** terminal
+/// conflict.
+///
+/// Soundness: this only *reconstructs* state; the caller
+/// ([`crate::Solver::replay_aot_cdcl_trace`]) gates it on the GF(2)
+/// guard check (the prelude is algebraically unchanged) AND verifies a
+/// claimed `root_conflict` actually falsifies a prelude clause before
+/// trusting it as Unsat — so a divergent or stale trace can never
+/// produce a wrong verdict, only a fall-through to full CDCL.
+pub fn replay_events(events: &[adsmt_jit::CdclTraceEvent], pool: &[Term]) -> ReplayedTrail {
+    use adsmt_jit::CdclTraceEvent as E;
+    let mut state = CdclState::new();
+    let mut root_conflict = false;
+    let term = |i: u32| -> Option<Term> { pool.get(i as usize).cloned() };
+    for ev in events {
+        match ev {
+            E::Decide { atom, polarity } => {
+                let Some(t) = term(*atom) else {
+                    return ReplayedTrail { state, root_conflict, diverged: true };
+                };
+                state.push(t, *polarity, Reason::Decision);
+            }
+            E::Propagate { atom, polarity, antecedent } => {
+                let Some(t) = term(*atom) else {
+                    return ReplayedTrail { state, root_conflict, diverged: true };
+                };
+                // `antecedent < 0` is a prelude-only derivation with no
+                // per-query clause; the index is trail metadata only
+                // (the replay never re-validates the unit step — that
+                // is the guard's job), so a sentinel is fine.
+                let clause_idx = if *antecedent < 0 {
+                    usize::MAX
+                } else {
+                    *antecedent as usize
+                };
+                state.push(t, *polarity, Reason::Propagated { clause_idx });
+            }
+            E::Backjump { to_scope } => state.backtrack_to(*to_scope),
+            E::Restart => state.backtrack_to(0),
+            E::Conflict { learnt, .. } => {
+                if state.decision_level == 0 {
+                    root_conflict = true;
+                }
+                // Record the learnt clause (index-mapped); on a stale
+                // index, skip the clause rather than emit a bogus Lit.
+                let mut lits = Vec::with_capacity(learnt.len());
+                let mut ok = true;
+                for (a, p) in learnt {
+                    match term(*a) {
+                        Some(t) => lits.push(Lit { atom: t, polarity: *p }),
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    state.learnt_clauses.push(lits);
+                }
+            }
+        }
+    }
+    ReplayedTrail { state, root_conflict, diverged: false }
+}
+
 /// v0.21 B.1 follow-up — Sat outcome carrying the satisfying
 /// assignment.  The model keys are atom name `String`s for
 /// backwards compatibility with the [`crate::result::Model`]
@@ -2065,5 +2158,62 @@ mod tests {
         assert!(state.assign.contains_key(&v("c")));
         assert!(!state.assign.contains_key(&v("d")));
         assert!(!state.assign.contains_key(&v("e")));
+    }
+
+    // ── §3.5.F event replay ─────────────────────────────────────
+
+    #[test]
+    fn replay_level0_conflict_is_root() {
+        // p propagated at level 0, then a conflict at level 0 → a
+        // terminal, search-independent contradiction.
+        use adsmt_jit::CdclTraceEvent as E;
+        let pool = vec![p()];
+        let events = vec![
+            E::Propagate { atom: 0, polarity: true, antecedent: -1 },
+            E::Conflict { learnt: vec![], lbd: 0 },
+        ];
+        let r = replay_events(&events, &pool);
+        assert!(!r.diverged);
+        assert!(r.root_conflict, "a level-0 conflict must be a root conflict");
+        assert_eq!(r.state.decision_level, 0);
+    }
+
+    #[test]
+    fn replay_mid_search_conflict_resolved_is_not_root() {
+        // Decide p (level 1), conflict at level 1, backjump to 0,
+        // propagate q. The old heuristic (Conflict-without-Restart ⇒
+        // Unsat) would wrongly call this Unsat; threading decision_level
+        // shows the conflict was at level 1 and was resolved, so it is
+        // NOT a root conflict.
+        use adsmt_jit::CdclTraceEvent as E;
+        let pool = vec![p(), q()];
+        let events = vec![
+            E::Decide { atom: 0, polarity: true },
+            E::Conflict { learnt: vec![(1, false)], lbd: 1 },
+            E::Backjump { to_scope: 0 },
+            E::Propagate { atom: 1, polarity: false, antecedent: -1 },
+        ];
+        let r = replay_events(&events, &pool);
+        assert!(!r.diverged);
+        assert!(
+            !r.root_conflict,
+            "a level-1 conflict resolved by a backjump is not a root conflict"
+        );
+        assert_eq!(r.state.decision_level, 0);
+        // the backjump popped p; q survives at level 0
+        assert!(!r.state.assign.contains_key(&p()));
+        assert_eq!(r.state.assign.get(&q()), Some(&false));
+    }
+
+    #[test]
+    fn replay_out_of_pool_atom_diverges() {
+        // An event references an atom index past the pool → the trace
+        // doesn't fit the current atom set → diverged (caller falls
+        // through to full CDCL).
+        use adsmt_jit::CdclTraceEvent as E;
+        let pool = vec![p()];
+        let events = vec![E::Decide { atom: 7, polarity: true }];
+        let r = replay_events(&events, &pool);
+        assert!(r.diverged, "an out-of-range atom index must diverge");
     }
 }
