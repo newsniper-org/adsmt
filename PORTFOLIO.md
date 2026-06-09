@@ -8,7 +8,7 @@
 > ~44 k lines of Rust across 31 workspace crates, 970 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.32.1` on 2026-06-09.
+> `1.0.0-rc.32.2` on 2026-06-09.
 
 ---
 
@@ -355,7 +355,7 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.32.1` (2026-06-09) |
+| Workspace version | `1.0.0-rc.32.2` (2026-06-09) |
 
 ---
 
