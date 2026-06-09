@@ -70,11 +70,32 @@ impl WasmEmitter {
         })?;
 
         let mut config = Config::default();
-        // Lift the 4 GiB wall: a wasm64 emitter can address beyond
-        // it. (Other common proposals — bulk-memory, sign-extension,
-        // multi-value, … — are on by default in wasmi.)
+        // Lift the 4 GiB wall: a wasm64 emitter can address beyond it.
         config.wasm_memory64(true);
+        // rc.33 (verus-fork "B′") — a prelude-scale certificate renders
+        // by recursing over the term / proof-step DAG, which exceeded
+        // wasmi's default 1000-frame call stack ("call stack
+        // exhausted"). Actively enable the proposals that carry a deep
+        // render and raise the interpreter's ceilings:
+        //
+        // - **tail-calls**: a render whose recursion is in tail
+        //   position (`return_call`) reuses the frame, so depth no
+        //   longer grows the call stack at all.
+        // - **bulk-memory**: `memory.copy`/`fill` for the large cert
+        //   (~1 MB) and the rendered output, instead of byte loops.
+        // - **multi-memory**: a module may split the cert and its
+        //   output across linear memories.
+        //
+        // These are default-on in wasmi 1.x; set explicitly so the
+        // contract is pinned regardless of the default. The interpreter
+        // runs its **own heap value/call stack** (not the host native
+        // stack), so raising `max_recursion_depth` bounds a deep-but-
+        // finite render by these limits without risking a host overflow.
+        config.wasm_bulk_memory(true);
         config.wasm_multi_memory(true);
+        config.wasm_tail_call(true);
+        config.set_max_recursion_depth(1 << 20);
+        config.set_max_stack_height(256 * 1024 * 1024);
         let engine = Engine::new(&config);
 
         let module = Module::new(&engine, &bytes[..]).map_err(|e| RuntimeError::Wasm {
@@ -238,6 +259,44 @@ mod tests {
             Err(EmitError::Unsupported(_)) => {}
             other => panic!("expected Unsupported, got {other:?}"),
         }
+    }
+
+    // rc.33 (B′): a module that recurses 5 000 deep — well past wasmi's
+    // default 1000-frame call stack — modelling a deep term/proof
+    // render. The recursion is **non-tail** (`add 1` after the call) so
+    // it genuinely consumes call frames and is not elided by the
+    // tail-call proposal; it must run only because the engine raised
+    // `max_recursion_depth`.
+    const DEEP_RECURSE: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "fd_write"
+            (func $fd_write (param i32 i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 100) "deep ok")
+          (func $rec (param $n i32) (result i32)
+            (if (result i32) (i32.eqz (local.get $n))
+              (then (i32.const 0))
+              (else
+                (i32.add
+                  (call $rec (i32.sub (local.get $n) (i32.const 1)))
+                  (i32.const 1)))))
+          (func (export "_start")
+            (drop (call $rec (i32.const 5000)))
+            (i32.store (i32.const 0) (i32.const 100))
+            (i32.store (i32.const 4) (i32.const 7))
+            (drop (call $fd_write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 200)))))
+    "#;
+
+    #[test]
+    fn deep_render_recursion_does_not_exhaust_call_stack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::at(tmp.path());
+        let pkg = wasm_pkg(&store, DEEP_RECURSE);
+        let em = WasmEmitter::from_locked(&pkg, &store).unwrap();
+        // 5 000-deep recursion > the 1000-frame default; with the raised
+        // ceiling it completes and writes its output instead of trapping
+        // "call stack exhausted" (the verus-fork rc.33 B′ symptom).
+        assert_eq!(em.emit(b"prelude-scale cert").unwrap().text, "deep ok");
     }
 
     #[test]
