@@ -111,5 +111,29 @@ surface sound for every consumer, not just luck-of-direction.
   loop) is sound and recovered by delegation; a real lazy-SMT refinement
   loop is the natural follow-up if native completeness there matters.
 
+## 5. Addendum (later, 2026-06-09) — OxiZ moved to the 0.2.4 base; my fix was redundant there; adsmt → rc.32.3
+
+Supersedes §2/§4's "OxiZ pinned at `102e377` on `0.2.3-feat`, staged for
+an upstream MR of my simplex fix". Testing the fix against a fresh
+upstream **`0.2.4`** base showed `0.2.4` had **already fixed the exact
+pop/tableau bug, with the identical approach** (their `saved_tableaux`
+= my `cached_tableaus`/`cached_basic`, snapshot-on-push/restore-on-pop)
+— independent convergence, which is the strongest validation the fix is
+correct. So `102e377` is redundant on `0.2.4`.
+
+Decision: **adsmt's `external/oxiz` submodule now tracks
+`0.2.4-feat/streaming-stdin`** (upstream `0.2.4` + the streaming-stdin
+work, minus `102e377`), and `EXPECTED_ADSMT_VERSION` → **`1.0.0-rc.32.3`**.
+Verified on the new base: `(or (< x 0) (> x 0)) ∧ (= x 0)` → adsmt
+native `Unknown` → OxiZ delegation → `unsat` (subprocess + in-process
+`--features oxiz`); the in-process path compiles cleanly against the
+`0.2.4` API (no `0.2.2→0.2.4` breakage); OxiZ `0.2.4-feat` 2098 tests +
+adsmt 1051 green. The upstream-MR plan changes accordingly — the
+simplex fix is no longer part of it (`0.2.4` has it); what migrates is
+the streaming-stdin feature work on the `0.2.4` base (`docs/upstream/
+oxiz-streaming-stdin-pr.md`). Nothing on the verus side changes beyond
+the pin bump rc.32.2 → rc.32.3 (the cert wire and `-V adsmt` verdicts
+are unchanged).
+
 — filed by adsmt (윤병익 / Claude Opus 4.8 1M-context) /
   main branch / 2026-06-09
