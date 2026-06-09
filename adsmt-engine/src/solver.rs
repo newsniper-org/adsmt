@@ -213,6 +213,13 @@ pub struct Solver {
     /// pure-interpreter behaviour.  Activated via
     /// [`Self::start_jit_caching`].
     jit_registry: Option<adsmt_jit::JitRegistry>,
+    /// §3.5.F — a `.lutrace` loaded via `--jit-trace-load`.  When
+    /// `Some`, [`Self::check_sat_inner`] consults
+    /// [`Self::replay_aot_cdcl_trace`] before the full per-query
+    /// search: if the trace's guards certify the live query and the
+    /// replay reaches a verdict, that verdict short-circuits the
+    /// solve.  Installed via [`Self::set_loaded_jit_trace`].
+    loaded_jit_trace: Option<adsmt_jit::CdclTrace>,
 }
 
 impl Default for Solver {
@@ -248,6 +255,7 @@ impl Default for Solver {
             aot_pool_terms: Vec::new(),
             jit_tracer: None,
             jit_registry: None,
+            loaded_jit_trace: None,
         }
     }
 }
@@ -593,6 +601,17 @@ impl Solver {
     /// started via [`Self::start_jit_recording`].
     pub fn take_jit_recording(&mut self) -> Option<adsmt_jit::CdclTracer> {
         self.jit_tracer.take()
+    }
+
+    /// §3.5.F load activation — install a `.lutrace` (decoded by
+    /// the `--jit-trace-load` CLI surface) so subsequent
+    /// `(check-sat)` calls consult [`Self::replay_aot_cdcl_trace`]
+    /// before the full per-query search.  The replay only
+    /// short-circuits when the trace carries a guard set that
+    /// certifies the live query (see [`Self::check_sat_inner`]'s
+    /// consult); otherwise the solve proceeds unchanged.
+    pub fn set_loaded_jit_trace(&mut self, trace: adsmt_jit::CdclTrace) {
+        self.loaded_jit_trace = Some(trace);
     }
 
     /// §3.2 registry activation — install an empty
@@ -1217,6 +1236,49 @@ impl Solver {
         deadline: Option<std::time::Instant>,
     ) -> SatResult {
         const QUANTIFIER_ROUNDS: usize = 3;
+
+        // §3.5.F replay consult — when a `.lutrace` was loaded
+        // (`--jit-trace-load`) on top of an AOT prelude
+        // (`--aot-load`), try replaying the recorded solve before
+        // committing to a full per-query search.  This is the
+        // payoff site for the whole §3.5 sub-cycle: a guard-certified
+        // trace lets `(check-sat)` skip the prelude search entirely.
+        //
+        // SOUNDNESS GATE — the replayed verdict is trusted ONLY when
+        // the trace carries a non-empty guard set and every guard
+        // passes.  The guard set (skeleton hash + GF(2) polynomial
+        // invariants, §3.5.E) is the certificate that the live query
+        // matches the recorded one; without it (the v0/v1 emit shape
+        // finalises with `GF2Snapshot::empty()` + no guards) the
+        // replay's verdict — in particular the empty-events ⇒ Sat arm
+        // — would apply a recorded result to an unmatched query, which
+        // is unsound.  An empty guard set therefore falls through to
+        // the full solve.  `replay_aot_cdcl_trace` itself already
+        // returns `GuardMiss` on any failing guard and re-confirms a
+        // replayed Unsat against the original prelude clauses, so this
+        // site never trusts an uncertified verdict.
+        if !self.aot_pool_terms.is_empty()
+            && let Some(trace) = self.loaded_jit_trace.take()
+        {
+            // `&[]` live equivalence classes: the per-query GF(2)
+            // class computation lands with §3.5.E.  Until then an
+            // `EquivClass` guard fails closed (empty lookup ⇒ Fail ⇒
+            // GuardMiss ⇒ full solve), while `SkeletonShape` /
+            // `PolyInvariant` guards are checked against the live
+            // skeleton + the trace's recorded basis as usual.
+            let outcome = if trace.guards.is_empty() {
+                ReplayOutcome::GuardsPassed
+            } else {
+                self.replay_aot_cdcl_trace(&trace, &[])
+            };
+            // Keep the trace installed for the next `(check-sat)` in
+            // this session (the prelude is fixed; only the per-query
+            // delta changes).
+            self.loaded_jit_trace = Some(trace);
+            if let ReplayOutcome::Replayed { verdict } = outcome {
+                return verdict;
+            }
+        }
 
         // Closure capturing the deadline for compact early-exit
         // sites inside the instantiation loop.
@@ -3036,6 +3098,107 @@ mod tests {
         trace.events.push(adsmt_jit::CdclTraceEvent::Restart);
         let outcome = s.replay_aot_cdcl_trace(&trace, &[]);
         assert!(matches!(outcome, ReplayOutcome::GuardsPassed));
+    }
+
+    // §3.5.F check-sat consult policy — the guard-gated dispatch
+    // wired into `check_sat_inner`.  These pin the soundness gate:
+    // a replayed verdict is trusted ONLY through a passing, non-empty
+    // guard set (the §3.5.E certificate that the live query matches
+    // the recorded solve); empty guards / guard misses fall through
+    // to the full solve.
+
+    #[test]
+    fn check_sat_consult_ignores_empty_guard_trace() {
+        // An empty guard set carries no certificate that the live
+        // query matches the recorded solve, so even a trace whose
+        // events would replay to a confirmed level-0 Unsat must be
+        // ignored.  The loaded prelude `[¬p]` is satisfiable (p=false),
+        // so the genuine verdict is Sat — the consult must fall through
+        // to it rather than short-circuit to the trace's Unsat.
+        let mut s = Solver::default();
+        let p = Term::var("p", Type::bool_());
+        s.aot_pool_terms = vec![p.clone()];
+        s.aot_prelude_clauses =
+            vec![vec![crate::cnf::Lit { atom: p, polarity: false }]];
+        let mut trace =
+            adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+        // No guards.  Events that, if trusted, would claim Unsat.
+        trace.events.push(adsmt_jit::CdclTraceEvent::Propagate {
+            atom: 0,
+            polarity: true,
+            antecedent: -1,
+        });
+        trace
+            .events
+            .push(adsmt_jit::CdclTraceEvent::Conflict { learnt: vec![], lbd: 0 });
+        s.set_loaded_jit_trace(trace);
+        assert!(
+            matches!(s.check_sat(), SatResult::Sat { .. }),
+            "an empty-guard trace must not short-circuit a satisfiable query to Unsat"
+        );
+    }
+
+    #[test]
+    fn check_sat_consult_short_circuits_unsat_on_certified_contradiction() {
+        // A contradictory prelude `[p] ∧ [¬p]` is Unsat for ANY query,
+        // so trusting the trace's replayed Unsat is sound here
+        // regardless of guard adequacy.  The `SkeletonShape(0)` guard
+        // matches the live skeleton of the (unasserted) query, so the
+        // consult fires and the replay short-circuits to Unsat.
+        let mut s = Solver::default();
+        let p = Term::var("p", Type::bool_());
+        s.aot_pool_terms = vec![p.clone()];
+        s.aot_prelude_clauses = vec![
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
+            vec![crate::cnf::Lit { atom: p, polarity: false }],
+        ];
+        let mut trace =
+            adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+        trace
+            .guards
+            .push(adsmt_jit::JitGuard::SkeletonShape(adsmt_jit::SkeletonShape(0)));
+        trace.events.push(adsmt_jit::CdclTraceEvent::Propagate {
+            atom: 0,
+            polarity: true,
+            antecedent: 0,
+        });
+        trace
+            .events
+            .push(adsmt_jit::CdclTraceEvent::Conflict { learnt: vec![], lbd: 0 });
+        s.set_loaded_jit_trace(trace);
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn check_sat_consult_falls_through_on_guard_miss() {
+        // A `SkeletonShape` guard that does not match the live skeleton
+        // is a miss; the consult must fall through to the full solve.
+        // The loaded prelude `[¬p]` is satisfiable and the trace's
+        // (inconsistent) Unsat-claiming events are never trusted —
+        // verdict is Sat.
+        let mut s = Solver::default();
+        let p = Term::var("p", Type::bool_());
+        s.aot_pool_terms = vec![p.clone()];
+        s.aot_prelude_clauses =
+            vec![vec![crate::cnf::Lit { atom: p, polarity: false }]];
+        let mut trace =
+            adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
+        trace.guards.push(adsmt_jit::JitGuard::SkeletonShape(
+            adsmt_jit::SkeletonShape(0xdead_beef),
+        ));
+        trace.events.push(adsmt_jit::CdclTraceEvent::Propagate {
+            atom: 0,
+            polarity: true,
+            antecedent: -1,
+        });
+        trace
+            .events
+            .push(adsmt_jit::CdclTraceEvent::Conflict { learnt: vec![], lbd: 0 });
+        s.set_loaded_jit_trace(trace);
+        assert!(
+            matches!(s.check_sat(), SatResult::Sat { .. }),
+            "a guard miss must fall through to the full solve (Sat), not trust the trace's Unsat"
+        );
     }
 
     // §1.1 / §1.2 — dump_cdcl_state + aot_cdcl_state cache.

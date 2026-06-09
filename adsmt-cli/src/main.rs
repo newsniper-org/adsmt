@@ -250,7 +250,7 @@ fn main() -> ExitCode {
     // §3.5.G load path: read the .lutrace bytes up front so a
     // corrupt artefact surfaces immediately rather than after
     // the regular session work runs.
-    let _jit_trace_loaded: Option<adsmt_jit::CdclTrace> =
+    let jit_trace_loaded: Option<adsmt_jit::CdclTrace> =
         match cli.jit_trace_load.as_deref() {
             Some(path) => match load_jit_trace(path) {
                 Ok(t) => Some(t),
@@ -291,6 +291,13 @@ fn main() -> ExitCode {
     // hooks had no `CdclTracer` to feed.
     if cli.jit_trace_emit.is_some() {
         driver.solver.start_jit_recording();
+    }
+    // §3.5.F — hand the loaded `.lutrace` to the live solver so
+    // every `(check-sat)` consults the replay path before the full
+    // search.  Mutually exclusive with `--jit-trace-emit` (validated
+    // above), so this never collides with the recorder install.
+    if let Some(trace) = jit_trace_loaded {
+        driver.solver.set_loaded_jit_trace(trace);
     }
     let mut last = LastStatus::Sat;
     // Stash the input bytes for the bake-side SHA-256 computation
