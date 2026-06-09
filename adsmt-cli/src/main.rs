@@ -2043,8 +2043,13 @@ impl Driver {
                 }
                 println!(")");
             }
+            // The phrasing ends in the Z3-canonical "model is not
+            // available" substring on purpose: a `-V adsmt` driver that
+            // reaches `(get-model)` after an incomplete `unknown` then
+            // takes air's cheaper not-verified shortcut (smt_verify.rs)
+            // instead of parsing an empty model (verus-fork 2026-06-09 §6).
             Some(_) | None => println!(
-                "(error \"get-model: the last verdict was not 'sat'; no model available\")"
+                "(error \"get-model: the last verdict was not 'sat'; model is not available\")"
             ),
         }
     }
