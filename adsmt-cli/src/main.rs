@@ -175,20 +175,21 @@ struct Cli {
     /// `--aot-load`.
     #[arg(long)]
     aot_include_cdcl: bool,
-    /// §3.5.G — emit an (empty in v0) `.lutrace` artefact at
-    /// `<PATH>` once the session finishes.  v0 ships the file
-    /// header + zero events; the recorder hook that populates
-    /// the event stream lives next to the CDCL loop in
-    /// `adsmt-engine` and lands in the §3.5.F follow-up.
+    /// §3.5.G — emit a `.lutrace` artefact at `<PATH>` once the
+    /// session finishes: the recorded CDCL event stream (§3.5.F
+    /// recorder hooks) plus the canonical GF(2) algebraic
+    /// signature of the formula (§3.5.E,
+    /// `Solver::jit_trace_signature`) that the replay consult
+    /// matches against. Mutually exclusive with `--jit-trace-load`.
     #[arg(long)]
     jit_trace_emit: Option<String>,
-    /// §3.5.G — load a previously-emitted `.lutrace` artefact
-    /// from `<PATH>` and offer the trace to the §3.5.F
-    /// replay-evaluation gate before every `(check-sat)`.
-    /// `GuardsPassed` lets the engine reuse the trace (once
-    /// §3.5.F's actual replay machinery lands); `GuardMiss`
-    /// falls through to the regular `check_sat_with_deadline`
-    /// path.  Mutually exclusive with `--jit-trace-emit`.
+    /// §3.5.G — load a previously-emitted `.lutrace` artefact from
+    /// `<PATH>` and consult it at every `(check-sat)` (when an
+    /// `--aot-load` prelude is also active): on an exact §3.5.E
+    /// signature match the recorded `unsat` short-circuits the
+    /// solve, otherwise it falls through to the regular
+    /// `check_sat_with_deadline` path. Mutually exclusive with
+    /// `--jit-trace-emit`.
     #[arg(long)]
     jit_trace_load: Option<String>,
 }
@@ -1928,7 +1929,7 @@ impl Driver {
     /// rc.30 (Y4) — register a (possibly parametric, possibly mutually
     /// recursive) bundle of datatypes: their sorts, every
     /// constructor (`C : f₁ × … × fₙ → DT`), and every selector
-    /// (`sel : DT → fᵢ`), then hand a [`DatatypeDecl`] (with arities +
+    /// (`sel : DT → fᵢ`), then hand a `DatatypeDecl` (with arities +
     /// selector names + type params) to the engine's datatype theory.
     ///
     /// Sorts are registered in a first pass so constructor field

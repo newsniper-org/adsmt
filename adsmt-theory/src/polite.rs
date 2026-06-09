@@ -114,7 +114,7 @@ impl Combination {
     /// theory a non-equality atom over its own sort that it could not
     /// interpret? The engine downgrades a combined `Sat` to `Unknown`
     /// when so, so the verdict never rests on an atom whose theory
-    /// semantics were silently dropped (see [`Self::uninterpreted`]).
+    /// semantics were silently dropped (see the `uninterpreted` flag).
     pub fn had_uninterpreted_atom(&self) -> bool { self.uninterpreted }
 
     /// Run `check` on each theory with Nelson-Oppen equality

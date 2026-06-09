@@ -56,7 +56,7 @@ pub fn resolve_program(
     dirs.into_iter().map(|d| d.join(program)).find(|c| c.is_file())
 }
 
-/// Split the process arguments (excluding argv[0]) into the program
+/// Split the process arguments (excluding `argv[0]`) into the program
 /// to run and its arguments. Returns `None` for an empty list.
 pub fn split_invocation(args: &[String]) -> Option<(&str, &[String])> {
     let (program, rest) = args.split_first()?;

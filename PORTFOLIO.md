@@ -5,10 +5,10 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~44 k lines of Rust across 31 workspace crates, 970 tests
+> ~44 k lines of Rust across 31 workspace crates, 1069 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.33` on 2026-06-09.
+> `1.0.0-rc.34` on 2026-06-10.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.33):**
+**Active consumers (rc.34):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -348,18 +348,18 @@ or proof-search strategies without touching the engine core.
 
 | | |
 |---|---|
-| Lines of Rust | ~42,000 (workspace) |
-| Workspace crates | 25 (`14 adsmt-* + 11 absorbed lu-* + adsmt-meta umbrella`) |
-| Tests | **946 green**, 0 ignored, 0 failed |
+| Lines of Rust | ~44,000 (workspace) |
+| Workspace crates | 31 (`adsmt-*` core + `adsmt-parsers/` + `adsmt-shims/` + `adsmt-emit/` + 11 absorbed `lu-*` + `adsmt-meta` umbrella) |
+| Tests | **1069 green**, 0 ignored, 0 failed |
 | `cargo doc --workspace --no-deps` | **0 warnings** (every intentional warning has an explicit `#[allow(...)]`) |
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.33` (2026-06-09) |
+| Workspace version | `1.0.0-rc.34` (2026-06-10) |
 
 ---
 
-## Roadmap snapshot (rc.33 → v1.0.0 stable)
+## Roadmap snapshot (rc.34 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -383,8 +383,8 @@ or proof-search strategies without touching the engine core.
 | §3.5.B `lu-smt --aot-bake --aot-include-cdcl` composable flag + `current_binary_sha256` | **landed** at rc.16 (`00ce626`) |
 | §3.5.C `Solver::with_aot_cdcl` + `ReconstructedCdclPrelude` | **landed** at rc.16 (`f91bea5`) |
 | §3.5.D `adsmt-jit::cdcl` submodule (5-event vocabulary + `CdclTrace` + `CdclTracer` + `GF2Snapshot` + `CdclCheckpoint`) | **landed** at rc.16 (`95efa45`) |
-| §3.5.E `GF2Snapshot::capture` + `FiniteFieldTheory::current_generators` | **landed** at rc.16 (`5fac19d`) |
-| §3.5.F `Solver::replay_aot_cdcl_trace` guard-evaluation gate + `ReplayOutcome` enum | v0 skeleton **landed** at rc.16 (`77ea879`); **promoted** at rc.17 (`f91ed5f`) with real `compute_live_skeleton` + event-replay scan (`Replayed { verdict }` variant + empty-trace / conflict-without-restart shortcuts) |
+| §3.5.E `GF2Snapshot::capture` + `FiniteFieldTheory::current_generators` | **landed** at rc.16 (`5fac19d`); **superseded** at rc.34 (`c5cfe84`) by `Solver::canonical_gf2_signature` — a fully canonical (sorted-atom / sorted-clause) encoding stamped on `--jit-trace-emit`, the exact-match verdict certificate (see the rc.34 row below) |
+| §3.5.F `Solver::replay_aot_cdcl_trace` guard-evaluation gate + `ReplayOutcome` enum | v0 skeleton **landed** at rc.16 (`77ea879`); promoted at rc.17 (`f91ed5f`) with `compute_live_skeleton` + an event-replay *scan*; **completed** at rc.34 (`2b13e08` + `ed69df5`) — `cdcl::replay_events` does a real CDCL event replay (replacing the conflict-without-restart heuristic) + the `(check-sat)` consult (see the rc.34 row below) |
 | §3.5.G `lu-smt --jit-trace-emit / --jit-trace-load` + `.lutrace` v0 binary format | v0 **landed** at rc.16 (`7706327`) |
 | §3.5.A v1.1 — Stålmarck-saturated implication graph as a trailing section in `.luart-cdcl` | **landed** at rc.17 (`09b33b2`) |
 | §3.5.B real CDCL bake (`Solver::dump_cdcl_state` + `cdcl::initial_bcp` helper) | **landed** at rc.17 (`f91ed5f`); the bake side now ships clauses + trail + watches + VSIDS + saved-phase instead of an empty section |
@@ -436,6 +436,7 @@ or proof-search strategies without touching the engine core.
 | (S.1-AOT) extend the rc.27 soundness fix to the `--aot-load` path (verus-fork rc.27 retry residual) | **landed** at rc.28, **CONFIRMED** by verus-fork rc.28 retry (mirror `6491a58`).  The rc.27 (S.1) fix lived only in `check_ground`; the AOT-prelude-bank path (`with_aot_cdcl` / `restore_cdcl_state_into` / `dump_cdcl_state`) still dropped the baked `(assert false)` empty clause → `sat`-for-unsat at every opaque-assert count.  Fix: `restore_cdcl_state_into` keeps genuine empty clauses (explicit `ok` flag vs the defensive out-of-range drop); a trailing v1.2 `CdclSection::had_opaque` wire field (`Cursor::at_end()`-gated, v1.0/v1.1 default `false`) carries the bake-time opaque flag through to a new `Solver::aot_prelude_had_opaque` that seeds `check_ground`'s `had_opaque`, mirroring the baseline `Sat`→`Unknown` downgrade.  Divergence table fully closed (baseline == `--aot-load` at 1/8/16/19/24 opaque asserts); 2 regression tests + 1 round-trip extension, 951/951 green.  verus-fork confirmed **all three paths sound**: full verus_smoke `--aot-load` → `unsat` 13 ms (was `unknown`), JIT-over-AOT → `unsat` |
 | §3.5.I AOT env-path argv threading (`VERUS_ADSMT_AOT_LUART` → `--aot-load`) | **DONE** (verus-fork rc.28 retry).  Driver through the env path → `verus -V adsmt` → `1 verified, 0 errors` 530 ms — §3.5.I proven sound end-to-end through the baked prelude bank, on top of (S.1-AOT) |
 | §3.5.H AOT prelude-bank bake hook | **DONE** (verus-fork `5533adfe`).  Implemented as a **frontend-agnostic** `scripts/aot-bake-prelude.sh` + `just aot-bake-prelude` (NOT a vargo-internal hook — the Y4 unification goal keeps adsmt the common verification engine, so the AOT axiom/prelude bank stays Verus-independent): bakes the Verus prelude (`--from-verus`, default) or any SMT-LIB axiom set (`--from-smt2`), caches under `$VERUS_ADSMT_AOT_CACHE_DIR`, emits the §3.5.I activation line.  End-to-end: bake → activate → `verus -V adsmt` → `1 verified, 0 errors` 292 ms (vs 511 ms without the bank).  **With this, every technical item across the rc.7 → rc.30 arc is landed on both sides** |
+| §3.5.E + §3.5.F **completed on adsmt's side** — JIT-on-AOT trace replay closed | **landed** at rc.34 (`2b13e08` + `ed69df5` + `c5cfe84`).  §3.5.F: `cdcl::replay_events` re-fires the recorded event stream onto a fresh `CdclState` (threads `decision_level` so only a level-0 conflict ⇒ Unsat); the `--jit-trace-load` trace is consulted at the top of `check_sat_inner` (gated on `--aot-load`).  §3.5.E: `--jit-trace-emit` stamps a canonical GF(2) signature; the consult trusts a replayed **Unsat** only on an **exact** signature match (`classes` + `basis`) — NOT `reduce(g, live_basis).is_zero()`, since multivariate reduction against a non-Gröbner basis is unreliable (`reduce(x,[1+x,x])`→`1`) and a per-query Gröbner basis costs as much as solving.  Unsat-only (a replayed Sat has no model); cache-trust model like `--aot-load`.  Fires for exact-formula re-runs (e.g. §3.5.J's 5 rlimit modes on one obligation); cross-query prelude reuse stays the §3.5.C seed follow-up.  4 new tests, 1057 → 1069 green.  **adsmt-side §3.5.A–G complete; remaining = verus-fork §3.5.H bake-hook (done) + §3.5.J 5-mode retry** |
 | Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.26 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | **the only remaining gate** — every technical item (rc.7 → rc.30 + §3.5.H/I/J) is landed; what's left is the formal completeness/soundness audit-sweep scope (rc.29 + verus-fork audits cover the key cases; a broader corpus — real Y4 obligations / adsmt-contrib Isabelle·Rocq emit round-trip — is the sign-off-holder's call) + **explicit user sign-off** per `feedback_stable_signoff_user_approval.md` |

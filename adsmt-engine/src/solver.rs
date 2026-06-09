@@ -49,10 +49,11 @@ pub enum ReplayOutcome {
     /// caller falls through to `check_sat_with_deadline` the
     /// same way `GuardMiss` does.
     GuardsPassed,
-    /// Every guard held + the v0.x event-replay scan reached
-    /// the recorded verdict without re-entering CDCL.  The
-    /// `verdict` is the [`SatResult`] the dispatcher
-    /// reconstructed from the trace; the caller surfaces it
+    /// Every guard held + the recorded event stream replayed to
+    /// a verdict without re-entering CDCL.  The `verdict` is the
+    /// [`SatResult`] the dispatcher reconstructed from the trace
+    /// (an `Unsat` confirmed by an exact §3.5.E signature match or
+    /// the prelude-clause backstop); the caller surfaces it
     /// directly.
     Replayed { verdict: SatResult },
 }
@@ -607,8 +608,8 @@ impl Solver {
     /// the `--jit-trace-load` CLI surface) so subsequent
     /// `(check-sat)` calls consult [`Self::replay_aot_cdcl_trace`]
     /// before the full per-query search.  The replay only
-    /// short-circuits when the trace carries a guard set that
-    /// certifies the live query (see [`Self::check_sat_inner`]'s
+    /// short-circuits when the trace carries a guard set / signature
+    /// that certifies the live query (see `check_sat_inner`'s
     /// consult); otherwise the solve proceeds unchanged.
     pub fn set_loaded_jit_trace(&mut self, trace: adsmt_jit::CdclTrace) {
         self.loaded_jit_trace = Some(trace);
@@ -644,24 +645,26 @@ impl Solver {
         self.jit_registry.as_ref()
     }
 
-    /// §3.5.F replay dispatcher (v0 skeleton).  Evaluates every
-    /// guard in `trace.guards` + the end-of-trace
-    /// `GF2Snapshot`-derived basis against the current
-    /// engine state.  Returns [`ReplayOutcome::GuardMiss`] on
-    /// the first guard failure (matching the v0 "full discard
-    /// on miss" semantics agreed in the §3.5 counter-ack §5.4 —
-    /// partial-replay fallback via mid-trace checkpoints is the
-    /// v1 follow-up); returns
-    /// [`ReplayOutcome::GuardsPassed`] when every guard holds.
+    /// §3.5.F/E replay dispatcher.  Evaluates every guard in
+    /// `trace.guards` against the **live** GF(2) basis + the live
+    /// skeleton ([`ReplayOutcome::GuardMiss`] on the first failure —
+    /// the "full discard on miss" semantics of the §3.5 counter-ack
+    /// §5.4; partial-replay via mid-trace checkpoints is a follow-up),
+    /// then **replays the recorded event stream** through
+    /// [`crate::cdcl::replay_events`] to reconstruct the prior solve's
+    /// trail.
     ///
-    /// v0 does not yet replay the recorded events through the
-    /// CDCL state machine — that wiring lands once the engine
-    /// side exposes the `restore_cdcl_state` helper the trace's
-    /// events feed into.  Calling this method is therefore a
-    /// guard-evaluation gate only; the caller (lu-smt
-    /// `(check-sat)` dispatcher in the §3.5.G CLI surface)
-    /// uses the result to decide between "try the trace" and
-    /// "fall through to full CDCL".
+    /// On a replayed level-0 (root) conflict it returns
+    /// [`ReplayOutcome::Replayed`] `{ Unsat }` iff the recorded §3.5.E
+    /// signature matches the live formula's canonical encoding EXACTLY
+    /// (`classes` and `basis` equal) — or the
+    /// `level0_falsifies_prelude_clause` backstop holds for an
+    /// empty-signature trace.  Otherwise [`ReplayOutcome::GuardsPassed`]
+    /// (consistent replay / unconfirmed conflict) or
+    /// [`ReplayOutcome::GuardMiss`] (guard failure / out-of-pool atom),
+    /// and the caller (the lu-smt `(check-sat)` consult, §3.5.G CLI)
+    /// falls through to full CDCL.  Replayed `Sat` is deliberately NOT
+    /// trusted by the consult (it carries no model).
     pub fn replay_aot_cdcl_trace(
         &self,
         trace: &adsmt_jit::CdclTrace,
@@ -694,27 +697,11 @@ impl Solver {
                 return ReplayOutcome::GuardMiss;
             }
         }
-        // §3.5.F v0.x event-replay scan.  Rather than
-        // re-firing each recorded event through the live CDCL
-        // state machine (the full restoration path that v1
-        // unlocks via `restore_cdcl_state_into`), the v0.x
-        // dispatcher walks the trace's `events` and reaches a
-        // verdict iff the event sequence is *internally
-        // consistent and decisive*:
-        //   - `events.is_empty()`            → Sat (vacuous)
-        //   - any `Conflict { … }` at the     → Unsat
-        //     top of the sequence
-        //   - otherwise                       → fall through
-        //                                       (GuardsPassed)
-        // The conservative arm preserves the v0 fall-through
-        // semantics — a guard-pass with no decisive event
-        // makes the caller run regular `check_sat_with_deadline`
-        // exactly as before.
         // §3.2 compiled-kernel invocation (v0.x post-guard
         // hook).  When the JIT registry is active + the
         // trace was previously registered via
         // `register_jit_trace`, lookup the compiled kernel
-        // and invoke it before the event-replay scan.  v0.x
+        // and invoke it before the event replay.  v0.x
         // kernels are `emit_noop_kernel`-produced (zero
         // payload — a single `xor rax, rax; ret`), so the
         // invocation is observable only as a function-call

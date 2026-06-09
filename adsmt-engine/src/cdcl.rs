@@ -495,7 +495,7 @@ pub fn replay_events(events: &[adsmt_jit::CdclTraceEvent], pool: &[Term]) -> Rep
 /// backwards compatibility with the [`crate::result::Model`]
 /// boundary; internally the engine carries the assignment as
 /// `HashMap<Term, bool>` and converts exactly once via
-/// [`model_from_assign`] when constructing this variant.
+/// `model_from_assign` when constructing this variant.
 #[derive(Clone, Debug)]
 pub enum CdclOutcome {
     Sat { model: HashMap<String, bool> },
