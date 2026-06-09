@@ -380,21 +380,29 @@ fn main() -> ExitCode {
         // dispatch loop ran.  Every CDCL state transition
         // the engine walked through during this session
         // sits in `tracer.events` (via the §1.3 v1
-        // recorder hooks landed at `78284bc`); we close
-        // the tracer with `GF2Snapshot::empty()` + empty
-        // guards because the v0.x emit shape does not yet
-        // carry a meaningful algebraic signature or guard
-        // list (those land alongside the §3.5.F engine-
-        // side replay wiring).  If no tracer was ever
-        // installed (e.g. `--jit-trace-emit` was set but
-        // the session never ran a `(check-sat)`), fall
-        // back to the empty-trace placeholder so the
-        // file-shape gate still holds.
-        let trace = driver.solver.take_jit_recording().map(|tracer| {
-            tracer.finalize(adsmt_jit::GF2Snapshot::empty(), Vec::new())
-        }).unwrap_or_else(|| {
-            adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty())
-        });
+        // recorder hooks landed at `78284bc`).
+        //
+        // §3.5.E — stamp the canonical GF(2) algebraic
+        // signature of the recorded formula
+        // (`Solver::jit_trace_signature`) onto the trace
+        // instead of the v0.x empty placeholder.  This is
+        // the certificate the `--jit-trace-load` consult
+        // checks (⟨recorded⟩ ⊆ ⟨live⟩) before trusting a
+        // replayed Unsat — without it a loaded trace
+        // consult-then-falls-through (sound, no speedup).
+        // The signature is captured AFTER `take_jit_recording`
+        // detaches the tracer, so the `&self` borrow is free.
+        // If no tracer was ever installed (e.g.
+        // `--jit-trace-emit` was set but the session never
+        // ran a `(check-sat)`), fall back to the empty-trace
+        // placeholder so the file-shape gate still holds.
+        let trace = match driver.solver.take_jit_recording() {
+            Some(tracer) => {
+                let (sig, guards) = driver.solver.jit_trace_signature();
+                tracer.finalize(sig, guards)
+            }
+            None => adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty()),
+        };
         if let Err(code) = emit_jit_trace_with(path, &trace) {
             return ExitCode::from(code);
         }
