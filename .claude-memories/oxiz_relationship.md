@@ -451,3 +451,46 @@ leo3 migration to a separate repository at a future date.**
 - Upstream collaboration: open issues on OxiZ describing what
   abductive / Lean4 / Rocq hooks would help us. Be transparent
   about adsmt's existence and goals.
+
+## OxiZ soundness fix — simplex pop did not restore the pivoted tableau (2026-06-09)
+
+Found while auditing adsmt's rc.32.2 native theory-atom fix (OxiZ
+delegation must decide the cases adsmt soundly downgrades to `Unknown`):
+OxiZ returned a spurious **`sat`** for the UNSAT `(or (< x 0) (> x 0)) ∧
+(= x 0)` (and the bound form). Root cause in `oxiz-theories/src/arithmetic/simplex.rs`:
+`check()` detects most infeasibility by **pivoting** in `make_feasible`,
+which rewrites tableau rows + `basic` flags including *lower*-decision-level
+rows; `push`/`pop` maintained only the bound-undo trail + a cached
+assignment, never the **pivoted tableau**, so the DPLL(T) backtracking
+cycle (decide `<0`, conflict, pop, decide `>0`) lost the level-0 bounds and
+missed the second disjunct's conflict. Fix = snapshot `tableau` + `basic`
+on `push`, reinstall on `pop` (`cached_tableaus`/`cached_basic`; `reset()`
+clears them). Landed on submodule branch **`0.2.3-feat/streaming-stdin`**
+commit **`102e377`** (2 regression tests in arithmetic/solver.rs;
+oxiz-theories 1364 + oxiz-solver 684 green), staged for the upstream MR to
+`cool-japan/oxiz` (origin = Honey-Be/oxiz; `0.2.3-feat/enable-writer`
+already merged upstream). adsmt submodule pointer bumped at rc.32.2
+(`49e4ae2`); rebuild the vendored binary for `ADSMT_OXIZ_PATH` / the
+in-process `oxiz` feature to pick it up. LESSON: an incremental simplex's
+`pop` must restore the *structural* state (tableau + basis), not just
+bounds + assignment — pivoting at a decision level mutates lower-level rows.
+
+## adsmt now tracks the 0.2.4-feat base (2026-06-09, decided by user)
+
+Testing the simplex fix against a fresh upstream-0.2.4 base revealed
+upstream **0.2.4 had already fixed the same pop/tableau bug with the
+IDENTICAL approach** (their `saved_tableaux` = my `cached_tableaus`/
+`cached_basic`, snapshot-on-push/restore-on-pop) — independent
+convergence, validating the fix. So my `102e377` patch is redundant on
+0.2.4. Created `0.2.4-feat/streaming-stdin` (`26b8454` = upstream/0.2.4
+merged with the streaming-stdin work up to `5286e29`, i.e. minus
+`102e377`); on it the bug is absent and oxiz-theories+oxiz-solver =
+**2098 tests green**. **adsmt `external/oxiz` submodule switched from
+`0.2.3-feat/streaming-stdin` → `0.2.4-feat/streaming-stdin`** (adsmt
+`80896bb`; `.gitmodules` branch pin + pointer 102e377→26b8454; Cargo.lock
+oxiz 0.2.2→0.2.4). Verified: in-process `--features oxiz` compiles
+cleanly against the 0.2.4 API (no 0.2.2→0.2.4 breakage) and both
+subprocess + in-process delegation give the correct `unsat`; adsmt 1051
+green. Net: the earlier "MR my simplex fix upstream" plan is moot
+(0.2.4 already has it) — what migrates upstream is the streaming-stdin
+feature work on the 0.2.4 base.

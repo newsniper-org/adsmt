@@ -93,3 +93,50 @@ source-build tier** — even a prebuilt wasm goes through `cp $x $pkgdir/`.
 2. Producer side: `lu-smt --emit-cert` writing the lockfile-declared
    wire (CBOR). The original Y4 `cert-emit-flag` request, still unanswered.
 3. bzip4 `Codec` impl (v1.1+); CLI polish (deferred).
+
+## rc.33 — cert wire is a FLAT hash-cons pool; delegated unsat emits a cert
+
+Two verus-fork "Gap A/B" fixes to make the cert-emit pipeline work
+end-to-end on real (prelude-sized, OxiZ-delegated) obligations:
+
+- **Gap B (cert serialization shape)**: `Term`'s serde (`adsmt-core/src/serde_impl.rs`)
+  no longer emits a recursively-nested shadow — it emits a
+  topologically-ordered, deduplicated **hash-cons pool**
+  (`FlatTerm { types: Vec<FlatType>, terms: Vec<FlatTermNode>, root: u32 }`,
+  children referenced by `u32` index). CBOR decode depth is now O(1) in
+  term size (a prelude-sized cert previously blew **ciborium's recursion
+  limit** at `adsmt-emit-contract::decode`), and shared subterms are
+  pooled once (the wire shrinks). Deserialize rebuilds bottom-up through
+  the hash-cons constructors (re-intern preserved; forward/out-of-range
+  refs rejected). The cert *wire* is still CBOR(default)/JSON — only the
+  Term encoding within it changed. **Consequence: any out-of-tree cert
+  consumer (the adsmt-contrib Isabelle/Rocq emitters) must be REBUILT
+  against the new adsmt-cert to decode the flat format** — no code
+  change, a rebuild; gated on the adsmt push to `testing`.
+- **Gap A (delegated cert)**: `Solver::build_delegated_unsat_cert` emits
+  a certificate for an OxiZ-*delegated* unsat (`Assume` per assertion +
+  `⊢ false` with an `oxiz-delegation` opaque witness, rendered as an
+  axiom), so `--emit-cert*` is no longer a no-op on the obligations only
+  delegation can decide.
+
+### B′ (render-side) — wasmi ceilings + proposals for prelude-scale certs
+
+Gap B's decode half closed (flat serde: ciborium `RecursionLimitExceeded`
+gone, 6.8 MB→1.0 MB), but the failure moved downstream to the **render**:
+the emitter recurses over the term/step DAG (`lean_emit::render_term`,
+**non-tail** — recursive calls are `format!` args), so a 1.0 MB
+prelude-scale cert blew wasmi's default **1000-frame call stack**
+(`wasm: call stack exhausted`). Fixed host-side in `adsmt-emit-runtime`'s
+wasmi `Config` (`wasm.rs`): explicitly enable **tail-calls**
+(`wasm_tail_call`), **bulk-memory** (`wasm_bulk_memory`), **multi-memory**
+(`wasm_multi_memory`) — all default-on in wasmi 1.x, pinned explicitly —
+and the load-bearing change for the non-tail recursion:
+`set_max_recursion_depth(1<<20)` + `set_max_stack_height(256 MiB)`. wasmi
+is an interpreter with its **own heap** value/call stack (not the host
+native stack), so raising these carries a deep-but-finite render without
+a host overflow. Verified by a 5 000-deep non-tail wasm recursion test
+(past the 1000 default). The runtime ceiling applies to EVERY emitter;
+full end-to-end on the real 1.0 MB isabelle/rocq cert needs the
+adsmt-contrib emitters rebuilt on rc.33 (gated on the adsmt push to
+`testing`). adsmt commit `c043287` (no version bump — runtime hardening
+within rc.33).
