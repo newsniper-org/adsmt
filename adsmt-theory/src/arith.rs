@@ -560,6 +560,47 @@ impl Theory for LinArith {
     }
 
     fn assert(&mut self, lit: Literal) -> AssertResult {
+        // rc.32.x — a *positive* equality over the arithmetic sort is a
+        // conjunction of bounds: `x = k ⇔ x ≤ k ∧ x ≥ k`,
+        // `x = y ⇔ x − y ≤ 0 ∧ x − y ≥ 0`. Accepting it (rather than
+        // leaving every equality to UF — which cannot see that distinct
+        // numerals are distinct, so `(= x 5) ∧ (= x 6)` would be a
+        // spurious UF `sat`) keeps LIA complete on equalities and is the
+        // numeral-distinctness half of the rc.32.x soundness fix. A
+        // *disequality* `(not (= a b))` is a *disjunction* of strict
+        // bounds that a single bound store can't represent — it stays
+        // `Ignored` for UF's disequality reasoning (and the polite
+        // backstop exempts equality-shaped atoms for the same reason).
+        if lit.polarity && let Some((a, b)) = lit.term.dest_eq() {
+            let var_lit = match (a.kind(), Self::int_lit(&b)) {
+                (TermInner::Var(v), Some(k)) => Some((v.name.clone(), k)),
+                _ => match (Self::int_lit(&a), b.kind()) {
+                    (Some(k), TermInner::Var(v)) => Some((v.name.clone(), k)),
+                    _ => None,
+                },
+            };
+            if let Some((var, k)) = var_lit {
+                for op in ["<=", ">="] {
+                    if let Some(w) = self.record_bound(var.clone(), op, k) {
+                        self.conflict = Some(w.clone());
+                        return AssertResult::Conflict { witness: w };
+                    }
+                }
+                return AssertResult::Accepted;
+            }
+            if let (TermInner::Var(vx), TermInner::Var(vy)) = (a.kind(), b.kind()) {
+                self.two_vars.push(TwoVar {
+                    x: vx.name.clone(), y: vy.name.clone(), sign: -1, op: "<=", k: 0,
+                });
+                self.two_vars.push(TwoVar {
+                    x: vx.name.clone(), y: vy.name.clone(), sign: -1, op: ">=", k: 0,
+                });
+                return AssertResult::Accepted;
+            }
+            // Non-var/non-literal operands (e.g. `(= (f x) 5)`) — leave
+            // to UF congruence; LIA has no variable to bound.
+            return AssertResult::Ignored;
+        }
         // Try two-variable comparison first (FM input).
         if let Some((x, sign, y, op, k)) = Self::parse_sum_comparison(&lit.term) {
             let final_op = if lit.polarity {
@@ -699,6 +740,53 @@ mod tests {
         t.assert(Literal::positive(ge_term("x", 5)).unwrap());
         let r = t.assert(Literal::positive(le_term("x", 3)).unwrap());
         assert!(matches!(r, AssertResult::Conflict { .. }));
+    }
+
+    #[test]
+    fn positive_equality_to_numeral_records_bounds_and_conflicts() {
+        // rc.32.x — `x = 5` is `x ≤ 5 ∧ x ≥ 5`; then `x = 6` tightens
+        // the lower bound to 6, conflicting with `x ≤ 5`. This numeral
+        // distinctness is exactly what UF alone cannot see, so LinArith
+        // accepting positive equalities closes the `(= x 5) ∧ (= x 6)`
+        // unsound-`sat` hole.
+        let mut t = LinArith::lia();
+        let x = Term::var("x", int_ty());
+        let e5 = Term::mk_eq(x.clone(), Term::const_("int:5", int_ty())).unwrap();
+        let e6 = Term::mk_eq(x, Term::const_("int:6", int_ty())).unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(e5).unwrap()),
+            AssertResult::Accepted
+        ));
+        let r = t.assert(Literal::positive(e6).unwrap());
+        assert!(matches!(r, AssertResult::Conflict { .. }));
+    }
+
+    #[test]
+    fn positive_equality_between_vars_is_accepted_and_consistent() {
+        // `x = y` ⇒ `x − y ≤ 0 ∧ x − y ≥ 0`, accepted and satisfiable.
+        let mut t = LinArith::lia();
+        let x = Term::var("x", int_ty());
+        let y = Term::var("y", int_ty());
+        let eq = Term::mk_eq(x, y).unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(eq).unwrap()),
+            AssertResult::Accepted
+        ));
+        assert!(matches!(t.check(), CheckResult::Sat));
+    }
+
+    #[test]
+    fn disequality_is_left_to_uf() {
+        // `¬(x = 5)` is a *disjunction* of strict bounds a single bound
+        // store can't represent; LinArith ignores it (UF reasons about
+        // the disequality, and the polite backstop exempts eq-shaped).
+        let mut t = LinArith::lia();
+        let x = Term::var("x", int_ty());
+        let e5 = Term::mk_eq(x, Term::const_("int:5", int_ty())).unwrap();
+        assert!(matches!(
+            t.assert(Literal::negative(e5).unwrap()),
+            AssertResult::Ignored
+        ));
     }
 
     #[test]

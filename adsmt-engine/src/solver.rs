@@ -1555,7 +1555,7 @@ impl Solver {
                     };
                 }
                 let theory_result =
-                    self.check_via_theories_with_model(&lits, model, deadline);
+                    self.check_via_theories_with_model(&lits, &clauses, model, deadline);
                 // rc.27 (S.1) — never report `sat` when some
                 // assertion was un-encodable: the flattenable
                 // subset is satisfiable but the opaque remainder
@@ -1694,6 +1694,7 @@ impl Solver {
     fn check_via_theories_with_model(
         &mut self,
         lits: &[(Term, bool)],
+        clauses: &[Clause],
         bool_assignment: HashMap<String, bool>,
         deadline: Option<std::time::Instant>,
     ) -> SatResult {
@@ -1726,31 +1727,30 @@ impl Solver {
                 return SatResult::Unsat { certificate: cert, core };
             }
         }
-        // Strip compound asserts — only send shape-recognizable
-        // literals (atom or `(not atom)`) to theories. Anything more
-        // complex is opaque to v0.3 theories.
-        let mut routable: Vec<(Term, bool)> = Vec::new();
+        // ── Stage 1: forced literals ── can soundly conclude `Unsat`.
+        //
+        // rc.32.x: the prior code routed only top-level *atomic* literals
+        // and skipped every `and`/`or`/`=>` wholesale — so the conjuncts
+        // of `(assert (and (> x 0) (< x 0)))` never reached LinArith and
+        // the formula was an unsound `sat`. A conjunct of an asserted
+        // conjunction MUST hold in every model, so `collect_forced_literals`
+        // descends through asserted-true `and` (and the De Morgan duals
+        // `¬(A∨B)`, `¬(A⇒B)`) to surface the *entailed* literals, leaving
+        // genuine disjunctions opaque. Routing only forced literals keeps
+        // `Unsat` sound: every routed literal is entailed, so theory-
+        // infeasibility of the routed set ⟹ the whole set is unsat.
+        let mut forced: Vec<(Term, bool)> = Vec::new();
         for (t, p) in lits {
-            if t.dest_and().is_some() || t.dest_or().is_some() || t.dest_imp().is_some() {
-                continue;
-            }
-            if let Some(inner) = t.dest_not() {
-                routable.push((inner, !p));
-            } else {
-                routable.push((t.clone(), *p));
-            }
+            collect_forced_literals(t, *p, &mut forced);
         }
-        match dpllt::run_once_with_deadline(&mut self.theories, &routable, deadline) {
-            LoopOutcome::Sat => SatResult::Sat {
-                model: crate::result::Model::from_assignment(bool_assignment),
-            },
+        let forced_uninterpreted = match dpllt::run_once_with_deadline(
+            &mut self.theories,
+            &forced,
+            deadline,
+        ) {
             LoopOutcome::Unsat { theory, witness } => {
-                // Cross-reference each `lits` entry against the
-                // solver-state literal table to recover the
-                // source position recorded by `assert_at` at the
-                // CLI boundary. Theory unsat now threads `:loc`
-                // through the cert exactly like the SAT-level
-                // unsat path.
+                // Theory unsat threads `:loc` through the cert exactly
+                // like the SAT-level unsat path.
                 let lits_with_locs = self.attach_locs(lits);
                 let cert = self.build_unsat_cert_opt_with_locs(
                     &lits_with_locs,
@@ -1758,11 +1758,72 @@ impl Solver {
                     witness,
                 );
                 let core = crate::result::UnsatCore::from_assertions(&self.all_assertions());
-                SatResult::Unsat {
-                    certificate: cert,
-                    core,
+                return SatResult::Unsat { certificate: cert, core };
+            }
+            LoopOutcome::Unknown { theory, reason } => {
+                return SatResult::Unknown { reason: format!("{theory}: {reason}") };
+            }
+            // Forced literals are theory-consistent; record whether any
+            // was uninterpreted for the backstop below, then validate
+            // the model's disjunct choices in stage 2.
+            LoopOutcome::Sat => self.theories.had_uninterpreted_atom(),
+        };
+
+        // ── Stage 2: validate the SAT model's chosen disjunct atoms ──
+        //
+        // The forced literals are consistent, but the SAT model also
+        // committed truth values to the atoms *inside* disjunctions
+        // (`(or (< x 0) (> x 0))` with `(= x 0)` picks one disjunct).
+        // Those choices are not entailed, so a theory conflict among
+        // them does NOT make the formula unsat — but it does mean THIS
+        // boolean model is theory-infeasible, and we do not run the full
+        // DPLL(T) refinement loop (theory conflict → learnt clause →
+        // re-solve). So re-check the full model's atoms (each clause
+        // atom at its model polarity) and, on a conflict, return
+        // `Unknown` (→ theory/OxiZ delegation) rather than an unsound
+        // `sat` — preserving soundness without the lazy-SMT machinery.
+        self.theories.reset();
+        let mut model_lits: Vec<(Term, bool)> = Vec::new();
+        let mut seen: std::collections::HashSet<Term> = std::collections::HashSet::new();
+        for clause in clauses {
+            for lit in clause {
+                if seen.insert(lit.atom.clone())
+                    && let Some(&pol) = bool_assignment.get(&lit.atom.to_string())
+                {
+                    model_lits.push((lit.atom.clone(), pol));
                 }
             }
+        }
+        match dpllt::run_once_with_deadline(&mut self.theories, &model_lits, deadline) {
+            LoopOutcome::Sat => {
+                // rc.32.x soundness backstop — even a theory-consistent
+                // model is unsound to report as `Sat` if it rests on an
+                // atom a sort-specialized theory could not interpret (a
+                // nonlinear `(> (* x x) 0)`); UF then accepted it only as
+                // an opaque boolean. Downgrade to `Unknown` so the
+                // verdict is sound AND delegation (gated on `unknown`)
+                // fires — rc.27 (S.1) `had_opaque` → `Unknown`, here
+                // generalized from nested boolean structure to theory
+                // atoms.
+                if forced_uninterpreted || self.theories.had_uninterpreted_atom() {
+                    // Plain detail — the CLI wraps it as the Verus-canonical
+                    // `(incomplete …)` reason-unknown (do not pre-wrap here).
+                    SatResult::Unknown {
+                        reason: "native theory abstraction: a theory atom was \
+                                 assigned without theory interpretation"
+                            .to_string(),
+                    }
+                } else {
+                    SatResult::Sat {
+                        model: crate::result::Model::from_assignment(bool_assignment),
+                    }
+                }
+            }
+            LoopOutcome::Unsat { .. } => SatResult::Unknown {
+                reason: "a satisfying boolean model was theory-infeasible and native \
+                         DPLL(T) does not refine across theory conflicts"
+                    .to_string(),
+            },
             LoopOutcome::Unknown { theory, reason } => SatResult::Unknown {
                 reason: format!("{theory}: {reason}"),
             },
@@ -1805,6 +1866,50 @@ impl Solver {
     }
 
     pub fn abduction_state(&self) -> &AbductionState { &self.abduction_state }
+}
+
+/// rc.32.x — collect the literals **forced** to a definite truth value
+/// by asserting `term` at `polarity`, pushing each as `(atom, polarity)`
+/// into `out`. A conjunct of an asserted-true conjunction must hold in
+/// every model, so it is forced; a disjunct of an asserted-true
+/// disjunction is not. We descend through `not` (flipping polarity) and
+/// the connectives whose forced structure is a conjunction —
+/// asserted-true `and`, asserted-false `or` (`¬(A∨B) = ¬A ∧ ¬B`),
+/// asserted-false `=>` (`¬(A⇒B) = A ∧ ¬B`) — and stop at a genuine
+/// disjunction (asserted-true `or`/`=>`, asserted-false `and`), which
+/// forces nothing. The leaves are the atomic theory literals the
+/// theory layer must check; routing only these keeps the single-model
+/// theory check sound for `unsat` (every routed literal is entailed).
+fn collect_forced_literals(term: &Term, polarity: bool, out: &mut Vec<(Term, bool)>) {
+    if let Some(inner) = term.dest_not() {
+        collect_forced_literals(&inner, !polarity, out);
+        return;
+    }
+    if polarity {
+        if let Some((a, b)) = term.dest_and() {
+            collect_forced_literals(&a, true, out);
+            collect_forced_literals(&b, true, out);
+            return;
+        }
+        if term.dest_or().is_some() || term.dest_imp().is_some() {
+            return; // asserted-true disjunction — nothing forced
+        }
+    } else {
+        if let Some((a, b)) = term.dest_or() {
+            collect_forced_literals(&a, false, out);
+            collect_forced_literals(&b, false, out);
+            return;
+        }
+        if let Some((a, b)) = term.dest_imp() {
+            collect_forced_literals(&a, true, out);
+            collect_forced_literals(&b, false, out);
+            return;
+        }
+        if term.dest_and().is_some() {
+            return; // asserted-false conjunction — disjunctive, nothing forced
+        }
+    }
+    out.push((term.clone(), polarity));
 }
 
 /// rc.30 (Y4) — decompose `App(App(…Const(name), a₁)…, aₙ)` into
@@ -2071,6 +2176,126 @@ mod tests {
         s.assert(Term::mk_eq(a, b).unwrap());
         s.assert(Term::mk_not(Term::mk_eq(fa, fb).unwrap()).unwrap());
         assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    // === rc.32.x — native theory-atom soundness (verus-fork P0) ===
+    //
+    // The native path used to abstract every arithmetic atom to a free
+    // boolean (comparison atoms routed by their Bool result sort, never
+    // reaching LinArith; conjuncts of an asserted `(and …)` never
+    // surfaced to the theory check), so theory-`unsat` formulas returned
+    // a confident, unsound `sat`. These pin the routing fix + LinArith
+    // positive-equality + forced-literal decomposition + the two-stage
+    // model validation + the uninterpreted-atom backstop.
+
+    fn int_ty() -> Type { Type::const_("Int", adsmt_core::Kind::Type) }
+
+    fn cmp(op: &str, lhs: Term, rhs: Term) -> Term {
+        let int = int_ty();
+        let opty = Type::fun(int.clone(), Type::fun(int, Type::bool_()).unwrap()).unwrap();
+        let head = Term::const_(op, opty);
+        Term::app(Term::app(head, lhs).unwrap(), rhs).unwrap()
+    }
+
+    fn int_lit(n: &str) -> Term { Term::const_(n, int_ty()) }
+
+    #[test]
+    fn theory_unsat_conjunction_is_not_sat() {
+        // (and (> x 0) (< x 0)) — the verus-fork repro. Both conjuncts
+        // are forced, route to LinArith, and conflict → unsat.
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let gt = cmp(">", x.clone(), int_lit("0"));
+        let lt = cmp("<", x, int_lit("0"));
+        s.assert(Term::mk_and(gt, lt).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn numeral_equality_conflict_is_unsat() {
+        // (and (= x 5) (= x 6)) — LinArith positive-equality turns each
+        // into bounds; x ≥ 6 ∧ x ≤ 5 conflicts. (UF alone can't see that
+        // 5 and 6 are distinct numerals, which is why this was `sat`.)
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let e5 = Term::mk_eq(x.clone(), int_lit("5")).unwrap();
+        let e6 = Term::mk_eq(x, int_lit("6")).unwrap();
+        s.assert(Term::mk_and(e5, e6).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn single_comparison_is_sat() {
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        s.assert(cmp(">", x, int_lit("0")));
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
+    }
+
+    #[test]
+    fn int_equality_is_sat_not_over_downgraded() {
+        // (= x y) must stay a definite `Sat` — LinArith accepts the
+        // equality (x − y ≤ 0 ∧ x − y ≥ 0); the backstop exempts
+        // equality-shaped atoms, so this is not downgraded to Unknown.
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let y = Term::var("y", int_ty());
+        s.assert(Term::mk_eq(x, y).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
+    }
+
+    #[test]
+    fn satisfiable_arith_range_is_sat() {
+        // (and (> x 0) (< x 10)) — both forced, consistent → sat.
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let gt = cmp(">", x.clone(), int_lit("0"));
+        let lt = cmp("<", x, int_lit("10"));
+        s.assert(Term::mk_and(gt, lt).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
+    }
+
+    #[test]
+    fn disjunctive_theory_conflict_is_never_sat() {
+        // (or (< x 0) (> x 0)) ∧ (= x 0) is theory-UNSAT (0 is neither
+        // < 0 nor > 0). The single-model native path can't refine across
+        // the disjunct choice, but it must never return `sat`: the
+        // two-stage model validation downgrades to Unknown (→ delegation).
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let lt = cmp("<", x.clone(), int_lit("0"));
+        let gt = cmp(">", x.clone(), int_lit("0"));
+        s.assert(Term::mk_or(lt, gt).unwrap());
+        s.assert(Term::mk_eq(x, int_lit("0")).unwrap());
+        assert!(!matches!(s.check_sat(), SatResult::Sat { .. }));
+    }
+
+    #[test]
+    fn nonlinear_atom_is_never_sat() {
+        // (> (* x x) 0) — LinArith can't parse the nonlinear term, so it
+        // `Ignored`s the atom; the backstop downgrades the would-be
+        // free-boolean `sat` to Unknown rather than trusting it.
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let int = int_ty();
+        let mul = Term::const_(
+            "*",
+            Type::fun(int.clone(), Type::fun(int.clone(), int).unwrap()).unwrap(),
+        );
+        let xx = Term::app(Term::app(mul, x.clone()).unwrap(), x).unwrap();
+        s.assert(cmp(">", xx, int_lit("0")));
+        assert!(!matches!(s.check_sat(), SatResult::Sat { .. }));
+    }
+
+    #[test]
+    fn boolean_disjunction_stays_sat() {
+        // Pure-propositional disjunction has no theory atoms; the
+        // backstop and the two-stage check leave it a definite `Sat`.
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        s.assert(Term::mk_or(p, q).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
     }
 
     // === v0.13 cert wiring tests ===

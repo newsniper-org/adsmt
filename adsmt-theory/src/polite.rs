@@ -11,14 +11,30 @@
 //! propagation arrive in v0.3.
 
 use adsmt_cert::witness::PoliteWitness;
-use adsmt_core::{Term, Type};
+use adsmt_core::{Term, TermInner, Type};
 
-use crate::trait_::{CheckResult, Literal, Theory};
+use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
 
 /// A registry of theories participating in combination.
 #[derive(Default)]
 pub struct Combination {
     theories: Vec<Box<dyn Theory>>,
+    /// rc.32.x soundness backstop — set during an [`Self::assert`]
+    /// sweep when a **sort-specialized** theory (one whose
+    /// `handles_sort` is restricted, i.e. it does *not* handle Bool —
+    /// LinArith / Arrays / BV / Datatypes, as opposed to the
+    /// sort-universal UF / egraph) was routed a **non-equality** atom
+    /// over its own sort but returned [`AssertResult::Ignored`]. That
+    /// means an atom the SAT core will assign a truth value to —
+    /// `(> (* x x) 0)`, a comparison form LinArith can't parse — had
+    /// its *theory* meaning dropped: UF then accepts it as an opaque
+    /// boolean, so a propositional model is found and the combined
+    /// check returns `Sat` while ignoring the atom's semantics. The
+    /// engine reads [`Self::had_uninterpreted_atom`] and downgrades
+    /// such a `Sat` to `Unknown` (→ theory/OxiZ delegation), exactly
+    /// the rc.27 (S.1) `had_opaque` lesson generalized from nested
+    /// boolean structure to theory atoms.
+    uninterpreted: bool,
 }
 
 
@@ -49,21 +65,57 @@ impl Combination {
     /// though the formula itself is Bool. This makes the Datatypes
     /// and Arrays theories see equalities about their elements
     /// without having to special-case Bool.
-    pub fn assert(&mut self, lit: Literal) -> Vec<(String, crate::trait_::AssertResult)> {
+    pub fn assert(&mut self, lit: Literal) -> Vec<(String, AssertResult)> {
+        // rc.32.x routing fix: a comparison atom `(op a b)`
+        // (op ∈ `<`,`<=`,`>`,`>=`) is Bool-sorted but its *arithmetic*
+        // meaning lives in the operand sort. Routing by the Bool
+        // result sort sent it only to the sort-universal theories
+        // (UF accepts it as an opaque boolean), never to LinArith —
+        // so `(> x 0) ∧ (< x 0)` produced a free-boolean model →
+        // unsound `sat`. Route by operand sort, like equality.
         let routing_sort = if let Some((a, _)) = lit.term.dest_eq() {
             a.type_of()
+        } else if let Some(operand_sort) = arith_comparison_operand_sort(&lit.term) {
+            operand_sort
         } else {
             lit.term.type_of()
         };
+        // Equalities/disequalities are reasoned about by UF's
+        // congruence machinery even when a sort-specialized theory
+        // can't parse them, so they never count as "uninterpreted";
+        // only a *non*-equality atom dropped by its specialized owner
+        // signals a lost theory meaning. (The one case UF misses —
+        // numeral distinctness in `(= x 5) ∧ (= x 6)` — is closed by
+        // LinArith's positive-equality handling, not the backstop.)
+        let is_eq_shaped = lit.term.dest_eq().is_some();
+        let bool_sort = Type::bool_();
         let mut out = Vec::new();
         for t in &mut self.theories {
             if t.handles_sort(&routing_sort) {
+                // Sort-universal theories (UF/egraph handle Bool too)
+                // accept everything as opaque booleans; only a
+                // sort-restricted theory ignoring an atom over its own
+                // sort is evidence the theory meaning was dropped.
+                let specialized = !t.handles_sort(&bool_sort);
                 let r = t.assert(lit.clone());
+                if specialized
+                    && !is_eq_shaped
+                    && matches!(r, AssertResult::Ignored)
+                {
+                    self.uninterpreted = true;
+                }
                 out.push((t.name().to_string(), r));
             }
         }
         out
     }
+
+    /// rc.32.x — did the last assert sweep hand a sort-specialized
+    /// theory a non-equality atom over its own sort that it could not
+    /// interpret? The engine downgrades a combined `Sat` to `Unknown`
+    /// when so, so the verdict never rests on an atom whose theory
+    /// semantics were silently dropped (see [`Self::uninterpreted`]).
+    pub fn had_uninterpreted_atom(&self) -> bool { self.uninterpreted }
 
     /// Run `check` on each theory with Nelson-Oppen equality
     /// propagation, followed by polite cardinality enforcement
@@ -311,6 +363,7 @@ impl Combination {
 
     /// Drop all theory state.
     pub fn reset(&mut self) {
+        self.uninterpreted = false;
         for t in &mut self.theories {
             t.reset();
         }
@@ -409,6 +462,28 @@ impl CardinalityReconciliation {
             upper_bound: self.tightest.as_ref().map(|(_, n)| *n),
         }
     }
+}
+
+/// Operand sort of a binary arithmetic comparison atom
+/// `(op a b)` with `op ∈ {<, <=, >, >=}` (and the word aliases
+/// `lt`/`le`/`gt`/`ge`). Returns the sort of the left operand — the
+/// sort the comparison is *about* — or `None` when `t` is not such a
+/// comparison. Mirrors [`crate::arith::LinArith`]'s recognized
+/// operator set so the routing in [`Combination::assert`] sends these
+/// Bool-sorted atoms to the arithmetic theory rather than abstracting
+/// them to free booleans.
+fn arith_comparison_operand_sort(t: &Term) -> Option<Type> {
+    if let TermInner::App(outer, _rhs) = t.kind()
+        && let TermInner::App(head, lhs) = outer.kind()
+        && let TermInner::Const(c) = head.kind()
+        && matches!(
+            c.name.as_str(),
+            "<" | "<=" | ">" | ">=" | "lt" | "le" | "gt" | "ge"
+        )
+    {
+        return Some(lhs.type_of());
+    }
+    None
 }
 
 /// v0.19 C.5 — diagnostic record for a sort where two theories
