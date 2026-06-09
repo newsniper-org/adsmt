@@ -23,3 +23,7 @@ serde = ["dep:serde"]
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# rc.33 (Gap B): exercise the *CBOR* decode path — ciborium's
+# recursion limit is what a prelude-sized cert blew, so the flat-pool
+# fix is regression-tested against ciborium, not just serde_json.
+ciborium = "0.2"

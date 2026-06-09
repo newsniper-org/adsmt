@@ -1681,6 +1681,54 @@ impl Solver {
         self.cert_builder.snapshot(conclusion)
     }
 
+    /// rc.33 (verus-fork "Gap A") — build a certificate for an `unsat`
+    /// reached by **delegation**: the native engine returned `Unknown`
+    /// (or the session was `degraded`) and an external solver — OxiZ —
+    /// decided the buffered SMT-LIB `unsat`. Without this the delegated
+    /// verdict carried no cert, so `--emit-cert*` was a no-op on every
+    /// real (Poly/fuel-prelude) obligation Verus verifies.
+    ///
+    /// The cert records each asserted formula as an `Assume` and a
+    /// final `⊢ false` justified by an opaque `oxiz-delegation`
+    /// witness; an ITP emitter renders that final step as an axiom —
+    /// adsmt produced no kernel proof here, it trusted the delegate,
+    /// the same trust status the SAT/DRAT step already has. Built on a
+    /// **fresh** [`CertBuilder`] so it is independent of any partial
+    /// state the inconclusive native check left in `self.cert_builder`.
+    /// `None` under [`ProofMode::None`].
+    pub fn build_delegated_unsat_cert(
+        &self,
+        delegate: &str,
+    ) -> Option<adsmt_cert::Certificate> {
+        if matches!(self.proof_mode, ProofMode::None) {
+            return None;
+        }
+        let mut builder = CertBuilder::new();
+        let mut assume_ids: Vec<StepId> = Vec::new();
+        let mut hyps: Vec<Term> = Vec::new();
+        for phi in self.all_assertions() {
+            let id = builder.add(
+                StepBody::Assume(phi.clone()),
+                Sequent { hyps: vec![phi.clone()], concl: phi.clone() },
+            );
+            assume_ids.push(id);
+            hyps.push(phi);
+        }
+        let witness = TheoryWitness::Opaque {
+            kind: "oxiz-delegation".into(),
+            notes: format!("unsat decided by the delegated solver ({delegate})"),
+        };
+        let conclusion = builder.add(
+            StepBody::Theory {
+                name: "delegation".into(),
+                witness,
+                parents: assume_ids,
+            },
+            Sequent { hyps, concl: Term::false_const() },
+        );
+        Some(builder.snapshot(conclusion))
+    }
+
     /// Route raw literals through the theory layer, threading the
     /// boolean assignment from the SAT layer through to the
     /// verdict's `SatResult::Sat::model`.
@@ -2322,6 +2370,41 @@ mod tests {
             }
             other => panic!("expected Unsat with certificate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn delegated_unsat_cert_records_assumptions_and_delegation_witness() {
+        // rc.33 (Gap A): a cert synthesised for an externally-decided
+        // (delegated) `unsat` records each assertion as an `Assume`,
+        // closes with a Theory step over `false`, and carries the
+        // `oxiz-delegation` opaque witness — so `--emit-cert*` covers
+        // obligations only OxiZ can decide.
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        s.assert(cmp(">", x.clone(), int_lit("0")));
+        s.assert(cmp("<", x, int_lit("0")));
+        let cert = s
+            .build_delegated_unsat_cert("oxiz")
+            .expect("proof mode default Always → Some cert");
+        assert!(cert.steps.len() >= 3, "two assumes + a closing step");
+        let final_step = &cert.steps[cert.conclusion.0 as usize];
+        match &final_step.body {
+            adsmt_cert::StepBody::Theory { name, witness, .. } => {
+                assert_eq!(name, "delegation");
+                assert!(
+                    matches!(witness, adsmt_cert::witness::TheoryWitness::Opaque { kind, .. } if kind == "oxiz-delegation"),
+                    "expected the oxiz-delegation opaque witness",
+                );
+            }
+            other => panic!("expected a Theory closing step, got {other:?}"),
+        }
+        assert!(final_step.result.concl.is_false_const());
+    }
+
+    #[test]
+    fn proof_mode_none_skips_delegated_cert() {
+        let s = Solver::new().with_proof_mode(ProofMode::None);
+        assert!(s.build_delegated_unsat_cert("oxiz").is_none());
     }
 
     #[test]

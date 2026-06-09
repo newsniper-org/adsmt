@@ -1041,8 +1041,19 @@ fn dispatch_one(
                 // protocol reads a stale `(incomplete …)` after an
                 // `unsat` and panics (`discovered_error`).
                 if matches!(v, LastStatus::Unsat) {
+                    // rc.33 (Gap A) — synthesise a certificate for the
+                    // delegated `unsat` (the native check was
+                    // inconclusive, so it produced none). The dispatch
+                    // above already ran `record_result` on the native
+                    // `Unknown` (no cert), so emit the delegated cert
+                    // here directly — it shares this check's `seq`.
+                    let cert = driver.solver.build_delegated_unsat_cert("oxiz");
+                    if let Some(c) = &cert {
+                        driver.write_emit_cert(c);
+                    }
+                    driver.last_cert = cert.clone();
                     driver.last_result = Some(SatResult::Unsat {
-                        certificate: None,
+                        certificate: cert,
                         core: adsmt_engine::result::UnsatCore::new(),
                     });
                 }
