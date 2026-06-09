@@ -9,7 +9,7 @@ reference (build, run, license, contribute).
 
 | What | Where |
 |---|---|
-| Project version | `1.0.0-rc.32` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
+| Project version | `1.0.0-rc.32.1` (testing channel; cuts to `v1.0.0` stable on explicit sign-off) |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (triple) |
 | Crate roster | the `adsmt-*` core + parser group (`adsmt-parsers/`) + shim group (`adsmt-shims/`) + WASM emitter stack (`adsmt-emit/`) + 11 absorbed `lu-*` + `adsmt-meta` umbrella + `logicutils-translator-to-oxiz-sat` |
 | Tests | **1034** passing across the workspace; 0 `cargo doc` / `cargo build` warnings (rc.31 added the WASM emitter package manager + runtime) |
@@ -61,7 +61,7 @@ adsmt is an SMT solver with five differentiating attributes
    surfaces (`oxiz-contrib-abduction`, future binding paths)
    flow upstream as Apache-2 contributions.
 
-## Workspace topology (v1.0.0-rc.32)
+## Workspace topology (v1.0.0-rc.32.1)
 
 ```
 ~/AD1/

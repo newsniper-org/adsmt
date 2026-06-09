@@ -17,4 +17,4 @@ syn = { version = "2.0", features = ["full"] }
 # Run-time parsing of the embedded lu-kb source happens inside
 # the proc-macro process itself; lu-common provides the parser
 # and the breaking-version helpers.
-lu-common = { version = "=1.0.0-rc.32", path = "../lu-common", default-features = false, features = ["k12"] }
+lu-common = { version = "=1.0.0-rc.32.1", path = "../lu-common", default-features = false, features = ["k12"] }
