@@ -15,7 +15,7 @@ indexmap.workspace = true
 # correct.
 serde = { workspace = true, features = ["rc"] }
 oxiz-proof = { version = "0.2", optional = true }
-adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.34.1", path = "../adsmt-heuristic-checker-macros" }
+adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.34.2", path = "../adsmt-heuristic-checker-macros" }
 # Pure LFSC + DRAT parsers (DratProof/DratStep data model + LFSC
 # reader), extracted into a dependency-free leaf crate; `drat`
 # and `prover_emit::lfsc_parse` re-export it.

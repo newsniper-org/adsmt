@@ -931,6 +931,33 @@ impl Solver {
         (self.canonical_gf2_signature(), Vec::new())
     }
 
+    /// §3.5.J slim-trace (verdict-only) — build the minimal `.lutrace`
+    /// the replay consult's **exact-match** route actually reads, for a
+    /// session that decided **Unsat**: the canonical §3.5.E signature +
+    /// a synthetic terminal `[Restart, Conflict @ level 0]`. The
+    /// `Restart` resets the replay's `decision_level` to 0 so the
+    /// `Conflict` is a root conflict (`replayed.root_conflict = true`),
+    /// after which the exact signature match certifies Unsat — the
+    /// identical verdict a full trace yields, minus the entire recorded
+    /// `Decide`/`Propagate`/`Backjump` stream (which the exact-match
+    /// route never inspects). Caller emits this only on a clean Unsat.
+    ///
+    /// Sound by construction: a slim trace carries a non-empty
+    /// signature, so the consult takes the exact-match route and never
+    /// reaches the `level0_falsifies_prelude_clause` backstop — the only
+    /// path that reads the level-0 trail the dropped events would have
+    /// built (rc.34.1 gates that backstop on an empty signature).
+    pub fn build_slim_jit_trace(&self) -> adsmt_jit::CdclTrace {
+        let (signature, guards) = self.jit_trace_signature();
+        let mut trace = adsmt_jit::CdclTrace::new(signature);
+        trace.guards = guards;
+        trace.events.push(adsmt_jit::CdclTraceEvent::Restart);
+        trace
+            .events
+            .push(adsmt_jit::CdclTraceEvent::Conflict { learnt: Vec::new(), lbd: 0 });
+        trace
+    }
+
     /// §3.5.F — the live-formula atom map the replay resolves recorded
     /// event atoms through. Keyed by `atom_key_hash_u32(term.to_string())`
     /// — identical to how `CdclTracerSink` recorded them — over EVERY
@@ -3612,6 +3639,66 @@ mod tests {
                  (pre-fix: GuardsPassed via spurious divergence), got {other:?}"
             ),
         }
+    }
+
+    #[test]
+    fn slim_trace_is_verdict_equivalent_to_full_and_tiny() {
+        // §3.5.J slim-trace: a verdict-only trace (signature + synthetic
+        // `[Restart, Conflict@0]`, no propagation stream) replays to the
+        // SAME `Replayed{Unsat}` as a full recorder trace on the same
+        // formula — via the exact-match route, which never reads the
+        // dropped events. And it's tiny (2 events).
+        let p = Term::var("p", Type::bool_());
+
+        // Build a slim trace from a contradictory formula.
+        let mut rec = Solver::default();
+        rec.aot_prelude_clauses = vec![
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: false }],
+        ];
+        let slim = rec.build_slim_jit_trace();
+        assert_eq!(
+            slim.events.len(),
+            2,
+            "a slim trace carries only the terminal [Restart, Conflict]"
+        );
+        assert!(
+            !slim.signature.basis.is_empty(),
+            "a slim trace still carries the §3.5.E signature certificate"
+        );
+
+        // Replay against the SAME formula (delivered as an --aot-load
+        // prelude) — exact signature match + the synthetic root conflict
+        // ⇒ Unsat, with no recorded propagations to resolve.
+        let mut live = Solver::default();
+        live.aot_pool_terms = vec![p.clone()];
+        live.aot_prelude_clauses = vec![
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
+            vec![crate::cnf::Lit { atom: p, polarity: false }],
+        ];
+        match live.replay_aot_cdcl_trace(&slim, &[]) {
+            ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } } => {}
+            other => panic!(
+                "a slim trace must replay to Replayed{{Unsat}} on a matching \
+                 formula (exact-match route), got {other:?}"
+            ),
+        }
+
+        // And a slim trace whose signature does NOT match the live
+        // formula must NOT short-circuit (no backstop reliance — it
+        // carries a signature, so the backstop is gated off).
+        let q = Term::var("q", Type::bool_());
+        let mut other_live = Solver::default();
+        other_live.aot_pool_terms = vec![q.clone()];
+        other_live.aot_prelude_clauses =
+            vec![vec![crate::cnf::Lit { atom: q, polarity: true }]];
+        assert!(
+            !matches!(
+                other_live.replay_aot_cdcl_trace(&slim, &[]),
+                ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } }
+            ),
+            "a slim trace must not import its Unsat into a non-matching formula"
+        );
     }
 
     // §1.1 / §1.2 — dump_cdcl_state + aot_cdcl_state cache.

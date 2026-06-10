@@ -183,13 +183,28 @@ struct Cli {
     /// matches against. Mutually exclusive with `--jit-trace-load`.
     #[arg(long)]
     jit_trace_emit: Option<String>,
+    /// §3.5.J slim-trace (verdict-only) — emit a `.lutrace` at
+    /// `<PATH>` carrying ONLY what the replay consult's exact-match
+    /// route reads: the §3.5.E canonical signature + a synthetic
+    /// terminal `[Restart, Conflict @ level 0]`. The intermediate
+    /// `Decide`/`Propagate`/`Backjump` propagation stream — dead
+    /// weight for the verdict short-circuit, but the bulk of a full
+    /// trace — is dropped. Only emitted when the session verdict is a
+    /// clean `unsat` (the only case the consult certifies); a non-Unsat
+    /// session emits nothing. Verdict-equivalent to a full trace on the
+    /// exact-match route, at a few hundred bytes instead of megabytes.
+    /// No recorder is installed (no per-event capture cost). Mutually
+    /// exclusive with `--jit-trace-emit` and `--jit-trace-load`.
+    #[arg(long)]
+    jit_trace_emit_slim: Option<String>,
     /// §3.5.G — load a previously-emitted `.lutrace` artefact from
     /// `<PATH>` and consult it at every `(check-sat)` (when an
     /// `--aot-load` prelude is also active): on an exact §3.5.E
     /// signature match the recorded `unsat` short-circuits the
     /// solve, otherwise it falls through to the regular
-    /// `check_sat_with_deadline` path. Mutually exclusive with
-    /// `--jit-trace-emit`.
+    /// `check_sat_with_deadline` path. A slim trace
+    /// (`--jit-trace-emit-slim`) loads through this same path.
+    /// Mutually exclusive with `--jit-trace-emit`.
     #[arg(long)]
     jit_trace_load: Option<String>,
 }
@@ -245,6 +260,17 @@ fn main() -> ExitCode {
     if cli.jit_trace_emit.is_some() && cli.jit_trace_load.is_some() {
         eprintln!(
             "lu-smt: --jit-trace-emit and --jit-trace-load are mutually exclusive",
+        );
+        return ExitCode::from(12);
+    }
+    // §3.5.J slim-trace is an emit mode — mutually exclusive with the
+    // full emit and with load (you can't emit while consuming).
+    if cli.jit_trace_emit_slim.is_some()
+        && (cli.jit_trace_emit.is_some() || cli.jit_trace_load.is_some())
+    {
+        eprintln!(
+            "lu-smt: --jit-trace-emit-slim is mutually exclusive with \
+             --jit-trace-emit and --jit-trace-load",
         );
         return ExitCode::from(12);
     }
@@ -406,6 +432,28 @@ fn main() -> ExitCode {
         };
         if let Err(code) = emit_jit_trace_with(path, &trace) {
             return ExitCode::from(code);
+        }
+    }
+    if let Some(path) = cli.jit_trace_emit_slim.as_deref() {
+        // §3.5.J slim-trace (verdict-only).  No recorder was installed,
+        // so there's no event stream to drop — we synthesise the minimal
+        // trace the consult's exact-match route reads (signature +
+        // terminal `[Restart, Conflict@0]`).  Only meaningful on a clean
+        // Unsat: that's the only verdict the consult certifies, and the
+        // synthetic root conflict encodes exactly that.  A non-Unsat
+        // session emits nothing (a slim trace of a Sat/Unknown verdict
+        // would carry a contradiction marker the verdict didn't earn).
+        if matches!(last, LastStatus::Unsat) {
+            let trace = driver.solver.build_slim_jit_trace();
+            if let Err(code) = emit_jit_trace_with(path, &trace) {
+                return ExitCode::from(code);
+            }
+        } else {
+            eprintln!(
+                "lu-smt: --jit-trace-emit-slim: session verdict is `{}`, not \
+                 `unsat`; nothing written (slim traces certify Unsat only)",
+                last.label(),
+            );
         }
     }
     ExitCode::from(last.exit_code())

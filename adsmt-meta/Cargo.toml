@@ -10,29 +10,29 @@ description = "Metacrate for adsmt — re-exports every adsmt-* and lu-* crate u
 adsmt-core.workspace = true
 adsmt-cert.workspace = true
 adsmt-theory.workspace = true
-adsmt-class = { version = "=1.0.0-rc.34.1", path = "../adsmt-class" }
-adsmt-quant = { version = "=1.0.0-rc.34.1", path = "../adsmt-quant" }
-adsmt-abduce = { version = "=1.0.0-rc.34.1", path = "../adsmt-abduce" }
+adsmt-class = { version = "=1.0.0-rc.34.2", path = "../adsmt-class" }
+adsmt-quant = { version = "=1.0.0-rc.34.2", path = "../adsmt-quant" }
+adsmt-abduce = { version = "=1.0.0-rc.34.2", path = "../adsmt-abduce" }
 adsmt-engine.workspace = true
 adsmt-parser-smtlib2.workspace = true
-adsmt-heuristic-checker = { version = "=1.0.0-rc.34.1", path = "../adsmt-heuristic-checker", optional = true }
-adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.34.1", path = "../adsmt-heuristic-checker-macros", optional = true }
-adsmt-lints = { version = "=1.0.0-rc.34.1", path = "../adsmt-lints", optional = true }
-adsmt-ffi = { version = "=1.0.0-rc.34.1", path = "../adsmt-ffi", optional = true }
+adsmt-heuristic-checker = { version = "=1.0.0-rc.34.2", path = "../adsmt-heuristic-checker", optional = true }
+adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.34.2", path = "../adsmt-heuristic-checker-macros", optional = true }
+adsmt-lints = { version = "=1.0.0-rc.34.2", path = "../adsmt-lints", optional = true }
+adsmt-ffi = { version = "=1.0.0-rc.34.2", path = "../adsmt-ffi", optional = true }
 
 # logicutils stack (absorbed in RC1.4.A).
 lu-common.workspace = true
-freshcheck = { version = "=1.0.0-rc.34.1", path = "../freshcheck", optional = true }
-stamp = { version = "=1.0.0-rc.34.1", path = "../stamp", optional = true }
-lu-match = { version = "=1.0.0-rc.34.1", path = "../lu-match", optional = true }
-lu-expand = { version = "=1.0.0-rc.34.1", path = "../lu-expand", optional = true }
-lu-query = { version = "=1.0.0-rc.34.1", path = "../lu-query", optional = true }
-lu-rule = { version = "=1.0.0-rc.34.1", path = "../lu-rule", optional = true }
-lu-queue = { version = "=1.0.0-rc.34.1", path = "../lu-queue", optional = true }
-lu-par = { version = "=1.0.0-rc.34.1", path = "../lu-par", optional = true }
-lu-deps = { version = "=1.0.0-rc.34.1", path = "../lu-deps", optional = true }
-lu-multi = { version = "=1.0.0-rc.34.1", path = "../lu-multi", optional = true }
-logicutils-translator-to-oxiz-sat = { version = "=1.0.0-rc.34.1", path = "../logicutils-translator-to-oxiz-sat", optional = true }
+freshcheck = { version = "=1.0.0-rc.34.2", path = "../freshcheck", optional = true }
+stamp = { version = "=1.0.0-rc.34.2", path = "../stamp", optional = true }
+lu-match = { version = "=1.0.0-rc.34.2", path = "../lu-match", optional = true }
+lu-expand = { version = "=1.0.0-rc.34.2", path = "../lu-expand", optional = true }
+lu-query = { version = "=1.0.0-rc.34.2", path = "../lu-query", optional = true }
+lu-rule = { version = "=1.0.0-rc.34.2", path = "../lu-rule", optional = true }
+lu-queue = { version = "=1.0.0-rc.34.2", path = "../lu-queue", optional = true }
+lu-par = { version = "=1.0.0-rc.34.2", path = "../lu-par", optional = true }
+lu-deps = { version = "=1.0.0-rc.34.2", path = "../lu-deps", optional = true }
+lu-multi = { version = "=1.0.0-rc.34.2", path = "../lu-multi", optional = true }
+logicutils-translator-to-oxiz-sat = { version = "=1.0.0-rc.34.2", path = "../logicutils-translator-to-oxiz-sat", optional = true }
 
 [features]
 # Default: the library-side surface only — no CLI binaries get
