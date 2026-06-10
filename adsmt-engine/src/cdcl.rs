@@ -407,21 +407,31 @@ pub struct ReplayedTrail {
     /// A `Conflict` event fired while `decision_level == 0` — a
     /// terminal, search-independent contradiction in the prelude.
     pub root_conflict: bool,
-    /// A trace atom index fell outside the supplied pool: the trace
-    /// does not fit the current atom set, so the replay can't be
-    /// trusted and the caller must fall through to full CDCL.
+    /// A trace atom did not resolve against the live atom map: the
+    /// trace references an atom the current formula doesn't carry, so
+    /// the replay can't be trusted and the caller must fall through to
+    /// full CDCL.
     pub diverged: bool,
 }
 
 /// §3.5.F real event replay — re-fire a recorded trace's
 /// `Decide`/`Propagate`/`Backjump`/`Restart`/`Conflict` events onto a
 /// fresh [`CdclState`], reconstructing the prior solve's trail without
-/// re-running the search (the JIT-replay payoff). Atom indices map to
-/// hash-consed [`Term`]s through `pool` (the engine's
-/// `aot_pool_terms`); an out-of-range index marks the trace as not
-/// fitting the current pool (`diverged`).
+/// re-running the search (the JIT-replay payoff).
 ///
-/// This replaces the v0.x heuristic event *scan* (which read any
+/// The recorded events carry each atom as `atom_key_hash_u32(term)` —
+/// a content hash of the atom's `to_string()` (the recorder side,
+/// `solver.rs`'s `CdclTracerSink`, hashes `entry.atom.to_string()`).
+/// `atom_map` resolves that hash back to the live [`Term`]: it is keyed
+/// the SAME way over the live formula's atoms (bank ∪ per-query), so a
+/// recorded atom that isn't in the live formula simply doesn't resolve
+/// and marks the trace `diverged`. (Earlier this took the engine's
+/// `aot_pool_terms` slice and indexed `pool[atom]` — but the recorder
+/// writes a *hash*, not a pool index, and the bank pool omits per-query
+/// atoms, so every real recorder-produced trace diverged; this is the
+/// §3.5.J short-circuit-never-fires fix.)
+///
+/// This also replaces the v0.x heuristic event *scan* (which read any
 /// `Conflict`-without-`Restart` as Unsat — wrong for a mid-search
 /// conflict later resolved by a backjump). Faithfully threading the
 /// `Decide`/`Backjump`/`Restart` events through `decision_level` means
@@ -429,16 +439,19 @@ pub struct ReplayedTrail {
 /// conflict.
 ///
 /// Soundness: this only *reconstructs* state; the caller
-/// ([`crate::Solver::replay_aot_cdcl_trace`]) gates it on the GF(2)
-/// guard check (the prelude is algebraically unchanged) AND verifies a
-/// claimed `root_conflict` actually falsifies a prelude clause before
-/// trusting it as Unsat — so a divergent or stale trace can never
-/// produce a wrong verdict, only a fall-through to full CDCL.
-pub fn replay_events(events: &[adsmt_jit::CdclTraceEvent], pool: &[Term]) -> ReplayedTrail {
+/// ([`crate::Solver::replay_aot_cdcl_trace`]) gates a trace-driven
+/// `Unsat` on an exact §3.5.E signature match (term-independent) or, as
+/// a collision-safe fallback, on the reconstructed level-0 trail
+/// falsifying an original prelude clause — so a divergent or stale
+/// trace can never produce a wrong verdict, only a fall-through.
+pub fn replay_events(
+    events: &[adsmt_jit::CdclTraceEvent],
+    atom_map: &std::collections::HashMap<u32, Term>,
+) -> ReplayedTrail {
     use adsmt_jit::CdclTraceEvent as E;
     let mut state = CdclState::new();
     let mut root_conflict = false;
-    let term = |i: u32| -> Option<Term> { pool.get(i as usize).cloned() };
+    let term = |i: u32| -> Option<Term> { atom_map.get(&i).cloned() };
     for ev in events {
         match ev {
             E::Decide { atom, polarity } => {
@@ -2162,17 +2175,29 @@ mod tests {
 
     // ── §3.5.F event replay ─────────────────────────────────────
 
+    /// Recorder-side atom key: the content hash the `CdclTracerSink`
+    /// writes into each event. Tests build their atom maps + event
+    /// atoms with the SAME function the live replay resolves through.
+    fn h(t: &Term) -> u32 {
+        crate::solver::atom_key_hash_u32(&t.to_string())
+    }
+
+    /// A live atom map (hash → Term) over the given atoms.
+    fn amap(terms: &[Term]) -> std::collections::HashMap<u32, Term> {
+        terms.iter().map(|t| (h(t), t.clone())).collect()
+    }
+
     #[test]
     fn replay_level0_conflict_is_root() {
         // p propagated at level 0, then a conflict at level 0 → a
         // terminal, search-independent contradiction.
         use adsmt_jit::CdclTraceEvent as E;
-        let pool = vec![p()];
+        let map = amap(&[p()]);
         let events = vec![
-            E::Propagate { atom: 0, polarity: true, antecedent: -1 },
+            E::Propagate { atom: h(&p()), polarity: true, antecedent: -1 },
             E::Conflict { learnt: vec![], lbd: 0 },
         ];
-        let r = replay_events(&events, &pool);
+        let r = replay_events(&events, &map);
         assert!(!r.diverged);
         assert!(r.root_conflict, "a level-0 conflict must be a root conflict");
         assert_eq!(r.state.decision_level, 0);
@@ -2186,14 +2211,14 @@ mod tests {
         // shows the conflict was at level 1 and was resolved, so it is
         // NOT a root conflict.
         use adsmt_jit::CdclTraceEvent as E;
-        let pool = vec![p(), q()];
+        let map = amap(&[p(), q()]);
         let events = vec![
-            E::Decide { atom: 0, polarity: true },
-            E::Conflict { learnt: vec![(1, false)], lbd: 1 },
+            E::Decide { atom: h(&p()), polarity: true },
+            E::Conflict { learnt: vec![(h(&q()), false)], lbd: 1 },
             E::Backjump { to_scope: 0 },
-            E::Propagate { atom: 1, polarity: false, antecedent: -1 },
+            E::Propagate { atom: h(&q()), polarity: false, antecedent: -1 },
         ];
-        let r = replay_events(&events, &pool);
+        let r = replay_events(&events, &map);
         assert!(!r.diverged);
         assert!(
             !r.root_conflict,
@@ -2206,14 +2231,14 @@ mod tests {
     }
 
     #[test]
-    fn replay_out_of_pool_atom_diverges() {
-        // An event references an atom index past the pool → the trace
-        // doesn't fit the current atom set → diverged (caller falls
+    fn replay_unmapped_atom_diverges() {
+        // An event references an atom the live map doesn't carry → the
+        // trace doesn't fit the current formula → diverged (caller falls
         // through to full CDCL).
         use adsmt_jit::CdclTraceEvent as E;
-        let pool = vec![p()];
-        let events = vec![E::Decide { atom: 7, polarity: true }];
-        let r = replay_events(&events, &pool);
-        assert!(r.diverged, "an out-of-range atom index must diverge");
+        let map = amap(&[p()]); // q is NOT in the map
+        let events = vec![E::Decide { atom: h(&q()), polarity: true }];
+        let r = replay_events(&events, &map);
+        assert!(r.diverged, "an unresolved atom must diverge");
     }
 }

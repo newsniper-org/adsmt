@@ -76,7 +76,13 @@ pub enum ReplayOutcome {
 /// at the trace cache sizes the v0.x dispatcher inspects;
 /// the §3.5.F / v1 follow-up replaces this with the real pool
 /// index once the engine recorder hooks fire inside CDCL.
-fn atom_key_hash_u32(atom_key: &str) -> u32 {
+/// §3.5.D/F — the recorder ⇔ replay atom key. The `CdclTracerSink`
+/// records each event's atom as `atom_key_hash_u32(term.to_string())`;
+/// the replay ([`crate::cdcl::replay_events`]) resolves that hash back
+/// through a live-formula atom map keyed the SAME way (see
+/// [`Solver::live_atom_map`]). Both sides MUST agree, so this is
+/// `pub(crate)`.
+pub(crate) fn atom_key_hash_u32(atom_key: &str) -> u32 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::Hasher;
     let mut h = DefaultHasher::new();
@@ -735,10 +741,18 @@ impl Solver {
                 verdict: SatResult::Sat { model: crate::result::Model::new() },
             };
         }
-        let replayed = crate::cdcl::replay_events(&trace.events, &self.aot_pool_terms);
+        // Resolve the recorded event atoms (content hashes) through the
+        // live formula's atom map (bank ∪ per-query), NOT the bank-only
+        // `aot_pool_terms` slice indexed by position — the recorder
+        // writes `atom_key_hash_u32(term)`, not a pool index, and a real
+        // trace's per-query atoms aren't in the bank pool (the §3.5.J
+        // short-circuit-never-fires fix).
+        let (atom_map, atom_map_collision) = self.live_atom_map();
+        let replayed = crate::cdcl::replay_events(&trace.events, &atom_map);
         if replayed.diverged {
-            // A trace atom fell outside the current pool — the trace
-            // does not fit this query, so it can't be trusted.
+            // A recorded atom didn't resolve in the live formula — the
+            // trace references an atom this query doesn't carry, so it
+            // can't be trusted.
             return ReplayOutcome::GuardsPassed;
         }
         if replayed.root_conflict {
@@ -764,14 +778,25 @@ impl Solver {
             //     baked prelude clauses (a `--jit-trace-load` artefact
             //     is opt-in, produced by lu-smt's own recorder).
             //
-            // (2) Backstop for traces with no algebraic signature (the
-            //     degenerate / empty-signature case): an *original*
-            //     prelude clause is fully falsified by the level-0
-            //     (decision-free) trail.
+            // (2) Backstop, ONLY for traces with no algebraic signature
+            //     (the degenerate / legacy empty-signature case): an
+            //     *original* prelude clause is fully falsified by the
+            //     level-0 (decision-free) trail. Gated on an empty
+            //     signature so it is mutually exclusive with (1) — a
+            //     trace that carries a signature but does NOT exactly
+            //     match the live formula falls through rather than
+            //     trusting its (possibly query-driven) recorded level-0
+            //     trail. Also disabled under a live atom-map hash
+            //     collision — a wrong-term trail entry could falsify a
+            //     prelude clause spuriously. (The exact-match path is
+            //     term-independent, so it stays sound regardless.)
             let exact_match = !trace.signature.basis.is_empty()
                 && trace.signature.classes == live.classes
                 && trace.signature.basis == live.basis;
-            if exact_match || self.level0_falsifies_prelude_clause(&replayed.state) {
+            let backstop = trace.signature.basis.is_empty()
+                && !atom_map_collision
+                && self.level0_falsifies_prelude_clause(&replayed.state);
+            if exact_match || backstop {
                 return ReplayOutcome::Replayed {
                     verdict: SatResult::Unsat {
                         certificate: None,
@@ -904,6 +929,62 @@ impl Solver {
     /// match [`adsmt_jit::CdclTracer::finalize`]'s shape.
     pub fn jit_trace_signature(&self) -> (adsmt_jit::GF2Snapshot, Vec<adsmt_jit::JitGuard>) {
         (self.canonical_gf2_signature(), Vec::new())
+    }
+
+    /// §3.5.F — the live-formula atom map the replay resolves recorded
+    /// event atoms through. Keyed by `atom_key_hash_u32(term.to_string())`
+    /// — identical to how `CdclTracerSink` recorded them — over EVERY
+    /// atom the live formula carries: the AOT bank (`aot_pool_terms` +
+    /// the prelude clauses' literals) AND the per-query assertions
+    /// (flattened to CNF). The bank-only `aot_pool_terms` slice the
+    /// pre-fix replay indexed into omitted the per-query atoms, so a
+    /// real trace's per-query propagations never resolved.
+    ///
+    /// Returns `(map, collision)`. `collision` is `true` if two
+    /// structurally-distinct live atoms hash to the same `u32` (a
+    /// lossy-key birthday collision). The exact-signature-match verdict
+    /// path is term-independent and stays sound under a collision; the
+    /// term-dependent `level0_falsifies_prelude_clause` backstop is
+    /// disabled when `collision` holds (a wrong-term trail entry could
+    /// otherwise falsify a prelude clause spuriously).
+    fn live_atom_map(&self) -> (std::collections::HashMap<u32, Term>, bool) {
+        use std::collections::hash_map::Entry;
+        let mut map: std::collections::HashMap<u32, Term> =
+            std::collections::HashMap::new();
+        let mut collision = false;
+        let mut insert = |t: &Term| {
+            let k = atom_key_hash_u32(&t.to_string());
+            match map.entry(k) {
+                Entry::Vacant(e) => {
+                    e.insert(t.clone());
+                }
+                Entry::Occupied(e) => {
+                    // Same hash, different term ⇒ a genuine collision;
+                    // same term ⇒ a harmless repeat.
+                    if !(*e.get() == *t) {
+                        collision = true;
+                    }
+                }
+            }
+        };
+        for t in &self.aot_pool_terms {
+            insert(t);
+        }
+        for clause in &self.aot_prelude_clauses {
+            for lit in clause {
+                insert(&lit.atom);
+            }
+        }
+        for term in self.all_assertions() {
+            if let Some(cs) = crate::cnf::flatten_to_clauses(&term) {
+                for clause in &cs {
+                    for lit in clause {
+                        insert(&lit.atom);
+                    }
+                }
+            }
+        }
+        (map, collision)
     }
 
     /// Internal helper — depth-3 skeleton hash of the
@@ -1303,27 +1384,47 @@ impl Solver {
         // shape) when the tracer is active and otherwise
         // empty, so the load-back path's session-shape
         // diagnostics always have *something* to inspect.
-        if let Some(tracer) = self.jit_tracer.as_mut()
-            && tracer.is_empty()
-        {
-            tracer.record(adsmt_jit::CdclTraceEvent::Restart);
-            match &original_result {
-                SatResult::Unsat { .. } => {
-                    tracer.record(adsmt_jit::CdclTraceEvent::Conflict {
-                        learnt: Vec::new(),
-                        lbd: 0,
-                    });
-                }
-                SatResult::Sat { model } => {
-                    for (atom, polarity) in &model.bool_assignments {
-                        let atom_u32 = atom_key_hash_u32(atom);
-                        tracer.record(adsmt_jit::CdclTraceEvent::Decide {
-                            atom: atom_u32,
-                            polarity: *polarity,
+        if let Some(tracer) = self.jit_tracer.as_mut() {
+            if tracer.is_empty() {
+                tracer.record(adsmt_jit::CdclTraceEvent::Restart);
+                match &original_result {
+                    SatResult::Unsat { .. } => {
+                        tracer.record(adsmt_jit::CdclTraceEvent::Conflict {
+                            learnt: Vec::new(),
+                            lbd: 0,
                         });
                     }
+                    SatResult::Sat { model } => {
+                        for (atom, polarity) in &model.bool_assignments {
+                            let atom_u32 = atom_key_hash_u32(atom);
+                            tracer.record(adsmt_jit::CdclTraceEvent::Decide {
+                                atom: atom_u32,
+                                polarity: *polarity,
+                            });
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
+            } else if matches!(original_result, SatResult::Unsat { .. }) {
+                // §3.5.J fix — the inner recorder fired, but the CDCL
+                // returns Unsat directly on a ROOT conflict (level-0 or
+                // empty-learnt) WITHOUT recording it: `on_conflict` only
+                // fires for a 1-UIP-analysable conflict, never for the
+                // root contradiction. So the recorded stream carries
+                // propagations but no terminal `Conflict`, leaving the
+                // replay's `root_conflict` false → the consult can never
+                // conclude Unsat (verus §3.5.J: the short-circuit never
+                // fired). Append a `Restart` (resets the replay's
+                // `decision_level` to 0) + a level-0 `Conflict` so the
+                // replay recognises the unconditional contradiction the
+                // `Unsat` verdict established. Sound: the verdict IS
+                // Unsat, and the replay only acts on it under an exact
+                // §3.5.E signature match (identical live formula).
+                tracer.record(adsmt_jit::CdclTraceEvent::Restart);
+                tracer.record(adsmt_jit::CdclTraceEvent::Conflict {
+                    learnt: Vec::new(),
+                    lbd: 0,
+                });
             }
         }
 
@@ -3168,11 +3269,12 @@ mod tests {
         // Unsat (not merely trusted from the trace).
         let mut s = Solver::default();
         let p = Term::var("p", Type::bool_());
+        let p_hash = atom_key_hash_u32(&p.to_string());
         s.aot_pool_terms = vec![p.clone()];
         s.aot_prelude_clauses = vec![vec![crate::cnf::Lit { atom: p, polarity: false }]];
         let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
         trace.events.push(adsmt_jit::CdclTraceEvent::Propagate {
-            atom: 0,
+            atom: p_hash,
             polarity: true,
             antecedent: -1,
         });
@@ -3192,11 +3294,13 @@ mod tests {
         let mut s = Solver::default();
         let p = Term::var("p", Type::bool_());
         let q = Term::var("q", Type::bool_());
+        let p_hash = atom_key_hash_u32(&p.to_string());
+        let q_hash = atom_key_hash_u32(&q.to_string());
         s.aot_pool_terms = vec![p, q];
         let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
-        trace.events.push(adsmt_jit::CdclTraceEvent::Decide { atom: 0, polarity: true });
+        trace.events.push(adsmt_jit::CdclTraceEvent::Decide { atom: p_hash, polarity: true });
         trace.events.push(adsmt_jit::CdclTraceEvent::Conflict {
-            learnt: vec![(1, false)],
+            learnt: vec![(q_hash, false)],
             lbd: 1,
         });
         assert!(
@@ -3241,6 +3345,7 @@ mod tests {
         // to it rather than short-circuit to the trace's Unsat.
         let mut s = Solver::default();
         let p = Term::var("p", Type::bool_());
+        let p_hash = atom_key_hash_u32(&p.to_string());
         s.aot_pool_terms = vec![p.clone()];
         s.aot_prelude_clauses =
             vec![vec![crate::cnf::Lit { atom: p, polarity: false }]];
@@ -3248,7 +3353,7 @@ mod tests {
             adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty());
         // No guards.  Events that, if trusted, would claim Unsat.
         trace.events.push(adsmt_jit::CdclTraceEvent::Propagate {
-            atom: 0,
+            atom: p_hash,
             polarity: true,
             antecedent: -1,
         });
@@ -3271,6 +3376,7 @@ mod tests {
         // consult fires and the replay short-circuits to Unsat.
         let mut s = Solver::default();
         let p = Term::var("p", Type::bool_());
+        let p_hash = atom_key_hash_u32(&p.to_string());
         s.aot_pool_terms = vec![p.clone()];
         s.aot_prelude_clauses = vec![
             vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
@@ -3282,7 +3388,7 @@ mod tests {
             .guards
             .push(adsmt_jit::JitGuard::SkeletonShape(adsmt_jit::SkeletonShape(0)));
         trace.events.push(adsmt_jit::CdclTraceEvent::Propagate {
-            atom: 0,
+            atom: p_hash,
             polarity: true,
             antecedent: 0,
         });
@@ -3302,6 +3408,7 @@ mod tests {
         // verdict is Sat.
         let mut s = Solver::default();
         let p = Term::var("p", Type::bool_());
+        let p_hash = atom_key_hash_u32(&p.to_string());
         s.aot_pool_terms = vec![p.clone()];
         s.aot_prelude_clauses =
             vec![vec![crate::cnf::Lit { atom: p, polarity: false }]];
@@ -3311,7 +3418,7 @@ mod tests {
             adsmt_jit::SkeletonShape(0xdead_beef),
         ));
         trace.events.push(adsmt_jit::CdclTraceEvent::Propagate {
-            atom: 0,
+            atom: p_hash,
             polarity: true,
             antecedent: -1,
         });
@@ -3452,6 +3559,59 @@ mod tests {
         ];
         live.set_loaded_jit_trace(trace);
         assert!(matches!(live.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn real_recorder_trace_replays_through_hash_atom_map() {
+        // THE §3.5.J REGRESSION GUARD. Record a trace through the REAL
+        // engine recorder (`CdclTracerSink` writes each atom as
+        // `atom_key_hash_u32(term)`), then replay it. The pre-fix replay
+        // indexed `aot_pool_terms[atom_hash]` — treating a content hash
+        // as a pool position — so every recorder-produced trace
+        // `diverged` → `GuardsPassed` → the consult never fired (verus
+        // §3.5.J: the threshold never dropped). The hand-built unit
+        // tests masked this by using small pool indices as atoms; this
+        // test exercises the real recorder→finalize→replay round-trip.
+        let p = Term::var("p", Type::bool_());
+
+        // (1) RECORD: an unsat formula that hits a level-0 conflict,
+        // through the live engine recorder.
+        let mut rec = Solver::default();
+        rec.start_jit_recording();
+        rec.assert(p.clone());
+        rec.assert(Term::mk_not(p.clone()).unwrap());
+        assert!(matches!(rec.check_sat(), SatResult::Unsat { .. }));
+        let tracer = rec.take_jit_recording().expect("recording was started");
+        let (sig, guards) = rec.jit_trace_signature();
+        let trace = tracer.finalize(sig, guards);
+        assert!(
+            !trace.events.is_empty(),
+            "the recorded solve must carry events to replay"
+        );
+        assert!(
+            !trace.signature.basis.is_empty(),
+            "§3.5.E must stamp a non-empty signature for a non-trivial formula"
+        );
+
+        // (2) REPLAY against the SAME formula, delivered as an
+        // `--aot-load`-shaped prelude (the §3.5.J shape: the canonical
+        // signature is identical whether the formula arrived inline or
+        // via the bank). Every recorded atom must resolve through the
+        // live atom map (no divergence) and the exact signature match
+        // must carry the recorded level-0 conflict to Unsat.
+        let mut live = Solver::default();
+        live.aot_pool_terms = vec![p.clone()];
+        live.aot_prelude_clauses = vec![
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
+            vec![crate::cnf::Lit { atom: p, polarity: false }],
+        ];
+        match live.replay_aot_cdcl_trace(&trace, &[]) {
+            ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } } => {}
+            other => panic!(
+                "a real recorder trace must replay to Replayed{{Unsat}} \
+                 (pre-fix: GuardsPassed via spurious divergence), got {other:?}"
+            ),
+        }
     }
 
     // §1.1 / §1.2 — dump_cdcl_state + aot_cdcl_state cache.
