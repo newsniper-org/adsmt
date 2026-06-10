@@ -170,6 +170,16 @@ pub struct CdclTrace {
     /// Opaque handle into the engine-side compiled-trace store
     /// (or `0` for v0 where the engine doesn't yet keep one).
     pub kernel_id: u32,
+    /// §3.5.J (rc.34.3) — a 32-byte KangarooTwelve-256 digest of the
+    /// recorded formula's **canonical clause set** (the same canonical
+    /// atom-naming + sorted/de-duplicated clauses the GF(2) signature
+    /// was built from, hashed *before* the polynomial encoding). This
+    /// is the exact-match certificate the `--jit-trace-load` consult
+    /// compares — 32 bytes instead of a megabyte `signature.basis`, and
+    /// the live side computes it without the GF(2) polynomial encoding.
+    /// `None` for legacy v1 traces (the consult falls back to comparing
+    /// `signature.{classes,basis}`). `.lutrace` v2+ persists it.
+    pub signature_digest: Option<[u8; 32]>,
 }
 
 impl CdclTrace {
@@ -182,7 +192,18 @@ impl CdclTrace {
             checkpoints: Vec::new(),
             guards: Vec::new(),
             kernel_id: 0,
+            signature_digest: None,
         }
+    }
+
+    /// §3.5.J — attach the canonical clause-set digest (rc.34.3
+    /// exact-match certificate) to a trace. Builder so the CLI emit
+    /// path can stamp it on a `finalize`d trace without a struct
+    /// rebuild.
+    #[must_use]
+    pub fn with_signature_digest(mut self, digest: [u8; 32]) -> Self {
+        self.signature_digest = Some(digest);
+        self
     }
 }
 
@@ -264,6 +285,10 @@ impl CdclTracer {
             checkpoints: self.checkpoints,
             guards,
             kernel_id: 0,
+            // §3.5.J: the caller (CLI emit) stamps the canonical
+            // clause-set digest after finalize; the recorder doesn't
+            // compute it.
+            signature_digest: None,
         }
     }
 }

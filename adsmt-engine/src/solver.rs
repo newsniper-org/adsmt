@@ -683,24 +683,23 @@ impl Solver {
         // makes `JitGuard::SkeletonShape` checks consult the
         // actual query rather than the constant.
         let live_skeleton = self.compute_live_skeleton();
-        // §3.5.E live GF(2) signature — the canonical polynomial
-        // encoding of the live formula (per-query assertions ∪ the AOT
-        // prelude clauses).  Guards and the algebraic Unsat check
-        // below evaluate against THIS basis, not the recorded one.
-        // (The pre-§3.5.E dispatcher passed `&trace.signature.basis`,
-        // which made `PolyInvariant` guards reduce a recorded generator
-        // against its own basis — a vacuous pass that certified
-        // nothing.)
-        let live = self.canonical_gf2_signature();
-        for guard in &trace.guards {
-            let pass = adsmt_jit::check_guard(
-                guard,
-                &live.basis,
-                classes,
-                live_skeleton,
-            );
-            if pass == adsmt_jit::guard::GuardResult::Fail {
-                return ReplayOutcome::GuardMiss;
+        // Guards (if any) evaluate against the LIVE GF(2) basis — but
+        // computing that basis means the polynomial encoding, which
+        // rc.34.3's digest exact-match exists to AVOID. §3.5.E/J traces
+        // carry no guards, so skip the encode entirely in the common
+        // case; only pay it when a guard is actually present.
+        if !trace.guards.is_empty() {
+            let live = self.canonical_gf2_signature();
+            for guard in &trace.guards {
+                let pass = adsmt_jit::check_guard(
+                    guard,
+                    &live.basis,
+                    classes,
+                    live_skeleton,
+                );
+                if pass == adsmt_jit::guard::GuardResult::Fail {
+                    return ReplayOutcome::GuardMiss;
+                }
             }
         }
         // §3.2 compiled-kernel invocation (v0.x post-guard
@@ -760,40 +759,43 @@ impl Solver {
             // no decisions. Two independent, sufficient conditions let
             // the consult carry that Unsat to the live query:
             //
-            // (1) §3.5.E exact-signature match. If the recorded
-            //     canonical GF(2) signature equals the live formula's
-            //     (`classes` AND `basis` both equal), the live formula
-            //     is structurally identical to the recorded one, so the
-            //     recorded verdict applies verbatim. We use an EXACT
-            //     match — not "recorded ⊆ live" via reduction — because
-            //     multivariate reduction against a non-Gröbner basis is
-            //     not a reliable ideal-membership test (e.g.
-            //     `reduce(x, [1+x, x])` greedily picks `1+x` and leaves
-            //     remainder `1`), and a Gröbner basis per query would be
-            //     as costly as just solving. It compares recorded
-            //     clause algebra to live clause algebra; on an exact
-            //     match the recorded `Conflict` is trusted to mean
-            //     "this formula is unsat" — the same cache-of-a-prior-
-            //     sound-solve trust model `--aot-load` already uses for
-            //     baked prelude clauses (a `--jit-trace-load` artefact
-            //     is opt-in, produced by lu-smt's own recorder).
+            // (1) Exact-signature match. The live formula must be
+            //     structurally identical to the recorded one; then the
+            //     recorded verdict applies verbatim (the same
+            //     cache-of-a-prior-sound-solve trust `--aot-load`
+            //     already uses for baked prelude clauses). rc.34.3:
+            //     compare the canonical clause-set **digest** (32 bytes,
+            //     no GF(2) encoding) — `jit_trace_digest()` on the live
+            //     formula vs `trace.signature_digest`. Legacy v1 traces
+            //     carry no digest, so fall back to the §3.5.E GF(2)
+            //     `(classes, basis)` equality (we use an EXACT match,
+            //     not "recorded ⊆ live" via reduction — multivariate
+            //     reduction against a non-Gröbner basis is not a
+            //     reliable ideal-membership test, e.g.
+            //     `reduce(x, [1+x, x])` → `1`).
             //
-            // (2) Backstop, ONLY for traces with no algebraic signature
-            //     (the degenerate / legacy empty-signature case): an
-            //     *original* prelude clause is fully falsified by the
-            //     level-0 (decision-free) trail. Gated on an empty
-            //     signature so it is mutually exclusive with (1) — a
-            //     trace that carries a signature but does NOT exactly
-            //     match the live formula falls through rather than
-            //     trusting its (possibly query-driven) recorded level-0
-            //     trail. Also disabled under a live atom-map hash
-            //     collision — a wrong-term trail entry could falsify a
-            //     prelude clause spuriously. (The exact-match path is
-            //     term-independent, so it stays sound regardless.)
-            let exact_match = !trace.signature.basis.is_empty()
-                && trace.signature.classes == live.classes
-                && trace.signature.basis == live.basis;
-            let backstop = trace.signature.basis.is_empty()
+            // (2) Backstop, ONLY for traces with NO exact-match
+            //     certificate (no digest AND no GF(2) basis — the
+            //     degenerate/legacy empty-signature case): an *original*
+            //     prelude clause is fully falsified by the level-0
+            //     (decision-free) trail. Mutually exclusive with (1) so
+            //     a certificate-carrying trace that does NOT match falls
+            //     through rather than trusting its (possibly
+            //     query-driven) recorded level-0 trail; also disabled
+            //     under a live atom-map hash collision. (The exact-match
+            //     path is term-independent, so it stays sound regardless.)
+            let has_exact_cert =
+                trace.signature_digest.is_some() || !trace.signature.basis.is_empty();
+            let exact_match = match trace.signature_digest {
+                Some(recorded) => recorded == self.jit_trace_digest(),
+                None if !trace.signature.basis.is_empty() => {
+                    let live = self.canonical_gf2_signature();
+                    trace.signature.classes == live.classes
+                        && trace.signature.basis == live.basis
+                }
+                None => false,
+            };
+            let backstop = !has_exact_cert
                 && !atom_map_collision
                 && self.level0_falsifies_prelude_clause(&replayed.state);
             if exact_match || backstop {
@@ -864,6 +866,31 @@ impl Solver {
     /// whether or not `--finite-field` is active.
     fn canonical_gf2_signature(&self) -> adsmt_jit::GF2Snapshot {
         use adsmt_theory_finite_field::monomial::MonomialOrder;
+        let (names, dimacs) = self.canonical_clause_set();
+        let n_vars = names.len();
+        let basis = adsmt_theory_finite_field::sat_encoder::cnf_to_generators(
+            &dimacs,
+            n_vars,
+            MonomialOrder::Grevlex,
+        );
+        let classes: Vec<(String, u32)> = names
+            .into_iter()
+            .enumerate()
+            .map(|(i, n)| (n, i as u32 + 1))
+            .collect();
+        adsmt_jit::GF2Snapshot { basis, classes }
+    }
+
+    /// §3.5.E/J — the live formula's **canonical clause set**: the
+    /// sorted atom-name var map + signed-literal DIMACS clauses, with
+    /// literals sorted within each clause and the clause list sorted +
+    /// de-duplicated. Order-independent of how the formula was assembled
+    /// (inline assertions vs an `--aot-load` prelude), so the same
+    /// formula produces the same canonical form across the record and
+    /// replay processes. Shared by `canonical_gf2_signature` (which then
+    /// encodes it to GF(2) polynomials) and `canonical_formula_digest`
+    /// (which hashes it, skipping the polynomial encoding).
+    fn canonical_clause_set(&self) -> (Vec<String>, Vec<Vec<i32>>) {
         let mut clauses: Vec<crate::cnf::Clause> = Vec::new();
         for term in self.all_assertions() {
             if let Some(mut cs) = crate::cnf::flatten_to_clauses(&term) {
@@ -871,7 +898,6 @@ impl Solver {
             }
         }
         clauses.extend(self.aot_prelude_clauses.iter().cloned());
-        // Canonical, order-independent variable map: sorted atom names.
         let mut names: Vec<String> = clauses
             .iter()
             .flat_map(|c| c.iter().map(|lit| lit.atom.to_string()))
@@ -883,11 +909,6 @@ impl Solver {
             .enumerate()
             .map(|(i, n)| (n.as_str(), i as i32 + 1))
             .collect();
-        let n_vars = names.len();
-        // Canonical clause shape: signed-literal ids, sorted within
-        // each clause, then the clause list sorted + de-duplicated. This
-        // makes the generator `Vec` order-independent of how the
-        // formula was assembled.
         let mut dimacs: Vec<Vec<i32>> = clauses
             .iter()
             .map(|c| {
@@ -906,17 +927,35 @@ impl Solver {
             .collect();
         dimacs.sort();
         dimacs.dedup();
-        let basis = adsmt_theory_finite_field::sat_encoder::cnf_to_generators(
-            &dimacs,
-            n_vars,
-            MonomialOrder::Grevlex,
-        );
-        let classes: Vec<(String, u32)> = names
-            .into_iter()
-            .enumerate()
-            .map(|(i, n)| (n, i as u32 + 1))
-            .collect();
-        adsmt_jit::GF2Snapshot { basis, classes }
+        (names, dimacs)
+    }
+
+    /// §3.5.J — a 32-byte KangarooTwelve-256 digest of the canonical
+    /// clause set: the **exact-match certificate** the `--jit-trace-load`
+    /// consult compares. Computed WITHOUT the GF(2) polynomial encoding
+    /// (the irreducible per-`(check-sat)` cost
+    /// `canonical_gf2_signature` paid) — just the canonical-clause-set
+    /// construction + a hash. Two formulas with the same canonical
+    /// clause set hash equal; collision-resistant, so distinct formulas
+    /// hash distinct with overwhelming probability. The byte framing is
+    /// length-prefixed (injective), so distinct canonical forms map to
+    /// distinct inputs.
+    pub fn jit_trace_digest(&self) -> [u8; 32] {
+        let (names, dimacs) = self.canonical_clause_set();
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&(names.len() as u64).to_le_bytes());
+        for n in &names {
+            buf.extend_from_slice(&(n.len() as u64).to_le_bytes());
+            buf.extend_from_slice(n.as_bytes());
+        }
+        buf.extend_from_slice(&(dimacs.len() as u64).to_le_bytes());
+        for clause in &dimacs {
+            buf.extend_from_slice(&(clause.len() as u64).to_le_bytes());
+            for lit in clause {
+                buf.extend_from_slice(&lit.to_le_bytes());
+            }
+        }
+        lu_common::k12::hash(&buf)
     }
 
     /// §3.5.E — the algebraic signature to stamp on a `--jit-trace-emit`
@@ -942,15 +981,18 @@ impl Solver {
     /// `Decide`/`Propagate`/`Backjump` stream (which the exact-match
     /// route never inspects). Caller emits this only on a clean Unsat.
     ///
-    /// Sound by construction: a slim trace carries a non-empty
-    /// signature, so the consult takes the exact-match route and never
-    /// reaches the `level0_falsifies_prelude_clause` backstop — the only
-    /// path that reads the level-0 trail the dropped events would have
-    /// built (rc.34.1 gates that backstop on an empty signature).
+    /// Sound by construction: a slim trace carries the §3.5.J
+    /// `signature_digest` (an exact-match certificate), so the consult
+    /// takes the exact-match route and never reaches the
+    /// `level0_falsifies_prelude_clause` backstop — the only path that
+    /// reads the level-0 trail the dropped events would have built.
+    ///
+    /// rc.34.3: the trace carries the 32-byte clause-set **digest**, not
+    /// the megabyte GF(2) `basis` (which verus-fork measured as 99.4% of
+    /// a prelude-scale trace and which the exact-match route never read).
     pub fn build_slim_jit_trace(&self) -> adsmt_jit::CdclTrace {
-        let (signature, guards) = self.jit_trace_signature();
-        let mut trace = adsmt_jit::CdclTrace::new(signature);
-        trace.guards = guards;
+        let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty())
+            .with_signature_digest(self.jit_trace_digest());
         trace.events.push(adsmt_jit::CdclTraceEvent::Restart);
         trace
             .events
@@ -1509,13 +1551,15 @@ impl Solver {
         if !self.aot_pool_terms.is_empty()
             && let Some(trace) = self.loaded_jit_trace.take()
         {
-            let has_certificate =
-                !trace.signature.basis.is_empty() || !trace.guards.is_empty();
-            // `&[]` live equivalence classes: §3.5.E carries its
-            // certificate in `signature` (the canonical basis + atom
-            // map), not in `EquivClass` guards, so the per-query UF
-            // class view is not needed here (an `EquivClass` guard, if
-            // any, fails closed ⇒ GuardMiss ⇒ full solve).
+            let has_certificate = trace.signature_digest.is_some()
+                || !trace.signature.basis.is_empty()
+                || !trace.guards.is_empty();
+            // `&[]` live equivalence classes: §3.5.E/J carries its
+            // certificate in the `signature_digest` (rc.34.3) or the
+            // GF(2) `signature` (legacy), not in `EquivClass` guards, so
+            // the per-query UF class view is not needed here (an
+            // `EquivClass` guard, if any, fails closed ⇒ GuardMiss ⇒
+            // full solve).
             let outcome = if has_certificate {
                 self.replay_aot_cdcl_trace(&trace, &[])
             } else {
@@ -3663,8 +3707,12 @@ mod tests {
             "a slim trace carries only the terminal [Restart, Conflict]"
         );
         assert!(
-            !slim.signature.basis.is_empty(),
-            "a slim trace still carries the §3.5.E signature certificate"
+            slim.signature_digest.is_some(),
+            "a slim trace carries the §3.5.J clause-set digest certificate"
+        );
+        assert!(
+            slim.signature.basis.is_empty(),
+            "rc.34.3: a slim trace drops the megabyte GF(2) basis (digest replaces it)"
         );
 
         // Replay against the SAME formula (delivered as an --aot-load
@@ -3699,6 +3747,69 @@ mod tests {
             ),
             "a slim trace must not import its Unsat into a non-matching formula"
         );
+    }
+
+    #[test]
+    fn jit_trace_digest_is_clause_order_independent_and_formula_sensitive() {
+        // §3.5.J — the canonical clause-set digest is the exact-match
+        // certificate: equal for the same formula regardless of clause
+        // order, and distinct for a different formula.
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let cp = vec![crate::cnf::Lit { atom: p.clone(), polarity: true }];
+        let cq = vec![crate::cnf::Lit { atom: q.clone(), polarity: false }];
+
+        let mut a = Solver::default();
+        a.aot_prelude_clauses = vec![cp.clone(), cq.clone()];
+        let mut b = Solver::default();
+        b.aot_prelude_clauses = vec![cq, cp]; // reversed
+        assert_eq!(
+            a.jit_trace_digest(),
+            b.jit_trace_digest(),
+            "the digest must be clause-order-independent"
+        );
+
+        let mut c = Solver::default();
+        c.aot_prelude_clauses =
+            vec![vec![crate::cnf::Lit { atom: p, polarity: true }]]; // drop the q clause
+        assert_ne!(
+            a.jit_trace_digest(),
+            c.jit_trace_digest(),
+            "a different formula must yield a different digest"
+        );
+    }
+
+    #[test]
+    fn digest_trace_short_circuits_unsat_without_the_gf2_basis() {
+        // §3.5.J rc.34.3: a digest-carrying trace (no GF(2) basis at all)
+        // short-circuits to Unsat on a matching formula — the consult
+        // never computes the polynomial signature, only the cheap digest.
+        let p = Term::var("p", Type::bool_());
+        let mut rec = Solver::default();
+        rec.aot_prelude_clauses = vec![
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: false }],
+        ];
+        // A digest-only trace: empty signature + the digest + a terminal
+        // root conflict (what `build_slim_jit_trace` produces).
+        let mut trace = adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty())
+            .with_signature_digest(rec.jit_trace_digest());
+        trace.events.push(adsmt_jit::CdclTraceEvent::Restart);
+        trace
+            .events
+            .push(adsmt_jit::CdclTraceEvent::Conflict { learnt: vec![], lbd: 0 });
+        assert!(trace.signature.basis.is_empty());
+
+        let mut live = Solver::default();
+        live.aot_pool_terms = vec![p.clone()];
+        live.aot_prelude_clauses = vec![
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
+            vec![crate::cnf::Lit { atom: p, polarity: false }],
+        ];
+        match live.replay_aot_cdcl_trace(&trace, &[]) {
+            ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } } => {}
+            other => panic!("digest trace must replay to Unsat, got {other:?}"),
+        }
     }
 
     // §1.1 / §1.2 — dump_cdcl_state + aot_cdcl_state cache.

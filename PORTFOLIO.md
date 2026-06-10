@@ -5,10 +5,10 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~44 k lines of Rust across 31 workspace crates, 1071 tests
+> ~44 k lines of Rust across 31 workspace crates, 1074 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.34.2` on 2026-06-10.
+> `1.0.0-rc.34.3` on 2026-06-10.
 
 ---
 
@@ -116,7 +116,7 @@ abductive
 ]}
 ```
 
-**Active consumers (rc.34.2):**
+**Active consumers (rc.34.3):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -350,16 +350,16 @@ or proof-search strategies without touching the engine core.
 |---|---|
 | Lines of Rust | ~44,000 (workspace) |
 | Workspace crates | 31 (`adsmt-*` core + `adsmt-parsers/` + `adsmt-shims/` + `adsmt-emit/` + 11 absorbed `lu-*` + `adsmt-meta` umbrella) |
-| Tests | **1071 green**, 0 ignored, 0 failed |
+| Tests | **1074 green**, 0 ignored, 0 failed |
 | `cargo doc --workspace --no-deps` | **0 warnings** (every intentional warning has an explicit `#[allow(...)]`) |
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.34.2` (2026-06-10) |
+| Workspace version | `1.0.0-rc.34.3` (2026-06-10) |
 
 ---
 
-## Roadmap snapshot (rc.34.2 → v1.0.0 stable)
+## Roadmap snapshot (rc.34.3 → v1.0.0 stable)
 
 | Track | Status |
 |---|---|
@@ -438,7 +438,8 @@ or proof-search strategies without touching the engine core.
 | §3.5.H AOT prelude-bank bake hook | **DONE** (verus-fork `5533adfe`).  Implemented as a **frontend-agnostic** `scripts/aot-bake-prelude.sh` + `just aot-bake-prelude` (NOT a vargo-internal hook — the Y4 unification goal keeps adsmt the common verification engine, so the AOT axiom/prelude bank stays Verus-independent): bakes the Verus prelude (`--from-verus`, default) or any SMT-LIB axiom set (`--from-smt2`), caches under `$VERUS_ADSMT_AOT_CACHE_DIR`, emits the §3.5.I activation line.  End-to-end: bake → activate → `verus -V adsmt` → `1 verified, 0 errors` 292 ms (vs 511 ms without the bank).  **With this, every technical item across the rc.7 → rc.30 arc is landed on both sides** |
 | §3.5.E + §3.5.F **completed on adsmt's side** — JIT-on-AOT trace replay closed | **landed** at rc.34 (`2b13e08` + `ed69df5` + `c5cfe84`).  §3.5.F: `cdcl::replay_events` re-fires the recorded event stream onto a fresh `CdclState` (threads `decision_level` so only a level-0 conflict ⇒ Unsat); the `--jit-trace-load` trace is consulted at the top of `check_sat_inner` (gated on `--aot-load`).  §3.5.E: `--jit-trace-emit` stamps a canonical GF(2) signature; the consult trusts a replayed **Unsat** only on an **exact** signature match (`classes` + `basis`) — NOT `reduce(g, live_basis).is_zero()`, since multivariate reduction against a non-Gröbner basis is unreliable (`reduce(x,[1+x,x])`→`1`) and a per-query Gröbner basis costs as much as solving.  Unsat-only (a replayed Sat has no model); cache-trust model like `--aot-load`.  Fires for exact-formula re-runs (e.g. §3.5.J's 5 rlimit modes on one obligation); cross-query prelude reuse stays the §3.5.C seed follow-up.  4 new tests, 1057 → 1069 green.  adsmt-side §3.5.A–G **mechanism** in place — BUT it did NOT fire end-to-end (see the rc.34.1 row) |
 | §3.5.J fix — the rc.34 replay never actually fired (verus-fork §3.5.J retry) | **landed** at rc.34.1 (`deb7e11`, bump `52dad19`).  verus-fork landed the bake-hook (§3.5.H) + argv (§3.5.I) and ran the 5-mode matrix: the consult never short-circuited, every mode fell through.  TWO engine bugs the rc.34 unit tests masked (they hand-built traces with pool *indices* as atoms): **(A)** the recorder writes each atom as `atom_key_hash_u32(term)` (content HASH) but `replay_events` indexed `aot_pool_terms[atom]` (pool POSITION) → every real trace `diverged`; the bank-only pool also omitted per-query atoms.  **(B)** the CDCL returns Unsat directly on a *root* conflict without calling `on_conflict` (can't 1-UIP a root contradiction) → no terminal `Conflict` event → `root_conflict` stayed false.  Fix: `replay_events(events, atom_map: &HashMap<u32,Term>)` resolves the hash through a new `Solver::live_atom_map()` over the FULL live formula (bank ∪ per-query, same hash key, collision-flagged); the session-boundary fallback appends `Restart` + a level-0 `Conflict` to a non-empty Unsat trace; the `level0_falsifies_prelude_clause` backstop is gated to empty-signature + collision-free (exact-match stays the sound primary).  New regression `real_recorder_trace_replays_through_hash_atom_map` exercises the REAL recorder→finalise→replay round-trip.  CLI-verified end-to-end.  1069 → **1070** green.  Process lesson: round-trip replay/serialise tests through the real producer.  **§3.5.J CONFIRMED by verus-fork (2026-06-10):** re-baked + re-ran the 5-mode matrix → tight-rlimit rows (1/10/100) flipped to `unsat`, rlimit-independent; arc functionally closed (the wall *win* is fixture-gated — the ~0.45 s consult pays off only on a search heavier than itself → the rc.34.2 slim-trace row) |
-| slim-trace (verdict-only) — the §3.5.J perf follow-up | **landed** at rc.34.2.  The consult's dominant cost was the 3.5 MB full trace (the whole `Decide`/`Propagate`/`Backjump` stream), which the **exact-match** route never reads — it consumes only `trace.signature` + a terminal level-0 `Conflict`.  `lu-smt --jit-trace-emit-slim <PATH>` (sibling of `--jit-trace-emit`; mutex with it + `--jit-trace-load`) emits — on a clean Unsat session only — just the §3.5.E signature + a synthetic `[Restart, Conflict@0]` (`Solver::build_slim_jit_trace`), dropping the propagation stream; no recorder installed.  Sound by construction: a slim trace carries a signature → exact-match route → never reaches the (empty-signature-gated) `level0_falsifies_prelude_clause` backstop, the only path that reads the dropped trail.  Verdict-equivalent to a full trace at hundreds of bytes instead of megabytes; the consult's trace-load term collapses (residual = the unavoidable live `canonical_gf2_signature` recompute), so the break-even drops from "search > ~0.45 s" to "search > signature pass".  New regression `slim_trace_is_verdict_equivalent_to_full_and_tiny`.  CLI-verified.  1070 → **1071** green |
+| slim-trace (verdict-only) — the §3.5.J perf follow-up | **landed** at rc.34.2.  The consult's dominant cost was the 3.5 MB full trace (the whole `Decide`/`Propagate`/`Backjump` stream), which the **exact-match** route never reads — it consumes only `trace.signature` + a terminal level-0 `Conflict`.  `lu-smt --jit-trace-emit-slim <PATH>` (sibling of `--jit-trace-emit`; mutex with it + `--jit-trace-load`) emits — on a clean Unsat session only — just the §3.5.E signature + a synthetic `[Restart, Conflict@0]` (`Solver::build_slim_jit_trace`), dropping the propagation stream; no recorder installed.  Sound by construction: a slim trace carries a signature → exact-match route → never reaches the (empty-signature-gated) `level0_falsifies_prelude_clause` backstop, the only path that reads the dropped trail.  Verdict-equivalent to a full trace.  New regression `slim_trace_is_verdict_equivalent_to_full_and_tiny`.  CLI-verified.  1070 → **1071** green.  (verus-fork then measured this at prelude scale: the dropped event stream is only **0.6%** — the 99.4% is the signature, addressed by the rc.34.3 digest row below.) |
+| signature digest — the real consult lever (verus-fork rc.34.2 measurement) | **landed** at rc.34.3.  verus-fork measured the slim trace on a real prelude: it dropped only 0.6% (the event stream); the §3.5.E GF(2) signature is the other **99.4%** (one generator polynomial per clause × thousands), so slim moved neither the consult wall (~0.45 s) nor the bake (~2.03 s).  Fix: the exact-match certificate is now a **32-byte canonical clause-set digest**.  `Solver::jit_trace_digest` hashes the canonical clause set (`canonical_clause_set` — sorted atoms + sorted/deduped DIMACS, factored out of `canonical_gf2_signature`) with **KangarooTwelve-256** (`lu_common::k12`, new `adsmt-engine` dep).  Both angles: **size/compare** — the megabyte `basis` is dropped from full *and* slim traces (`.lutrace` **v2** trailing `signature_digest: Option<[u8;32]>`, `read_trace` accepts v1[`None`]+v2; MB → hundreds of bytes); **compute** — the digest hashes the clause set *without* the GF(2) polynomial encoding (consult skips `cnf_to_generators`; `canonical_gf2_signature` is now lazy, computed only when a trace carries guards, which §3.5.E/J never emit).  Consult exact-match = digest equality; legacy v1 → GF(2) `(classes, basis)` fallback; backstop gated on no-exact-cert.  Sound — same exact-formula-match trust via a collision-resistant hash.  3 new regressions (digest order-independence + formula-sensitivity, digest-only Unsat short-circuit, v2 wire round-trip).  CLI-verified (full 113 B / slim 99 B tiny-fixture; real prelude collapses from MB).  1071 → **1074** green |
 | Specialised JIT kernels lifted from `trace.events` (replace `emit_noop_kernel`) | post-rc.26 follow-up |
 | Adsmt-theory `TheoryWitness::FiniteField` structured variant | post-1.0.0 (cert breaking) |
 | v1.0.0 stable cut | **the only remaining gate** — every technical item (rc.7 → rc.30 + §3.5.H/I/J) is landed; what's left is the formal completeness/soundness audit-sweep scope (rc.29 + verus-fork audits cover the key cases; a broader corpus — real Y4 obligations / adsmt-contrib Isabelle·Rocq emit round-trip — is the sign-off-holder's call) + **explicit user sign-off** per `feedback_stable_signoff_user_approval.md` |

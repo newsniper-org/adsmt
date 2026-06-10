@@ -64,7 +64,11 @@ pub const LUTRACE_MAGIC: [u8; 8] = *b"lutrace\0";
 /// breaking layout changes.  v1 (§1.6) lifted the version
 /// from 0 because the wire shape now persists every
 /// `CdclTrace` field (signature + guards + checkpoints).
-pub const LUTRACE_VERSION: u32 = 1;
+/// v2 (rc.34.3) appends a trailing §3.5.J `signature_digest`
+/// (presence byte + 32 bytes) after the checkpoint table. v1 files
+/// (no digest) still load — `read_trace` accepts both and leaves
+/// `signature_digest = None` for v1.
+pub const LUTRACE_VERSION: u32 = 2;
 
 /// Errors surface from the trace reader / writer.
 #[derive(Debug)]
@@ -132,6 +136,15 @@ pub fn write_trace<W: Write>(
     for cp in &trace.checkpoints {
         out.write_all(&cp.at_event.to_le_bytes())?;
         write_signature(out, &cp.signature)?;
+    }
+    // §3.5.J v2 — trailing canonical clause-set digest: a presence
+    // byte then 32 bytes when present.
+    match trace.signature_digest {
+        Some(d) => {
+            out.write_all(&[1u8])?;
+            out.write_all(&d)?;
+        }
+        None => out.write_all(&[0u8])?,
     }
     Ok(())
 }
@@ -389,7 +402,9 @@ pub fn read_trace(buf: &[u8]) -> Result<CdclTrace, TraceIoError> {
         return Err(TraceIoError::BadMagic);
     }
     let version = c.u32()?;
-    if version != LUTRACE_VERSION {
+    // v1 and v2 both load: v2 appends the trailing signature digest;
+    // v1 has none (→ `signature_digest = None`).
+    if version != 1 && version != LUTRACE_VERSION {
         return Err(TraceIoError::UnsupportedVersion {
             found: version,
             expected: LUTRACE_VERSION,
@@ -455,12 +470,28 @@ pub fn read_trace(buf: &[u8]) -> Result<CdclTrace, TraceIoError> {
             signature,
         });
     }
+    // §3.5.J v2 — trailing signature digest (presence byte + 32 bytes).
+    // v1 files have no trailing bytes → `None`.
+    let signature_digest = if version >= 2 {
+        let present = c.u8()?;
+        if present != 0 {
+            let bytes = c.take(32)?;
+            let mut d = [0u8; 32];
+            d.copy_from_slice(bytes);
+            Some(d)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     Ok(CdclTrace {
         events,
         signature,
         checkpoints,
         guards,
         kernel_id,
+        signature_digest,
     })
 }
 
@@ -475,8 +506,8 @@ mod tests {
         write_trace(&mut buf, &trace).unwrap();
         // 8 magic + 4 version + 4 kernel_id + 8 events_len
         // + 8 basis_len + 8 classes_len + 8 guards_len
-        // + 8 checkpoints_len = 56 bytes.
-        assert_eq!(buf.len(), 56);
+        // + 8 checkpoints_len + 1 digest-presence byte (v2) = 57 bytes.
+        assert_eq!(buf.len(), 57);
         let decoded = read_trace(&buf).unwrap();
         assert_eq!(decoded.events.len(), 0);
         assert_eq!(decoded.kernel_id, 0);
@@ -484,6 +515,19 @@ mod tests {
         assert!(decoded.signature.classes.is_empty());
         assert!(decoded.guards.is_empty());
         assert!(decoded.checkpoints.is_empty());
+        assert!(decoded.signature_digest.is_none());
+    }
+
+    #[test]
+    fn v2_trace_round_trips_signature_digest() {
+        // §3.5.J — a trace carrying a 32-byte digest round-trips it.
+        let digest = [0xABu8; 32];
+        let trace =
+            CdclTrace::new(GF2Snapshot::empty()).with_signature_digest(digest);
+        let mut buf: Vec<u8> = Vec::new();
+        write_trace(&mut buf, &trace).unwrap();
+        let decoded = read_trace(&buf).unwrap();
+        assert_eq!(decoded.signature_digest, Some(digest));
     }
 
     #[test]

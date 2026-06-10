@@ -423,11 +423,15 @@ fn main() -> ExitCode {
         // `--jit-trace-emit` was set but the session never
         // ran a `(check-sat)`), fall back to the empty-trace
         // placeholder so the file-shape gate still holds.
+        // rc.34.3 — the exact-match certificate is the canonical
+        // clause-set DIGEST (32 bytes), not the megabyte GF(2) `basis`.
+        // The full trace keeps its recorded event stream (the slim mode
+        // drops it) but, like slim, carries the digest + an empty
+        // signature.
         let trace = match driver.solver.take_jit_recording() {
-            Some(tracer) => {
-                let (sig, guards) = driver.solver.jit_trace_signature();
-                tracer.finalize(sig, guards)
-            }
+            Some(tracer) => tracer
+                .finalize(adsmt_jit::GF2Snapshot::empty(), Vec::new())
+                .with_signature_digest(driver.solver.jit_trace_digest()),
             None => adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty()),
         };
         if let Err(code) = emit_jit_trace_with(path, &trace) {
