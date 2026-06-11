@@ -1308,7 +1308,8 @@ fn run_stdin_streaming(
 /// ```text
 /// {"abductive_candidates":[
 ///   {"rank":1,"score":1.025,
-///    "hypotheses":["…"],"explanations":[null],"sources":["…"]},
+///    "term":"(> x 0)",
+///    "hypotheses":["(> x 0)"],"explanations":[null],"sources":["…"]},
 ///   …
 /// ]}
 /// ```
@@ -1319,6 +1320,17 @@ fn run_stdin_streaming(
 /// adsmt-abduce score (smaller = stronger). `hypotheses`,
 /// `explanations`, `sources` mirror the lock-step lists on
 /// [`adsmt_abduce::sld::Candidate`] one-to-one.
+///
+/// rc.35.1 — both the per-hypothesis strings AND the new top-level
+/// `term` field are **re-parseable SMT-LIB** (via [`term_to_smtlib`]),
+/// not the engine's curried-HOL `Term` Display (`> x 0`, which has no
+/// outer parens and can't be fed back to a parser). `term` is the
+/// candidate's whole abduct — the conjunction of its hypotheses,
+/// byte-identical to the body `(get-abduct …)` emits in its
+/// `(define-fun … Bool <term>)`. So a consumer that wants to
+/// back-translate a candidate (Verus's A2c) reads `term` from this same
+/// ranked-JSON the list view (A2a) already parses — one parser for
+/// both, per verus-fork's request.
 fn abductive_candidates_json(ranked: &[RankedCandidate]) -> String {
     let items: Vec<serde_json::Value> = ranked
         .iter()
@@ -1328,7 +1340,7 @@ fn abductive_candidates_json(ranked: &[RankedCandidate]) -> String {
                 .candidate
                 .hypotheses
                 .iter()
-                .map(|t| format!("{}", t))
+                .map(term_to_smtlib)
                 .collect();
             let explanations: Vec<serde_json::Value> = rc
                 .candidate
@@ -1343,6 +1355,7 @@ fn abductive_candidates_json(ranked: &[RankedCandidate]) -> String {
             serde_json::json!({
                 "rank":         (idx as u64) + 1,
                 "score":        rc.score,
+                "term":         render_abduct_body(&rc.candidate.hypotheses),
                 "hypotheses":   hypotheses,
                 "explanations": explanations,
                 "sources":      sources,
@@ -2738,5 +2751,37 @@ mod abduct_render_tests {
         assert_eq!(render_abduct_body(&[]), "true");
         assert_eq!(render_abduct_body(std::slice::from_ref(&x)), "x");
         assert_eq!(render_abduct_body(&[x, y]), "(and x y)");
+    }
+
+    #[test]
+    fn abductive_json_carries_reparseable_term_and_hypotheses() {
+        // rc.35.1 — the ranked `abductive` JSON must carry a re-parseable
+        // `term` per candidate AND re-parseable `hypotheses` (SMT-LIB via
+        // `term_to_smtlib`), not the engine's curried-HOL Display. This is
+        // what lets the A2a list view and the A2c back-translation share
+        // one parser (verus-fork's request).
+        use adsmt_abduce::sld::Candidate;
+        let inner = Type::fun(int(), Type::bool_()).unwrap();
+        let gt = Term::const_(">", Type::fun(int(), inner).unwrap());
+        let x = Term::var("x", int());
+        let zero = Term::const_("0", int());
+        let gt_x_0 = Term::app(Term::app(gt, x).unwrap(), zero).unwrap();
+
+        let ranked = vec![RankedCandidate {
+            candidate: Candidate {
+                hypotheses: vec![gt_x_0],
+                explanations: vec![Some("x must be positive".into())],
+                sources: vec!["declared".into()],
+            },
+            score: 1.003,
+        }];
+        let json: serde_json::Value =
+            serde_json::from_str(&abductive_candidates_json(&ranked)).unwrap();
+        let cand = &json["abductive_candidates"][0];
+        // Re-parseable, NOT the bare `> x 0` Display.
+        assert_eq!(cand["term"], "(> x 0)");
+        assert_eq!(cand["hypotheses"][0], "(> x 0)");
+        assert_eq!(cand["rank"], 1);
+        assert_eq!(cand["explanations"][0], "x must be positive");
     }
 }
