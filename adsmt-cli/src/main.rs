@@ -1352,6 +1352,65 @@ fn abductive_candidates_json(ranked: &[RankedCandidate]) -> String {
     serde_json::json!({ "abductive_candidates": items }).to_string()
 }
 
+/// rc.35 — render a `Term` as a re-parseable SMT-LIB expression by
+/// flattening the curried HOL application spine `((f a) b) → (f a b)`
+/// (the engine's `Term` Display prints `f a b` *without* the outer
+/// parens, which cvc5 / Verus can't re-read). Covers the
+/// first-order fragment abducts live in; a `Lam` (rare in an abduct)
+/// falls back to a `(lambda ((v T)) body)` form.
+fn term_to_smtlib(t: &Term) -> String {
+    use adsmt_core::TermInner;
+    match t.kind() {
+        TermInner::Var(v) => v.name.clone(),
+        TermInner::Const(c) => c.name.clone(),
+        TermInner::App(_, _) => {
+            // Collect the spine: walk left through `App` heads,
+            // accumulating args, until a non-App head remains.
+            let mut args: Vec<&Term> = Vec::new();
+            let mut head = t;
+            while let TermInner::App(f, x) = head.kind() {
+                args.push(x);
+                head = f;
+            }
+            args.reverse();
+            let rendered: Vec<String> = args.iter().map(|a| term_to_smtlib(a)).collect();
+            format!("({} {})", term_to_smtlib(head), rendered.join(" "))
+        }
+        TermInner::Lam(v, body) => {
+            format!("(lambda (({} {})) {})", v.name, v.ty, term_to_smtlib(body))
+        }
+    }
+}
+
+/// rc.35 — render an abduct candidate's hypothesis set as the body of a
+/// cvc5 `(define-fun <name> () Bool <body>)`: a lone hypothesis, an
+/// empty set as `true`, otherwise their conjunction `(and …)`. Each
+/// hypothesis goes through [`term_to_smtlib`] so the result re-parses.
+fn render_abduct_body(hyps: &[Term]) -> String {
+    match hyps {
+        [] => "true".to_string(),
+        [h] => term_to_smtlib(h),
+        many => {
+            let parts: Vec<String> = many.iter().map(term_to_smtlib).collect();
+            format!("(and {})", parts.join(" "))
+        }
+    }
+}
+
+/// rc.35 — emit one cvc5-shaped abduct line: `(define-fun <name> ()
+/// Bool <body>)` for a candidate, or `(fail)` when there is none.
+fn emit_abduct_define_fun(name: &str, candidate: Option<&RankedCandidate>) {
+    match candidate {
+        Some(rc) => {
+            println!(
+                "(define-fun {name} () Bool {})",
+                render_abduct_body(&rc.candidate.hypotheses)
+            );
+        }
+        None => println!("(fail)"),
+    }
+}
+
 /// Parse a numeric `(set-option :key VALUE)` payload into a `u64`.
 /// `VALUE` may arrive as `SExpr::Numeric` (the lexer's normal
 /// classification) or as a plain `SExpr::Symbol` for callers that
@@ -1528,6 +1587,19 @@ struct Driver {
     /// `(check-sat)` sequence number, for `--emit-cert-dir` file
     /// naming.
     check_sat_seq: usize,
+    /// rc.35 — the cvc5 `(get-abduct …)` cursor: the abduct name + the
+    /// ranked candidate set from the last `(get-abduct …)`, plus the
+    /// index of the next candidate `(get-abduct-next)` will emit.
+    /// `None` until a `(get-abduct …)` runs; reset on `(reset)` /
+    /// `(reset-assertions)`.
+    abduct_cursor: Option<AbductCursor>,
+}
+
+/// rc.35 — incremental-abduct state for cvc5 `(get-abduct-next)`.
+struct AbductCursor {
+    name: String,
+    candidates: Vec<RankedCandidate>,
+    next: usize,
 }
 
 impl Driver {
@@ -1573,6 +1645,7 @@ impl Driver {
             assertions,
             assertion_qids,
             check_sat_seq: 0,
+            abduct_cursor: None,
         }
     }
 
@@ -1779,6 +1852,7 @@ impl Driver {
                 self.last_result = None;
                 self.assertions.clear();
                 self.assertion_qids.clear();
+                self.abduct_cursor = None;
                 DispatchResult::Continue
             }
             Command::ResetAssertions => {
@@ -1787,6 +1861,7 @@ impl Driver {
                 self.last_result = None;
                 self.assertions.clear();
                 self.assertion_qids.clear();
+                self.abduct_cursor = None;
                 DispatchResult::Continue
             }
             Command::Exit => DispatchResult::Exit,
@@ -1797,6 +1872,22 @@ impl Driver {
                 // use this as a sentinel (Verus's `SmtProcess`)
                 // expect the raw payload, not a re-quoted form.
                 println!("{}", msg);
+                DispatchResult::Continue
+            }
+            Command::DeclareAbducible { pattern, explanation } => {
+                match self.declare_abducible(&pattern, explanation.as_deref()) {
+                    Ok(()) => DispatchResult::Continue,
+                    Err(e) => DispatchResult::Error(13, e),
+                }
+            }
+            Command::Abduce { name, goal } => {
+                match self.run_abduce(name.as_deref(), &goal) {
+                    Ok(()) => DispatchResult::Continue,
+                    Err(e) => DispatchResult::Error(13, e),
+                }
+            }
+            Command::GetAbductNext => {
+                self.emit_next_abduct();
                 DispatchResult::Continue
             }
             Command::Raw(s) => {
@@ -2099,6 +2190,87 @@ impl Driver {
         self.assertions.push(term);
         self.assertion_qids.push(qid);
         Ok(())
+    }
+
+    /// rc.35 — convert an abductive goal / abducible pattern SExpr to a
+    /// `Term`, mirroring `(assert …)`'s pipeline (inline `define-fun`s,
+    /// auto-declare bare Bools, `convert_expr`). Unlike an assertion it
+    /// is NOT routed into the solver — the caller registers it as an
+    /// abducible or hands it to `Solver::abduce`.
+    fn abductive_term(&mut self, e: &SExpr) -> Result<Term, String> {
+        let expanded = inline_defines(e, &self.registry);
+        if !self.cfg.no_autodeclare {
+            autodeclare_bools(&expanded, &mut self.symbols);
+        }
+        convert_expr(&expanded, &self.symbols).map_err(|err: ConvertError| err.to_string())
+    }
+
+    /// rc.35 — `(declare-abducible <pattern> [<explanation>])`: register
+    /// `<pattern>` as a hypothesis the abductive engine may propose.
+    fn declare_abducible(
+        &mut self,
+        pattern: &SExpr,
+        explanation: Option<&str>,
+    ) -> Result<(), String> {
+        let term = self.abductive_term(pattern)?;
+        let mut a = adsmt_abduce::Abducible::new(term, "declared");
+        if let Some(e) = explanation {
+            a = a.with_explanation(e);
+        }
+        self.solver.register_abducible(a);
+        Ok(())
+    }
+
+    /// rc.35 — run the abductive engine on `goal` and emit the result.
+    ///
+    /// - `name == None` (`(abduce <goal>)`, adsmt-native): the full
+    ///   ranked candidate set as the single-line `abductive` JSON — the
+    ///   same shape the `(check-sat)` abductive verdict emits, so the
+    ///   Verus / Lean reporters parse it with the existing path.
+    /// - `name == Some(n)` (`(get-abduct <n> <goal>)`, cvc5 extension):
+    ///   the top-ranked abduct as `(define-fun <n> () Bool <body>)`, and
+    ///   arm the `(get-abduct-next)` cursor over the remaining ranked
+    ///   candidates.
+    fn run_abduce(&mut self, name: Option<&str>, goal: &SExpr) -> Result<(), String> {
+        let term = self.abductive_term(goal)?;
+        let candidates = self.solver.abduce(&term).candidates;
+        match name {
+            None => {
+                println!("abductive");
+                println!("{}", abductive_candidates_json(&candidates));
+            }
+            Some(n) => {
+                emit_abduct_define_fun(n, candidates.first());
+                self.abduct_cursor = Some(AbductCursor {
+                    name: n.to_string(),
+                    candidates,
+                    next: 1,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// rc.35 — `(get-abduct-next)`: emit the next ranked abduct after a
+    /// prior `(get-abduct …)`. adsmt already ranks the whole candidate
+    /// set, so this just advances the cursor. Without a prior
+    /// `(get-abduct …)`, or once the candidates are exhausted, emit
+    /// `(fail)` (the cvc5 terminal for "no further abduct").
+    fn emit_next_abduct(&mut self) {
+        let Some(cur) = self.abduct_cursor.as_mut() else {
+            println!("(fail)");
+            return;
+        };
+        let idx = cur.next;
+        cur.next += 1;
+        let body = cur
+            .candidates
+            .get(idx)
+            .map(|rc| render_abduct_body(&rc.candidate.hypotheses));
+        match body {
+            Some(b) => println!("(define-fun {} () Bool {b})", cur.name),
+            None => println!("(fail)"),
+        }
     }
 
     fn emit_get_model(&self) {
@@ -2534,4 +2706,37 @@ fn is_logic_supported(logic: &str) -> bool {
             // Universal escape hatch.
             | "ALL"
     )
+}
+
+#[cfg(test)]
+mod abduct_render_tests {
+    use super::*;
+    use adsmt_core::Type;
+
+    fn int() -> Type {
+        Type::const_("Int", adsmt_core::Kind::Type)
+    }
+
+    #[test]
+    fn term_to_smtlib_flattens_the_application_spine() {
+        // rc.35 — `(> x 0)` is interned as the curried spine `((> x) 0)`;
+        // the engine's Display prints `> x 0` (no outer parens), which
+        // cvc5 / Verus can't re-read. `term_to_smtlib` must restore
+        // `(> x 0)`.
+        let inner = Type::fun(int(), Type::bool_()).unwrap();
+        let gt = Term::const_(">", Type::fun(int(), inner).unwrap());
+        let x = Term::var("x", int());
+        let zero = Term::const_("0", int());
+        let app = Term::app(Term::app(gt, x).unwrap(), zero).unwrap();
+        assert_eq!(term_to_smtlib(&app), "(> x 0)");
+    }
+
+    #[test]
+    fn render_abduct_body_handles_zero_one_and_many() {
+        let x = Term::var("x", Type::bool_());
+        let y = Term::var("y", Type::bool_());
+        assert_eq!(render_abduct_body(&[]), "true");
+        assert_eq!(render_abduct_body(std::slice::from_ref(&x)), "x");
+        assert_eq!(render_abduct_body(&[x, y]), "(and x y)");
+    }
 }

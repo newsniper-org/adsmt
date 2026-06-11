@@ -33,6 +33,9 @@ const FROZEN_VARIANTS: &[&str] = &[
     "ResetAssertions",
     "Exit",
     "Echo",
+    "DeclareAbducible",
+    "Abduce",
+    "GetAbductNext",
     "Raw",
 ];
 
@@ -46,7 +49,9 @@ fn command_variant_count_is_frozen() {
     //   through this multi-sort variant
     // Count bumps to 22; future additive variants require
     // updating this assertion and DIALECT_POLICY.md together.
-    assert_eq!(FROZEN_VARIANTS.len(), 23);
+    // rc.35: +3 abductive-reasoning commands (DeclareAbducible,
+    // Abduce, GetAbductNext) → 26.
+    assert_eq!(FROZEN_VARIANTS.len(), 26);
 }
 
 fn variant_name(c: &Command) -> &'static str {
@@ -73,6 +78,9 @@ fn variant_name(c: &Command) -> &'static str {
         Command::ResetAssertions => "ResetAssertions",
         Command::Exit => "Exit",
         Command::Echo(_) => "Echo",
+        Command::DeclareAbducible { .. } => "DeclareAbducible",
+        Command::Abduce { .. } => "Abduce",
+        Command::GetAbductNext => "GetAbductNext",
         Command::Raw(_) => "Raw",
     }
 }
@@ -108,6 +116,10 @@ fn canonical_command_corpus_parses_to_recognised_variants() {
         ("(reset-assertions)", "ResetAssertions"),
         ("(exit)", "Exit"),
         ("(echo \"hello\")", "Echo"),
+        ("(declare-abducible (> x 0))", "DeclareAbducible"),
+        ("(abduce (> x 0))", "Abduce"),
+        ("(get-abduct A (>= x 0))", "Abduce"),
+        ("(get-abduct-next)", "GetAbductNext"),
     ];
 
     for (src, expected) in corpus {

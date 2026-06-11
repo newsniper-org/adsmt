@@ -14,9 +14,10 @@ The parser entry points are:
 - `parse_smtlib(&str) -> Result<Vec<Command>, SmtLibError>`
 - `parse_smtlib_positioned(&str) -> Result<Vec<(Command, Position)>, SmtLibError>`
 
-`Command` enum (`src/smtlib.rs`) — 23 frozen variants. Adding
-new variants in v1.x minor bumps is allowed; removing or
-renaming variants requires a major bump.
+`Command` enum (`src/smtlib.rs`) — 26 frozen variants (23 +
+the rc.35 abductive-reasoning trio). Adding new variants in
+v1.x minor bumps is allowed; removing or renaming variants
+requires a major bump.
 
 | Variant | Form |
 |---|---|
@@ -42,6 +43,9 @@ renaming variants requires a major bump.
 | `ResetAssertions` | `(reset-assertions)` |
 | `Exit` | `(exit)` |
 | `Echo` | `(echo "<string>")` — SMT-LIB v2.6 § 4.2.4; verbatim line to stdout |
+| `DeclareAbducible` | `(declare-abducible <pattern> [<explanation-string>])` — rc.35; register a hypothesis the abductive engine may propose |
+| `Abduce` | `(abduce <goal>)` (adsmt-native; full ranked `abductive` JSON) **and** `(get-abduct <name> <goal> [<grammar>])` (cvc5 abduction extension; top abduct as `(define-fun <name> () Bool …)`) — rc.35; both carry `goal`, the cvc5 form sets `name` |
+| `GetAbductNext` | `(get-abduct-next)` — rc.35; the cvc5 incremental form, walks the ranked candidate set after `(get-abduct …)` |
 | `Raw` | escape hatch for adsmt-specific dialect + unrecognised standard commands |
 
 ### Error surface
@@ -101,7 +105,7 @@ Phase 1 (v0.23) freeze candidate sign-off status:
 1. **Command variant audit** — ✅ enforced by
    `tests/dialect_surface.rs::command_variant_set_is_frozen`.
 2. **Round-trip smoke** — ✅ existing parser tests cover the
-   23 variants over ~50 SMT-LIB snippets.
+   26 variants over ~50 SMT-LIB snippets.
 3. **lu-kb AST audit** — pending. The audit cross-walks
    `lu-common/src/kb/ast.rs` enum cardinalities against this
    document.

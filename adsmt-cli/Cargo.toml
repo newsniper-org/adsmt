@@ -15,7 +15,7 @@ adsmt-cert.workspace = true
 adsmt-engine.workspace = true
 # Canonical cert wire codec (CBOR/JSON) for `--emit-cert`, matching
 # what the adsmt-emit emitters decode.
-adsmt-emit-contract = { version = "=1.0.0-rc.34.6", path = "../adsmt-emit/adsmt-emit-contract" }
+adsmt-emit-contract = { version = "=1.0.0-rc.35", path = "../adsmt-emit/adsmt-emit-contract" }
 adsmt-parser-smtlib2.workspace = true
 adsmt-theory.workspace = true
 # §3.4 GF(2) Gröbner-basis theory sibling — opt-in via
@@ -41,7 +41,7 @@ adsmt-stalmarck.workspace = true
 # ranking type's fields by name without going through engine privacy.
 adsmt-abduce.workspace = true
 # dead-pattern audit JSON for --audit-json.
-adsmt-lints = { version = "=1.0.0-rc.34.6", path = "../adsmt-lints" }
+adsmt-lints = { version = "=1.0.0-rc.35", path = "../adsmt-lints" }
 # SHA-256 of the bake input — recorded in the `.luart` header per
 # the verus-fork ack §8.3 of the §3.1 counter-proposal.
 sha2.workspace = true

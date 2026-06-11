@@ -98,6 +98,33 @@ pub enum Command {
     /// response batches when several commands flush through a
     /// single pipe `read`.
     Echo(String),
+    /// rc.35 — `(declare-abducible <pattern> [<explanation-string>])`.
+    /// adsmt abductive-reasoning surface: register `<pattern>` (a term
+    /// over the in-scope vocabulary) as a hypothesis the abductive
+    /// engine (`Solver::abduce`) may propose.  The optional trailing
+    /// string literal is attached as the candidate's human-readable
+    /// explanation.  Without any declared abducibles the engine abduces
+    /// over an empty vocabulary, so a front-end (Verus, Lean) declares
+    /// the program variables / lemmas it would accept as a fix before
+    /// asking for an abduct.
+    DeclareAbducible { pattern: SExpr, explanation: Option<String> },
+    /// rc.35 — request ranked abductive hypotheses that would discharge
+    /// `goal`.  Two surfaces route here:
+    /// - `(abduce <goal>)` — adsmt-native; emits the full ranked
+    ///   candidate set as the single-line `abductive` JSON.  `name` is
+    ///   `None`.
+    /// - `(get-abduct <name> <goal> [<grammar>])` — the cvc5 SMT-LIB
+    ///   abduction extension; emits a cvc5-shaped
+    ///   `(define-fun <name> () Bool <abduct>)` for the top-ranked
+    ///   abduct and arms `(get-abduct-next)` to walk the rest.  `name`
+    ///   is `Some(<name>)`; the optional grammar argument is accepted
+    ///   and ignored (adsmt abduces over the declared abducibles).
+    Abduce { name: Option<String>, goal: SExpr },
+    /// rc.35 — `(get-abduct-next)` — the cvc5 SMT-LIB abduction
+    /// extension's incremental form: emit the **next** ranked abduct
+    /// after a prior `(get-abduct …)` (adsmt already ranks the whole
+    /// candidate set, so this just advances a cursor over it).
+    GetAbductNext,
     /// adsmt-specific dialect commands and any unrecognized standard
     /// commands are kept as raw forms.
     Raw(SExpr),
@@ -350,6 +377,39 @@ fn parse_command(s: SExpr) -> Result<Command, SmtLibError> {
             };
             Ok(Command::Echo(msg))
         }
+        "declare-abducible" => {
+            let pattern = list
+                .get(1)
+                .cloned()
+                .ok_or_else(|| malformed(&head, "missing abducible pattern"))?;
+            // Optional trailing string literal = explanation.
+            let explanation = match list.get(2) {
+                Some(SExpr::String(s)) => Some(s.clone()),
+                _ => None,
+            };
+            Ok(Command::DeclareAbducible { pattern, explanation })
+        }
+        "abduce" => {
+            // adsmt-native: `(abduce <goal>)`.
+            let goal = list
+                .get(1)
+                .cloned()
+                .ok_or_else(|| malformed(&head, "missing goal"))?;
+            Ok(Command::Abduce { name: None, goal })
+        }
+        "get-abduct" => {
+            // cvc5 SMT-LIB abduction extension: `(get-abduct <name>
+            // <conjecture> [<grammar>])`.  The grammar argument (if
+            // present) is accepted and ignored — adsmt abduces over the
+            // declared abducibles.
+            let name = expect_symbol(list.get(1), "get-abduct")?;
+            let goal = list
+                .get(2)
+                .cloned()
+                .ok_or_else(|| malformed(&head, "missing conjecture"))?;
+            Ok(Command::Abduce { name: Some(name), goal })
+        }
+        "get-abduct-next" => Ok(Command::GetAbductNext),
         _ => Ok(Command::Raw(s)),
     }
 }
@@ -564,9 +624,65 @@ mod tests {
 
     #[test]
     fn unrecognized_command_becomes_raw() {
-        let cmds = parse_smtlib("(abduce (Functor MyType))").unwrap();
+        let cmds = parse_smtlib("(some-vendor-extension (Functor MyType))").unwrap();
         assert_eq!(cmds.len(), 1);
         assert!(matches!(cmds[0], Command::Raw(_)));
+    }
+
+    // rc.35 — abductive-reasoning surface.
+
+    #[test]
+    fn abduce_native_form_parses() {
+        let cmds = parse_smtlib("(abduce (> x 0))").unwrap();
+        match &cmds[0] {
+            Command::Abduce { name, goal } => {
+                assert!(name.is_none(), "(abduce …) has no abduct name");
+                assert_eq!(goal.to_string(), "(> x 0)");
+            }
+            other => panic!("expected Abduce, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_abduct_cvc5_form_parses_with_name() {
+        // cvc5: `(get-abduct A <conjecture> [<grammar>])`.
+        let cmds = parse_smtlib("(get-abduct A (>= x 0))").unwrap();
+        match &cmds[0] {
+            Command::Abduce { name, goal } => {
+                assert_eq!(name.as_deref(), Some("A"));
+                assert_eq!(goal.to_string(), "(>= x 0)");
+            }
+            other => panic!("expected Abduce, got {other:?}"),
+        }
+        // The optional grammar argument is accepted and ignored.
+        let cmds = parse_smtlib("(get-abduct A (>= x 0) (G))").unwrap();
+        assert!(matches!(cmds[0], Command::Abduce { name: Some(_), .. }));
+    }
+
+    #[test]
+    fn get_abduct_next_parses() {
+        let cmds = parse_smtlib("(get-abduct-next)").unwrap();
+        assert!(matches!(cmds[0], Command::GetAbductNext));
+    }
+
+    #[test]
+    fn declare_abducible_parses_with_optional_explanation() {
+        let cmds = parse_smtlib("(declare-abducible (> x 0))").unwrap();
+        match &cmds[0] {
+            Command::DeclareAbducible { pattern, explanation } => {
+                assert_eq!(pattern.to_string(), "(> x 0)");
+                assert!(explanation.is_none());
+            }
+            other => panic!("expected DeclareAbducible, got {other:?}"),
+        }
+        let cmds =
+            parse_smtlib("(declare-abducible (> x 0) \"x must be positive\")").unwrap();
+        match &cmds[0] {
+            Command::DeclareAbducible { explanation, .. } => {
+                assert_eq!(explanation.as_deref(), Some("x must be positive"));
+            }
+            other => panic!("expected DeclareAbducible, got {other:?}"),
+        }
     }
 
     #[test]
