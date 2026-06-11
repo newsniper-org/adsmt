@@ -446,22 +446,26 @@ pub struct ReplayedTrail {
 /// trace can never produce a wrong verdict, only a fall-through.
 pub fn replay_events(
     events: &[adsmt_jit::CdclTraceEvent],
-    atom_map: &std::collections::HashMap<u32, Term>,
+    resolve: impl Fn(u32) -> Option<Term>,
 ) -> ReplayedTrail {
     use adsmt_jit::CdclTraceEvent as E;
     let mut state = CdclState::new();
     let mut root_conflict = false;
-    let term = |i: u32| -> Option<Term> { atom_map.get(&i).cloned() };
+    // rc.34.5 — `resolve` maps a recorded content-hash atom to the live
+    // `Term`. The caller chains the small per-query atom map over the
+    // precomputed prelude atom map (see `Solver::live_atom_map` /
+    // `query_atom_map`), so a slim/digest trace whose events reference no
+    // query atom never touches the prelude — the consult is O(query delta).
     for ev in events {
         match ev {
             E::Decide { atom, polarity } => {
-                let Some(t) = term(*atom) else {
+                let Some(t) = resolve(*atom) else {
                     return ReplayedTrail { state, root_conflict, diverged: true };
                 };
                 state.push(t, *polarity, Reason::Decision);
             }
             E::Propagate { atom, polarity, antecedent } => {
-                let Some(t) = term(*atom) else {
+                let Some(t) = resolve(*atom) else {
                     return ReplayedTrail { state, root_conflict, diverged: true };
                 };
                 // `antecedent < 0` is a prelude-only derivation with no
@@ -486,7 +490,7 @@ pub fn replay_events(
                 let mut lits = Vec::with_capacity(learnt.len());
                 let mut ok = true;
                 for (a, p) in learnt {
-                    match term(*a) {
+                    match resolve(*a) {
                         Some(t) => lits.push(Lit { atom: t, polarity: *p }),
                         None => {
                             ok = false;
@@ -2197,7 +2201,7 @@ mod tests {
             E::Propagate { atom: h(&p()), polarity: true, antecedent: -1 },
             E::Conflict { learnt: vec![], lbd: 0 },
         ];
-        let r = replay_events(&events, &map);
+        let r = replay_events(&events, |i| map.get(&i).cloned());
         assert!(!r.diverged);
         assert!(r.root_conflict, "a level-0 conflict must be a root conflict");
         assert_eq!(r.state.decision_level, 0);
@@ -2218,7 +2222,7 @@ mod tests {
             E::Backjump { to_scope: 0 },
             E::Propagate { atom: h(&q()), polarity: false, antecedent: -1 },
         ];
-        let r = replay_events(&events, &map);
+        let r = replay_events(&events, |i| map.get(&i).cloned());
         assert!(!r.diverged);
         assert!(
             !r.root_conflict,
@@ -2238,7 +2242,7 @@ mod tests {
         use adsmt_jit::CdclTraceEvent as E;
         let map = amap(&[p()]); // q is NOT in the map
         let events = vec![E::Decide { atom: h(&q()), polarity: true }];
-        let r = replay_events(&events, &map);
+        let r = replay_events(&events, |i| map.get(&i).cloned());
         assert!(r.diverged, "an unresolved atom must diverge");
     }
 }

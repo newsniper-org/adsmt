@@ -300,6 +300,18 @@ pub struct Solver {
     /// than `O(#prelude + #query)`.  `None` until a CDCL-section
     /// prelude is loaded (`restore_cdcl_state_into`).
     aot_prelude_clause_fold: Option<ClauseFold>,
+    /// rc.34.5 — the prelude's precomputed §3.5.F replay atom map:
+    /// `(hash → Term, internal-collision)` over `aot_pool_terms` ∪ the
+    /// prelude clause/assertion atoms, built **once** at `--aot-load`
+    /// (`with_aot_cdcl`).  The prelude is fixed across a session, so the
+    /// per-`(check-sat)` consult chains a small per-query atom map over
+    /// this base (`query_atom_map`) instead of re-flattening + re-hashing
+    /// the whole prelude every consult — the residual `O(whole formula)`
+    /// term verus-fork measured at rc.34.4 (~0.38 s = the prelude
+    /// re-canonicalisation inside `live_atom_map`).  `None` keeps the
+    /// pre-rc.34.5 full-rebuild fallback (no bank loaded / direct-field
+    /// test construction).
+    aot_prelude_atom_map: Option<(std::collections::HashMap<u32, Term>, bool)>,
     /// rc.20 / verus-fork rc.19 retry — set of prelude
     /// assertion `Term`s.  `Term`'s `Hash` / `Eq` impls are
     /// `Arc::ptr_eq`-based (post-rc.10 hash-cons), so a
@@ -370,6 +382,7 @@ impl Default for Solver {
             aot_prelude_clauses: Vec::new(),
             aot_prelude_had_opaque: false,
             aot_prelude_clause_fold: None,
+            aot_prelude_atom_map: None,
             aot_prelude_term_set: std::collections::HashSet::new(),
             aot_pool_terms: Vec::new(),
             jit_tracer: None,
@@ -524,7 +537,18 @@ impl Solver {
         // references when assembling the BCP-fixpoint seed.
         self.aot_pool_terms = prelude.prelude.pool_terms.clone();
         self.aot_cdcl_state = prelude.cdcl_section;
-        self.with_aot_prelude(prelude.prelude)
+        let mut out = self.with_aot_prelude(prelude.prelude);
+        // rc.34.5 — precompute the prelude's §3.5.F replay atom map once,
+        // now that the bank pool, prelude clauses, AND prelude assertions
+        // are all installed.  At this point `all_assertions()` is the
+        // prelude only (no per-query assertions yet), so the full
+        // `live_atom_map()` build here yields exactly the prelude base.
+        // Each later `(check-sat)` consult chains only the per-query atoms
+        // over this (see `live_atom_map`/`query_atom_map`), so it never
+        // re-flattens the prelude.
+        let base = out.live_atom_map();
+        out.aot_prelude_atom_map = Some(base);
+        out
     }
 
     /// rc.20 / verus-fork rc.19 retry §3.5.J gate — consume a
@@ -869,8 +893,28 @@ impl Solver {
         // writes `atom_key_hash_u32(term)`, not a pool index, and a real
         // trace's per-query atoms aren't in the bank pool (the §3.5.J
         // short-circuit-never-fires fix).
-        let (atom_map, atom_map_collision) = self.live_atom_map();
-        let replayed = crate::cdcl::replay_events(&trace.events, &atom_map);
+        // rc.34.5 — resolve recorded event atoms through a CHAINED map:
+        // the small per-query atom map (`query_atom_map`) over the
+        // precomputed prelude base (`aot_prelude_atom_map`), built once at
+        // `--aot-load`.  A slim/digest trace references no query atom, so
+        // its replay never touches the prelude — the consult is O(query
+        // delta).  Without a precomputed base (no bank / test-built
+        // solver) fall back to the full whole-formula `live_atom_map`.
+        let (replayed, atom_map_collision) = match &self.aot_prelude_atom_map {
+            Some((base, base_collision)) => {
+                let (qmap, q_collision) = self.query_atom_map(base);
+                let replayed = crate::cdcl::replay_events(&trace.events, |i| {
+                    qmap.get(&i).or_else(|| base.get(&i)).cloned()
+                });
+                (replayed, *base_collision || q_collision)
+            }
+            None => {
+                let (atom_map, collision) = self.live_atom_map();
+                let replayed =
+                    crate::cdcl::replay_events(&trace.events, |i| atom_map.get(&i).cloned());
+                (replayed, collision)
+            }
+        };
         if replayed.diverged {
             // A recorded atom didn't resolve in the live formula — the
             // trace references an atom this query doesn't carry, so it
@@ -1192,6 +1236,69 @@ impl Solver {
             }
         }
         for term in self.all_assertions() {
+            if let Some(cs) = crate::cnf::flatten_to_clauses(&term) {
+                for clause in &cs {
+                    for lit in clause {
+                        insert(&lit.atom);
+                    }
+                }
+            }
+        }
+        (map, collision)
+    }
+
+    /// rc.34.5 — the **per-query** half of the §3.5.F replay atom map:
+    /// only the atoms the per-query (non-prelude) assertions carry,
+    /// keyed identically to [`Self::live_atom_map`]. The §3.5.J consult
+    /// chains this over the precomputed prelude base
+    /// (`aot_prelude_atom_map`), so it never re-flattens or re-hashes the
+    /// prelude — the work is `O(#query atoms)`, not `O(whole formula)`.
+    ///
+    /// Prelude assertion `Term`s (those in `aot_prelude_term_set`) are
+    /// skipped: their atoms already live in `base`, and re-flattening
+    /// them is exactly the prelude cost this avoids. An atom whose hash
+    /// is already in `base` is left there (not duplicated into the query
+    /// map); a hash that lands on a `base` entry with a structurally
+    /// **different** term is a cross-collision and flips the flag (the
+    /// union of this with the base's internal-collision flag matches what
+    /// the old whole-formula `live_atom_map` would have reported).
+    fn query_atom_map(
+        &self,
+        base: &std::collections::HashMap<u32, Term>,
+    ) -> (std::collections::HashMap<u32, Term>, bool) {
+        use std::collections::hash_map::Entry;
+        let mut map: std::collections::HashMap<u32, Term> =
+            std::collections::HashMap::new();
+        let mut collision = false;
+        let mut insert = |t: &Term| {
+            let k = atom_key_hash_u32(&t.to_string());
+            // Already resolvable through the prelude base: don't
+            // duplicate it into the query map, but a same-hash/
+            // different-term landing is a genuine cross-collision.
+            if let Some(bt) = base.get(&k) {
+                if !(*bt == *t) {
+                    collision = true;
+                }
+                return;
+            }
+            match map.entry(k) {
+                Entry::Vacant(e) => {
+                    e.insert(t.clone());
+                }
+                Entry::Occupied(e) => {
+                    if !(*e.get() == *t) {
+                        collision = true;
+                    }
+                }
+            }
+        };
+        for term in self.all_assertions() {
+            // Prelude assertions are covered by `base`; skipping them is
+            // what keeps this `O(query)` (their flatten/hash is the
+            // prelude cost rc.34.5 removes from the consult).
+            if self.aot_prelude_term_set.contains(&term) {
+                continue;
+            }
             if let Some(cs) = crate::cnf::flatten_to_clauses(&term) {
                 for clause in &cs {
                     for lit in clause {
@@ -4098,6 +4205,81 @@ mod tests {
             ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } } => {}
             other => panic!("digest trace must replay to Unsat, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn digest_trace_short_circuits_via_precomputed_prelude_atom_map() {
+        // rc.34.5 — the same digest short-circuit, but driven through the
+        // chained (precomputed prelude base + per-query) atom resolver
+        // instead of the full whole-formula rebuild. Same Unsat verdict,
+        // proving the `aot_prelude_atom_map` Some-arm path is sound.
+        let p = Term::var("p", Type::bool_());
+        let mut rec = Solver::default();
+        rec.aot_prelude_clauses = vec![
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: false }],
+        ];
+        let trace = rec.build_slim_jit_trace();
+
+        let mut live = Solver::default();
+        live.aot_pool_terms = vec![p.clone()];
+        live.aot_prelude_clauses = vec![
+            vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
+            vec![crate::cnf::Lit { atom: p, polarity: false }],
+        ];
+        // Precompute the prelude atom map (what `with_aot_cdcl` does at
+        // load); the consult must now take the chained Some-arm.
+        live.aot_prelude_atom_map = Some(live.live_atom_map());
+
+        match live.replay_aot_cdcl_trace(&trace, &[]) {
+            ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } } => {}
+            other => panic!("chained-resolver consult must replay to Unsat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn query_atom_map_skips_prelude_and_chained_resolver_matches_full() {
+        // rc.34.5 — `query_atom_map` carries ONLY the per-query atoms
+        // (prelude assertion terms are skipped — they live in the base),
+        // and the chained `query ∪ base` resolver resolves every atom
+        // identically to the full whole-formula `live_atom_map`. So the
+        // consult's `diverged`/`root_conflict` are unchanged while the
+        // per-consult work drops to O(query).
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let mut s = Solver::default();
+        s.aot_pool_terms = vec![p.clone()];
+        s.aot_prelude_clauses =
+            vec![vec![crate::cnf::Lit { atom: p.clone(), polarity: true }]];
+        s.aot_prelude_term_set.insert(p.clone());
+        s.assert(p.clone()); // prelude assertion present at "load"
+        let base = s.live_atom_map().0; // load-time snapshot = prelude only
+        s.assert(q.clone()); // now add the per-query assertion
+
+        let (qmap, _coll) = s.query_atom_map(&base);
+        let hp = atom_key_hash_u32(&p.to_string());
+        let hq = atom_key_hash_u32(&q.to_string());
+        assert!(
+            qmap.contains_key(&hq),
+            "per-query atom q must land in the query map"
+        );
+        assert!(
+            !qmap.contains_key(&hp),
+            "prelude atom p must NOT be duplicated into the query map"
+        );
+
+        // The chained resolver resolves every atom the full rebuild does.
+        let (full, _) = s.live_atom_map();
+        let chained = |i: u32| qmap.get(&i).or_else(|| base.get(&i)).cloned();
+        for (k, v) in &full {
+            assert_eq!(
+                chained(*k).as_ref(),
+                Some(v),
+                "atom {k} must resolve identically through the chain"
+            );
+        }
+        assert_eq!(chained(hp), Some(p));
+        assert_eq!(chained(hq), Some(q));
     }
 
     // §1.1 / §1.2 — dump_cdcl_state + aot_cdcl_state cache.
