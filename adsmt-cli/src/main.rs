@@ -767,6 +767,16 @@ fn build_cdcl_section(
     // saturation + one round of dilemma-rule saturation, then
     // project the resulting edges into the v1.1 wire shape.
     let stalmarck_edges = stalmarck_edges_for(&clauses, &lookup);
+    // rc.34.4 — precompute the prelude's order-independent clause-fold
+    // once, here at bake, so the §3.5.J `--jit-trace-load` consult can
+    // `combine` it with only the per-query delta each `(check-sat)`
+    // (`O(query)`) instead of re-canonicalising the whole prelude every
+    // query.  Folded from the engine's full flattened `clauses` via the
+    // exact same `clause_set_fold` the load side uses, so the stored
+    // value is byte-identical to a load-time recompute over the
+    // reconstructed prelude (the load side recomputes it for banks that
+    // predate this field).
+    let prelude_clause_fold = Some(adsmt_engine::solver::clause_set_fold(clauses.iter()));
     adsmt_aot::CdclSection {
         binary_sha256: binary_sha,
         flatten_version: FLATTEN_VERSION,
@@ -782,6 +792,7 @@ fn build_cdcl_section(
         // alongside a flattenable `(assert false)` would return `sat`
         // under `--aot-load` (the soundness gap verus-fork reported).
         had_opaque,
+        prelude_clause_fold,
     }
 }
 

@@ -90,6 +90,105 @@ pub(crate) fn atom_key_hash_u32(atom_key: &str) -> u32 {
     h.finish() as u32
 }
 
+/// rc.34.4 — an **order-independent, incremental clause-set fold**:
+/// the running `(sum, count)` accumulator the §3.5.J exact-match
+/// digest is built from. `sum` is a 256-bit AdHash accumulator
+/// (KangarooTwelve-256 per-clause hashes added mod 2³⁵⁶, little-
+/// endian); `count` is the clause multiplicity.
+///
+/// The fold is a homomorphism from the clause **multiset** into the
+/// abelian group `(ℤ/2³⁵⁶) × ℤ`, so two folds compose exactly:
+/// `fold(A ⊎ B) == combine(fold(A), fold(B))`. That is the whole
+/// point — the *prelude's* fold is computed **once** (at `--aot-bake`,
+/// stored in the bank; or once at `--aot-load`), and every
+/// `(check-sat)` only folds the per-query delta and `combine`s, so the
+/// consult is `O(#query clauses)` instead of re-canonicalising the
+/// whole prelude∪query formula (verus-fork's rc.34.3 measurement: the
+/// residual ~0.38 s was exactly that whole-formula re-canonicalisation).
+///
+/// **Why sum, not XOR.** An XOR fold is also order-independent, but it
+/// is a poor *cryptographic* multiset hash: it is linear over GF(2)
+/// (sub-multiset collisions fall out of Gaussian elimination) and a
+/// duplicated clause self-cancels (`h ⊕ h == 0`), which would alias
+/// `{C, C, D}` onto `{D}`. Modular addition (AdHash) has neither flaw —
+/// it is collision-resistant under the standard random-oracle
+/// assumption — and the digest is **soundness-critical** (an exact
+/// match makes the consult trust a recorded verdict), so the stronger
+/// combiner is the right call.
+pub type ClauseFold = ([u8; 32], u64);
+
+/// The canonical KangarooTwelve-256 hash of a single clause, keyed by
+/// **atom name** (not a global index). Literals are rendered as
+/// `(atom.to_string(), polarity)` pairs, sorted + de-duplicated within
+/// the clause, then length-prefix serialised. Name-keying is what makes
+/// a clause's hash independent of the rest of the formula's atom set —
+/// the property the rc.34.3 global-index DIMACS lacked, and the reason
+/// the prelude's fold could not be precomputed there.
+pub(crate) fn clause_name_hash(clause: &crate::cnf::Clause) -> [u8; 32] {
+    let mut lits: Vec<(String, bool)> = clause
+        .iter()
+        .map(|lit| (lit.atom.to_string(), lit.polarity))
+        .collect();
+    lits.sort();
+    lits.dedup();
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(&(lits.len() as u64).to_le_bytes());
+    for (name, polarity) in &lits {
+        buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
+        buf.extend_from_slice(name.as_bytes());
+        buf.push(*polarity as u8);
+    }
+    lu_common::k12::hash(&buf)
+}
+
+/// Little-endian 256-bit addition (mod 2³⁵⁶) — the AdHash group
+/// operation on the `sum` half of a [`ClauseFold`].
+fn add256(acc: [u8; 32], x: [u8; 32]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let mut carry: u16 = 0;
+    for i in 0..32 {
+        let s = acc[i] as u16 + x[i] as u16 + carry;
+        out[i] = s as u8;
+        carry = s >> 8;
+    }
+    out
+}
+
+/// Compose two folds: `(sum, count)` add component-wise. Exact, so
+/// `combine(fold(A), fold(B)) == fold(A ⊎ B)`.
+pub(crate) fn combine_fold(a: ClauseFold, b: ClauseFold) -> ClauseFold {
+    (add256(a.0, b.0), a.1.wrapping_add(b.1))
+}
+
+/// Fold a clause multiset from scratch — `combine` over every clause's
+/// [`clause_name_hash`], starting from the identity `([0; 32], 0)`.
+///
+/// `pub` so the `--aot-bake` path (`adsmt-cli`) can precompute the
+/// prelude's fold from the engine's flattened clause set and store it
+/// in the bank's trailing v1.3 field — the *exact* algorithm the
+/// `--aot-load` consult folds with, so the two are byte-identical.
+pub fn clause_set_fold<'a>(
+    clauses: impl Iterator<Item = &'a crate::cnf::Clause>,
+) -> ClauseFold {
+    let mut fold: ClauseFold = ([0u8; 32], 0);
+    for c in clauses {
+        fold = combine_fold(fold, (clause_name_hash(c), 1));
+    }
+    fold
+}
+
+/// Collapse a [`ClauseFold`] into the 32-byte §3.5.J exact-match
+/// digest: `K12(sum ‖ count_le)`. The trailing `count` disambiguates
+/// the (vanishingly unlikely) sum collision and pins the multiset
+/// cardinality, and the final K12 wrap gives a fixed-width,
+/// well-distributed certificate to compare byte-for-byte.
+pub(crate) fn fold_to_digest(fold: ClauseFold) -> [u8; 32] {
+    let mut buf = [0u8; 40];
+    buf[..32].copy_from_slice(&fold.0);
+    buf[32..].copy_from_slice(&fold.1.to_le_bytes());
+    lu_common::k12::hash(&buf)
+}
+
 /// `CdclEventSink` adapter that funnels every engine-side
 /// state-transition event into a borrowed
 /// [`adsmt_jit::CdclTracer`].  Atom-key strings flow through
@@ -189,6 +288,18 @@ pub struct Solver {
     /// `Unsat` — soundness asymmetry.  Loaded from
     /// `CdclSection::had_opaque` by `restore_cdcl_state_into`.
     aot_prelude_had_opaque: bool,
+    /// rc.34.4 — the prelude's precomputed order-independent
+    /// clause-fold (`(sum, count)`; see [`ClauseFold`]).  The
+    /// prelude is fixed across a session's `(check-sat)`s, so its
+    /// share of the §3.5.J exact-match digest is folded **once** —
+    /// at `--aot-bake` (stored in the bank's trailing field) or, for
+    /// banks that predate the field, once at `--aot-load` from the
+    /// reconstructed `aot_prelude_clauses`.  Each `(check-sat)` then
+    /// `combine`s this with the fold of only the per-query delta
+    /// clauses, so `jit_trace_digest` is `O(#query clauses)` rather
+    /// than `O(#prelude + #query)`.  `None` until a CDCL-section
+    /// prelude is loaded (`restore_cdcl_state_into`).
+    aot_prelude_clause_fold: Option<ClauseFold>,
     /// rc.20 / verus-fork rc.19 retry — set of prelude
     /// assertion `Term`s.  `Term`'s `Hash` / `Eq` impls are
     /// `Arc::ptr_eq`-based (post-rc.10 hash-cons), so a
@@ -258,6 +369,7 @@ impl Default for Solver {
             aot_cdcl_state: None,
             aot_prelude_clauses: Vec::new(),
             aot_prelude_had_opaque: false,
+            aot_prelude_clause_fold: None,
             aot_prelude_term_set: std::collections::HashSet::new(),
             aot_pool_terms: Vec::new(),
             jit_tracer: None,
@@ -488,6 +600,17 @@ impl Solver {
         }
         self.aot_prelude_clauses = clauses;
         self.aot_prelude_had_opaque = section.had_opaque;
+        // rc.34.4 — pick up the precomputed prelude clause-fold the
+        // baker stored in the bank's trailing field.  A bank that
+        // predates the field (`None`) is folded once here from the
+        // reconstructed clauses, so the per-`(check-sat)` consult is
+        // `O(query)` either way; storing it merely turns this
+        // one-time `O(prelude)` fold into an `O(1)` bank read.
+        self.aot_prelude_clause_fold = Some(
+            section
+                .prelude_clause_fold
+                .unwrap_or_else(|| clause_set_fold(self.aot_prelude_clauses.iter())),
+        );
     }
 
     /// rc.20 read-only borrow of the prelude clause-set cache
@@ -930,32 +1053,56 @@ impl Solver {
         (names, dimacs)
     }
 
-    /// §3.5.J — a 32-byte KangarooTwelve-256 digest of the canonical
-    /// clause set: the **exact-match certificate** the `--jit-trace-load`
-    /// consult compares. Computed WITHOUT the GF(2) polynomial encoding
-    /// (the irreducible per-`(check-sat)` cost
-    /// `canonical_gf2_signature` paid) — just the canonical-clause-set
-    /// construction + a hash. Two formulas with the same canonical
-    /// clause set hash equal; collision-resistant, so distinct formulas
-    /// hash distinct with overwhelming probability. The byte framing is
-    /// length-prefixed (injective), so distinct canonical forms map to
-    /// distinct inputs.
+    /// §3.5.J — a 32-byte KangarooTwelve-256 digest of the live
+    /// formula's clause **multiset**: the **exact-match certificate**
+    /// the `--jit-trace-load` consult compares. Computed WITHOUT the
+    /// GF(2) polynomial encoding (the irreducible per-`(check-sat)`
+    /// cost `canonical_gf2_signature` paid). Two formulas with the
+    /// same clause multiset hash equal; collision-resistant (AdHash
+    /// over K12-256, see [`clause_set_fold`]), so distinct formulas
+    /// hash distinct with overwhelming probability.
+    ///
+    /// rc.34.4 — **incremental**: the digest is
+    /// `fold_to_digest(combine(prelude_fold, query_delta_fold))`. The
+    /// prelude's fold is precomputed (once, at bake or load — see
+    /// `aot_prelude_clause_fold`), so each `(check-sat)` only folds the
+    /// per-query (non-prelude) assertion clauses. That is what makes
+    /// the consult `O(#query clauses)` rather than re-canonicalising
+    /// the whole prelude∪query formula every query — the residual cost
+    /// verus-fork measured at rc.34.3 (~0.38 s = the live
+    /// whole-formula canonicalisation).
+    ///
+    /// Sound and order-independent regardless of how the prelude
+    /// arrived: when the CDCL-section clause cache is populated, the
+    /// prelude is folded once via `aot_prelude_clauses` and its
+    /// assertion `Term`s are skipped in the per-query pass (so it is
+    /// counted exactly once); otherwise the prelude (if any) is folded
+    /// inline with the query. The fold is a multiset homomorphism, so
+    /// the incremental result is byte-identical to a from-scratch fold
+    /// of the whole clause multiset.
     pub fn jit_trace_digest(&self) -> [u8; 32] {
-        let (names, dimacs) = self.canonical_clause_set();
-        let mut buf: Vec<u8> = Vec::new();
-        buf.extend_from_slice(&(names.len() as u64).to_le_bytes());
-        for n in &names {
-            buf.extend_from_slice(&(n.len() as u64).to_le_bytes());
-            buf.extend_from_slice(n.as_bytes());
-        }
-        buf.extend_from_slice(&(dimacs.len() as u64).to_le_bytes());
-        for clause in &dimacs {
-            buf.extend_from_slice(&(clause.len() as u64).to_le_bytes());
-            for lit in clause {
-                buf.extend_from_slice(&lit.to_le_bytes());
+        let prelude_from_cache = !self.aot_prelude_clauses.is_empty();
+        let mut fold: ClauseFold = if prelude_from_cache {
+            self.aot_prelude_clause_fold
+                .unwrap_or_else(|| clause_set_fold(self.aot_prelude_clauses.iter()))
+        } else {
+            ([0u8; 32], 0)
+        };
+        // Fold the per-query delta: every assertion whose clauses are
+        // NOT already accounted for by the cached prelude fold. When
+        // the cache is populated, prelude assertion `Term`s are
+        // skipped (their clauses live in `aot_prelude_clauses`); when
+        // it is not, every assertion — including any inline prelude —
+        // is folded here.
+        for term in self.all_assertions() {
+            if prelude_from_cache && self.aot_prelude_term_set.contains(&term) {
+                continue;
+            }
+            if let Some(cs) = crate::cnf::flatten_to_clauses(&term) {
+                fold = combine_fold(fold, clause_set_fold(cs.iter()));
             }
         }
-        lu_common::k12::hash(&buf)
+        fold_to_digest(fold)
     }
 
     /// §3.5.E — the algebraic signature to stamp on a `--jit-trace-emit`
@@ -3777,6 +3924,147 @@ mod tests {
             c.jit_trace_digest(),
             "a different formula must yield a different digest"
         );
+    }
+
+    #[test]
+    fn clause_fold_is_an_exact_multiset_homomorphism() {
+        // rc.34.4 — the core invariant the incremental digest rests on:
+        // `combine(fold(P), fold(Q)) == fold(P ⊎ Q)`, exactly (not just
+        // the final digest). Order of the two halves doesn't matter
+        // either (the group is abelian).
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let r = Term::var("r", Type::bool_());
+        let cp = vec![crate::cnf::Lit { atom: p, polarity: true }];
+        let cq = vec![crate::cnf::Lit { atom: q, polarity: false }];
+        let cr = vec![crate::cnf::Lit { atom: r, polarity: true }];
+        let prelude = vec![cp, cq];
+        let query = vec![cr];
+
+        let inc = combine_fold(
+            clause_set_fold(prelude.iter()),
+            clause_set_fold(query.iter()),
+        );
+        let whole: Vec<crate::cnf::Clause> =
+            prelude.iter().chain(query.iter()).cloned().collect();
+        assert_eq!(inc, clause_set_fold(whole.iter()));
+        assert_eq!(fold_to_digest(inc), fold_to_digest(clause_set_fold(whole.iter())));
+        // Abelian: swapping the two folds is identical.
+        assert_eq!(
+            inc,
+            combine_fold(clause_set_fold(query.iter()), clause_set_fold(prelude.iter())),
+        );
+    }
+
+    #[test]
+    fn jit_trace_digest_incremental_equals_whole_formula() {
+        // rc.34.4 — the live digest computed from the precomputed
+        // prelude fold + the per-query delta must be byte-identical to
+        // a from-scratch fold over the whole prelude∪query multiset.
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let r = Term::var("r", Type::bool_());
+        let cp = vec![crate::cnf::Lit { atom: p, polarity: true }];
+        let cq = vec![crate::cnf::Lit { atom: q, polarity: false }];
+        let prelude = vec![cp, cq];
+
+        let mut s = Solver::default();
+        s.aot_prelude_clauses = prelude.clone();
+        s.aot_prelude_clause_fold = Some(clause_set_fold(prelude.iter()));
+        s.assert(r); // query delta: (assert r)
+
+        // Reference: prelude ⊎ flatten(query), folded from scratch.
+        let mut whole = prelude.clone();
+        for t in s.all_assertions() {
+            if let Some(cs) = crate::cnf::flatten_to_clauses(&t) {
+                whole.extend(cs);
+            }
+        }
+        assert_eq!(
+            s.jit_trace_digest(),
+            fold_to_digest(clause_set_fold(whole.iter())),
+        );
+    }
+
+    #[test]
+    fn jit_trace_digest_counts_cached_prelude_once_not_twice() {
+        // rc.34.4 — the real §3.5 flow: `with_aot_cdcl` puts the prelude
+        // into BOTH the assertion ledger AND `aot_prelude_clauses`. The
+        // digest must fold it exactly once (the per-query pass skips
+        // assertion `Term`s already in the cache), so it equals the
+        // digest of the same formula with the prelude supplied only via
+        // the cache. If the prelude were double-counted these would
+        // differ.
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let cp = vec![crate::cnf::Lit { atom: p.clone(), polarity: true }];
+
+        let mut a = Solver::default();
+        a.aot_prelude_clauses = vec![cp.clone()];
+        a.aot_prelude_clause_fold = Some(clause_set_fold(a.aot_prelude_clauses.iter()));
+        a.aot_prelude_term_set.insert(p.clone());
+        a.assert(p); // prelude assertion — must be skipped, not re-folded
+        a.assert(q.clone()); // query delta
+
+        let mut b = Solver::default();
+        b.aot_prelude_clauses = vec![cp];
+        b.aot_prelude_clause_fold = Some(clause_set_fold(b.aot_prelude_clauses.iter()));
+        b.assert(q); // query delta only; prelude solely from the cache
+
+        assert_eq!(
+            a.jit_trace_digest(),
+            b.jit_trace_digest(),
+            "a cached prelude term must be folded once, not double-counted",
+        );
+    }
+
+    #[test]
+    fn precomputed_prelude_fold_matches_recompute() {
+        // rc.34.4 — using the precomputed `aot_prelude_clause_fold`
+        // must yield the same digest as recomputing the prelude fold
+        // from `aot_prelude_clauses` on the fly (the bank-stored value
+        // is an `O(1)` stand-in for the `O(prelude)` recompute).
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let prelude = vec![
+            vec![crate::cnf::Lit { atom: p, polarity: true }],
+            vec![crate::cnf::Lit { atom: q, polarity: false }],
+        ];
+        let mut with_precompute = Solver::default();
+        with_precompute.aot_prelude_clauses = prelude.clone();
+        with_precompute.aot_prelude_clause_fold = Some(clause_set_fold(prelude.iter()));
+
+        let mut without = Solver::default();
+        without.aot_prelude_clauses = prelude;
+        without.aot_prelude_clause_fold = None; // forces the on-the-fly recompute
+
+        assert_eq!(with_precompute.jit_trace_digest(), without.jit_trace_digest());
+    }
+
+    #[test]
+    fn restore_cdcl_state_into_picks_up_or_recomputes_prelude_fold() {
+        // rc.34.4 — the load side prefers the bank's stored fold and
+        // falls back to recomputing it when the bank predates the v1.3
+        // field.
+        let p = Term::var("p", Type::bool_());
+        let pool = vec![p];
+        let mut section = adsmt_aot::CdclSection::empty([0u8; 32], 0);
+        section.clauses.push(adsmt_aot::CdclClause { lits: vec![(0, true)] });
+
+        // No stored fold → recompute from the reconstructed clauses.
+        section.prelude_clause_fold = None;
+        let mut s = Solver::default();
+        s.restore_cdcl_state_into(&section, &pool);
+        assert_eq!(
+            s.aot_prelude_clause_fold,
+            Some(clause_set_fold(s.aot_prelude_clauses.iter())),
+        );
+
+        // Stored fold → used verbatim.
+        section.prelude_clause_fold = Some(([9u8; 32], 5));
+        let mut s2 = Solver::default();
+        s2.restore_cdcl_state_into(&section, &pool);
+        assert_eq!(s2.aot_prelude_clause_fold, Some(([9u8; 32], 5)));
     }
 
     #[test]

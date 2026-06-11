@@ -481,6 +481,20 @@ fn read_cdcl_section_inner<'a>(
     } else {
         c.u8()? != 0
     };
+    // rc.34.4 v1.3 trailing precomputed prelude clause-fold.
+    // Absent in v1.0–v1.2 artefacts (cursor already at end after
+    // `had_opaque`) → `None`, and the load-side engine recomputes
+    // the fold once at load.  Present (`presence == 1`) → a 32-byte
+    // AdHash sum followed by a u64 clause count.
+    let prelude_clause_fold = if c.at_end() {
+        None
+    } else if c.u8()? != 0 {
+        let sum = c.fixed32()?;
+        let count = c.u64()?;
+        Some((sum, count))
+    } else {
+        None
+    };
     Ok(CdclSection {
         binary_sha256,
         flatten_version,
@@ -491,6 +505,7 @@ fn read_cdcl_section_inner<'a>(
         saved_phase,
         stalmarck_edges,
         had_opaque,
+        prelude_clause_fold,
     })
 }
 
@@ -922,6 +937,8 @@ mod tests {
         });
         // rc.28 (S.1-AOT) — exercise the trailing v1.2 flag.
         s.had_opaque = true;
+        // rc.34.4 — exercise the trailing v1.3 prelude clause-fold.
+        s.prelude_clause_fold = Some(([7u8; 32], 3));
         crate::cdcl::write_cdcl_section(&mut buf, &s).unwrap();
         let (file, section) = read_luart_with_cdcl(&buf).unwrap();
         let section = section.expect("v1 section should round-trip");
@@ -936,6 +953,28 @@ mod tests {
         assert_eq!(section.vsids[0].activity, 0.5_f64);
         // The trailing v1.2 `had_opaque` flag survives write→read.
         assert!(section.had_opaque);
+        // The trailing v1.3 prelude clause-fold survives write→read.
+        assert_eq!(section.prelude_clause_fold, Some(([7u8; 32], 3)));
+    }
+
+    #[test]
+    fn cdcl_section_without_v1_3_fold_reads_back_none() {
+        // rc.34.4 — a v1.2-layout section (no prelude clause-fold
+        // written, the writer's only-when-`Some` path) must read back
+        // `prelude_clause_fold == None` so older banks keep
+        // round-tripping; the load side then recomputes the fold.
+        let p = Term::var("p", bool_());
+        let assertions = vec![Assertion { term: p, qid: None }];
+        let mut buf: Vec<u8> = Vec::new();
+        write_luart(&mut buf, [1u8; 32], "1.0.0-rc.28", &assertions).unwrap();
+        let mut s = crate::cdcl::CdclSection::empty([2u8; 32], 7);
+        s.had_opaque = true;
+        s.prelude_clause_fold = None; // v1.2 layout: nothing trailing
+        crate::cdcl::write_cdcl_section(&mut buf, &s).unwrap();
+        let (_file, section) = read_luart_with_cdcl(&buf).unwrap();
+        let section = section.expect("v1 section should round-trip");
+        assert!(section.had_opaque);
+        assert_eq!(section.prelude_clause_fold, None);
     }
 
     #[test]

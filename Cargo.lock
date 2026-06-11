@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adsmt-abduce"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-class",
@@ -16,14 +16,14 @@ dependencies = [
 
 [[package]]
 name = "adsmt-aot"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-core",
 ]
 
 [[package]]
 name = "adsmt-cert"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-core",
  "adsmt-heuristic-checker-macros",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-class"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-cli"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-abduce",
  "adsmt-aot",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-core"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "ciborium",
  "indexmap",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-emit-cli"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-emit-contract"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "ciborium",
  "serde",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-emit-lean"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-emit-pm"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-emit-contract",
  "semver",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-emit-runtime"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-emit-contract",
  "adsmt-emit-pm",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-engine"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-abduce",
  "adsmt-aot",
@@ -171,14 +171,14 @@ dependencies = [
 
 [[package]]
 name = "adsmt-env"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "adsmt-ffi"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-core",
  "adsmt-engine",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-heuristic-checker"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-heuristic-checker-macros"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "lu-common",
  "proc-macro2",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-jit"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-core",
  "adsmt-theory-finite-field",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-lints"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-lsp"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-meta"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-abduce",
  "adsmt-cert",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-parser-lfsc-drat"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -285,14 +285,14 @@ dependencies = [
 
 [[package]]
 name = "adsmt-parser-lu-kb"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "adsmt-parser-smtlib2"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-core",
  "adsmt-heuristic-checker-macros",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-quant"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-shim-lu-kb"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-core",
  "adsmt-parser-lu-kb",
@@ -322,11 +322,11 @@ dependencies = [
 
 [[package]]
 name = "adsmt-stalmarck"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 
 [[package]]
 name = "adsmt-theory"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "adsmt-theory-finite-field"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "freshcheck"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "clap",
  "lu-common",
@@ -1662,7 +1662,7 @@ checksum = "113b30b4cd05f7c06868fdb2854f66a7b9fece9a48425351cd532e810d74024f"
 
 [[package]]
 name = "logicutils-translator-to-oxiz-sat"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "lu-common",
  "oxiz-sat",
@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "lu-common"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "adsmt-parser-lu-kb",
  "blake3",
@@ -1703,7 +1703,7 @@ dependencies = [
 
 [[package]]
 name = "lu-deps"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "clap",
  "lu-common",
@@ -1713,7 +1713,7 @@ dependencies = [
 
 [[package]]
 name = "lu-expand"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "clap",
  "lu-common",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "lu-match"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "clap",
  "glob",
@@ -1734,14 +1734,14 @@ dependencies = [
 
 [[package]]
 name = "lu-multi"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "lu-common",
 ]
 
 [[package]]
 name = "lu-par"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "clap",
  "lu-common",
@@ -1750,7 +1750,7 @@ dependencies = [
 
 [[package]]
 name = "lu-query"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "clap",
  "lu-common",
@@ -1760,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "lu-queue"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "clap",
  "lu-common",
@@ -1769,7 +1769,7 @@ dependencies = [
 
 [[package]]
 name = "lu-rule"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "clap",
  "lu-common",
@@ -2594,7 +2594,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stamp"
-version = "1.0.0-rc.34.3"
+version = "1.0.0-rc.34.4"
 dependencies = [
  "clap",
  "lu-common",

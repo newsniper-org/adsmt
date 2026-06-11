@@ -170,6 +170,18 @@ pub struct CdclSection {
     /// Trailing v1.2 field — v1.0/v1.1 readers stop before it
     /// and default it to `false`.
     pub had_opaque: bool,
+    /// rc.34.4 — the prelude's precomputed order-independent
+    /// clause-fold `(sum, count)`: a 256-bit AdHash accumulator
+    /// over the per-clause KangarooTwelve-256 hashes plus the
+    /// clause count.  The §3.5.J `--jit-trace-load` consult folds
+    /// this **once** (prelude is fixed across a session) and
+    /// `combine`s it with only the per-query delta each
+    /// `(check-sat)`, so the exact-match digest is `O(#query
+    /// clauses)` rather than re-canonicalising the whole
+    /// prelude∪query formula.  Trailing v1.3 field — v1.0–v1.2
+    /// readers stop before it (`None`); a `None`-loading engine
+    /// recomputes the fold once at load instead.
+    pub prelude_clause_fold: Option<([u8; 32], u64)>,
 }
 
 impl CdclSection {
@@ -189,6 +201,7 @@ impl CdclSection {
             saved_phase: Vec::new(),
             stalmarck_edges: Vec::new(),
             had_opaque: false,
+            prelude_clause_fold: None,
         }
     }
 }
@@ -262,6 +275,16 @@ pub fn write_cdcl_section<W: Write>(
     // to `false`; v1.2 readers pick it up when the cursor has
     // not reached the buffer's end.
     out.write_all(&[if section.had_opaque { 1u8 } else { 0u8 }])?;
+    // rc.34.4 v1.3 trailing precomputed prelude clause-fold.
+    // v1.0–v1.2 readers stop after the `had_opaque` byte and
+    // default this to `None`; v1.3 readers pick it up when the
+    // cursor has not reached the buffer's end.  Written only when
+    // present, so absence is byte-for-byte the v1.2 layout.
+    if let Some((sum, count)) = &section.prelude_clause_fold {
+        out.write_all(&[1u8])?; // presence
+        out.write_all(sum)?; // 32-byte AdHash sum
+        out.write_all(&count.to_le_bytes())?; // u64 clause count
+    }
     Ok(())
 }
 
