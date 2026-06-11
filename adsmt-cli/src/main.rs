@@ -1153,7 +1153,10 @@ fn dispatch_one(
                 if let Some(SatResult::Abductive { candidates }) =
                     driver.last_result.as_ref()
                 {
-                    println!("{}", abductive_candidates_json(candidates));
+                    // Spontaneous T4 escalation — no consistency pass here
+                    // (no assertion-stack context threaded through the
+                    // verdict), so the `consistent` field is omitted.
+                    println!("{}", abductive_candidates_json(candidates, None));
                 }
             }
             if cli.audit_json {
@@ -1331,7 +1334,10 @@ fn run_stdin_streaming(
 /// back-translate a candidate (Verus's A2c) reads `term` from this same
 /// ranked-JSON the list view (A2a) already parses — one parser for
 /// both, per verus-fork's request.
-fn abductive_candidates_json(ranked: &[RankedCandidate]) -> String {
+fn abductive_candidates_json(
+    ranked: &[RankedCandidate],
+    consistency: Option<&[bool]>,
+) -> String {
     let items: Vec<serde_json::Value> = ranked
         .iter()
         .enumerate()
@@ -1352,14 +1358,22 @@ fn abductive_candidates_json(ranked: &[RankedCandidate]) -> String {
                 })
                 .collect();
             let sources: Vec<String> = rc.candidate.sources.clone();
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "rank":         (idx as u64) + 1,
                 "score":        rc.score,
                 "term":         render_abduct_body(&rc.candidate.hypotheses),
                 "hypotheses":   hypotheses,
                 "explanations": explanations,
                 "sources":      sources,
-            })
+            });
+            // rc.35.1 follow-up — `consistent` is present only when
+            // `(set-option :abduct-consistency true)` ran (so its absence
+            // means "not checked", distinct from `false` = "proven
+            // inconsistent with the assertion stack").
+            if let Some(cons) = consistency {
+                obj["consistent"] = serde_json::Value::Bool(cons[idx]);
+            }
+            obj
         })
         .collect();
     serde_json::json!({ "abductive_candidates": items }).to_string()
@@ -1527,6 +1541,20 @@ struct Options {
     /// Whichever option arrives later wins; both reset to `None`
     /// on `(reset)` / `(reset-assertions)`.
     rlimit_us: Option<u64>,
+    /// rc.35.1 follow-up — `(set-option :abduct-consistency true)`.
+    /// When set, the abductive surface checks each candidate `H` for
+    /// **consistency with the assertion stack** `F` (`SAT(F ∧ H)`,
+    /// engine-side, one `check-sat` per candidate) — the true cvc5
+    /// `(get-abduct)` semantics (`F ∧ H ⊨ G` AND `SAT(F ∧ H)`), not
+    /// just the derivation `H ⊢ G`. Without it a vacuous abduct
+    /// (inconsistent with `F`) would entail the goal and pass a
+    /// downstream re-check, surfacing a misleading suggestion like
+    /// `requires x > 0 ∧ x < 0`. `(abduce)` then tags each candidate
+    /// with a `consistent` JSON field (consumer filters/dims);
+    /// `(get-abduct)` / `(get-abduct-next)` drop the inconsistent ones
+    /// (no JSON field on the `(define-fun …)` form). Default off keeps
+    /// the cheap derivation-only mode.
+    abduct_consistency: bool,
 }
 
 /// Sort + function registry for `declare-sort` / `declare-fun` /
@@ -1927,6 +1955,10 @@ impl Driver {
             "produce-proofs" => self.options.produce_proofs = truthy,
             "produce-unsat-cores" => self.options.produce_unsat_cores = truthy,
             "print-success" => self.options.print_success = truthy,
+            // rc.35.1 follow-up — opt into consistency-enforced
+            // abduction (true cvc5 `(get-abduct)` semantics). See the
+            // `Options::abduct_consistency` doc + `run_abduce`.
+            "abduct-consistency" => self.options.abduct_consistency = truthy,
             "rlimit" => {
                 // Z3-extension: `(set-option :rlimit N)` where N is
                 // a resource-unit budget; one unit ≈ 1 µs on a
@@ -2246,13 +2278,35 @@ impl Driver {
     ///   candidates.
     fn run_abduce(&mut self, name: Option<&str>, goal: &SExpr) -> Result<(), String> {
         let term = self.abductive_term(goal)?;
-        let candidates = self.solver.abduce(&term).candidates;
+        let mut candidates = self.solver.abduce(&term).candidates;
+        let check = self.options.abduct_consistency;
         match name {
             None => {
+                // `(abduce …)` — keep every candidate but tag it with a
+                // `consistent` field (when the flag is on) so the consumer
+                // can rank / dim / filter the vacuous strengthenings.
+                let consistency: Option<Vec<bool>> = if check {
+                    let mut v = Vec::with_capacity(candidates.len());
+                    for rc in &candidates {
+                        v.push(self.abduct_is_consistent(&rc.candidate.hypotheses));
+                    }
+                    Some(v)
+                } else {
+                    None
+                };
                 println!("abductive");
-                println!("{}", abductive_candidates_json(&candidates));
+                println!(
+                    "{}",
+                    abductive_candidates_json(&candidates, consistency.as_deref())
+                );
             }
             Some(n) => {
+                // `(get-abduct …)` — the cvc5 `(define-fun …)` form carries
+                // no field, so consistency enforcement *drops* the vacuous
+                // candidates (true cvc5 semantics: SAT(F ∧ H)).
+                if check {
+                    candidates.retain(|rc| self.abduct_is_consistent(&rc.candidate.hypotheses));
+                }
                 emit_abduct_define_fun(n, candidates.first());
                 self.abduct_cursor = Some(AbductCursor {
                     name: n.to_string(),
@@ -2262,6 +2316,28 @@ impl Driver {
             }
         }
         Ok(())
+    }
+
+    /// rc.35.1 follow-up — is the abduct `H` (a hypothesis set)
+    /// **consistent with the assertion stack** `F`? Checks `SAT(F ∧ H)`
+    /// engine-side: push a scope, assert each hypothesis, `check-sat`,
+    /// pop. Returns `false` only when `F ∧ H` is **proven `Unsat`** — an
+    /// `Unknown` is treated as (possibly) consistent, so a vacuous abduct
+    /// is dropped only when the engine can actually refute it (never a
+    /// false drop of a real strengthening). Honours the session's
+    /// `:rlimit` / `:timeout` deadline, the same as `(check-sat)`.
+    fn abduct_is_consistent(&mut self, hyps: &[Term]) -> bool {
+        self.solver.push();
+        for h in hyps {
+            self.solver.assert(h.clone());
+        }
+        let deadline = self
+            .options
+            .rlimit_us
+            .map(|us| std::time::Instant::now() + std::time::Duration::from_micros(us));
+        let verdict = self.solver.check_sat_with_deadline(deadline);
+        self.solver.pop(1);
+        !matches!(verdict, SatResult::Unsat { .. })
     }
 
     /// rc.35 — `(get-abduct-next)`: emit the next ranked abduct after a
@@ -2775,13 +2851,35 @@ mod abduct_render_tests {
             },
             score: 1.003,
         }];
+        // No consistency pass → no `consistent` field.
         let json: serde_json::Value =
-            serde_json::from_str(&abductive_candidates_json(&ranked)).unwrap();
+            serde_json::from_str(&abductive_candidates_json(&ranked, None)).unwrap();
         let cand = &json["abductive_candidates"][0];
         // Re-parseable, NOT the bare `> x 0` Display.
         assert_eq!(cand["term"], "(> x 0)");
         assert_eq!(cand["hypotheses"][0], "(> x 0)");
         assert_eq!(cand["rank"], 1);
         assert_eq!(cand["explanations"][0], "x must be positive");
+        assert!(cand.get("consistent").is_none(), "absent unless checked");
+    }
+
+    #[test]
+    fn abductive_json_carries_consistent_field_when_checked() {
+        // rc.35.1 follow-up — when consistency was checked, each candidate
+        // carries a `consistent` boolean (the consumer filters/dims the
+        // vacuous ones).
+        use adsmt_abduce::sld::Candidate;
+        let x = Term::var("x", Type::bool_());
+        let ranked = vec![RankedCandidate {
+            candidate: Candidate {
+                hypotheses: vec![x],
+                explanations: vec![None],
+                sources: vec!["declared".into()],
+            },
+            score: 1.0,
+        }];
+        let json: serde_json::Value =
+            serde_json::from_str(&abductive_candidates_json(&ranked, Some(&[false]))).unwrap();
+        assert_eq!(json["abductive_candidates"][0]["consistent"], false);
     }
 }
