@@ -537,18 +537,17 @@ impl Solver {
         // references when assembling the BCP-fixpoint seed.
         self.aot_pool_terms = prelude.prelude.pool_terms.clone();
         self.aot_cdcl_state = prelude.cdcl_section;
-        let mut out = self.with_aot_prelude(prelude.prelude);
-        // rc.34.5 — precompute the prelude's §3.5.F replay atom map once,
-        // now that the bank pool, prelude clauses, AND prelude assertions
-        // are all installed.  At this point `all_assertions()` is the
-        // prelude only (no per-query assertions yet), so the full
-        // `live_atom_map()` build here yields exactly the prelude base.
-        // Each later `(check-sat)` consult chains only the per-query atoms
-        // over this (see `live_atom_map`/`query_atom_map`), so it never
-        // re-flattens the prelude.
-        let base = out.live_atom_map();
-        out.aot_prelude_atom_map = Some(base);
-        out
+        // rc.34.5 — the prelude §3.5.F replay atom map is NOT precomputed
+        // here.  It is only ever read by `replay_events`, which only runs
+        // when a `--jit-trace-load` trace is active; building it on every
+        // `--aot-load` would tax the AOT-only path (`verify-adsmt-fast` /
+        // any `VERUS_ADSMT_AOT_LUART`-without-`VERUS_ADSMT_JIT_TRACE`
+        // consumer) with a prelude-scale build it never uses.  It is built
+        // instead in `set_loaded_jit_trace` — gated on a trace actually
+        // being installed.  (`with_aot_cdcl` always runs before
+        // `set_loaded_jit_trace` in the lu-smt driver, so the bank pool +
+        // prelude clauses + prelude assertions are all in place by then.)
+        self.with_aot_prelude(prelude.prelude)
     }
 
     /// rc.20 / verus-fork rc.19 retry §3.5.J gate — consume a
@@ -766,6 +765,16 @@ impl Solver {
     /// consult); otherwise the solve proceeds unchanged.
     pub fn set_loaded_jit_trace(&mut self, trace: adsmt_jit::CdclTrace) {
         self.loaded_jit_trace = Some(trace);
+        // rc.34.5 — now that a trace IS loaded, precompute the prelude's
+        // replay atom map once (the consult chains the per-query delta
+        // over it; see `replay_aot_cdcl_trace`/`query_atom_map`).  Gating
+        // the build here — rather than in `with_aot_cdcl` — keeps the
+        // AOT-only `--aot-load` path (no trace) from paying a
+        // prelude-scale build it never reads.  Built from the FIXED
+        // prelude sources only, so it stays the prelude base even if a
+        // trace is ever installed mid-session.
+        let base = self.build_prelude_atom_map();
+        self.aot_prelude_atom_map = Some(base);
     }
 
     /// §3.2 registry activation — install an empty
@@ -1191,6 +1200,56 @@ impl Solver {
         trace
     }
 
+    /// rc.34.5 — the **prelude-only** §3.5.F replay atom map: the FIXED
+    /// part of [`Self::live_atom_map`] (the AOT bank `aot_pool_terms` +
+    /// the prelude clause atoms + the prelude *assertion* atoms — those
+    /// in `aot_prelude_term_set`), with NO per-query assertions. Built
+    /// once when a trace is installed (`set_loaded_jit_trace`) and cached
+    /// in `aot_prelude_atom_map`; the per-`(check-sat)` consult chains a
+    /// small `query_atom_map` over it. Restricting to the prelude via
+    /// `aot_prelude_term_set` (rather than relying on `all_assertions()`
+    /// happening to be prelude-only) keeps it correct even if a trace is
+    /// installed after some per-query assertions exist.
+    fn build_prelude_atom_map(&self) -> (std::collections::HashMap<u32, Term>, bool) {
+        use std::collections::hash_map::Entry;
+        let mut map: std::collections::HashMap<u32, Term> =
+            std::collections::HashMap::new();
+        let mut collision = false;
+        let mut insert = |t: &Term| {
+            let k = atom_key_hash_u32(&t.to_string());
+            match map.entry(k) {
+                Entry::Vacant(e) => {
+                    e.insert(t.clone());
+                }
+                Entry::Occupied(e) => {
+                    if !(*e.get() == *t) {
+                        collision = true;
+                    }
+                }
+            }
+        };
+        for t in &self.aot_pool_terms {
+            insert(t);
+        }
+        for clause in &self.aot_prelude_clauses {
+            for lit in clause {
+                insert(&lit.atom);
+            }
+        }
+        for term in self.all_assertions() {
+            if self.aot_prelude_term_set.contains(&term) {
+                if let Some(cs) = crate::cnf::flatten_to_clauses(&term) {
+                    for clause in &cs {
+                        for lit in clause {
+                            insert(&lit.atom);
+                        }
+                    }
+                }
+            }
+        }
+        (map, collision)
+    }
+
     /// §3.5.F — the live-formula atom map the replay resolves recorded
     /// event atoms through. Keyed by `atom_key_hash_u32(term.to_string())`
     /// — identical to how `CdclTracerSink` recorded them — over EVERY
@@ -1199,6 +1258,11 @@ impl Solver {
     /// (flattened to CNF). The bank-only `aot_pool_terms` slice the
     /// pre-fix replay indexed into omitted the per-query atoms, so a
     /// real trace's per-query propagations never resolved.
+    ///
+    /// rc.34.5: this full whole-formula build is now the **fallback**
+    /// (no precomputed prelude base — no bank loaded, or a test-built
+    /// solver). The `--aot-load` consult takes the chained
+    /// `query_atom_map` over `aot_prelude_atom_map` instead.
     ///
     /// Returns `(map, collision)`. `collision` is `true` if two
     /// structurally-distinct live atoms hash to the same `u32` (a
@@ -4227,14 +4291,46 @@ mod tests {
             vec![crate::cnf::Lit { atom: p.clone(), polarity: true }],
             vec![crate::cnf::Lit { atom: p, polarity: false }],
         ];
-        // Precompute the prelude atom map (what `with_aot_cdcl` does at
-        // load); the consult must now take the chained Some-arm.
-        live.aot_prelude_atom_map = Some(live.live_atom_map());
+        // Precompute the prelude atom map (what `set_loaded_jit_trace`
+        // does on trace install); the consult must now take the chained
+        // Some-arm.
+        live.aot_prelude_atom_map = Some(live.build_prelude_atom_map());
 
         match live.replay_aot_cdcl_trace(&trace, &[]) {
             ReplayOutcome::Replayed { verdict: SatResult::Unsat { .. } } => {}
             other => panic!("chained-resolver consult must replay to Unsat, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn prelude_atom_map_is_built_only_when_a_trace_is_installed() {
+        // rc.34.5 — the prelude replay atom map is dead weight without a
+        // trace (only `replay_events` reads it), so a bare `--aot-load`
+        // must NOT build it; installing a trace is what builds it. (The
+        // first rc.34.5 cut built it eagerly in `with_aot_cdcl`, which
+        // taxed the AOT-only `verify-adsmt-fast` path with a
+        // prelude-scale build it never used — verus-fork's regression.)
+        let p = Term::var("p", Type::bool_());
+        let mut s = Solver::default();
+        s.aot_pool_terms = vec![p.clone()];
+        s.aot_prelude_clauses =
+            vec![vec![crate::cnf::Lit { atom: p.clone(), polarity: true }]];
+        // Bank loaded but no trace → no precomputed map (AOT-only path).
+        assert!(
+            s.aot_prelude_atom_map.is_none(),
+            "a bare --aot-load must not build the prelude atom map"
+        );
+        // Installing a trace builds it, over the prelude base.
+        let trace = s.build_slim_jit_trace();
+        s.set_loaded_jit_trace(trace);
+        let base = s
+            .aot_prelude_atom_map
+            .as_ref()
+            .expect("installing a trace must build the prelude atom map");
+        assert!(
+            base.0.contains_key(&atom_key_hash_u32(&p.to_string())),
+            "the prelude base must carry the prelude atom p"
+        );
     }
 
     #[test]

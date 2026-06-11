@@ -23,7 +23,7 @@ adsmt-abduce.workspace = true
 # §3.5.J slim/digest — KangarooTwelve-256 for the canonical
 # clause-set digest the `--jit-trace-load` consult compares (a 32-byte
 # exact-match certificate, replacing the megabyte GF(2) basis).
-lu-common = { version = "=1.0.0-rc.34.5", path = "../lu-common", default-features = false, features = ["k12"] }
+lu-common = { version = "=1.0.0-rc.34.6", path = "../lu-common", default-features = false, features = ["k12"] }
 thiserror.workspace = true
 indexmap.workspace = true
 cadical = { version = "0.1", optional = true }
