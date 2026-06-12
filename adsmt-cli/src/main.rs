@@ -1918,13 +1918,13 @@ impl Driver {
             Command::DeclareAbducible { pattern, explanation } => {
                 match self.declare_abducible(&pattern, explanation.as_deref()) {
                     Ok(()) => DispatchResult::Continue,
-                    Err(e) => DispatchResult::Error(13, e),
+                    Err(e) => self.recoverable_command_error("declare-abducible", e),
                 }
             }
             Command::Abduce { name, goal } => {
                 match self.run_abduce(name.as_deref(), &goal) {
                     Ok(()) => DispatchResult::Continue,
-                    Err(e) => DispatchResult::Error(13, e),
+                    Err(e) => self.recoverable_command_error("abduce", e),
                 }
             }
             Command::GetAbductNext => {
@@ -2235,6 +2235,31 @@ impl Driver {
         self.assertions.push(term);
         self.assertion_qids.push(qid);
         Ok(())
+    }
+
+    /// rc.35.1 follow-up — a **recoverable** per-command error from a
+    /// read-only abductive query (`(abduce …)` / `(declare-abducible …)`).
+    /// In the persistent-solver **streaming** model (verus runs one
+    /// lu-smt per air context and pipes many commands to it) a
+    /// `std::process::exit` mid-stream kills the whole session — the
+    /// reader thread never sees the `<<DONE>>` sentinel and dies on
+    /// `RecvError`. Unlike `(assert)` (where dropping a constraint is
+    /// soundness-sensitive), the abductive commands touch neither the
+    /// assertion stack nor any verdict, so reporting the error and
+    /// skipping the one command is fully sound — that's the cvc5/z3 `-in`
+    /// REPL contract. The diagnostic goes to **stderr** so stdout stays
+    /// verdicts + sentinels for the streaming reader.
+    ///
+    /// `--strict-commands` (batch validation, not streaming) keeps the
+    /// hard error so a malformed script still fails the run — same policy
+    /// the `Raw` arm uses.
+    fn recoverable_command_error(&self, cmd: &str, msg: String) -> DispatchResult {
+        if self.cfg.strict_commands {
+            DispatchResult::Error(13, format!("{cmd}: {msg}"))
+        } else {
+            eprintln!("lu-smt: {cmd}: {msg} (command skipped, session continues)");
+            DispatchResult::Continue
+        }
     }
 
     /// rc.35 — convert an abductive goal / abducible pattern SExpr to a
