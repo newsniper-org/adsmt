@@ -1013,8 +1013,8 @@ fn oxiz_inproc(history: &str) -> Option<LastStatus> {
 /// rc.30 — split an SMT-LIB transcript into its top-level
 /// S-expressions (balanced parens, respecting `"…"` strings and
 /// `;…` line comments).  Used to feed the OxiZ delegation one
-/// command at a time.
-#[cfg(feature = "oxiz")]
+/// command at a time, and (rc.36) to filter the abductive commands
+/// out of the buffer before delegating an abduce check-sat.
 fn split_top_level_sexprs(s: &str) -> Vec<&str> {
     let bytes = s.as_bytes();
     let mut out = Vec::new();
@@ -1100,7 +1100,7 @@ fn dispatch_one(
     degraded: &mut bool,
 ) -> Option<ExitCode> {
     use std::io::Write;
-    let result = driver.dispatch(cmd, pos);
+    let result = driver.dispatch(cmd, pos, history);
     let outcome = match result {
         DispatchResult::Continue => None,
         DispatchResult::CheckSat(status) => {
@@ -1444,9 +1444,10 @@ mod abduct {
             explanations: Vec<Option<String>>,
             sources: Vec<String>,
             neg_goal: &Term,
+            history: &str,
         ) -> Option<Self> {
-            if driver.entails_under_theory(&hypotheses, neg_goal)
-                && driver.abduct_is_consistent(&hypotheses)
+            if driver.entails_under_theory(&hypotheses, neg_goal, history)
+                && driver.abduct_is_consistent(&hypotheses, history)
             {
                 Some(Self { hypotheses, explanations, sources })
             } else {
@@ -1466,6 +1467,43 @@ mod abduct {
             }
         }
     }
+}
+
+/// rc.36 — the head symbol of a top-level SMT-LIB command (the first
+/// symbol after the opening paren), e.g. `declare-fun` from
+/// `(declare-fun Add (Int Int) Int)`. `None` for a malformed / empty
+/// form.
+fn command_head(cmd: &str) -> Option<&str> {
+    let s = cmd.trim_start().strip_prefix('(')?.trim_start();
+    let end = s
+        .find(|c: char| c.is_whitespace() || c == '(' || c == ')')
+        .unwrap_or(s.len());
+    let head = &s[..end];
+    (!head.is_empty()).then_some(head)
+}
+
+/// rc.36 — `history` with the adsmt-specific abductive commands removed,
+/// so it replays cleanly through OxiZ (which errors on
+/// `(declare-abducible …)` / `(abduce …)` / `(get-abduct …)` /
+/// `(get-abduct-next)` and the `:abduct-*` options — and `oxiz_inproc`
+/// aborts the whole delegation on the first such error). Every *standard*
+/// command is kept — declarations, asserts (including the quantified
+/// `:pattern` axioms), `set-logic` — so the result is the session's `F`
+/// exactly as OxiZ should see it.
+fn strip_abductive_commands(history: &str) -> String {
+    let mut out = String::with_capacity(history.len());
+    for cmd in split_top_level_sexprs(history) {
+        let head = command_head(cmd);
+        let drop = matches!(
+            head,
+            Some("declare-abducible" | "abduce" | "get-abduct" | "get-abduct-next")
+        ) || (head == Some("set-option") && cmd.contains(":abduct-"));
+        if !drop {
+            out.push_str(cmd);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// rc.35.1 — is the sorted index list `small` a subset of the sorted
@@ -1703,6 +1741,16 @@ impl Options {
     }
 }
 
+/// rc.36 — the verdict of an abduce-internal `F ∧ extra` decision
+/// (`Driver::decide_fh`): native first, OxiZ delegation on `Unknown`.
+/// A three-valued result so the caller can distinguish "proven unsat"
+/// (drop / entails) from "couldn't decide" (keep / not-entails).
+enum FhVerdict {
+    Sat,
+    Unsat,
+    Unknown,
+}
+
 /// Sort + function registry for `declare-sort` / `declare-fun` /
 /// `define-fun`. Keeps the CLI self-contained: no upstream
 /// `Solver` API change is required to validate sort references at
@@ -1844,7 +1892,13 @@ impl Driver {
         }
     }
 
-    fn dispatch(&mut self, cmd: Command, pos: Position) -> DispatchResult {
+    /// `history` is the session's accumulated SMT-LIB buffer (the same
+    /// one the top-level `(check-sat)` delegates through OxiZ). Only the
+    /// abductive commands consult it — to give their per-subset
+    /// `check-sat`es the main solve's completeness (OxiZ delegation on a
+    /// goal behind an axiomatized/quantified encoding) — so most arms
+    /// ignore it.
+    fn dispatch(&mut self, cmd: Command, pos: Position, history: &str) -> DispatchResult {
         match cmd {
             Command::SetLogic(logic) => {
                 if !is_logic_supported(&logic) {
@@ -2078,7 +2132,7 @@ impl Driver {
                 }
             }
             Command::Abduce { name, goal } => {
-                match self.run_abduce(name.as_deref(), &goal) {
+                match self.run_abduce(name.as_deref(), &goal, history) {
                     Ok(()) => DispatchResult::Continue,
                     Err(e) => self.recoverable_command_error("abduce", e),
                 }
@@ -2464,7 +2518,12 @@ impl Driver {
     ///   the top-ranked abduct as `(define-fun <n> () Bool <body>)`, and
     ///   arm the `(get-abduct-next)` cursor over the remaining ranked
     ///   candidates.
-    fn run_abduce(&mut self, name: Option<&str>, goal: &SExpr) -> Result<(), String> {
+    fn run_abduce(
+        &mut self,
+        name: Option<&str>,
+        goal: &SExpr,
+        history: &str,
+    ) -> Result<(), String> {
         // The search strategy is a single total `match` on the derived
         // `AbductMode`. The theory path's candidates are consistent by
         // construction (`TheoryAbduct` can't be built otherwise), so the
@@ -2472,7 +2531,7 @@ impl Driver {
         // `SldConsistent` mode's job.
         let mode = self.options.abduct_mode();
         let mut candidates = match mode {
-            AbductMode::Theory => self.abduce_theory(goal)?,
+            AbductMode::Theory => self.abduce_theory(goal, history)?,
             AbductMode::Sld | AbductMode::SldConsistent => {
                 let term = self.abductive_term(goal)?;
                 self.solver.abduce(&term).candidates
@@ -2487,7 +2546,7 @@ impl Driver {
                 let consistency: Option<Vec<bool>> = if check {
                     let mut v = Vec::with_capacity(candidates.len());
                     for rc in &candidates {
-                        v.push(self.abduct_is_consistent(&rc.candidate.hypotheses));
+                        v.push(self.abduct_is_consistent(&rc.candidate.hypotheses, history));
                     }
                     Some(v)
                 } else {
@@ -2504,7 +2563,8 @@ impl Driver {
                 // no field, so consistency enforcement *drops* the vacuous
                 // candidates (true cvc5 semantics: SAT(F ∧ H)).
                 if check {
-                    candidates.retain(|rc| self.abduct_is_consistent(&rc.candidate.hypotheses));
+                    candidates
+                        .retain(|rc| self.abduct_is_consistent(&rc.candidate.hypotheses, history));
                 }
                 emit_abduct_define_fun(n, candidates.first());
                 self.abduct_cursor = Some(AbductCursor {
@@ -2517,47 +2577,75 @@ impl Driver {
         Ok(())
     }
 
-    /// rc.35.1 follow-up — is the abduct `H` (a hypothesis set)
-    /// **consistent with the assertion stack** `F`? Checks `SAT(F ∧ H)`
-    /// engine-side: push a scope, assert each hypothesis, `check-sat`,
-    /// pop. Returns `false` only when `F ∧ H` is **proven `Unsat`** — an
-    /// `Unknown` is treated as (possibly) consistent, so a vacuous abduct
-    /// is dropped only when the engine can actually refute it (never a
-    /// false drop of a real strengthening). Honours the session's
-    /// `:rlimit` / `:timeout` deadline, the same as `(check-sat)`.
-    fn abduct_is_consistent(&mut self, hyps: &[Term]) -> bool {
+    /// rc.36 — decide `F ∧ (extra)` with the **same completeness the
+    /// top-level `(check-sat)` has**: the native engine first (decisive on
+    /// the plain arith / EUF fragment, and the only path when OxiZ isn't
+    /// configured), then **OxiZ delegation** on an undecided native
+    /// verdict — exactly what the main solve does, so an abduce check over
+    /// a goal behind an axiomatized / quantified encoding (verus's `Add`,
+    /// `Poly`, `fuel`, `:pattern` axioms — where native is `unknown` but
+    /// MBQI / e-matching discharges it) is decided, not abandoned.
+    ///
+    /// `extra` are pushed onto the engine for the native check AND
+    /// rendered to SMT-LIB (`term_to_smtlib`) for the delegated query;
+    /// `history` is the session buffer, minus the adsmt-specific abductive
+    /// commands (which OxiZ can't parse), used as `F`.
+    fn decide_fh(&mut self, extra: &[Term], history: &str) -> FhVerdict {
+        // 1. Native, in-engine (push/assert/check-sat/pop).
         self.solver.push();
-        for h in hyps {
-            self.solver.assert(h.clone());
+        for t in extra {
+            self.solver.assert(t.clone());
         }
         let deadline = self
             .options
             .rlimit_us
             .map(|us| std::time::Instant::now() + std::time::Duration::from_micros(us));
-        let verdict = self.solver.check_sat_with_deadline(deadline);
+        let native = self.solver.check_sat_with_deadline(deadline);
         self.solver.pop(1);
-        !matches!(verdict, SatResult::Unsat { .. })
+        match native {
+            SatResult::Unsat { .. } => return FhVerdict::Unsat,
+            SatResult::Sat { .. } => return FhVerdict::Sat,
+            // `Unknown` / `Abductive` — undecided natively; delegate.
+            _ => {}
+        }
+        if !oxiz_available() {
+            return FhVerdict::Unknown;
+        }
+        // 2. Delegate the *augmented* query — `F` (adsmt-abductive
+        // commands stripped) + `(assert extra)` + `(check-sat)` — through
+        // the same OxiZ path the main solve uses.
+        let mut query = strip_abductive_commands(history);
+        for t in extra {
+            query.push_str("(assert ");
+            query.push_str(&term_to_smtlib(t));
+            query.push_str(")\n");
+        }
+        query.push_str("(check-sat)\n");
+        match oxiz_fallback(&query) {
+            Some(LastStatus::Unsat) => FhVerdict::Unsat,
+            Some(LastStatus::Sat) => FhVerdict::Sat,
+            _ => FhVerdict::Unknown,
+        }
     }
 
-    /// rc.35.1 follow-up — does `F ∧ H` **entail** the goal under the
-    /// theory? `F ∧ H ⊨ G` iff `F ∧ H ∧ ¬G` is `Unsat`. The dual of
-    /// [`Self::abduct_is_consistent`] (which checks `SAT(F ∧ H)`), same
-    /// push/assert/check-sat/pop machinery. `¬G` is the caller's
-    /// pre-converted negated goal. An `Unknown` is **not** entailment
-    /// (we only surface an abduct the engine can actually confirm).
-    fn entails_under_theory(&mut self, hyps: &[Term], neg_goal: &Term) -> bool {
-        self.solver.push();
-        for h in hyps {
-            self.solver.assert(h.clone());
-        }
-        self.solver.assert(neg_goal.clone());
-        let deadline = self
-            .options
-            .rlimit_us
-            .map(|us| std::time::Instant::now() + std::time::Duration::from_micros(us));
-        let verdict = self.solver.check_sat_with_deadline(deadline);
-        self.solver.pop(1);
-        matches!(verdict, SatResult::Unsat { .. })
+    /// rc.35.1 follow-up (rc.36: delegating) — is the abduct `H`
+    /// **consistent with the assertion stack** `F`? `SAT(F ∧ H)`. Returns
+    /// `false` only when `F ∧ H` is **proven `Unsat`** (native or via
+    /// delegation); an `Unknown` is treated as possibly-consistent, so a
+    /// real strengthening is never falsely dropped.
+    fn abduct_is_consistent(&mut self, hyps: &[Term], history: &str) -> bool {
+        !matches!(self.decide_fh(hyps, history), FhVerdict::Unsat)
+    }
+
+    /// rc.35.1 follow-up (rc.36: delegating) — does `F ∧ H` **entail** the
+    /// goal under the theory? `F ∧ H ⊨ G` iff `F ∧ H ∧ ¬G` is `Unsat`
+    /// (the dual of [`Self::abduct_is_consistent`]). `¬G` is the caller's
+    /// pre-converted negated goal. An `Unknown` is **not** entailment (we
+    /// surface only an abduct the solver — native or OxiZ — confirms).
+    fn entails_under_theory(&mut self, hyps: &[Term], neg_goal: &Term, history: &str) -> bool {
+        let mut extra: Vec<Term> = hyps.to_vec();
+        extra.push(neg_goal.clone());
+        matches!(self.decide_fh(&extra, history), FhVerdict::Unsat)
     }
 
     /// rc.35.1 follow-up — **theory-aware abductive search**
@@ -2577,7 +2665,11 @@ impl Driver {
     /// would otherwise *all* spuriously "entail" `G`). Candidates are
     /// ranked by minimality (subset size); each check honours the session
     /// `:rlimit`/`:timeout`.
-    fn abduce_theory(&mut self, goal: &SExpr) -> Result<Vec<RankedCandidate>, String> {
+    fn abduce_theory(
+        &mut self,
+        goal: &SExpr,
+        history: &str,
+    ) -> Result<Vec<RankedCandidate>, String> {
         const MAX_ABDUCT_SIZE: usize = 3;
         const MAX_ABDUCT_RESULTS: usize = 32;
         const MAX_ABDUCT_SUBSETS: usize = 512;
@@ -2623,9 +2715,9 @@ impl Driver {
                     // can't reach the output. (Entailment is checked
                     // first inside `verified`, rejecting the common
                     // non-entailing subset in one check-sat.)
-                    if let Some(abduct) =
-                        abduct::TheoryAbduct::verified(self, hyps, expls, srcs, &neg_goal)
-                    {
+                    if let Some(abduct) = abduct::TheoryAbduct::verified(
+                        self, hyps, expls, srcs, &neg_goal, history,
+                    ) {
                         minimal.push((combo.clone(), abduct));
                     }
                 }
@@ -3199,5 +3291,47 @@ mod abduct_render_tests {
         let json: serde_json::Value =
             serde_json::from_str(&abductive_candidates_json(&ranked, Some(&[false]))).unwrap();
         assert_eq!(json["abductive_candidates"][0]["consistent"], false);
+    }
+
+    #[test]
+    fn command_head_reads_the_leading_symbol() {
+        // rc.36 — the head symbol drives the abductive-command filter.
+        assert_eq!(command_head("(declare-abducible (>= x 0))"), Some("declare-abducible"));
+        assert_eq!(command_head("  (check-sat)\n"), Some("check-sat"));
+        assert_eq!(command_head("(set-option :abduct-theory true)"), Some("set-option"));
+        assert_eq!(command_head("()"), None);
+        assert_eq!(command_head("   "), None);
+    }
+
+    #[test]
+    fn strip_abductive_commands_keeps_f_drops_the_abductive_surface() {
+        // rc.36 — the delegated query is the session `F` with only the
+        // adsmt-specific abductive commands removed (OxiZ can't parse them
+        // and `oxiz_inproc` aborts on the first such error). Standard
+        // commands — declarations, the quantified `:pattern` axiom, asserts,
+        // `set-logic`, and *non*-abductive options — must survive verbatim.
+        let history = "(set-logic ALL)\n\
+            (declare-fun Add (Int Int) Int)\n\
+            (assert (forall ((a Int) (b Int)) (! (= (Add a b) (+ a b)) :pattern ((Add a b)))))\n\
+            (declare-const x Int)\n\
+            (assert (> x 0))\n\
+            (declare-abducible (>= x 0))\n\
+            (set-option :abduct-theory true)\n\
+            (set-option :produce-models true)\n\
+            (abduce (> (Add x 1) 0))\n\
+            (get-abduct A (> x 0))\n\
+            (get-abduct-next)\n";
+        let f = strip_abductive_commands(history);
+        // F survives.
+        assert!(f.contains("(set-logic ALL)"));
+        assert!(f.contains("(declare-fun Add (Int Int) Int)"));
+        assert!(f.contains(":pattern ((Add a b))"));
+        assert!(f.contains("(assert (> x 0))"));
+        assert!(f.contains("(set-option :produce-models true)"));
+        // The abductive surface is gone.
+        assert!(!f.contains("declare-abducible"));
+        assert!(!f.contains(":abduct-theory"));
+        assert!(!f.contains("(abduce "));
+        assert!(!f.contains("get-abduct"));
     }
 }
