@@ -494,3 +494,41 @@ subprocess + in-process delegation give the correct `unsat`; adsmt 1051
 green. Net: the earlier "MR my simplex fix upstream" plan is moot
 (0.2.4 already has it) — what migrates upstream is the streaming-stdin
 feature work on the 0.2.4 base.
+
+**rc.36 (2026-06-12) — vendored OxiZ was UNSOUND on quantified `:pattern`
+axioms; fixed + CDQI. Submodule now on branch `0.2.4-feat/cdqi`.**
+adsmt rc.36 routed `:abduct-theory`'s per-candidate check-sat through the
+SAME `oxiz_fallback` delegation the top-level `(check-sat)` uses
+(`Driver::decide_fh`; native first, OxiZ on Unknown, buffer stripped of
+adsmt-abductive commands). But the vendored OxiZ returned WRONG (inverted)
+verdicts on verus's `Add` axiom (`∀a b. Add(a,b)=a+b :pattern …`),
+z3-cross-checked — so "just delegate" was insufficient. THREE OxiZ-side
+defects (writeup: `external/oxiz/docs/QUANTIFIER_EMATCH_SOUNDNESS_BUG.md`):
+(1) **UF-of-int sort lost across `execute_script` calls** — the parser's
+declared-fn table lives on the per-call `Parser`, not the persistent
+`TermManager`, so a fed-one-at-a-time `(f 3)` (streaming CLI / our
+per-command in-proc delegation) defaulted to **Bool** sort → invisible to
+EUF/LIA; fixed with a persistent `oxiz_core::smtlib::ParserEnv` +
+`parse_script_with_env`, held in `Context.parser_env` (env-as-state, the
+State-monad shape). (2) `intern_term_for_congruence` omitted **IntConst**
+pairwise diseqs (had BV) → `f(3)=3 ∧ f(3)=4` no conflict; mirrored the BV
+arm. (3) **MBQI enumeration blew up on `:pattern` axioms** (infinite hang
+on SAT); fixed by making pattern-guided e-matching primary — parser threads
+`:pattern` into `Forall` (`collect_trigger_patterns`→`mk_forall_with_patterns`,
+was DROPPED), `Solver::ematch_fixpoint_step` runs e-matching to a fixpoint
+first, the model-based pass (`MBQIIntegration::run`) skips trigger-annotated
+quantifiers + enumerates only trigger-free ones, plus a wall-clock
+`MBQI_NONTERMINATION_GUARD` backstop. Now every case matches z3
+(`Add(2,3)=5→sat`, `=6→unsat`, entailment→unsat, countermodel→sat); the
+**in-process** delegation returns `(>= x 0)` on verus's `Add` repro in
+~0.01s. Commit `5576524` on `0.2.4-feat/streaming-stdin` (preserved as the
+soundness-fix-only point). **CDQI** (conflict-driven quantifier
+instantiation, Reynolds+ FMCAD'14): `CounterExampleGenerator::generate_ground_conflicts`
+(conflict instances over EXISTING ground terms, no synthetic values) tried
+first in `run()` before the constructing enumeration; complements the
+pre-existing conflict-driven *scoring* (`ConflictScores`). Committed
+`f60ab1e` on **new branch `0.2.4-feat/cdqi`** (forked from streaming-stdin).
+SyQI/SyGuS rejected for now (term-synthesis overlaps adsmt's own abductive
+search → belongs in adsmt, not OxiZ). `.gitmodules` `external/oxiz.branch`
+→ `0.2.4-feat/cdqi`; submodule gitlink → `f60ab1e`. OxiZ oxiz-solver 730 +
+oxiz-core 1180 + bench-regression 22 green; adsmt in-proc 18 green.

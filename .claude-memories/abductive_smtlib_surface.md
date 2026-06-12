@@ -200,7 +200,20 @@ is a *runtime semantic* coverage gap (F doesn't contain the Horn rules) +
 CAN do is make the mode/invariant total: encode the search strategy as an
 enum/typestate (not a stringly `set-option` bool) and make "a theory
 abduct that wasn't consistency-filtered" unrepresentable. Orthogonal to
-the opt-in default; a possible later refinement.
+the opt-in default. **LANDED (user asked for both, no bump):** (a) the
+search strategy is derived once into a total `AbductMode` enum
+(`Sld`/`SldConsistent`/`Theory`; `Options::abduct_mode`) so the dispatch
+is one exhaustive `match` and "theory subsumes consistency" lives in
+exactly one place — replacing the `if abduct_theory … else …` +
+`check = consistency && !theory` bool gates. (b) `mod abduct`'s
+`TheoryAbduct` newtype (private fields; sole constructor `verified` runs
+BOTH `entails_under_theory` + `abduct_is_consistent`) makes an unverified
+theory abduct **unrepresentable** — `abduce_theory` can only push a
+`TheoryAbduct`, so the vacuous-abduct hazard is a compile-time
+impossibility on that path. The submodule reaches `Driver`'s private
+checks as a descendant of the crate root. Pure refactor (behaviour
+unchanged); 1100 → **1101** green. Mirrors adsmt's own kernel discipline
+(`Theorem` constructible only via the 12 rules, not deserializable).
 
 CLI-verified: `x>0 ∧ y>0 ⊨ x+y>0` → `(and (> x 0) (> y 0))`; `x>0 ⊨ x≥1`;
 vacuous (F: x<0) → dropped; `F ⊨ G` → `true`; default (no flag) → SLD `[]`.
