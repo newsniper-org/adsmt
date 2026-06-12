@@ -1409,6 +1409,48 @@ fn term_to_smtlib(t: &Term) -> String {
     }
 }
 
+/// rc.35.1 — is the sorted index list `small` a subset of the sorted
+/// index list `big`? Used by `abduce_theory`'s minimality pruning (skip
+/// any subset that is a superset of an already-found minimal abduct).
+fn is_index_subset(small: &[usize], big: &[usize]) -> bool {
+    let mut j = 0;
+    for &x in small {
+        while j < big.len() && big[j] < x {
+            j += 1;
+        }
+        if j >= big.len() || big[j] != x {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+/// rc.35.1 — advance `combo` (a strictly-increasing length-`k` index
+/// list over `0..n`) to the next combination in lexicographic order.
+/// Returns `false` when the last combination has been passed. `k == 0`
+/// has a single (empty) combination, so this returns `false` for it.
+fn next_index_combination(combo: &mut [usize], n: usize) -> bool {
+    let k = combo.len();
+    if k == 0 {
+        return false;
+    }
+    let mut i = k - 1;
+    loop {
+        if combo[i] != i + n - k {
+            combo[i] += 1;
+            for j in (i + 1)..k {
+                combo[j] = combo[j - 1] + 1;
+            }
+            return true;
+        }
+        if i == 0 {
+            return false;
+        }
+        i -= 1;
+    }
+}
+
 /// rc.35 — render an abduct candidate's hypothesis set as the body of a
 /// cvc5 `(define-fun <name> () Bool <body>)`: a lone hypothesis, an
 /// empty set as `true`, otherwise their conjunction `(and …)`. Each
@@ -1555,6 +1597,20 @@ struct Options {
     /// (no JSON field on the `(define-fun …)` form). Default off keeps
     /// the cheap derivation-only mode.
     abduct_consistency: bool,
+    /// rc.35.1 follow-up — `(set-option :abduct-theory true)`. When set,
+    /// the abductive **search** uses the SMT theory solver instead of the
+    /// default syntactic SLD / α-match: it finds a minimal conjunction
+    /// `H` of the *declared abducibles* such that `F ∧ H ⊨ G` under the
+    /// theory (e.g. `x>0 ∧ y>0 ⊨ x+y>0`, which SLD can't see). It is
+    /// `F ∧ H ∧ ¬G` UNSAT (the dual of the `:abduct-consistency`
+    /// `SAT(F ∧ H)` check), and the search also requires `SAT(F ∧ H)`
+    /// (an inconsistent `H` entails `G` vacuously), so this single flag
+    /// yields the full cvc5 `(get-abduct)` contract — `F ∧ H ⊨ G` AND
+    /// `SAT(F ∧ H)`. Closed-vocabulary (over the declared abducibles),
+    /// not open term synthesis. Default off keeps the cheap SLD search
+    /// (which also covers the Horn-rule-base goals the theory search,
+    /// reasoning only over `F`, cannot).
+    abduct_theory: bool,
 }
 
 /// Sort + function registry for `declare-sort` / `declare-fun` /
@@ -1634,6 +1690,13 @@ struct Driver {
     /// `None` until a `(get-abduct …)` runs; reset on `(reset)` /
     /// `(reset-assertions)`.
     abduct_cursor: Option<AbductCursor>,
+    /// rc.35.1 follow-up — the declared abducible vocabulary, kept
+    /// CLI-side (parallel to `Solver::register_abducible`) so the
+    /// `:abduct-theory` search can enumerate subsets of it. The
+    /// `Solver`'s `AbducibleSet` has no public iterator, and the SLD
+    /// path doesn't need one; the theory search does. Reset on
+    /// `(reset)` / `(reset-assertions)`.
+    declared_abducibles: Vec<adsmt_abduce::Abducible>,
 }
 
 /// rc.35 — incremental-abduct state for cvc5 `(get-abduct-next)`.
@@ -1687,6 +1750,7 @@ impl Driver {
             assertion_qids,
             check_sat_seq: 0,
             abduct_cursor: None,
+            declared_abducibles: Vec::new(),
         }
     }
 
@@ -1894,6 +1958,7 @@ impl Driver {
                 self.assertions.clear();
                 self.assertion_qids.clear();
                 self.abduct_cursor = None;
+                self.declared_abducibles.clear();
                 DispatchResult::Continue
             }
             Command::ResetAssertions => {
@@ -1903,6 +1968,7 @@ impl Driver {
                 self.assertions.clear();
                 self.assertion_qids.clear();
                 self.abduct_cursor = None;
+                self.declared_abducibles.clear();
                 DispatchResult::Continue
             }
             Command::Exit => DispatchResult::Exit,
@@ -1959,6 +2025,10 @@ impl Driver {
             // abduction (true cvc5 `(get-abduct)` semantics). See the
             // `Options::abduct_consistency` doc + `run_abduce`.
             "abduct-consistency" => self.options.abduct_consistency = truthy,
+            // rc.35.1 follow-up — opt into theory-aware abductive search
+            // (`F ∧ H ⊨ G` over the declared abducibles, not just SLD
+            // α-match). See `Options::abduct_theory` + `abduce_theory`.
+            "abduct-theory" => self.options.abduct_theory = truthy,
             "rlimit" => {
                 // Z3-extension: `(set-option :rlimit N)` where N is
                 // a resource-unit budget; one unit ≈ 1 µs on a
@@ -2287,6 +2357,9 @@ impl Driver {
         if let Some(e) = explanation {
             a = a.with_explanation(e);
         }
+        // Keep a CLI-side copy for the `:abduct-theory` subset search
+        // (the SLD path reads it back out of the solver instead).
+        self.declared_abducibles.push(a.clone());
         self.solver.register_abducible(a);
         Ok(())
     }
@@ -2302,9 +2375,18 @@ impl Driver {
     ///   arm the `(get-abduct-next)` cursor over the remaining ranked
     ///   candidates.
     fn run_abduce(&mut self, name: Option<&str>, goal: &SExpr) -> Result<(), String> {
-        let term = self.abductive_term(goal)?;
-        let mut candidates = self.solver.abduce(&term).candidates;
-        let check = self.options.abduct_consistency;
+        // `:abduct-theory` swaps the syntactic SLD search for a
+        // theory-entailment search over the declared abducibles. The
+        // theory path already enforces `SAT(F ∧ H)` (an inconsistent `H`
+        // entails `G` vacuously), so its candidates are consistent by
+        // construction — the `:abduct-consistency` annotate/drop pass is
+        // only for the SLD path.
+        let (mut candidates, check) = if self.options.abduct_theory {
+            (self.abduce_theory(goal)?, false)
+        } else {
+            let term = self.abductive_term(goal)?;
+            (self.solver.abduce(&term).candidates, self.options.abduct_consistency)
+        };
         match name {
             None => {
                 // `(abduce …)` — keep every candidate but tag it with a
@@ -2363,6 +2445,112 @@ impl Driver {
         let verdict = self.solver.check_sat_with_deadline(deadline);
         self.solver.pop(1);
         !matches!(verdict, SatResult::Unsat { .. })
+    }
+
+    /// rc.35.1 follow-up — does `F ∧ H` **entail** the goal under the
+    /// theory? `F ∧ H ⊨ G` iff `F ∧ H ∧ ¬G` is `Unsat`. The dual of
+    /// [`Self::abduct_is_consistent`] (which checks `SAT(F ∧ H)`), same
+    /// push/assert/check-sat/pop machinery. `¬G` is the caller's
+    /// pre-converted negated goal. An `Unknown` is **not** entailment
+    /// (we only surface an abduct the engine can actually confirm).
+    fn entails_under_theory(&mut self, hyps: &[Term], neg_goal: &Term) -> bool {
+        self.solver.push();
+        for h in hyps {
+            self.solver.assert(h.clone());
+        }
+        self.solver.assert(neg_goal.clone());
+        let deadline = self
+            .options
+            .rlimit_us
+            .map(|us| std::time::Instant::now() + std::time::Duration::from_micros(us));
+        let verdict = self.solver.check_sat_with_deadline(deadline);
+        self.solver.pop(1);
+        matches!(verdict, SatResult::Unsat { .. })
+    }
+
+    /// rc.35.1 follow-up — **theory-aware abductive search**
+    /// (`:abduct-theory`). Finds minimal conjunctions `H` of the declared
+    /// abducibles such that `F ∧ H ⊨ G` under the SMT theory **and**
+    /// `SAT(F ∧ H)` — the full cvc5 `(get-abduct A φ)` contract — rather
+    /// than the default syntactic SLD / α-match (which can't see
+    /// `x>0 ∧ y>0 ⊨ x+y>0`).
+    ///
+    /// Closed-vocabulary, bounded search: BFS over subset size up to
+    /// `MAX_ABDUCT_SIZE`, pruning any superset of an already-found
+    /// minimal abduct (so only minimal sufficient subsets are returned),
+    /// capped at `MAX_ABDUCT_RESULTS` results and `MAX_ABDUCT_SUBSETS`
+    /// subsets examined. The empty subset is tried first: if `F` already
+    /// entails `G` (and is consistent) the trivial `true` abduct is the
+    /// single minimal answer (and prunes every non-empty subset, which
+    /// would otherwise *all* spuriously "entail" `G`). Candidates are
+    /// ranked by minimality (subset size); each check honours the session
+    /// `:rlimit`/`:timeout`.
+    fn abduce_theory(&mut self, goal: &SExpr) -> Result<Vec<RankedCandidate>, String> {
+        use adsmt_abduce::sld::Candidate;
+        const MAX_ABDUCT_SIZE: usize = 3;
+        const MAX_ABDUCT_RESULTS: usize = 32;
+        const MAX_ABDUCT_SUBSETS: usize = 512;
+
+        // `¬G`, converted once through the same pipeline as a goal.
+        let neg_goal = self.abductive_term(&SExpr::List(vec![
+            SExpr::Symbol("not".to_string()),
+            goal.clone(),
+        ]))?;
+        // Clone the vocabulary out so the per-subset `&mut self` checks
+        // don't conflict with iterating `self.declared_abducibles`.
+        let vocab: Vec<adsmt_abduce::Abducible> = self.declared_abducibles.clone();
+        let n = vocab.len();
+
+        let mut minimal: Vec<Vec<usize>> = Vec::new();
+        let mut examined = 0usize;
+        for size in 0..=MAX_ABDUCT_SIZE {
+            if minimal.len() >= MAX_ABDUCT_RESULTS || examined >= MAX_ABDUCT_SUBSETS {
+                break;
+            }
+            if size > n {
+                break;
+            }
+            let mut combo: Vec<usize> = (0..size).collect();
+            loop {
+                if minimal.len() >= MAX_ABDUCT_RESULTS || examined >= MAX_ABDUCT_SUBSETS {
+                    break;
+                }
+                examined += 1;
+                // Minimality: skip any superset of an abduct already found.
+                if !minimal.iter().any(|m| is_index_subset(m, &combo)) {
+                    let hyps: Vec<Term> =
+                        combo.iter().map(|&i| vocab[i].pattern.clone()).collect();
+                    // Entailment first (rejects the common non-entailing
+                    // subset in one check-sat); consistency only for the
+                    // entailing ones (an inconsistent `H` entails
+                    // vacuously, so this drops the vacuous abducts).
+                    if self.entails_under_theory(&hyps, &neg_goal)
+                        && self.abduct_is_consistent(&hyps)
+                    {
+                        minimal.push(combo.clone());
+                    }
+                }
+                if size == 0 || !next_index_combination(&mut combo, n) {
+                    break;
+                }
+            }
+        }
+
+        Ok(minimal
+            .into_iter()
+            .map(|combo| {
+                let hypotheses = combo.iter().map(|&i| vocab[i].pattern.clone()).collect();
+                let explanations =
+                    combo.iter().map(|&i| vocab[i].explanation.clone()).collect();
+                let sources = combo.iter().map(|&i| vocab[i].source.clone()).collect();
+                RankedCandidate {
+                    candidate: Candidate { hypotheses, explanations, sources },
+                    // Smaller = stronger: a 1-predicate abduct outranks a
+                    // 2-predicate one.
+                    score: combo.len() as f64,
+                }
+            })
+            .collect())
     }
 
     /// rc.35 — `(get-abduct-next)`: emit the next ranked abduct after a
