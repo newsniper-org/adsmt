@@ -1184,7 +1184,15 @@ fn dispatch_one(
             // delegates to OxiZ (which replays the full buffer
             // including the skipped command), and keep the stream
             // alive.  IO / fatal errors still abort.
-            if oxiz_available() && (code == 11 || code == 13) {
+            //
+            // rc.36 — but `--strict-commands` (batch validation) opts OUT
+            // of this leniency: it must fail the run on a malformed command
+            // regardless of OxiZ availability.  Otherwise a strict-mode
+            // error that `recoverable_command_error` deliberately escalated
+            // to `Error(13)` (e.g. a bad `(abduce …)` term — which OxiZ
+            // can't rescue anyway: it has no `(abduce)`) would be silently
+            // deferred and the run would exit 0.
+            if oxiz_available() && (code == 11 || code == 13) && !cli.strict_commands {
                 eprintln!("lu-smt: (native-skip, deferred to OxiZ) {msg}");
                 *degraded = true;
                 None
