@@ -1409,6 +1409,65 @@ fn term_to_smtlib(t: &Term) -> String {
     }
 }
 
+/// rc.35.1 — `TheoryAbduct` makes the cvc5 `(get-abduct)` invariant a
+/// **type**. Its only constructor, [`TheoryAbduct::verified`], performs
+/// BOTH the `F ∧ H ⊨ G` entailment check and the `SAT(F ∧ H)`
+/// consistency check against the live assertion stack; the fields are
+/// private to this module, so an *unverified* theory abduct is
+/// unrepresentable. That turns the vacuous-abduct hazard — an
+/// inconsistent `H` that entails `G` only vacuously — into a
+/// compile-time impossibility on this path, rather than a discipline a
+/// future edit could forget. (The module is a descendant of the crate
+/// root, so it can call `Driver`'s private `entails_under_theory` /
+/// `abduct_is_consistent` checks.)
+mod abduct {
+    use super::{Driver, RankedCandidate, Term};
+
+    pub struct TheoryAbduct {
+        hypotheses: Vec<Term>,
+        explanations: Vec<Option<String>>,
+        sources: Vec<String>,
+    }
+
+    impl TheoryAbduct {
+        /// The ONLY constructor. `Some(_)` iff `F ∧ H ⊨ G`
+        /// (`entails_under_theory`: `F ∧ H ∧ ¬G` UNSAT) AND `SAT(F ∧ H)`
+        /// (`abduct_is_consistent`) both hold — the full cvc5
+        /// `(get-abduct A φ)` contract. Entailment is checked first
+        /// (short-circuits the common non-entailing subset in one
+        /// check-sat); consistency only for the entailing ones (an
+        /// inconsistent `H` entails `G` vacuously, so this is what drops
+        /// the vacuous abducts).
+        pub fn verified(
+            driver: &mut Driver,
+            hypotheses: Vec<Term>,
+            explanations: Vec<Option<String>>,
+            sources: Vec<String>,
+            neg_goal: &Term,
+        ) -> Option<Self> {
+            if driver.entails_under_theory(&hypotheses, neg_goal)
+                && driver.abduct_is_consistent(&hypotheses)
+            {
+                Some(Self { hypotheses, explanations, sources })
+            } else {
+                None
+            }
+        }
+
+        /// Lower a verified abduct into a `RankedCandidate` for emission.
+        pub fn into_ranked(self, score: f64) -> RankedCandidate {
+            RankedCandidate {
+                candidate: adsmt_abduce::sld::Candidate {
+                    hypotheses: self.hypotheses,
+                    explanations: self.explanations,
+                    sources: self.sources,
+                },
+                score,
+            }
+        }
+    }
+}
+
 /// rc.35.1 — is the sorted index list `small` a subset of the sorted
 /// index list `big`? Used by `abduce_theory`'s minimality pruning (skip
 /// any subset that is a superset of an already-found minimal abduct).
@@ -1611,6 +1670,37 @@ struct Options {
     /// (which also covers the Horn-rule-base goals the theory search,
     /// reasoning only over `F`, cannot).
     abduct_theory: bool,
+}
+
+/// rc.35.1 — the abductive search strategy, derived **once** from the
+/// `:abduct-theory` / `:abduct-consistency` options so the dispatch is a
+/// single total `match` rather than scattered bool gates (the old
+/// `if abduct_theory … else …` + `check = consistency && !theory`). The
+/// "theory subsumes consistency" relationship lives in exactly one place
+/// — [`Options::abduct_mode`] — and a future mode is a `match` arm the
+/// compiler forces every dispatch to handle.
+enum AbductMode {
+    /// Syntactic SLD / α-match + Horn (default). Cheap; no theory check.
+    Sld,
+    /// SLD search, then a `SAT(F ∧ H)` consistency pass that annotates
+    /// `(abduce)` candidates / drops `(get-abduct)` ones
+    /// (`:abduct-consistency`).
+    SldConsistent,
+    /// Theory-entailment search (`:abduct-theory`): `F ∧ H ⊨ G` over the
+    /// declared abducibles. Consistency is intrinsic (an inconsistent
+    /// `H` entails `G` vacuously), so this mode subsumes — and therefore
+    /// ignores — `:abduct-consistency`.
+    Theory,
+}
+
+impl Options {
+    fn abduct_mode(&self) -> AbductMode {
+        match (self.abduct_theory, self.abduct_consistency) {
+            (true, _) => AbductMode::Theory,
+            (false, true) => AbductMode::SldConsistent,
+            (false, false) => AbductMode::Sld,
+        }
+    }
 }
 
 /// Sort + function registry for `declare-sort` / `declare-fun` /
@@ -2375,18 +2465,20 @@ impl Driver {
     ///   arm the `(get-abduct-next)` cursor over the remaining ranked
     ///   candidates.
     fn run_abduce(&mut self, name: Option<&str>, goal: &SExpr) -> Result<(), String> {
-        // `:abduct-theory` swaps the syntactic SLD search for a
-        // theory-entailment search over the declared abducibles. The
-        // theory path already enforces `SAT(F ∧ H)` (an inconsistent `H`
-        // entails `G` vacuously), so its candidates are consistent by
-        // construction — the `:abduct-consistency` annotate/drop pass is
-        // only for the SLD path.
-        let (mut candidates, check) = if self.options.abduct_theory {
-            (self.abduce_theory(goal)?, false)
-        } else {
-            let term = self.abductive_term(goal)?;
-            (self.solver.abduce(&term).candidates, self.options.abduct_consistency)
+        // The search strategy is a single total `match` on the derived
+        // `AbductMode`. The theory path's candidates are consistent by
+        // construction (`TheoryAbduct` can't be built otherwise), so the
+        // `:abduct-consistency` annotate/drop pass is only the
+        // `SldConsistent` mode's job.
+        let mode = self.options.abduct_mode();
+        let mut candidates = match mode {
+            AbductMode::Theory => self.abduce_theory(goal)?,
+            AbductMode::Sld | AbductMode::SldConsistent => {
+                let term = self.abductive_term(goal)?;
+                self.solver.abduce(&term).candidates
+            }
         };
+        let check = matches!(mode, AbductMode::SldConsistent);
         match name {
             None => {
                 // `(abduce …)` — keep every candidate but tag it with a
@@ -2486,7 +2578,6 @@ impl Driver {
     /// ranked by minimality (subset size); each check honours the session
     /// `:rlimit`/`:timeout`.
     fn abduce_theory(&mut self, goal: &SExpr) -> Result<Vec<RankedCandidate>, String> {
-        use adsmt_abduce::sld::Candidate;
         const MAX_ABDUCT_SIZE: usize = 3;
         const MAX_ABDUCT_RESULTS: usize = 32;
         const MAX_ABDUCT_SUBSETS: usize = 512;
@@ -2501,7 +2592,11 @@ impl Driver {
         let vocab: Vec<adsmt_abduce::Abducible> = self.declared_abducibles.clone();
         let n = vocab.len();
 
-        let mut minimal: Vec<Vec<usize>> = Vec::new();
+        // Each entry pairs the chosen index set (for minimality pruning +
+        // the rank score) with a `TheoryAbduct` — a value that *cannot
+        // exist* unless its `H` passed both the entailment and consistency
+        // checks (the type carries the cvc5 invariant; see `mod abduct`).
+        let mut minimal: Vec<(Vec<usize>, abduct::TheoryAbduct)> = Vec::new();
         let mut examined = 0usize;
         for size in 0..=MAX_ABDUCT_SIZE {
             if minimal.len() >= MAX_ABDUCT_RESULTS || examined >= MAX_ABDUCT_SUBSETS {
@@ -2517,17 +2612,21 @@ impl Driver {
                 }
                 examined += 1;
                 // Minimality: skip any superset of an abduct already found.
-                if !minimal.iter().any(|m| is_index_subset(m, &combo)) {
+                if !minimal.iter().any(|(m, _)| is_index_subset(m, &combo)) {
                     let hyps: Vec<Term> =
                         combo.iter().map(|&i| vocab[i].pattern.clone()).collect();
-                    // Entailment first (rejects the common non-entailing
-                    // subset in one check-sat); consistency only for the
-                    // entailing ones (an inconsistent `H` entails
-                    // vacuously, so this drops the vacuous abducts).
-                    if self.entails_under_theory(&hyps, &neg_goal)
-                        && self.abduct_is_consistent(&hyps)
+                    let expls = combo.iter().map(|&i| vocab[i].explanation.clone()).collect();
+                    let srcs = combo.iter().map(|&i| vocab[i].source.clone()).collect();
+                    // The ONLY way to build a `TheoryAbduct` runs both
+                    // `F ∧ H ⊨ G` and `SAT(F ∧ H)` — a vacuous (or
+                    // non-entailing) abduct can't be constructed, so it
+                    // can't reach the output. (Entailment is checked
+                    // first inside `verified`, rejecting the common
+                    // non-entailing subset in one check-sat.)
+                    if let Some(abduct) =
+                        abduct::TheoryAbduct::verified(self, hyps, expls, srcs, &neg_goal)
                     {
-                        minimal.push(combo.clone());
+                        minimal.push((combo.clone(), abduct));
                     }
                 }
                 if size == 0 || !next_index_combination(&mut combo, n) {
@@ -2536,20 +2635,11 @@ impl Driver {
             }
         }
 
+        // Smaller subset = stronger: a 1-predicate abduct outranks a
+        // 2-predicate one.
         Ok(minimal
             .into_iter()
-            .map(|combo| {
-                let hypotheses = combo.iter().map(|&i| vocab[i].pattern.clone()).collect();
-                let explanations =
-                    combo.iter().map(|&i| vocab[i].explanation.clone()).collect();
-                let sources = combo.iter().map(|&i| vocab[i].source.clone()).collect();
-                RankedCandidate {
-                    candidate: Candidate { hypotheses, explanations, sources },
-                    // Smaller = stronger: a 1-predicate abduct outranks a
-                    // 2-predicate one.
-                    score: combo.len() as f64,
-                }
-            })
+            .map(|(combo, abduct)| abduct.into_ranked(combo.len() as f64))
             .collect())
     }
 
@@ -3074,6 +3164,21 @@ mod abduct_render_tests {
         assert_eq!(cand["rank"], 1);
         assert_eq!(cand["explanations"][0], "x must be positive");
         assert!(cand.get("consistent").is_none(), "absent unless checked");
+    }
+
+    #[test]
+    fn abduct_mode_derivation_is_total_and_theory_subsumes_consistency() {
+        // rc.35.1 — the search strategy is derived once into a total enum
+        // (the (a) typing refinement); "theory subsumes consistency" lives
+        // in exactly this one derivation.
+        let mut o = Options::default();
+        assert!(matches!(o.abduct_mode(), AbductMode::Sld));
+        o.abduct_consistency = true;
+        assert!(matches!(o.abduct_mode(), AbductMode::SldConsistent));
+        o.abduct_theory = true; // theory subsumes the consistency flag
+        assert!(matches!(o.abduct_mode(), AbductMode::Theory));
+        o.abduct_consistency = false;
+        assert!(matches!(o.abduct_mode(), AbductMode::Theory));
     }
 
     #[test]
