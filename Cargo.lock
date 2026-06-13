@@ -1921,6 +1921,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiz-mbqi"
+version = "0.2.4"
+dependencies = [
+ "rustc-hash",
+]
+
+[[package]]
 name = "oxiz-nlsat"
 version = "0.2.4"
 dependencies = [
@@ -1975,6 +1982,7 @@ dependencies = [
  "num-rational",
  "num-traits",
  "oxiz-core",
+ "oxiz-mbqi",
  "oxiz-proof",
  "oxiz-sat",
  "oxiz-theories",
