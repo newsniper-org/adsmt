@@ -1,7 +1,7 @@
 [submodule "external/oxiz"]
 	path = external/oxiz
 	url = https://github.com/Honey-Be/oxiz.git
-	branch = 0.2.4-feat/cdqi
+	branch = 0.2.4-redesign
 [submodule "contributions/oxiz/abduction"]
 	path = contributions/oxiz/abduction
 	url = https://github.com/newsniper-org/oxiz-contrib-abduction
