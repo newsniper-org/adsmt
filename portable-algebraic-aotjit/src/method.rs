@@ -96,6 +96,12 @@ impl<A> Method<A> {
         self.atom_map.get(&handle)
     }
 
+    /// Borrow the prelude handle→atom resolver map (e.g. for a host
+    /// that chains a per-query map over it before [`crate::replay::replay_hybrid`]).
+    pub fn atom_map(&self) -> &HashMap<u32, A> {
+        &self.atom_map
+    }
+
     /// Number of prelude atoms the method resolves.
     pub fn atom_count(&self) -> usize {
         self.atom_map.len()
