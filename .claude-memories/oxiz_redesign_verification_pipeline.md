@@ -103,18 +103,37 @@ lib + all integration: EUF/LIA/BV/MBQI/combined/z3-compat) verdict-identical to 
 **pre-existing spurious SAT** (oxiz=sat,z3=unsat) in EUF+LIA — reproduces identically at 012b726 (before the
 conversion) in BOTH drivers ⇒ upstream EUF+LIA bug, orthogonal to the swap, NOT introduced here.
 
-**COMPLETENESS is the remaining gate** (user directive 2026-06-13: "soundness 먼저 완벽하게 → 마지막에
-completeness도 완벽하게 = redesign 완료"). The hooks path is final-check-driven so it DROPS theory propagations
-(sound, but "less eager"): two suites ran ~100× slower (clean_mbqi_wiring 10.48s vs ~0.04s,
-ground_soundness_regression 14.29s vs 0.02s — verdicts still correct, but slower ⇒ more Unknown under rlimit). So:
-- **Phase 2b = thread eager theory propagation through the hooks channel** (surface `assign_hook`'s deferred
-  Propagate/Conflict to the driver, currently `let _ = t.assign_hook(...)` in oxiz-sat trail.rs) BEFORE flipping the
-  production default ON. This is what closes the perf/Unknown gap so adsmt/Verus's tight rlimit budgets hold.
-- The pre-existing **spurious SAT** (EUF+LIA, both drivers) must also be fixed for "completeness perfect" (in the
-  verifier framing, sat-when-unsat = can't discharge a true goal = incompleteness).
-- THEN Phase 2 step 5: flip default ON + DELETE level_stack/processed_count/the four `last_conflict_is_stale_bound`
-  guards (old path's machinery; needs the old `TheoryCallback` path retired). NOT done autonomously — production
-  default change + irreversible deletion, gated on Phase 2b perf parity + user sign-off.
+**COMPLETENESS gate** (user directive 2026-06-13: "soundness 먼저 완벽하게 → 마지막에 completeness도 완벽하게 =
+redesign 완료"; user chose "둘 다 순차로: Phase 2b → spurious SAT → step 5"). The hooks path slowed two suites
+~100× (clean_mbqi_wiring 10.5s, ground_soundness_regression 14.4s — verdicts CORRECT, just slower ⇒ Unknown risk
+under rlimit).
+- **Phase 2b DONE** (`818c4ce`, AD1 `5f502e6`). Root cause was NOT dropped propagations (`process_constraint`
+  never returns `Propagated`) — it was the hooks `final_check` running the FULL euf/arith/Nelson-Oppen battery at
+  EVERY Boolean fixpoint, where the legacy eager path runs it only at full assignment. Fix: split — oxiz-sat
+  `TheoryHooks::final_check_complete` (default delegates to `final_check`, so ToyImplTheory unaffected) fired by
+  `solve_with_hooks_inner` ONLY when the assignment is total (last gate before Sat); `TheoryManager::final_check` =
+  cheap per-fixpoint drain (shared `drain_queue` + `theory_consistency_check` extract), `final_check_complete` =
+  drain + battery. Result: 10.5s→0.03s, 14.4s→0.02s; verdict-identical (oxiz-sat 717 / oxiz-solver 752 / z3-diff
+  numerically identical to legacy, ZERO spurious UNSAT). **The redesign's own soundness+completeness for the driver
+  swap is DONE (verdict-parity + perf-parity).**
+- **Pre-existing spurious SAT — DIAGNOSED, fix NOT yet attempted** (soundness-delicate). Minimal repro (QF_UFLIA):
+  `f(1)>=5 ∧ f(1)<=5 ∧ f(f(1))>=10 ∧ f(5)<=1` is UNSAT (f(1)=5 ⟹ congruence f(f(1))=f(5) ⟹ f(5)>=10 vs f(5)<=1)
+  but oxiz says SAT. Isolated: the bounds force f(1)=5 but that arith-ENTAILED equality is never propagated to EUF
+  to fire the nested congruence (explicit `(= (f 1) 5)` → correctly UNSAT). GAP is in `model_based_combination`
+  (`theory_manager.rs:708`): it only DETECTS EUF-equal terms with differing arith values → conflict; it never
+  PROPAGATES an arith-fixed shared term into EUF as a constant-equality. Detection is tractable (simplex
+  `lower`/`upper: Vec<Option<Bound>>` with `Bound.reasons` already stored — a `fixed_value_with_reasons` query is a
+  small oxiz-theories addition). The DANGER: the entailed equality `f(1)=5` has TWO reason atoms (the two bounds)
+  but `EufSolver::merge(a,b,reason: TermId)` takes ONE reason term — building a correct all-false conflict clause
+  from a multi-reason entailed merge is exactly where a mistake flips to the DANGEROUS spurious UNSAT. So this is a
+  genuine theory-combination feature (≈ NO-4: arith→EUF entailed-equality propagation), z3-diff-gated, NOT a quick
+  patch. This bug exists in BOTH legacy and hooks paths (engine-wide, orthogonal to the redesign).
+- THEN **Phase 2 step 5**: flip default ON + DELETE level_stack/processed_count/the four
+  `last_conflict_is_stale_bound` guards. NOT done autonomously — production default change + irreversible deletion,
+  gated on Phase 2b (done) + the spurious-SAT fix + user sign-off.
+
+NOTE: user authorized cleaning the stale `rebase-merge` dir AFTER completeness is fully nailed (deferred until the
+spurious-SAT item resolves).
 
 NOTE: stale `.git/modules/external/oxiz/rebase-merge` dir (orphaned `feat/enable-writer` DRAT-writer rebase, not
 active — `git symbolic-ref HEAD`=0.2.4-redesign; harmless, I didn't create it). Baseline (pre-Phase-2): oxiz-solver
