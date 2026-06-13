@@ -101,7 +101,7 @@ exclude = ["external/oxiz"]
 #     definition over stdin/stdout, verify responses.
 #   * RC2.H.1 mid-cycle audit + RC2.H.2 final stable sign-off
 #     (gates v1.0.0 bump).
-version = "1.0.0-rc.36"
+version = "1.0.0-rc.37"
 edition = "2024"
 license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
 rust-version = "1.96"

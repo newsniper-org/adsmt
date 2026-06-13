@@ -116,24 +116,45 @@ under rlimit).
   drain + battery. Result: 10.5s→0.03s, 14.4s→0.02s; verdict-identical (oxiz-sat 717 / oxiz-solver 752 / z3-diff
   numerically identical to legacy, ZERO spurious UNSAT). **The redesign's own soundness+completeness for the driver
   swap is DONE (verdict-parity + perf-parity).**
-- **Pre-existing spurious SAT — DIAGNOSED, fix NOT yet attempted** (soundness-delicate). Minimal repro (QF_UFLIA):
-  `f(1)>=5 ∧ f(1)<=5 ∧ f(f(1))>=10 ∧ f(5)<=1` is UNSAT (f(1)=5 ⟹ congruence f(f(1))=f(5) ⟹ f(5)>=10 vs f(5)<=1)
-  but oxiz says SAT. Isolated: the bounds force f(1)=5 but that arith-ENTAILED equality is never propagated to EUF
-  to fire the nested congruence (explicit `(= (f 1) 5)` → correctly UNSAT). GAP is in `model_based_combination`
-  (`theory_manager.rs:708`): it only DETECTS EUF-equal terms with differing arith values → conflict; it never
-  PROPAGATES an arith-fixed shared term into EUF as a constant-equality. Detection is tractable (simplex
-  `lower`/`upper: Vec<Option<Bound>>` with `Bound.reasons` already stored — a `fixed_value_with_reasons` query is a
-  small oxiz-theories addition). The DANGER: the entailed equality `f(1)=5` has TWO reason atoms (the two bounds)
-  but `EufSolver::merge(a,b,reason: TermId)` takes ONE reason term — building a correct all-false conflict clause
-  from a multi-reason entailed merge is exactly where a mistake flips to the DANGEROUS spurious UNSAT. So this is a
-  genuine theory-combination feature (≈ NO-4: arith→EUF entailed-equality propagation), z3-diff-gated, NOT a quick
-  patch. This bug exists in BOTH legacy and hooks paths (engine-wide, orthogonal to the redesign).
-- THEN **Phase 2 step 5**: flip default ON + DELETE level_stack/processed_count/the four
-  `last_conflict_is_stale_bound` guards. NOT done autonomously — production default change + irreversible deletion,
-  gated on Phase 2b (done) + the spurious-SAT fix + user sign-off.
+- **Pre-existing spurious SAT — FIXED** (`da0b167`, AD1 `900f735`). Repro `f(1)>=5 ∧ f(1)<=5 ∧ f(f(1))>=10 ∧
+  f(5)<=1` (UNSAT: f(1)=5 ⟹ congruence f(f(1))=f(5) ⟹ f(5)>=10 vs f(5)<=1) returned SAT. **arith→EUF entailed-
+  equality propagation** added to `model_based_combination`: `ArithSolver::fixed_value_with_reasons` (scratch-frame
+  probe: t fixed to v iff both t≷v half-spaces infeasible; reasons = the pinning bounds minus the scratch sentinel;
+  push/pop leave zero residue — unit-tested); `EufSolver::interned_term_ids` enumerates the EUF SUB-terms (the merge
+  candidates are `f(1)`/`5`, NOT the Bool atoms in term_to_var — that was the first wrong iteration set); merge each
+  arith-fixed term into its constant's canonical node (placeholder EUF reason — entailed, so the explanation need
+  not flow through EUF's single-reason merge), bounded fixpoint for deeper chains. **THE soundness-critical step:**
+  the clause `propagate_euf_equalities_to_arith` builds OMITS the fixing bounds (arith reasons, not EUF) — so it is
+  AUGMENTED with `pending_arith_eq_reasons`; without that the learned clause isn't theory-valid and flips to the
+  DANGEROUS spurious UNSAT. **Negative literals (user-directed):** `Neg(IntConst(n))→IntConst(-n)` SANITIZER in
+  `TermManager::mk_neg` (SMT-LIB `(- 3)` parses to `Neg(IntConst(3))`, bypassing every IntConst fast-path incl. the
+  EUF const-node interning) + UNSANITIZER `smtlib::int_literal_smtlib` rendering a negative IntConst back as `(- n)`
+  at every SMT-LIB text renderer (basic/pretty printer, get-value, z3-compat). VALIDATED to a high bar: z3
+  differential BOTH drivers EUF+LIA agree 5000/5000 + 3000/3000 (spurious SAT GONE), arith fatal=0, ZERO spurious
+  UNSAT; **60-case z3-verified adversarial corpus** (`oxiz-solver/tests/arith_euf_fixed_value_adversarial.rs` —
+  off-path decoys, distinct-value diamonds, multi merge-class, deep chains, negatives) mismatches=0 spurious_unsat=0
+  both drivers; named regressions; printer round-trip; suites green (core 1181 / theories 1383 / solver 755). Bug was
+  PRE-EXISTING in BOTH drivers (engine-wide, orthogonal to the §4 swap). **⇒ redesign SOUNDNESS + COMPLETENESS both
+  nailed (verdict-parity with z3 on the ground fragment).**
+- **Phase 2 step 5 DONE** (user-chosen "보수적": flip + gate guards, keep legacy). oxiz `369a3a8`, AD1 `900f735`→
+  bump. **5a (`8552b4a`)**: `use_hooks_driver` default flipped **ON** — the lock-step §4 hooks driver is the
+  production CDCL(T) path; legacy `TheoryCallback`/`solve_with_theory` retained as opt-out
+  (`(set-option :oxiz.use-hooks-driver false)`) cross-check fallback. Test helpers now set the driver EXPLICITLY
+  both ways (default is hooks, so an unset option no longer exercises legacy; `OXIZ_USE_HOOKS=0` selects legacy).
+  **5b (`369a3a8`)**: the four `arith` `last_conflict_is_stale_bound` guards gated on a new
+  `TheoryManager::suppress_stale_bounds` field (`!use_hooks_driver`) — DEAD on the hooks path (lock-step makes a
+  stale frame unrepresentable), kept ON for the legacy fallback. EMPIRICALLY CONFIRMED: with guards OFF on hooks,
+  z3 differential stays agree=3000/3000 EUF+LIA + arith fatal=0, the stale-bound spurious-UNSAT regressions pass,
+  legacy stays fatal=0. Realises the §4 thesis "make the desync unrepresentable, NOT guarded". NOTE: kept
+  `level_stack`/`processed_count` (legacy path still uses them — only retired when legacy is removed, deferred).
+  Stale `rebase-merge` dir CLEANED earlier.
 
-NOTE: user authorized cleaning the stale `rebase-merge` dir AFTER completeness is fully nailed (deferred until the
-spurious-SAT item resolves).
+**§4 SAT-CORE REDESIGN PHASE 2 — COMPLETE.** Arc: owning TheoryManager → opt-in hooks impl → Phase 2b perf parity
+(battery at full-assignment only) → spurious-SAT fix (arith→EUF entailed-equality propagation + Neg-literal
+sanitizer/unsanitizer) → hooks-as-production-default + stale-bound-guard retirement. **Soundness AND completeness
+both nailed** (verdict-parity with z3 on the QF_UFLIA ground fragment, both drivers; zero spurious UNSAT across
+8000+ random + 60 adversarial z3-verified cases). adsmt-cli `--features oxiz` (in-process backend adsmt/Verus
+delegate to) verified end-to-end on the new hooks default.
 
 NOTE: stale `.git/modules/external/oxiz/rebase-merge` dir (orphaned `feat/enable-writer` DRAT-writer rebase, not
 active — `git symbolic-ref HEAD`=0.2.4-redesign; harmless, I didn't create it). Baseline (pre-Phase-2): oxiz-solver
