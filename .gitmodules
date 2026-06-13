@@ -12,3 +12,6 @@
 	path = docs/books
 	url = https://github.com/newsniper-org/adsmt-books
 	branch = main
+[submodule "external/oxiz-sat-redesign-verification"]
+	path = external/oxiz-sat-redesign-verification
+	url = https://github.com/newsniper-org/oxiz-sat-redesign-verification
