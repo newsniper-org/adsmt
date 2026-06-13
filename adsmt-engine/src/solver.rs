@@ -115,7 +115,7 @@ pub(crate) fn atom_key_hash_u32(atom_key: &str) -> u32 {
 /// assumption — and the digest is **soundness-critical** (an exact
 /// match makes the consult trust a recorded verdict), so the stronger
 /// combiner is the right call.
-pub type ClauseFold = ([u8; 32], u64);
+pub type ClauseFold = portable_algebraic_aotjit::ClauseFold;
 
 /// The canonical KangarooTwelve-256 hash of a single clause, keyed by
 /// **atom name** (not a global index). Literals are rendered as
@@ -125,39 +125,24 @@ pub type ClauseFold = ([u8; 32], u64);
 /// the property the rc.34.3 global-index DIMACS lacked, and the reason
 /// the prelude's fold could not be precomputed there.
 pub(crate) fn clause_name_hash(clause: &crate::cnf::Clause) -> [u8; 32] {
-    let mut lits: Vec<(String, bool)> = clause
+    // Delegate to the portable crate — one implementation. The
+    // `(name, polarity)` view is byte-identical to the prior in-tree
+    // serialization (length-prefixed, sorted + de-duplicated names),
+    // so digests stay wire-compatible with every baked `.luart` bank
+    // and recorded `.lutrace`. The owned `String`s back the `&str`
+    // refs the portable hasher re-collects + sorts.
+    let owned: Vec<(String, bool)> = clause
         .iter()
         .map(|lit| (lit.atom.to_string(), lit.polarity))
         .collect();
-    lits.sort();
-    lits.dedup();
-    let mut buf: Vec<u8> = Vec::new();
-    buf.extend_from_slice(&(lits.len() as u64).to_le_bytes());
-    for (name, polarity) in &lits {
-        buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
-        buf.extend_from_slice(name.as_bytes());
-        buf.push(*polarity as u8);
-    }
-    lu_common::k12::hash(&buf)
-}
-
-/// Little-endian 256-bit addition (mod 2³⁵⁶) — the AdHash group
-/// operation on the `sum` half of a [`ClauseFold`].
-fn add256(acc: [u8; 32], x: [u8; 32]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    let mut carry: u16 = 0;
-    for i in 0..32 {
-        let s = acc[i] as u16 + x[i] as u16 + carry;
-        out[i] = s as u8;
-        carry = s >> 8;
-    }
-    out
+    portable_algebraic_aotjit::clause_name_hash(owned.iter().map(|(n, p)| (n.as_str(), *p)))
 }
 
 /// Compose two folds: `(sum, count)` add component-wise. Exact, so
-/// `combine(fold(A), fold(B)) == fold(A ⊎ B)`.
+/// `combine(fold(A), fold(B)) == fold(A ⊎ B)`. Delegates to the
+/// portable AdHash combiner.
 pub(crate) fn combine_fold(a: ClauseFold, b: ClauseFold) -> ClauseFold {
-    (add256(a.0, b.0), a.1.wrapping_add(b.1))
+    portable_algebraic_aotjit::combine_fold(a, b)
 }
 
 /// Fold a clause multiset from scratch — `combine` over every clause's
@@ -170,23 +155,18 @@ pub(crate) fn combine_fold(a: ClauseFold, b: ClauseFold) -> ClauseFold {
 pub fn clause_set_fold<'a>(
     clauses: impl Iterator<Item = &'a crate::cnf::Clause>,
 ) -> ClauseFold {
-    let mut fold: ClauseFold = ([0u8; 32], 0);
+    let mut fold: ClauseFold = portable_algebraic_aotjit::EMPTY_FOLD;
     for c in clauses {
-        fold = combine_fold(fold, (clause_name_hash(c), 1));
+        fold = portable_algebraic_aotjit::combine_fold(fold, (clause_name_hash(c), 1));
     }
     fold
 }
 
 /// Collapse a [`ClauseFold`] into the 32-byte §3.5.J exact-match
-/// digest: `K12(sum ‖ count_le)`. The trailing `count` disambiguates
-/// the (vanishingly unlikely) sum collision and pins the multiset
-/// cardinality, and the final K12 wrap gives a fixed-width,
-/// well-distributed certificate to compare byte-for-byte.
+/// digest: `K12(sum ‖ count_le)`. Delegates to the portable crate;
+/// the byte layout (`sum ‖ count_le`, K12-wrapped) is unchanged.
 pub(crate) fn fold_to_digest(fold: ClauseFold) -> [u8; 32] {
-    let mut buf = [0u8; 40];
-    buf[..32].copy_from_slice(&fold.0);
-    buf[32..].copy_from_slice(&fold.1.to_le_bytes());
-    lu_common::k12::hash(&buf)
+    portable_algebraic_aotjit::fold_to_digest(fold)
 }
 
 /// `CdclEventSink` adapter that funnels every engine-side
@@ -4124,6 +4104,56 @@ mod tests {
         assert_eq!(
             inc,
             combine_fold(clause_set_fold(query.iter()), clause_set_fold(prelude.iter())),
+        );
+    }
+
+    #[test]
+    fn engine_digest_matches_portable_over_same_atom_names() {
+        // The extraction-boundary contract (Phase 2 α): the engine's
+        // clause-set-fold digest helpers now delegate to
+        // `portable-algebraic-aotjit`, and a from-scratch portable
+        // computation over the same `(atom.to_string(), polarity)`
+        // clause views is byte-identical — so every baked `.luart`
+        // bank fold + recorded `.lutrace` `signature_digest` stays
+        // valid across the extraction (wire-compatible).
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let r = Term::var("r", Type::bool_());
+        let clauses: Vec<crate::cnf::Clause> = vec![
+            vec![
+                crate::cnf::Lit { atom: p, polarity: true },
+                crate::cnf::Lit { atom: q, polarity: false },
+            ],
+            vec![crate::cnf::Lit { atom: r, polarity: true }],
+        ];
+
+        // Engine path (internally delegates to the portable crate).
+        let engine_fold = clause_set_fold(clauses.iter());
+        let engine_digest = fold_to_digest(engine_fold);
+
+        // Direct portable path over the same atom names.
+        let names: Vec<Vec<(String, bool)>> = clauses
+            .iter()
+            .map(|c| {
+                c.iter()
+                    .map(|l| (l.atom.to_string(), l.polarity))
+                    .collect()
+            })
+            .collect();
+        let portable_fold = portable_algebraic_aotjit::clause_set_fold(
+            names
+                .iter()
+                .map(|c| c.iter().map(|(n, pol)| (n.as_str(), *pol))),
+        );
+        let portable_digest = portable_algebraic_aotjit::fold_to_digest(portable_fold);
+
+        assert_eq!(
+            engine_fold, portable_fold,
+            "the clause-set fold must equal the portable crate's exactly"
+        );
+        assert_eq!(
+            engine_digest, portable_digest,
+            "the 32-byte digest must match the portable crate byte-for-byte"
         );
     }
 

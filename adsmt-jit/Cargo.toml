@@ -20,3 +20,10 @@ adsmt-theory-finite-field.workspace = true
 # `KernelStore::register_emitted` at register time.
 dynasmrt.workspace = true
 dynasm.workspace = true
+# Portable core extracted from this crate + the engine's AOT
+# helpers. adsmt-jit is now the in-tree adapter: it re-exports the
+# portable `CdclTraceEvent` / digest / FF-free guards / replay
+# interpreter and adds the `adsmt_core::Term`-coupled superset
+# (GF2Snapshot, the `PolyInvariant` guard, `SkeletonShape::of`,
+# the `.lutrace` wire format, kernel/registry).
+portable-algebraic-aotjit.workspace = true

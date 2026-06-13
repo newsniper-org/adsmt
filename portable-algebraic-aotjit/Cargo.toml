@@ -1,0 +1,36 @@
+# `portable-algebraic-aotjit` — the adsmt-independent core of the
+# §3.5 AOT/JIT "algebraic" trace-replay machinery.
+#
+# Extracted from `adsmt-jit` + the engine's AOT helpers so a second
+# consumer (e.g. OxiZ) can reuse the algebraic-invariant trace /
+# clause-set-digest / replay logic WITHOUT pulling in adsmt-core.
+# Per the 2026-06-13 profile (see the `aot-jit-profile-finding`
+# memory): the live lever is the clause-set-fold DIGEST + the AOT
+# state reuse, NOT a native-codegen meta-tracing kernel — so this
+# crate carries the algebraic replay/digest core and stays generic
+# over the host's atom representation. "Real meta-tracing" (dynasm
+# native kernels) is deliberately out of scope.
+[package]
+name = "portable-algebraic-aotjit"
+version = "1.0.0-rc.37"
+edition = "2021"
+license = "Apache-2.0"
+description = "Portable, solver-independent core of the algebraic AOT/JIT trace-replay + clause-set-digest machinery."
+repository = "https://github.com/honey-be/adsmt"
+
+[dependencies]
+# Direct, version-pinned (NOT workspace.dependencies) so the crate
+# stays extractable to a standalone repo with zero adsmt coupling.
+# K12-256 backs the clause-set-fold digest; the byte layout here is
+# identical to `lu_common::k12::hash` so digests are wire-compatible
+# with the in-tree adsmt-engine consult.
+tiny-keccak = { version = "2.0", features = ["k12"] }
+
+[features]
+default = []
+# Opt-in GF(2) polynomial-invariant guard. The 2026-06-13 profile
+# found the megabyte GF(2) basis was the 99.4% the 32-byte digest
+# replaced (rc.34.3); the poly guard is kept for the legacy /
+# ideal-membership path but off by default so the portable core
+# stays dependency-light.
+gf2 = []

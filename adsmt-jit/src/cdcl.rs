@@ -47,44 +47,12 @@ use adsmt_theory_finite_field::polynomial::Polynomial as GF2Poly;
 
 use crate::guard::JitGuard;
 
-/// One recorded state transition.  Encodes the same atom /
-/// polarity pair the engine maintains on its trail and clause
-/// store; `antecedent` is `-1` for events with no per-query
-/// antecedent clause (matches the `.luart-cdcl` v1 `TrailEntry`
-/// shape so the AOT bake and the JIT trace share a single
-/// addressing model).
-#[derive(Clone, Debug, PartialEq)]
-pub enum CdclTraceEvent {
-    /// `propagate_two_watched` derived `(atom, polarity)`.
-    /// `antecedent` is the index into the live engine's clause
-    /// store of the clause that caused the unit propagation;
-    /// `-1` marks a prelude-only derivation with no per-query
-    /// antecedent.
-    Propagate {
-        atom: u32,
-        polarity: bool,
-        antecedent: i64,
-    },
-    /// `analyze_conflict_1uip` produced a learnt clause; `lbd`
-    /// is the literal-block-distance the engine computed.
-    Conflict {
-        learnt: Vec<(u32, bool)>,
-        lbd: u32,
-    },
-    /// `backtrack_to(to_scope)` was called as the post-conflict
-    /// non-chronological backjump.
-    Backjump { to_scope: u32 },
-    /// `pick_vsids_atom` returned `(atom, polarity)` for the
-    /// next decision.
-    Decide { atom: u32, polarity: bool },
-    /// Luby-restart fired; the engine wiped the decision stack
-    /// down to scope 0 while preserving learnt clauses + VSIDS
-    /// activity + phase-save.  Load-bearing per the counter-ack
-    /// §5.3 — replay without an explicit Restart event would
-    /// treat post-restart decisions as if the pre-restart trail
-    /// were still live.
-    Restart,
-}
+/// The recorded state-transition vocabulary now lives in the
+/// portable `portable-algebraic-aotjit` crate (the u32-atom event
+/// shape is host-agnostic); re-exported here so every in-tree
+/// `adsmt_jit::CdclTraceEvent` reference and the `.lutrace`
+/// serializer keep resolving unchanged.
+pub use portable_algebraic_aotjit::CdclTraceEvent;
 
 /// GF(2) algebraic signature captured at trace boundary (and,
 /// eventually in v1, at every phase-transition checkpoint).

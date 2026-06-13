@@ -399,19 +399,56 @@ impl CdclState {
 
 /// §3.5.F — outcome of replaying a recorded CDCL trace's event stream
 /// onto a fresh [`CdclState`].
-#[derive(Debug)]
-pub struct ReplayedTrail {
-    /// The reconstructed engine state (trail / assignment / decision
-    /// level / learnt clauses), ready to seed the per-query CDCL.
-    pub state: CdclState,
-    /// A `Conflict` event fired while `decision_level == 0` — a
-    /// terminal, search-independent contradiction in the prelude.
-    pub root_conflict: bool,
-    /// A trace atom did not resolve against the live atom map: the
-    /// trace references an atom the current formula doesn't carry, so
-    /// the replay can't be trusted and the caller must fall through to
-    /// full CDCL.
-    pub diverged: bool,
+///
+/// The interpreter itself now lives in the portable
+/// `portable-algebraic-aotjit` crate (generic over the host's
+/// [`portable_algebraic_aotjit::ReplayState`]); this alias binds it to
+/// the engine's [`CdclState`], so `.state` / `.root_conflict` /
+/// `.diverged` field access at every call site is unchanged.
+pub type ReplayedTrail = portable_algebraic_aotjit::ReplayedTrail<CdclState>;
+
+/// Bind the engine's [`CdclState`] to the portable replay interpreter.
+/// The inherent `CdclState::push` / `backtrack_to` take precedence
+/// over these same-named trait methods at every method-call site
+/// (Rust prefers inherent methods), so the bodies below dispatch to
+/// the real engine logic — no recursion.
+impl portable_algebraic_aotjit::ReplayState for CdclState {
+    type Atom = Term;
+
+    fn push(
+        &mut self,
+        atom: Term,
+        polarity: bool,
+        reason: portable_algebraic_aotjit::ReplayReason,
+    ) {
+        let reason = match reason {
+            portable_algebraic_aotjit::ReplayReason::Decision => Reason::Decision,
+            portable_algebraic_aotjit::ReplayReason::Propagated { clause_idx } => {
+                Reason::Propagated { clause_idx }
+            }
+        };
+        // `reason: Reason` matches only the inherent `push`, which is
+        // also preferred — dispatches to the engine trail logic.
+        self.push(atom, polarity, reason);
+    }
+
+    fn backtrack_to(&mut self, scope: u32) {
+        // Inherent `CdclState::backtrack_to` is preferred over this
+        // trait method of the same signature.
+        self.backtrack_to(scope);
+    }
+
+    fn decision_level(&self) -> u32 {
+        self.decision_level
+    }
+
+    fn push_learnt(&mut self, lits: Vec<(Term, bool)>) {
+        let clause: Clause = lits
+            .into_iter()
+            .map(|(atom, polarity)| Lit { atom, polarity })
+            .collect();
+        self.learnt_clauses.push(clause);
+    }
 }
 
 /// §3.5.F real event replay — re-fire a recorded trace's
@@ -448,63 +485,19 @@ pub fn replay_events(
     events: &[adsmt_jit::CdclTraceEvent],
     resolve: impl Fn(u32) -> Option<Term>,
 ) -> ReplayedTrail {
-    use adsmt_jit::CdclTraceEvent as E;
-    let mut state = CdclState::new();
-    let mut root_conflict = false;
+    // The interpreter body now lives in the portable crate, driven by
+    // the `ReplayState for CdclState` impl above. The faithful
+    // semantics — a `Decide`/`Propagate` that fails to resolve aborts
+    // with `diverged: true`; an unresolved `Conflict` learnt literal
+    // skips the clause without diverging; `root_conflict` is set only
+    // for a level-0 conflict — are preserved verbatim there.
+    //
     // rc.34.5 — `resolve` maps a recorded content-hash atom to the live
     // `Term`. The caller chains the small per-query atom map over the
     // precomputed prelude atom map (see `Solver::live_atom_map` /
     // `query_atom_map`), so a slim/digest trace whose events reference no
     // query atom never touches the prelude — the consult is O(query delta).
-    for ev in events {
-        match ev {
-            E::Decide { atom, polarity } => {
-                let Some(t) = resolve(*atom) else {
-                    return ReplayedTrail { state, root_conflict, diverged: true };
-                };
-                state.push(t, *polarity, Reason::Decision);
-            }
-            E::Propagate { atom, polarity, antecedent } => {
-                let Some(t) = resolve(*atom) else {
-                    return ReplayedTrail { state, root_conflict, diverged: true };
-                };
-                // `antecedent < 0` is a prelude-only derivation with no
-                // per-query clause; the index is trail metadata only
-                // (the replay never re-validates the unit step — that
-                // is the guard's job), so a sentinel is fine.
-                let clause_idx = if *antecedent < 0 {
-                    usize::MAX
-                } else {
-                    *antecedent as usize
-                };
-                state.push(t, *polarity, Reason::Propagated { clause_idx });
-            }
-            E::Backjump { to_scope } => state.backtrack_to(*to_scope),
-            E::Restart => state.backtrack_to(0),
-            E::Conflict { learnt, .. } => {
-                if state.decision_level == 0 {
-                    root_conflict = true;
-                }
-                // Record the learnt clause (index-mapped); on a stale
-                // index, skip the clause rather than emit a bogus Lit.
-                let mut lits = Vec::with_capacity(learnt.len());
-                let mut ok = true;
-                for (a, p) in learnt {
-                    match resolve(*a) {
-                        Some(t) => lits.push(Lit { atom: t, polarity: *p }),
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if ok {
-                    state.learnt_clauses.push(lits);
-                }
-            }
-        }
-    }
-    ReplayedTrail { state, root_conflict, diverged: false }
+    portable_algebraic_aotjit::replay_events(CdclState::new(), events, resolve)
 }
 
 /// v0.21 B.1 follow-up — Sat outcome carrying the satisfying

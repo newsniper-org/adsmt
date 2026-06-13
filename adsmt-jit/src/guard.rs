@@ -37,28 +37,12 @@ pub enum JitGuard {
     SkeletonShape(SkeletonShape),
 }
 
-/// Outcome of [`check_guard`].
-///
-/// `Pass` — the recorded invariant still holds; the trace stays
-/// valid against this guard and the cache can continue checking
-/// the next one.
-/// `Fail` — the invariant has broken; the trace cannot fire and
-/// the runtime falls back to the interpreter (same shape as a
-/// classical-JIT value-guard miss).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum GuardResult {
-    Pass,
-    Fail,
-}
-
-/// Read-only view of the engine's UF equivalence-class state at
-/// the time of a guard check.  The v0 shape is a flat
-/// `(atom, class_id)` table; the engine builds it once per query
-/// from whatever internal representation it uses and hands it
-/// here.  Future versions may shift to a borrowing `Fn`
-/// closure-based shape if the table allocation shows up in
-/// profiling.
-pub type ClassesView<'a> = &'a [(String, u32)];
+// `GuardResult` and `ClassesView` now live in the portable
+// `portable-algebraic-aotjit` crate and are re-exported verbatim so
+// the in-tree `adsmt_jit::guard::{GuardResult, ClassesView}` are the
+// *same* types the portable `check_guard` returns/consumes — the
+// EquivClass / SkeletonShape arms below delegate to it.
+pub use portable_algebraic_aotjit::{ClassesView, GuardResult};
 
 /// Check a single guard.  Pure function; the same
 /// `(guard, basis, classes, skeleton)` quadruple always returns
@@ -77,35 +61,32 @@ pub fn check_guard(
 ) -> GuardResult {
     match guard {
         JitGuard::PolyInvariant(p) => {
-            // `reduce` shares the kernel with §3.4: the same
-            // function the theory-layer UNSAT certification calls.
-            // Polynomial guard holds iff the reduction collapses
-            // to zero against the live basis.
+            // The FF-coupled arm stays in-tree: `reduce` shares the
+            // kernel with §3.4 (the same function the theory-layer
+            // UNSAT certification calls). Holds iff the reduction
+            // collapses to zero against the live basis.
             if reduce(p, basis).is_zero() {
                 GuardResult::Pass
             } else {
                 GuardResult::Fail
             }
         }
-        JitGuard::EquivClass { a, b } => {
-            let lookup = |name: &str| -> Option<u32> {
-                classes
-                    .iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, id)| *id)
-            };
-            match (lookup(a), lookup(b)) {
-                (Some(ia), Some(ib)) if ia == ib => GuardResult::Pass,
-                _ => GuardResult::Fail,
-            }
-        }
-        JitGuard::SkeletonShape(recorded) => {
-            if recorded.0 == live_skeleton.0 {
-                GuardResult::Pass
-            } else {
-                GuardResult::Fail
-            }
-        }
+        // The two FF-free arms delegate to the portable `check_guard`
+        // — one implementation, shared with any future non-adsmt
+        // consumer.
+        JitGuard::EquivClass { a, b } => portable_algebraic_aotjit::check_guard(
+            &portable_algebraic_aotjit::Guard::EquivClass {
+                a: a.clone(),
+                b: b.clone(),
+            },
+            classes,
+            live_skeleton.0,
+        ),
+        JitGuard::SkeletonShape(recorded) => portable_algebraic_aotjit::check_guard(
+            &portable_algebraic_aotjit::Guard::SkeletonShape(recorded.0),
+            classes,
+            live_skeleton.0,
+        ),
     }
 }
 

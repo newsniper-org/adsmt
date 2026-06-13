@@ -17,13 +17,18 @@ adsmt-aot.workspace = true
 # `JitGuard` / `check_guard` / `CdclTrace` vocabulary with the
 # §3.2 / §3.5.D recorder.
 adsmt-jit.workspace = true
+# Portable core: the engine's clause-set-fold digest helpers and the
+# `replay_events` interpreter now delegate to this crate so there is a
+# single implementation shared with adsmt-jit (and any future
+# non-adsmt consumer). See the `aot-jit-profile-finding` memory.
+portable-algebraic-aotjit.workspace = true
 adsmt-class.workspace = true
 adsmt-quant.workspace = true
 adsmt-abduce.workspace = true
-# §3.5.J slim/digest — KangarooTwelve-256 for the canonical
-# clause-set digest the `--jit-trace-load` consult compares (a 32-byte
-# exact-match certificate, replacing the megabyte GF(2) basis).
-lu-common = { version = "=1.0.0-rc.37", path = "../lu-common", default-features = false, features = ["k12"] }
+# §3.5.J slim/digest — the KangarooTwelve-256 clause-set digest the
+# `--jit-trace-load` consult compares now lives in
+# `portable-algebraic-aotjit` (which pulls tiny-keccak directly), so
+# the engine no longer needs lu-common for k12.
 thiserror.workspace = true
 indexmap.workspace = true
 cadical = { version = "0.1", optional = true }

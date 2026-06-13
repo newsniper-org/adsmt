@@ -163,9 +163,9 @@ dependencies = [
  "cadical",
  "criterion",
  "indexmap",
- "lu-common",
  "oxiz-proof",
  "oxiz-sat",
+ "portable-algebraic-aotjit",
  "thiserror 2.0.18",
 ]
 
@@ -218,6 +218,7 @@ dependencies = [
  "adsmt-theory-finite-field",
  "dynasm",
  "dynasmrt",
+ "portable-algebraic-aotjit",
 ]
 
 [[package]]
@@ -2099,6 +2100,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "portable-algebraic-aotjit"
+version = "1.0.0-rc.37"
+dependencies = [
+ "tiny-keccak",
 ]
 
 [[package]]
