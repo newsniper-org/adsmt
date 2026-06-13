@@ -40,4 +40,18 @@ pub enum CdclTraceEvent {
     /// Load-bearing for replay: without it, post-restart decisions
     /// would be read as if the pre-restart trail were still live.
     Restart,
+    /// §Phase3 BacCaml-interop head pseudo-event: "a trace inlines a
+    /// method-invoke." A *hybrid* goal trace is
+    /// `[MethodInvoke{region_key}, <goal-delta events>]` — instead of
+    /// re-firing the prelude's backbone events, the replayer CALLS the
+    /// precompiled [`crate::method::Method`] identified by `region_key`
+    /// (binding its prelude resolver) and continues with the goal tail.
+    ///
+    /// It is only valid as the FIRST event of a stream, consumed by
+    /// [`crate::replay::replay_hybrid`]; the core [`crate::replay::drive`]
+    /// loop treats a `MethodInvoke` anywhere as a divergence (keeping the
+    /// interpreter total and sound). Wire tag `0x06`, additive — a
+    /// decoder that predates it rejects the unknown tag (safe
+    /// fall-through), and no production emit path writes it yet.
+    MethodInvoke { region_key: [u8; 32] },
 }

@@ -27,6 +27,7 @@
 //! fall-through, never a wrong verdict.
 
 use crate::event::CdclTraceEvent;
+use crate::method::Method;
 
 /// Why a literal was placed on the trail during replay. The host
 /// maps this onto its own reason type.
@@ -75,14 +76,15 @@ pub struct ReplayedTrail<S> {
     pub diverged: bool,
 }
 
-/// Replay `events` onto `initial`, resolving each recorded `u32` atom
-/// handle through `resolve`. See the module docs for the faithful
-/// divergence / root-conflict semantics.
-pub fn replay_events<S, R>(
-    mut initial: S,
-    events: &[CdclTraceEvent],
-    resolve: R,
-) -> ReplayedTrail<S>
+/// The core interpreter loop, shared by [`replay_events`] (pure
+/// meta-tracing) and [`replay_hybrid`] (the meta-method composition) —
+/// the BacCaml "one interpreter, two regions" discipline. Drives
+/// `events` onto `state`, returning `(root_conflict, diverged)`. Stops
+/// early (`diverged = true`) on the first unresolved `Decide` /
+/// `Propagate` atom, or on a `MethodInvoke` anywhere in the body (it is
+/// a [`replay_hybrid`] head pseudo-event only — seeing one mid-stream
+/// keeps the interpreter total and sound by diverging).
+pub(crate) fn drive<S, R>(state: &mut S, events: &[CdclTraceEvent], resolve: &R) -> (bool, bool)
 where
     S: ReplayState,
     R: Fn(u32) -> Option<S::Atom>,
@@ -91,15 +93,11 @@ where
     for ev in events {
         match ev {
             CdclTraceEvent::Decide { atom, polarity } => {
-                let Some(t) = resolve(*atom) else {
-                    return ReplayedTrail { state: initial, root_conflict, diverged: true };
-                };
-                initial.push(t, *polarity, ReplayReason::Decision);
+                let Some(t) = resolve(*atom) else { return (root_conflict, true) };
+                state.push(t, *polarity, ReplayReason::Decision);
             }
             CdclTraceEvent::Propagate { atom, polarity, antecedent } => {
-                let Some(t) = resolve(*atom) else {
-                    return ReplayedTrail { state: initial, root_conflict, diverged: true };
-                };
+                let Some(t) = resolve(*atom) else { return (root_conflict, true) };
                 // `antecedent < 0` is a prelude-only derivation with no
                 // per-query clause; the index is trail metadata only
                 // (replay never re-validates the unit step), so the
@@ -109,12 +107,12 @@ where
                 } else {
                     *antecedent as usize
                 };
-                initial.push(t, *polarity, ReplayReason::Propagated { clause_idx });
+                state.push(t, *polarity, ReplayReason::Propagated { clause_idx });
             }
-            CdclTraceEvent::Backjump { to_scope } => initial.backtrack_to(*to_scope),
-            CdclTraceEvent::Restart => initial.backtrack_to(0),
+            CdclTraceEvent::Backjump { to_scope } => state.backtrack_to(*to_scope),
+            CdclTraceEvent::Restart => state.backtrack_to(0),
             CdclTraceEvent::Conflict { learnt, .. } => {
-                if initial.decision_level() == 0 {
+                if state.decision_level() == 0 {
                     root_conflict = true;
                 }
                 // Record the learnt clause; on an unresolved literal,
@@ -132,12 +130,66 @@ where
                     }
                 }
                 if ok {
-                    initial.push_learnt(lits);
+                    state.push_learnt(lits);
                 }
             }
+            CdclTraceEvent::MethodInvoke { .. } => return (root_conflict, true),
         }
     }
-    ReplayedTrail { state: initial, root_conflict, diverged: false }
+    (root_conflict, false)
+}
+
+/// Replay `events` onto `initial`, resolving each recorded `u32` atom
+/// handle through `resolve` (pure meta-tracing). See the module docs
+/// for the faithful divergence / root-conflict semantics.
+pub fn replay_events<S, R>(initial: S, events: &[CdclTraceEvent], resolve: R) -> ReplayedTrail<S>
+where
+    S: ReplayState,
+    R: Fn(u32) -> Option<S::Atom>,
+{
+    let mut state = initial;
+    let (root_conflict, diverged) = drive(&mut state, events, &resolve);
+    ReplayedTrail { state, root_conflict, diverged }
+}
+
+/// §Phase3 hybrid replay — "a trace inlines a method-invoke."
+///
+/// Replays a goal trace ON TOP of a precompiled [`Method`]
+/// (the BacCaml meta-method ⊕ meta-tracing composition). Soundness gate:
+/// a leading [`CdclTraceEvent::MethodInvoke`] whose `region_key` does
+/// not match `method.region_key()` means the method is STALE for this
+/// trace, so the replay aborts with `diverged = true` (a fall-through,
+/// never a verdict). Atom handles resolve through a chained resolver —
+/// the per-query `query_resolve` shadows, the `method`'s prelude
+/// resolver backs it — so a goal trace whose events reference only
+/// query atoms never touches the prelude (the rc.34.5 O(query delta)
+/// property, now expressed through the method). A trace with no leading
+/// `MethodInvoke` is still driven against the method's resolver (legacy
+/// shape), so this is a strict superset of [`replay_events`].
+pub fn replay_hybrid<S, R>(
+    initial: S,
+    method: &Method<S::Atom>,
+    events: &[CdclTraceEvent],
+    query_resolve: R,
+) -> ReplayedTrail<S>
+where
+    S: ReplayState,
+    S::Atom: Clone,
+    R: Fn(u32) -> Option<S::Atom>,
+{
+    let tail = match events.first() {
+        Some(CdclTraceEvent::MethodInvoke { region_key }) => {
+            if *region_key != method.region_key() {
+                return ReplayedTrail { state: initial, root_conflict: false, diverged: true };
+            }
+            &events[1..]
+        }
+        _ => events,
+    };
+    let resolve = |h: u32| query_resolve(h).or_else(|| method.resolve(h).cloned());
+    let mut state = initial;
+    let (root_conflict, diverged) = drive(&mut state, tail, &resolve);
+    ReplayedTrail { state, root_conflict, diverged }
 }
 
 #[cfg(test)]
@@ -219,5 +271,74 @@ mod tests {
         ];
         let r = replay_events(ToyState::default(), &ev, ident);
         assert!(r.root_conflict, "post-restart the conflict is at level 0 again");
+    }
+
+    // --- §Phase3 hybrid (meta-method) ---
+
+    fn method_over(prelude_atoms: &[(u32, u32)]) -> Method<u32> {
+        // region_key is derived from the clause_fold; the atom_map is
+        // the prelude's handle->atom resolver.
+        let map: std::collections::HashMap<u32, u32> = prelude_atoms.iter().cloned().collect();
+        Method::new(crate::digest::clause_set_fold(vec![vec![("p", true)]]), map, false)
+    }
+
+    #[test]
+    fn hybrid_with_matching_region_key_equals_plain_replay() {
+        let m = method_over(&[(1, 1)]);
+        let rk = m.region_key();
+        // Goal trace: a MethodInvoke head + a Decide on a query atom.
+        let hybrid = vec![
+            CdclTraceEvent::MethodInvoke { region_key: rk },
+            CdclTraceEvent::Decide { atom: 2, polarity: true },
+        ];
+        let r = replay_hybrid(ToyState::default(), &m, &hybrid, |h| if h == 2 { Some(2) } else { None });
+        assert!(!r.diverged);
+        // Same trail as plain-replaying just the tail.
+        let plain = replay_events(
+            ToyState::default(),
+            &[CdclTraceEvent::Decide { atom: 2, polarity: true }],
+            |h| if h == 2 { Some(2) } else { None },
+        );
+        assert_eq!(r.state.trail, plain.state.trail);
+    }
+
+    #[test]
+    fn hybrid_diverges_on_region_key_mismatch() {
+        let m = method_over(&[(1, 1)]);
+        let mut wrong = m.region_key();
+        wrong[0] ^= 0xff; // perturb the region key
+        let hybrid = vec![
+            CdclTraceEvent::MethodInvoke { region_key: wrong },
+            CdclTraceEvent::Conflict { learnt: vec![], lbd: 0 },
+        ];
+        let r = replay_hybrid(ToyState::default(), &m, &hybrid, |_| None);
+        assert!(r.diverged, "a stale method (region mismatch) must diverge, never decide a verdict");
+        assert!(!r.root_conflict);
+    }
+
+    #[test]
+    fn hybrid_resolver_chains_query_over_method() {
+        // Prelude atom 1 resolves through the method; query atom 2
+        // resolves through query_resolve. No MethodInvoke head.
+        let m = method_over(&[(1, 100)]);
+        let ev = vec![
+            CdclTraceEvent::Propagate { atom: 1, polarity: true, antecedent: -1 },
+            CdclTraceEvent::Decide { atom: 2, polarity: false },
+        ];
+        let r = replay_hybrid(ToyState::default(), &m, &ev, |h| if h == 2 { Some(2) } else { None });
+        assert!(!r.diverged, "prelude atom via method, query atom via query_resolve");
+        assert_eq!(r.state.trail, vec![(100, true), (2, false)]);
+    }
+
+    #[test]
+    fn drive_diverges_on_midstream_method_invoke() {
+        // A MethodInvoke anywhere but the replay_hybrid head is a
+        // divergence (keeps the interpreter total).
+        let ev = vec![
+            CdclTraceEvent::Decide { atom: 1, polarity: true },
+            CdclTraceEvent::MethodInvoke { region_key: [0u8; 32] },
+        ];
+        let r = replay_events(ToyState::default(), &ev, ident);
+        assert!(r.diverged, "a mid-stream MethodInvoke must diverge");
     }
 }

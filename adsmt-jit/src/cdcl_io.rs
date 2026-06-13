@@ -23,6 +23,7 @@
 //!   0x03 Backjump  (to_scope:u32)
 //!   0x04 Decide    (atom:u32 + polarity:u8)
 //!   0x05 Restart   (no payload)
+//!   0x06 MethodInvoke (region_key:[u8; 32])  — §Phase3, additive
 //! ── end-of-trace GF(2) signature ─────────────────────────
 //! basis_len     : u64
 //! each polynomial:
@@ -188,6 +189,13 @@ fn write_event<W: Write>(
         }
         CdclTraceEvent::Restart => {
             out.write_all(&[0x05u8])?;
+        }
+        CdclTraceEvent::MethodInvoke { region_key } => {
+            // §Phase3 — additive tag 0x06 (32-byte region key). No
+            // production emit path writes this yet; the codec carries it
+            // so a future hybrid trace can persist.
+            out.write_all(&[0x06u8])?;
+            out.write_all(region_key)?;
         }
     }
     Ok(())
@@ -445,6 +453,11 @@ pub fn read_trace(buf: &[u8]) -> Result<CdclTrace, TraceIoError> {
                 CdclTraceEvent::Decide { atom, polarity }
             }
             0x05 => CdclTraceEvent::Restart,
+            0x06 => {
+                let mut region_key = [0u8; 32];
+                region_key.copy_from_slice(c.take(32)?);
+                CdclTraceEvent::MethodInvoke { region_key }
+            }
             other => {
                 return Err(TraceIoError::UnknownTag {
                     offset: tag_off,
@@ -598,6 +611,23 @@ mod tests {
         assert_eq!(decoded.kernel_id, 42);
         assert_eq!(decoded.events.len(), 5);
         assert_eq!(decoded.events, trace.events);
+    }
+
+    #[test]
+    fn method_invoke_event_round_trips_through_bytes() {
+        // §Phase3 — the additive 0x06 tag carries a 32-byte region key.
+        let mut trace = CdclTrace::new(GF2Snapshot::empty());
+        let rk = [0xA5u8; 32];
+        trace.events.push(CdclTraceEvent::MethodInvoke { region_key: rk });
+        trace.events.push(CdclTraceEvent::Decide { atom: 1, polarity: true });
+        let mut buf: Vec<u8> = Vec::new();
+        write_trace(&mut buf, &trace).unwrap();
+        let decoded = read_trace(&buf).unwrap();
+        assert_eq!(decoded.events, trace.events);
+        match decoded.events[0] {
+            CdclTraceEvent::MethodInvoke { region_key } => assert_eq!(region_key, rk),
+            ref other => panic!("expected MethodInvoke, got {other:?}"),
+        }
     }
 
     #[test]

@@ -162,12 +162,11 @@ pub fn clause_set_fold<'a>(
     fold
 }
 
-/// Collapse a [`ClauseFold`] into the 32-byte §3.5.J exact-match
-/// digest: `K12(sum ‖ count_le)`. Delegates to the portable crate;
-/// the byte layout (`sum ‖ count_le`, K12-wrapped) is unchanged.
-pub(crate) fn fold_to_digest(fold: ClauseFold) -> [u8; 32] {
-    portable_algebraic_aotjit::fold_to_digest(fold)
-}
+// The §3.5.J digest collapse (`fold_to_digest`) now lives only in the
+// portable crate — §Phase3 routed the engine's one caller
+// (`jit_trace_digest`) through `portable_algebraic_aotjit::compose_digest`,
+// so the in-tree thin wrapper became dead. Call sites (and tests) use
+// `portable_algebraic_aotjit::fold_to_digest` directly.
 
 /// `CdclEventSink` adapter that funnels every engine-side
 /// state-transition event into a borrowed
@@ -1114,28 +1113,44 @@ impl Solver {
     /// the incremental result is byte-identical to a from-scratch fold
     /// of the whole clause multiset.
     pub fn jit_trace_digest(&self) -> [u8; 32] {
-        let prelude_from_cache = !self.aot_prelude_clauses.is_empty();
-        let mut fold: ClauseFold = if prelude_from_cache {
+        // §Phase3 single-source-of-truth digest: the prelude half and
+        // the per-query delta half are combined + collapsed in exactly
+        // ONE place — the portable `compose_digest` (the same expression
+        // `Method::region_key` flows through). Keeping the prelude/query
+        // split to a single fold expression is the soundness discipline
+        // that prevents a stale prelude half from ever silently matching
+        // a query it should not. `compose_digest(P, Q)` is byte-identical
+        // to the prior `fold_to_digest(combine_fold(P, Q))` since
+        // `combine_fold` is an exact multiset homomorphism.
+        let prelude_fold = if self.aot_prelude_clauses.is_empty() {
+            portable_algebraic_aotjit::EMPTY_FOLD
+        } else {
             self.aot_prelude_clause_fold
                 .unwrap_or_else(|| clause_set_fold(self.aot_prelude_clauses.iter()))
-        } else {
-            ([0u8; 32], 0)
         };
-        // Fold the per-query delta: every assertion whose clauses are
-        // NOT already accounted for by the cached prelude fold. When
-        // the cache is populated, prelude assertion `Term`s are
-        // skipped (their clauses live in `aot_prelude_clauses`); when
-        // it is not, every assertion — including any inline prelude —
-        // is folded here.
+        portable_algebraic_aotjit::compose_digest(prelude_fold, self.query_delta_fold())
+    }
+
+    /// §Phase3 — the per-query delta half of the §3.5.J digest: the
+    /// AdHash fold over every assertion whose clauses are NOT already
+    /// accounted for by the cached prelude fold. When the prelude cache
+    /// is populated, prelude assertion `Term`s are skipped (their
+    /// clauses live in `aot_prelude_clauses`); when it is not, every
+    /// assertion — including any inline prelude — folds here. Combined
+    /// with the prelude half through the single [`Self::jit_trace_digest`]
+    /// `compose_digest` call.
+    fn query_delta_fold(&self) -> ClauseFold {
+        let prelude_from_cache = !self.aot_prelude_clauses.is_empty();
+        let mut delta = portable_algebraic_aotjit::EMPTY_FOLD;
         for term in self.all_assertions() {
             if prelude_from_cache && self.aot_prelude_term_set.contains(&term) {
                 continue;
             }
             if let Some(cs) = crate::cnf::flatten_to_clauses(&term) {
-                fold = combine_fold(fold, clause_set_fold(cs.iter()));
+                delta = combine_fold(delta, clause_set_fold(cs.iter()));
             }
         }
-        fold_to_digest(fold)
+        delta
     }
 
     /// §3.5.E — the algebraic signature to stamp on a `--jit-trace-emit`
@@ -4099,7 +4114,10 @@ mod tests {
         let whole: Vec<crate::cnf::Clause> =
             prelude.iter().chain(query.iter()).cloned().collect();
         assert_eq!(inc, clause_set_fold(whole.iter()));
-        assert_eq!(fold_to_digest(inc), fold_to_digest(clause_set_fold(whole.iter())));
+        assert_eq!(
+            portable_algebraic_aotjit::fold_to_digest(inc),
+            portable_algebraic_aotjit::fold_to_digest(clause_set_fold(whole.iter())),
+        );
         // Abelian: swapping the two folds is identical.
         assert_eq!(
             inc,
@@ -4129,7 +4147,7 @@ mod tests {
 
         // Engine path (internally delegates to the portable crate).
         let engine_fold = clause_set_fold(clauses.iter());
-        let engine_digest = fold_to_digest(engine_fold);
+        let engine_digest = portable_algebraic_aotjit::fold_to_digest(engine_fold);
 
         // Direct portable path over the same atom names.
         let names: Vec<Vec<(String, bool)>> = clauses
@@ -4183,7 +4201,7 @@ mod tests {
         }
         assert_eq!(
             s.jit_trace_digest(),
-            fold_to_digest(clause_set_fold(whole.iter())),
+            portable_algebraic_aotjit::fold_to_digest(clause_set_fold(whole.iter())),
         );
     }
 

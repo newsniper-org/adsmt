@@ -38,8 +38,17 @@
 //! - [`guard`] — the FF-free `EquivClass` / `SkeletonShape`
 //!   algebraic guards (the `PolyInvariant` GF(2) guard stays in the
 //!   in-tree `adsmt-jit` superset; see [`guard`]).
-//! - [`replay`] — the event-stream interpreter, generic over a host
-//!   [`replay::ReplayState`] + an atom `resolve` closure.
+//! - [`replay`] — the event-stream interpreter
+//!   ([`replay::replay_events`], pure meta-tracing) + the hybrid
+//!   composition ([`replay::replay_hybrid`], meta-method ⊕
+//!   meta-tracing), both over one shared `drive` loop and a host
+//!   [`replay::ReplayState`].
+//! - [`method`] — §Phase3 the meta-method half: a [`method::Method`]
+//!   reusable prelude unit + [`method::compose_digest`], the single
+//!   fold expression both the region key and the verdict digest flow
+//!   through (the BacCaml-hybrid upgrade — honest scope: the verdict
+//!   path is already O(1), so this is the soundness-discipline +
+//!   additive interop architecture, not a wall-clock win).
 //!
 //! `adsmt-jit` is the in-tree adapter that binds these to
 //! `adsmt_core::Term` (skeleton hashing, the `ReplayState` impl over
@@ -50,6 +59,7 @@ pub mod digest;
 pub mod event;
 pub mod guard;
 pub mod k12;
+pub mod method;
 pub mod replay;
 
 pub use digest::{
@@ -58,4 +68,5 @@ pub use digest::{
 };
 pub use event::CdclTraceEvent;
 pub use guard::{check_guard, ClassesView, Guard, GuardResult};
-pub use replay::{replay_events, ReplayReason, ReplayState, ReplayedTrail};
+pub use method::{compose_digest, Method};
+pub use replay::{replay_events, replay_hybrid, ReplayReason, ReplayState, ReplayedTrail};
