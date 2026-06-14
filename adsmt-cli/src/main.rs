@@ -369,6 +369,7 @@ fn main() -> ExitCode {
                     pos,
                     &file_history,
                     &mut degraded,
+                    false, // file mode: constant whole-file history → stateless delegation
                 ) {
                     return code;
                 }
@@ -1010,6 +1011,88 @@ fn oxiz_inproc(history: &str) -> Option<LastStatus> {
     last
 }
 
+/// completeness-check (A) — the persistent in-process delegation context.
+/// `oxiz_inproc` recreates a fresh `Context` and re-feeds the WHOLE history
+/// on every delegation, so for a streaming session that shares one big
+/// prelude across many obligations the per-`(check-sat)` cost is O(prelude).
+/// This keeps ONE context alive and feeds only the un-fed suffix of the
+/// growing `history`, so the prelude is asserted ONCE and per-obligation
+/// delegation is O(query delta). `(reset)`/`(push)`/`(pop)` in the suffix
+/// keep the context in lock-step (OxiZ applies them), so the incremental
+/// state is identical to a fresh full re-feed. Soundness-neutral — only the
+/// wall changes, never the verdict.
+#[cfg(feature = "oxiz")]
+struct OxizPersist {
+    ctx: oxiz_solver::Context,
+    fed_len: usize,
+}
+
+#[cfg(feature = "oxiz")]
+thread_local! {
+    static OXIZ_PERSIST: std::cell::RefCell<Option<OxizPersist>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// completeness-check (A) — feed only `history[fed_len..]` to the persistent
+/// context. Falls back to a fresh full re-feed (`oxiz_inproc`) if the context
+/// is absent, the history shrank/diverged from the fed prefix, or a command
+/// errors mid-feed (so correctness is never worse than the stateless path).
+#[cfg(feature = "oxiz")]
+fn oxiz_inproc_persistent(history: &str) -> Option<LastStatus> {
+    let debug = std::env::var_os("ADSMT_OXIZ_DEBUG").is_some();
+    OXIZ_PERSIST.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let reuse = matches!(slot.as_ref(), Some(p)
+            if history.len() >= p.fed_len && history.is_char_boundary(p.fed_len));
+        if !reuse {
+            *slot = Some(OxizPersist { ctx: oxiz_solver::Context::new(), fed_len: 0 });
+        }
+        let p = slot.as_mut().expect("just set");
+        let delta = &history[p.fed_len..];
+        let mut last = None;
+        for cmd in split_top_level_sexprs(delta) {
+            match p.ctx.execute_script(cmd) {
+                Ok(out) => {
+                    if let Some(v) = oxiz_pick_last(out.iter().map(String::as_str)) {
+                        last = Some(v);
+                    }
+                }
+                Err(e) => {
+                    // The persistent context is now in an unknown partial
+                    // state — drop it and fall back to a fresh full re-feed.
+                    if debug {
+                        eprintln!("[oxiz_persist] ERR mid-feed, fresh re-feed: {e:?}");
+                    }
+                    *slot = None;
+                    drop(slot);
+                    return oxiz_inproc(history);
+                }
+            }
+        }
+        p.fed_len = history.len();
+        if debug {
+            eprintln!(
+                "[oxiz_persist] delta={}B total={}B last={last:?}",
+                delta.len(),
+                history.len()
+            );
+        }
+        last
+    })
+}
+
+/// completeness-check (A) — the streaming-path delegation entry: persistent
+/// in-process context first, then the subprocess oracle. Distinct from
+/// [`oxiz_fallback`] (the stateless full-refeed) used by the file path and the
+/// independent-query abductive path.
+fn oxiz_fallback_streaming(history: &str) -> Option<LastStatus> {
+    #[cfg(feature = "oxiz")]
+    if let Some(v) = oxiz_inproc_persistent(history) {
+        return Some(v);
+    }
+    oxiz_subprocess(history)
+}
+
 /// rc.30 — split an SMT-LIB transcript into its top-level
 /// S-expressions (balanced parens, respecting `"…"` strings and
 /// `;…` line comments).  Used to feed the OxiZ delegation one
@@ -1098,6 +1181,11 @@ fn dispatch_one(
     pos: Position,
     history: &str,
     degraded: &mut bool,
+    // completeness-check (A): the streaming path passes a GROWING history, so
+    // its delegation reuses a persistent OxiZ context (prelude asserted once);
+    // the file path passes a CONSTANT whole-file history, so it must keep the
+    // stateless full-refeed.
+    streaming: bool,
 ) -> Option<ExitCode> {
     use std::io::Write;
     let result = driver.dispatch(cmd, pos, history);
@@ -1111,7 +1199,12 @@ fn dispatch_one(
             // verdict would then be UNSOUND, since OxiZ replays the
             // full, correct buffer).
             let status = if *degraded || matches!(status, LastStatus::Unknown) {
-                let v = oxiz_fallback(history).unwrap_or(status);
+                let delegated = if streaming {
+                    oxiz_fallback_streaming(history)
+                } else {
+                    oxiz_fallback(history)
+                };
+                let v = delegated.unwrap_or(status);
                 // Keep the driver's `last_result` consistent with the
                 // delegated verdict, so a follow-up
                 // `(get-info :reason-unknown)` / `(get-model)` (which
@@ -1297,6 +1390,7 @@ fn run_stdin_streaming(
                     for (cmd, pos) in commands {
                         if let Some(code) = dispatch_one(
                             driver, last, cli, cmd, pos, &history, &mut degraded,
+                            true, // streaming: growing history → persistent delegation
                         ) {
                             return Err(code);
                         }
