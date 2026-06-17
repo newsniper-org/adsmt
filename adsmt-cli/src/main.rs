@@ -1596,11 +1596,46 @@ fn strip_abductive_commands(history: &str) -> String {
     let mut out = String::with_capacity(history.len());
     for cmd in split_top_level_sexprs(history) {
         let head = command_head(cmd);
-        let drop = matches!(
+        // (a) The abductive surface itself (re-asserting it would either be a
+        // parse error for OxiZ or re-enter the abductive search).
+        let drop_abductive = matches!(
             head,
             Some("declare-abducible" | "abduce" | "get-abduct" | "get-abduct-next")
         ) || (head == Some("set-option") && cmd.contains(":abduct-"));
-        if !drop {
+        // (b) The session's prior INTERACTIVE query/output commands. `decide_fh`
+        // delegates `F ∧ H ∧ ¬G` by reconstructing the assertion context `F`
+        // from `history` and appending its OWN single terminal `(check-sat)`.
+        // The session's earlier `(check-sat)` / `(get-*)` calls are NOT part of
+        // `F` — and replaying a prior in-scope `(check-sat)` is the trigger for a
+        // theory-state residual: when the abduce runs mid-session (the streaming
+        // verus driver feeds commands one at a time, so `history` ends inside an
+        // OPEN `(push)` scope rather than the whole balanced file), the prior
+        // failed-query `(check-sat)` executes inside that still-open scope and
+        // leaks EUF/arith state into the appended entailment/consistency solve →
+        // spurious `unsat` → a non-entailing candidate (e.g. `(>= x! 0)`) wrongly
+        // "entails" `(= x! 0)`. Batch (`lu-smt FILE`) escaped it only because the
+        // whole-file history is push/pop-balanced, so the appended check ran at
+        // top level. Stripping these query/output commands makes the delegated
+        // query feed-independent (streaming ≡ batch) AND faster (no wasted
+        // intermediate solves). They never modify `F`, so dropping them is sound.
+        let drop_interactive = matches!(
+            head,
+            Some(
+                "check-sat"
+                    | "check-sat-assuming"
+                    | "get-model"
+                    | "get-value"
+                    | "get-info"
+                    | "get-unsat-core"
+                    | "get-unsat-assumptions"
+                    | "get-proof"
+                    | "get-assignment"
+                    | "get-option"
+                    | "echo"
+                    | "exit"
+            )
+        );
+        if !drop_abductive && !drop_interactive {
             out.push_str(cmd);
             out.push('\n');
         }
@@ -3417,6 +3452,11 @@ mod abduct_render_tests {
             (assert (forall ((a Int) (b Int)) (! (= (Add a b) (+ a b)) :pattern ((Add a b)))))\n\
             (declare-const x Int)\n\
             (assert (> x 0))\n\
+            (push)\n\
+            (check-sat)\n\
+            (get-info :reason-unknown)\n\
+            (get-model)\n\
+            (pop)\n\
             (declare-abducible (>= x 0))\n\
             (set-option :abduct-theory true)\n\
             (set-option :produce-models true)\n\
@@ -3430,10 +3470,21 @@ mod abduct_render_tests {
         assert!(f.contains(":pattern ((Add a b))"));
         assert!(f.contains("(assert (> x 0))"));
         assert!(f.contains("(set-option :produce-models true)"));
+        // The push/pop scope structure survives (it shapes F).
+        assert!(f.contains("(push)"));
+        assert!(f.contains("(pop)"));
         // The abductive surface is gone.
         assert!(!f.contains("declare-abducible"));
         assert!(!f.contains(":abduct-theory"));
         assert!(!f.contains("(abduce "));
         assert!(!f.contains("get-abduct"));
+        // The session's INTERACTIVE query/output commands are gone — `decide_fh`
+        // appends its OWN terminal `(check-sat)`, and replaying a prior in-scope
+        // `(check-sat)` is the streaming consistency/entailment-gate leak trigger
+        // (verus-fork non-entailing-candidates repro). Dropping them makes the
+        // delegated F-query feed-independent (streaming ≡ batch).
+        assert!(!f.contains("(check-sat)"), "prior (check-sat) must be stripped from the delegated F");
+        assert!(!f.contains("(get-model)"));
+        assert!(!f.contains("get-info"));
     }
 }
