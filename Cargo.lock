@@ -1968,6 +1968,8 @@ dependencies = [
  "libm",
  "oxiz-core",
  "portable-atomic-util",
+ "portable-collection-primitives",
+ "portable-queues",
  "rayon",
  "rustc-hash",
  "smallvec",
@@ -2143,6 +2145,14 @@ version = "0.1.0"
 source = "git+https://github.com/newsniper-org/portable-collections#58133ac09cb59b5c0df17556f448edba45f6a117"
 dependencies = [
  "rustc_version",
+]
+
+[[package]]
+name = "portable-queues"
+version = "0.1.0"
+source = "git+https://github.com/newsniper-org/portable-collections#58133ac09cb59b5c0df17556f448edba45f6a117"
+dependencies = [
+ "portable-collection-primitives",
 ]
 
 [[package]]
