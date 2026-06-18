@@ -221,6 +221,49 @@ vacuous (F: x<0) → dropped; `F ⊨ G` → `true`; default (no flag) → SLD `[
 on rc.35.1 (NO bump — additive option). 1094 → **1100** green. Reply:
 `.local-replies-to/verus-fork/2026-06-12-theory-aware-abductive-search-landed.md`.
 
+## Delegated `F`-query must strip the session's interactive commands (2026-06-18, streaming≡batch parity)
+
+verus-fork found `(abduce (= x! 0))` fed STREAMING (one cmd at a time — the
+verus pipe) returned NON-entailing singletons `(>= x! 0)`/`(> x! 0)` alongside
+the real `(= x! 0)`, while the IDENTICAL file fed BATCH (`lu-smt FILE`) returned
+the correct minimal sets (`(= x! 0)` + `(>= x! 0) ∧ (<= x! 0)`). The per-subset
+ENTAILMENT check `F ∧ H ∧ ¬G` was spuriously `unsat` for `H=(>= x! 0)` only on
+streaming. Localized empirically (the [[oxiz_relationship]] 38019b0 lesson —
+falsify the structural guess first): the NATIVE verdict was **identical** batch
+vs streaming (`Unknown→delegate` both), so it was the **OxiZ delegation**; and
+since `oxiz_inproc` uses a fresh `Context` per call, the only difference was the
+`history` string fed to `oxiz_fallback`. ROOT CAUSE: `decide_fh` (adsmt-cli)
+delegates by reconstructing `F` from the session `history` + appending its own
+terminal `(check-sat)`. Streaming `history` ends MID-SCOPE (inside an open
+`(push)`) at the `(abduce)` command and INCLUDES the prior failed-query
+`(check-sat)`; replaying that prior in-scope `(check-sat)` inside the still-open
+push leaks theory state into the appended entailment solve → spurious `unsat`
+(the 38019b0 class, one level out — at the open-push level, not across a
+`(pop)`). Batch escaped it only because the whole-file `history` is push/pop
+BALANCED, so the appended check ran at top level. Proven 100% query-content
+(not feed): feeding the two captured query strings to a standalone OxiZ gave
+`unknown` (batch) vs `unsat` (streaming), and **closing the open push before the
+appended asserts flipped streaming → `unknown`** (closing only removes
+constraints, so the `unsat` was provably spurious). FIX (adsmt-side, no OxiZ
+change, no bump): `strip_abductive_commands` now ALSO drops the session's
+interactive query/output commands (`check-sat`/`check-sat-assuming`/`get-model`/
+`get-value`/`get-info`/`get-unsat-core`/`get-unsat-assumptions`/`get-proof`/
+`get-assignment`/`get-option`/`echo`/`exit`) — they are never part of `F`, so
+dropping them makes the delegated query **feed-independent** (streaming ≡ batch)
++ faster (no wasted intermediate solves); `decide_fh` still appends ONE
+`(check-sat)`. REUSABLE LESSON: when reconstructing an SMT-LIB query from session
+history for delegation, reconstruct only the **assertion context** (set-*,
+declare-*, define-*, assert, push, pop) — never replay prior interactive
+`(check-sat)`/`(get-*)`; replaying them both wastes solves and (if the engine
+has any cross-check residual) makes the result depend on feed shape. LATENT (noted,
+non-blocking): the underlying OxiZ residual (a `(check-sat)` inside an open
+`(push)` leaking to the next in-scope `(check-sat)`) still exists but is
+unreachable via the delegation now. Streaming + batch both return the correct
+sets; all `adsmt-cli` tests green (`theory_abduction`/`_delegation`/
+`streaming_robustness`); `strip_abductive_commands` unit test extended (fails on
+old code). Reply: `.local-replies-to/verus-fork/2026-06-18-streaming-abduce-nonentailing-FIXED-strip-interactive-from-delegated-F.md`.
+See [[feedback_roundtrip_through_real_producer]] (CLI feed-shape divergence).
+
 ## Gaps still on the Verus side (the wire is now adsmt-complete)
 
 - **Trigger:** Verus's air backend already *parses* the `abductive` JSON
