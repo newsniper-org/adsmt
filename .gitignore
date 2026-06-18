@@ -18,3 +18,5 @@ docs/upstream/*.md
 *.data
 perf.data
 perf.data.old
+
+.claude-conversations/precompact-backups*.md
