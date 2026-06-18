@@ -5,10 +5,10 @@
 > theory sibling that certifies UNSAT under Hilbert's Weak
 > Nullstellensatz.
 >
-> ~44 k lines of Rust across 31 workspace crates, 1101 tests
+> ~44 k lines of Rust across 31 workspace crates, 1105 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.38` on 2026-06-14.
+> `1.0.0-rc.39` on 2026-06-18.
 
 ---
 
@@ -135,7 +135,7 @@ missing* when not (abductive, ranked) — a strictly better failure mode
 than "unknown / timeout". The abduct is advisory: the user justifies it
 (as a `requires`/`invariant`/lemma), never silently assumes it.
 
-**Active consumers (rc.38):**
+**Active consumers (rc.39):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -369,12 +369,12 @@ or proof-search strategies without touching the engine core.
 |---|---|
 | Lines of Rust | ~44,000 (workspace) |
 | Workspace crates | 31 (`adsmt-*` core + `adsmt-parsers/` + `adsmt-shims/` + `adsmt-emit/` + 11 absorbed `lu-*` + `adsmt-meta` umbrella) |
-| Tests | **1101 green**, 0 ignored, 0 failed |
+| Tests | **1105 green**, 0 ignored, 0 failed |
 | `cargo doc --workspace --no-deps` | **0 warnings** (every intentional warning has an explicit `#[allow(...)]`) |
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.38` (2026-06-14) |
+| Workspace version | `1.0.0-rc.39` (2026-06-18) |
 
 ---
 

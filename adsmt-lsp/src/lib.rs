@@ -1,4 +1,4 @@
-//! adsmt LSP server library — v0.25 phase 2 scaffold.
+//! adsmt LSP server library.
 //!
 //! Public surface: the [`Backend`] type implements
 //! [`tower_lsp::LanguageServer`] and is what the
@@ -7,15 +7,17 @@
 //! tests can construct a `Backend` directly without going
 //! through stdio.
 //!
-//! Scaffold capability set (this commit, 25LSP.1):
+//! Capability set (all built on the one `Backend` type):
 //!   - `initialize` / `initialized` / `shutdown` lifecycle
 //!   - `textDocument/didOpen` + `didChange` + `didClose` sync
-//!   - empty capability bitmap (every other capability lands in
-//!     subsequent 25LSP.* tasks).
+//!   - `publishDiagnostics` from the SMT-LIB parser
+//!   - `textDocument/definition` + a symbol → declaration index
+//!   - `textDocument/hover` (declaration line) and `completion`
+//!     (static SMT-LIB table)
+//!   - `workspace/symbol` search and a `codeAction` placeholder
 //!
-//! Each subsequent task (25LSP.2 publishDiagnostics, 25LSP.3
-//! definition, …) extends this same `Backend` type without
-//! restructuring the lifecycle.
+//! The inline `v0.25 25LSP.N` markers below record which roadmap
+//! task each capability landed under (historical provenance).
 
 use std::collections::HashMap;
 use std::sync::Arc;

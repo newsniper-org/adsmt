@@ -8,7 +8,7 @@
 //! UNSAT by the constant-`1` criterion (Hilbert's Weak
 //! Nullstellensatz over `GF(2)`).
 //!
-//! ## Layered surface (current rc.14 state)
+//! ## Layered surface (current state)
 //!
 //! - **v0 (Buchberger, dense)** — [`Monomial`] is a `SmallVec`
 //!   of `u8` exponents, [`Polynomial`] is the sorted-descending
@@ -36,7 +36,7 @@
 //!   the engine returns `Unknown`).  Wire it up through
 //!   `adsmt_engine::Solver::with_finite_field(...)`.
 //!
-//! ## Out of scope at rc.14
+//! ## Out of scope (current state)
 //!
 //! - **ZDD representation (v2)** — only opens if a Verus prelude
 //!   shape with > ~1k variables shows up; would route through the
