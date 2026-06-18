@@ -57,6 +57,58 @@ pub fn byte_offset_to_position(input: &str, byte: usize) -> Position {
     Position::new(line, col)
 }
 
+/// Precomputed newline byte-offsets for `O(log N)` position lookup.
+///
+/// [`byte_offset_to_position`] scans from byte 0 on every call, so a
+/// caller that resolves one position per command — as the SMT-LIB
+/// parser does, one per top-level `(...)` at *growing* offsets — pays
+/// `Σ offsets = O(N²)` in the input size. (Measured 2026-06-18: ~80 %
+/// of a 6 k-line parse.) Build a `LineIndex` ONCE over the input, then
+/// each [`LineIndex::position`] is a binary search over the newline
+/// table: `O(N log N)` total. The result is byte-identical to
+/// [`byte_offset_to_position`] on the same input.
+#[derive(Debug, Clone)]
+pub struct LineIndex {
+    /// Ascending byte offsets of every `\n` in the input.
+    newlines: Vec<usize>,
+    len: usize,
+}
+
+impl LineIndex {
+    /// Precompute the newline table for `input` (one linear pass).
+    #[must_use]
+    pub fn new(input: &str) -> Self {
+        let newlines = input
+            .bytes()
+            .enumerate()
+            .filter_map(|(i, b)| (b == b'\n').then_some(i))
+            .collect();
+        Self {
+            newlines,
+            len: input.len(),
+        }
+    }
+
+    /// 1-based (line, column) of `byte`, byte-identical to
+    /// [`byte_offset_to_position`] (column counts bytes since the last
+    /// newline; the byte AT a newline belongs to the preceding line).
+    #[must_use]
+    pub fn position(&self, byte: usize) -> Position {
+        let byte = byte.min(self.len);
+        // Newlines strictly before `byte` (matches the original, which
+        // never processes the byte at `byte` itself).
+        let before = self.newlines.partition_point(|&p| p < byte);
+        let line = before as u32 + 1;
+        let line_start = if before == 0 {
+            0
+        } else {
+            self.newlines[before - 1] + 1
+        };
+        let column = (byte - line_start) as u32 + 1;
+        Position::new(line, column)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ParseError {
     #[error("unexpected character {ch:?} at byte {at}")]
@@ -379,6 +431,30 @@ mod tests {
         let input = "abc\ndef";
         let pos = byte_offset_to_position(input, 5);
         assert_eq!(pos, Position::new(2, 2));
+    }
+
+    #[test]
+    fn line_index_position_matches_linear_scan_for_every_offset() {
+        // The O(N log N) LineIndex must be byte-identical to the O(N) linear
+        // `byte_offset_to_position` at EVERY offset (incl. at newlines, past
+        // EOF, empty input, consecutive/trailing newlines).
+        for input in [
+            "",
+            "abc",
+            "abc\ndef",
+            "\n\n\nx",
+            "(declare-const x Int)\n(assert (> x 0))\n(check-sat)\n",
+            "a\nbb\nccc\n\ndddd",
+        ] {
+            let idx = LineIndex::new(input);
+            for byte in 0..=input.len() + 3 {
+                assert_eq!(
+                    idx.position(byte),
+                    byte_offset_to_position(input, byte),
+                    "mismatch at byte {byte} of {input:?}"
+                );
+            }
+        }
     }
 
     #[test]

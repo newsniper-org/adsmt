@@ -8,7 +8,7 @@
 
 use thiserror::Error;
 
-use crate::sexpr::{self, byte_offset_to_position, ParseError, Position, SExpr};
+use crate::sexpr::{self, ParseError, Position, SExpr};
 
 #[derive(Debug, Error)]
 pub enum SmtLibError {
@@ -142,9 +142,14 @@ pub fn parse_smtlib_positioned(
     input: &str,
 ) -> Result<Vec<(Command, Position)>, SmtLibError> {
     let positioned = sexpr::parse_sexprs_positioned(input)?;
+    // Build the newline index ONCE: a per-command `byte_offset_to_position`
+    // scans from byte 0 each call, so over commands at growing offsets it is
+    // O(N²) in the input (measured ~80% of a 6 k-line parse). `LineIndex`
+    // makes each lookup an O(log N) binary search → O(N log N) total.
+    let line_index = sexpr::LineIndex::new(input);
     positioned
         .into_iter()
-        .map(|(s, off)| Ok((parse_command(s)?, byte_offset_to_position(input, off))))
+        .map(|(s, off)| Ok((parse_command(s)?, line_index.position(off))))
         .collect()
 }
 

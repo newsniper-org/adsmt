@@ -26,6 +26,24 @@
 //! meta-tracing" (dynasm native kernels) is therefore deliberately
 //! out of scope for this crate.
 //!
+//! The 2026-06-18 re-profile (5 workload shapes — average QF, a
+//! DAG-heavy, an LIA, a quantifier, and a pigeonhole solve-heavy
+//! case) confirms and sharpens this, and formally retires the
+//! "copy-and-patch / Deegen-style native codegen JIT" idea. 4 of 5
+//! cases are front-end-bound (parse + DAG + hash-cons) and the
+//! native engine *bails to `unknown`* on every non-trivial input
+//! (the hard solving is delegated, where this crate never runs).
+//! The one solve-heavy case (pigeonhole) *does* make the native
+//! CDCL loop ~80% — yet a native-codegen tier still would not pay
+//! off, because its two prerequisites are **disjoint** across
+//! workloads: (i) the native CDCL solve dominates (only hard,
+//! one-shot propositional search) AND (ii) the solve recurs so a
+//! recorded trace can be replayed (only a repeated prelude — which
+//! bails to delegation). No workload satisfies both, and where CDCL
+//! does dominate the hotspot is an `O(n)` VSIDS scan (a
+//! data-structure fix, not a codegen target). See
+//! `docs/thoughts/algebraic-aotjit-codegen-rejected.md`.
+//!
 //! ## Surface (incremental extraction)
 //!
 //! - [`k12`] — the K12-256 hash backing the digest, byte-identical
