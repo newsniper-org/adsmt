@@ -166,7 +166,7 @@ adsmt-jit = { path = "adsmt-jit" }
 # https://codeberg.org/newsniper-org/portable-algebraic-aotjit ; consumed
 # here via the sibling local clone for now. Switch to a Codeberg git-dep
 # (+ rev) once the migration commit is pushed.
-portable-algebraic-aotjit = { path = "../portable-algebraic-aotjit" }
+portable-algebraic-aotjit = { git = "https://codeberg.org/newsniper-org/portable-algebraic-aotjit.git" }
 # §3.3 Stålmarck pre-saturation — AOT-time propositional
 # implication-graph saturator.
 adsmt-stalmarck = { path = "adsmt-stalmarck" }

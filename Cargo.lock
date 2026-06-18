@@ -2108,6 +2108,7 @@ dependencies = [
 [[package]]
 name = "portable-algebraic-aotjit"
 version = "1.0.0-rc.39"
+source = "git+https://codeberg.org/newsniper-org/portable-algebraic-aotjit.git#a917df764991784234828e7d926aba69a559584c"
 dependencies = [
  "tiny-keccak",
 ]
