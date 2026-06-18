@@ -48,7 +48,7 @@ pub enum CdclTraceEvent {
     /// (binding its prelude resolver) and continues with the goal tail.
     ///
     /// It is only valid as the FIRST event of a stream, consumed by
-    /// [`crate::replay::replay_hybrid`]; the core [`crate::replay::drive`]
+    /// [`crate::replay::replay_hybrid`]; the core `replay::drive`
     /// loop treats a `MethodInvoke` anywhere as a divergence (keeping the
     /// interpreter total and sound). Wire tag `0x06`, additive — a
     /// decoder that predates it rejects the unknown tag (safe

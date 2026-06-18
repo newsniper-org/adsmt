@@ -44,6 +44,16 @@
 //! data-structure fix, not a codegen target). See
 //! `docs/thoughts/algebraic-aotjit-codegen-rejected.md`.
 //!
+//! The *meta-generator* reading of Deegen — one declarative trace-ABI
+//! spec → derived (mutually-consistent) replay interpreter, recorder
+//! contract, digest contribution, and guard projection, so the four
+//! trace consumers cannot drift (the §3.5.J recorder-vs-replay class)
+//! — IS pursued, as the opt-in default-off `deegen` module
+//! (`algebraic-deegen` feature). Its artifacts are algebraic, never
+//! machine code; like Phase 3 its value is soundness-coherence +
+//! maintainability, not wall-clock. See
+//! `docs/thoughts/algebraic-deegen-meta-generator-design.md`.
+//!
 //! ## Surface (incremental extraction)
 //!
 //! - [`k12`] — the K12-256 hash backing the digest, byte-identical
@@ -73,6 +83,8 @@
 //! the engine `CdclState`, the GF(2) snapshot + `PolyInvariant`), so
 //! existing `adsmt_jit::…` engine imports keep working unchanged.
 
+#[cfg(feature = "algebraic-deegen")]
+pub mod deegen;
 pub mod digest;
 pub mod event;
 pub mod guard;
