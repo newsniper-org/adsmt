@@ -29,12 +29,6 @@ members = [
     # solve starts with the prelude's propositional skeleton
     # already at fixpoint.
     "adsmt-stalmarck",
-    # Portable, adsmt-independent core of the §3.5 algebraic
-    # AOT/JIT trace-replay + clause-set-digest machinery (extracted
-    # from adsmt-jit + the engine's AOT helpers so OxiZ can reuse
-    # it). See the `aot-jit-profile-finding` memory: the digest +
-    # AOT state-reuse is the lever, not a native-codegen kernel.
-    "portable-algebraic-aotjit",
     "adsmt-class",
     "adsmt-quant",
     "adsmt-abduce",
@@ -167,7 +161,12 @@ adsmt-jit = { path = "adsmt-jit" }
 # trace-replay + clause-set-digest machinery (digest / event
 # vocabulary / FF-free guards / replay interpreter). adsmt-jit +
 # the engine consume it so there is a single implementation.
-portable-algebraic-aotjit = { path = "portable-algebraic-aotjit" }
+#
+# MIGRATED OUT (2026-06-18) to its own BSD-2-Clause-Patent repo at
+# https://codeberg.org/newsniper-org/portable-algebraic-aotjit ; consumed
+# here via the sibling local clone for now. Switch to a Codeberg git-dep
+# (+ rev) once the migration commit is pushed.
+portable-algebraic-aotjit = { path = "../portable-algebraic-aotjit" }
 # §3.3 Stålmarck pre-saturation — AOT-time propositional
 # implication-graph saturator.
 adsmt-stalmarck = { path = "adsmt-stalmarck" }
