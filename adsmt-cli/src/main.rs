@@ -1571,6 +1571,17 @@ mod abduct {
     }
 }
 
+/// Does the session buffer `F` assert any quantifier?  Used by
+/// [`Driver::decide_fh`] to decide whether a native `sat` is authoritative: on
+/// the quantifier-free fragment native is complete, but over a quantified `F`
+/// (the verus prelude's `:pattern` definition axioms) native is an incomplete
+/// quantifier engine and a `sat` may be spurious, so the abduce check defers to
+/// OxiZ.  A crude substring scan is intentional: a false positive (e.g. a symbol
+/// literally named `forall`) only costs an extra, sound OxiZ confirmation.
+fn history_has_quantifier(history: &str) -> bool {
+    history.contains("forall") || history.contains("exists")
+}
+
 /// rc.36 — the head symbol of a top-level SMT-LIB command (the first
 /// symbol after the opening paren), e.g. `declare-fun` from
 /// `(declare-fun Add (Int Int) Int)`. `None` for a malformed / empty
@@ -2739,14 +2750,35 @@ impl Driver {
             .map(|us| std::time::Instant::now() + std::time::Duration::from_micros(us));
         let native = self.solver.check_sat_with_deadline(deadline);
         self.solver.pop(1);
-        match native {
+        // A native `Sat` is authoritative ONLY on the quantifier-free fragment.
+        // On a quantified `F` (the verus prelude's `:pattern` definition axioms,
+        // e.g. `(forall ((x …)) (! (= (ens%L x) <ens>) :pattern ((ens%L x))))`)
+        // the native engine is an INCOMPLETE quantifier engine: when its
+        // e-matcher does not fire a trigger (it misses Bool-sorted *predicate*
+        // applications like `(ens%L x)` against an asserted atom `(ens%L c)`), it
+        // can return a `sat` whose model VIOLATES the un-instantiated `∀` — so for
+        // the abduce entailment/consistency check it is not trustworthy. Defer to
+        // OxiZ (the complete authority, which e-matches the pattern) whenever a
+        // quantifier is present; trust native's `sat` only if OxiZ cannot decide.
+        // `Unsat` is always sound (a refutation is a proof), so it is trusted
+        // unconditionally. (verus-fork `abduce-ens-pattern-completeness`.)
+        let native_sat = match native {
             SatResult::Unsat { .. } => return FhVerdict::Unsat,
-            SatResult::Sat { .. } => return FhVerdict::Sat,
+            SatResult::Sat { .. } => {
+                if !history_has_quantifier(history) {
+                    return FhVerdict::Sat;
+                }
+                true // a SUSPECT sat over quantifiers — confirm via OxiZ below
+            }
             // `Unknown` / `Abductive` — undecided natively; delegate.
-            _ => {}
-        }
+            _ => false,
+        };
         if !oxiz_available() {
-            return FhVerdict::Unknown;
+            // No complete backend to confirm the suspect `sat`: for entailment an
+            // unconfirmed verdict is not entailment (caller surfaces only a
+            // confirmed abduct); for consistency `Sat`/`Unknown` ≠ `Unsat`, so a
+            // real abduct is never falsely dropped.
+            return if native_sat { FhVerdict::Sat } else { FhVerdict::Unknown };
         }
         // 2. Delegate the *augmented* query — `F` (adsmt-abductive
         // commands stripped) + `(assert extra)` + `(check-sat)` — through
@@ -2761,7 +2793,15 @@ impl Driver {
         match oxiz_fallback(&query) {
             Some(LastStatus::Unsat) => FhVerdict::Unsat,
             Some(LastStatus::Sat) => FhVerdict::Sat,
-            _ => FhVerdict::Unknown,
+            // OxiZ also undecided: keep native's `sat` if it had one (a suspect
+            // but un-refuted sat), else `Unknown`.
+            _ => {
+                if native_sat {
+                    FhVerdict::Sat
+                } else {
+                    FhVerdict::Unknown
+                }
+            }
         }
     }
 

@@ -116,3 +116,43 @@ fn get_abduct_emits_the_theory_abduct_as_a_reparseable_define_fun() {
         "out={out}"
     );
 }
+
+// verus-fork `abduce-ens-pattern-completeness` (2026-06-19): an abducible whose
+// entailment needs a `:pattern`-triggered definition axiom to fire. Native's
+// e-matcher misses the Bool-sorted predicate trigger `(ensL x)` and returns a
+// spurious `sat`, so the per-subset check must DEFER to OxiZ (the complete
+// authority) — gated on the `oxiz` feature (the delegation backend).
+#[cfg(feature = "oxiz")]
+#[test]
+fn pattern_triggered_definition_abduct_surfaces_via_delegation() {
+    // ∀x. ensL(x) ⟺ (x>5)  [:pattern ((ensL x))];  goal x>5.
+    // (ensL xc) ⊨ (xc>5) via the def axiom, so it IS a valid abduct.
+    let out = run(
+        "(set-logic UFLIA)\n(declare-fun ensL (Int) Bool)\n(declare-const xc Int)\n\
+         (assert (forall ((x Int)) (! (= (ensL x) (> x 5)) :pattern ((ensL x)))))\n\
+         (declare-abducible (ensL xc))\n(set-option :abduct-theory true)\n\
+         (abduce (> xc 5))\n",
+    );
+    let j = last_abductive(&out);
+    let cands = j["abductive_candidates"].as_array().unwrap();
+    assert_eq!(cands.len(), 1, "expected the (ensL xc) abduct: {out}");
+    assert_eq!(cands[0]["term"], "(ensL xc)");
+}
+
+#[cfg(feature = "oxiz")]
+#[test]
+fn pattern_definition_non_entailing_abduct_does_not_surface() {
+    // SOUNDNESS: (ensL xc) gives only xc>5, which does NOT entail xc>100 —
+    // delegation must confirm SAT (not entailed), so the abduct stays absent.
+    let out = run(
+        "(set-logic UFLIA)\n(declare-fun ensL (Int) Bool)\n(declare-const xc Int)\n\
+         (assert (forall ((x Int)) (! (= (ensL x) (> x 5)) :pattern ((ensL x)))))\n\
+         (declare-abducible (ensL xc))\n(set-option :abduct-theory true)\n\
+         (abduce (> xc 100))\n",
+    );
+    let j = last_abductive(&out);
+    assert!(
+        j["abductive_candidates"].as_array().unwrap().is_empty(),
+        "a non-entailing pattern abduct must not surface: {out}"
+    );
+}
