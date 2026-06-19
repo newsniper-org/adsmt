@@ -160,11 +160,22 @@ pub fn instantiate_one(
 }
 
 /// Collect positive sub-terms of `body` that mention the bound
-/// variable `v`. Walks through `not / and / or / =>` connectives so
+/// variable `v`. Walks through `not / and / or / => / =` connectives so
 /// e.g. `¬P(x)` yields the pattern `P(x)` and `(or P(x) Q(x))`
 /// yields both `P(x)` and `Q(x)`. Bottoms out at the first
 /// non-connective sub-term — those are the actual trigger
 /// candidates the E-matcher can match against the universe.
+///
+/// Equality is decomposed into its two sides: a definitional axiom
+/// `∀x. (= (f x) rhs)` — and in particular a Bool-sorted *predicate*
+/// definition `∀x. (= (P x) <body>)` (verus's `:pattern`-annotated
+/// `ens%L` axioms) — must yield `(P x)` as a trigger, NOT the whole
+/// equality. Omitting this left the equality itself as the sole pattern,
+/// which never matches a ground predicate atom `(P c)` (heads `=` vs
+/// `P` differ), so the e-matcher fired no instantiation and the engine
+/// returned a spurious `sat` (the model violated the un-instantiated
+/// `∀`). The int-sorted analog `∀x. (> (f x) 0)` worked only because its
+/// body is a single arith atom, already a usable trigger.
 fn collect_trigger_patterns(body: &Term, v: &Arc<Var>) -> Vec<Term> {
     fn walk(t: &Term, v: &Arc<Var>, out: &mut Vec<Term>) {
         if !mentions(t, v) {
@@ -185,6 +196,11 @@ fn collect_trigger_patterns(body: &Term, v: &Arc<Var>) -> Vec<Term> {
             return;
         }
         if let Some((a, b)) = t.dest_imp() {
+            walk(&a, v, out);
+            walk(&b, v, out);
+            return;
+        }
+        if let Some((a, b)) = t.dest_eq() {
             walk(&a, v, out);
             walk(&b, v, out);
             return;

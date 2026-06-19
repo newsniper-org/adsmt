@@ -3035,6 +3035,72 @@ mod tests {
     }
 
     #[test]
+    fn bool_equality_propositional_conflict_is_unsat() {
+        // (= p q) ∧ p ∧ ¬q over plain Bool constants is structurally
+        // UNSAT — the iff forces q whenever p holds. Pre-fix the CNF
+        // flattener treated `(= p q)` as an opaque atom (never tied to
+        // the literals p, q), so this was a spurious `sat`. Now Bool-eq
+        // is encoded as the iff `(and (=> p q) (=> q p))`. (verus-fork
+        // request 3b: the predicate-trigger e-matching soundness item.)
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let eq = Term::mk_eq(p.clone(), q.clone()).unwrap();
+        let body = Term::mk_and(p, Term::mk_not(q).unwrap()).unwrap();
+        s.assert(Term::mk_and(eq, body).unwrap());
+        assert!(
+            matches!(s.check_sat(), SatResult::Unsat { .. }),
+            "(p ⟺ q) ∧ p ∧ ¬q must be unsat"
+        );
+    }
+
+    #[test]
+    fn bool_equality_consistent_is_sat() {
+        // (= p q) ∧ p ∧ q is satisfiable (p = q = true) — the iff
+        // encoding must not over-constrain into a spurious unsat.
+        let mut s = Solver::new();
+        let p = Term::var("p", Type::bool_());
+        let q = Term::var("q", Type::bool_());
+        let eq = Term::mk_eq(p.clone(), q.clone()).unwrap();
+        let body = Term::mk_and(p, q).unwrap();
+        s.assert(Term::mk_and(eq, body).unwrap());
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
+    }
+
+    #[test]
+    fn predicate_definition_axiom_refutes_via_ematch() {
+        // The verus-fork `ens%L` shape on a small F:
+        //   ∀x. (ensL x) ⟺ (x > 5)        [:pattern (ensL x)]
+        //   (ensL xc) ∧ ¬(xc > 5)
+        // e-matching instantiates x ↦ xc → (ensL xc) ⟺ (xc > 5), and the
+        // iff encoding (Bug 2 fix) then refutes it against the assumed
+        // (ensL xc) ∧ ¬(xc > 5). Requires BOTH the trigger-extraction
+        // equality recursion (quant.rs) AND the Bool-eq iff encoding.
+        use adsmt_core::{Kind, Var};
+        use std::sync::Arc;
+        let mut s = Solver::new();
+        let int_ = Type::const_("Int", Kind::Type);
+        let ens = Term::const_("ensL", Type::fun(int_.clone(), Type::bool_()).unwrap());
+        let xc = Term::var("xc", int_.clone());
+        let x_var = Var { name: "x".into(), ty: int_.clone() };
+        let bx = Term::Var(Arc::new(x_var.clone()));
+        // body: (= (ensL x) (> x 5))
+        let body = Term::mk_eq(
+            Term::app(ens.clone(), bx.clone()).unwrap(),
+            cmp(">", bx, int_lit("5")),
+        )
+        .unwrap();
+        let axiom = Term::mk_forall(x_var, body).unwrap();
+        s.assert(axiom);
+        s.assert(Term::app(ens, xc.clone()).unwrap());
+        s.assert(Term::mk_not(cmp(">", xc, int_lit("5"))).unwrap());
+        assert!(
+            matches!(s.check_sat(), SatResult::Unsat { .. }),
+            "the instantiated predicate definition must refute (ensL xc) ∧ ¬(xc>5)"
+        );
+    }
+
+    #[test]
     fn int_equality_is_sat_not_over_downgraded() {
         // (= x y) must stay a definite `Sat` — LinArith accepts the
         // equality (x − y ≤ 0 ∧ x − y ≥ 0); the backstop exempts

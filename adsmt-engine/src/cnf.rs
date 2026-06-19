@@ -8,6 +8,8 @@
 //! - `(or p q)`               ⟶ single clause with each disjunct as literal
 //! - `(not (or p q))`         ⟶ flatten each negated side as separate clauses
 //! - `(=> p q)`               ⟶ `(or (not p) q)`
+//! - `(= a b)` at sort `Bool` ⟶ the iff `(a ⟺ b)`, i.e.
+//!   `(and (=> a b) (=> b a))` (see [`rewrite_bool_iff`])
 //! - `(not (not p))`          ⟶ flatten `p`
 //! - `true`                   ⟶ empty clause set (vacuously true)
 //! - `false`                  ⟶ a single empty clause (unsat)
@@ -30,6 +32,19 @@
 //! contradictory definition — unsound. Soundness floor: the empty
 //! clause stays sacred (the aux path never drops a genuine
 //! contradiction), so the rc.26→28 soundness regressions hold.
+//!
+//! A **Bool-sorted equality** `(= a b)` is the iff `(a ⟺ b)`, NOT an
+//! opaque theory atom: leaving it as a single literal `Lit::pos((= a b))`
+//! disconnects the SAT layer from the operand atoms `a`, `b`, so
+//! `(= p q) ∧ p ∧ ¬q` (structurally unsat) would be reported `sat`,
+//! and an instantiated predicate-definition axiom
+//! `(= (ensL xc) (> xc 5))` would never refute `(ensL xc) ∧ ¬(> xc 5)`.
+//! [`rewrite_bool_iff`] rewrites it to `(and (=> a b) (=> b a))` so the
+//! existing connective machinery handles it uniformly under both
+//! polarities — `¬(a ⟺ b)` becomes the xor via De Morgan, and a Bool-eq
+//! buried in a disjunct or a Tseitin sub-term is encoded the same way.
+//! `dest_iff` gates on the operand sort, so an EUF/arith equality
+//! (`(= (f x) (g y))` at Int, etc.) is left an atom for the theory.
 
 use adsmt_core::Term;
 
@@ -148,6 +163,13 @@ fn term_size_bounded(t: &Term, limit: usize) -> bool {
         if let Some((p, q)) = t.dest_imp() {
             return walk(&p, budget) && walk(&q, budget);
         }
+        // Bool-sorted `(= a b)` rewrites to `(and (=> a b) (=> b a))`
+        // (see `rewrite_bool_iff`), so it's a connective node too —
+        // count it and recurse into both operands. `dest_iff` gates on
+        // the operand sort, so an EUF/arith equality bottoms out here.
+        if let Some((a, b)) = t.dest_iff() {
+            return walk(&a, budget) && walk(&b, budget);
+        }
         true
     }
     let mut budget = limit;
@@ -206,6 +228,26 @@ fn aux_var_for(t: &Term) -> Term {
     Term::var(&format!("!tseitin!{t}"), adsmt_core::Type::bool_())
 }
 
+/// Rewrite a **Bool-sorted** equality `(= a b)` into the equivalent
+/// iff `(a ⟺ b)` ≡ `(and (=> a b) (=> b a))`, so the flattener treats
+/// it propositionally (connecting the SAT layer to the operand atoms
+/// `a`, `b`) instead of as one opaque atom.  Returns `None` for any
+/// non-Bool equality (`dest_iff` gates on the operand sort, so an
+/// EUF/arith equality stays a theory atom) or any non-equality term.
+///
+/// Logically `(= a b)` at sort `Bool` *is* `(a ⟺ b)`; rewriting to the
+/// two implications lets the existing `and`/`or`/`=>`/`not` machinery
+/// handle it under both polarities (`¬(a ⟺ b)` De-Morgans to the xor)
+/// without a bespoke iff clause emitter.  Structural recursion: the
+/// rewritten term is an `and`, never a Bool-eq, so the rewrite fires at
+/// most once per equality node and the operands are strictly smaller.
+fn rewrite_bool_iff(t: &Term) -> Option<Term> {
+    let (a, b) = t.dest_iff()?;
+    let fwd = Term::mk_imp(a.clone(), b.clone()).ok()?;
+    let bwd = Term::mk_imp(b, a).ok()?;
+    Term::mk_and(fwd, bwd).ok()
+}
+
 /// Encode an arbitrary boolean sub-term into a single [`Encoded`],
 /// emitting `aux ⟺ subformula` defining clauses into `ctx.aux` for
 /// every genuine compound node.  Constant-folds `true` / `false` so no
@@ -239,6 +281,12 @@ fn encode(t: &Term, ctx: &mut Tseitin) -> Option<Encoded> {
         let ea = encode(&a, ctx)?.negate();
         let eb = encode(&b, ctx)?;
         return Some(encode_or(t, ea, eb, ctx));
+    }
+    // Bool-sorted `(= a b)` ≡ `(a ⟺ b)` = `(and (=> a b) (=> b a))`:
+    // encode the rewrite so a Bool-eq sub-term gets a Tseitin aux that
+    // is genuinely tied to the operand literals, not an opaque atom.
+    if let Some(rw) = rewrite_bool_iff(t) {
+        return encode(&rw, ctx);
     }
     Some(Encoded::Lit(Lit::pos(t.clone())))
 }
@@ -323,6 +371,14 @@ fn flatten(t: &Term, polarity: bool, ctx: &mut Tseitin) -> Option<Vec<Clause>> {
     if t.is_false_const() {
         return Some(if polarity { vec![Vec::new()] } else { Vec::new() });
     }
+    // Bool-sorted `(= a b)` ≡ `(a ⟺ b)` = `(and (=> a b) (=> b a))`:
+    // rewrite and recurse so the iff flows through the connective
+    // machinery under both polarities (`¬(a ⟺ b)` De-Morgans to the
+    // xor). An EUF/arith equality (`dest_iff` returns `None`) falls
+    // through to the atom handling below.
+    if let Some(rw) = rewrite_bool_iff(t) {
+        return flatten(&rw, polarity, ctx);
+    }
     // Compound destructuring.
     match polarity {
         true => flatten_positive(t, ctx),
@@ -394,6 +450,13 @@ fn literals_of_disjunct(t: &Term, polarity: bool, ctx: &mut Tseitin) -> Option<V
     }
     if let Some(inner) = t.dest_not() {
         return literals_of_disjunct(&inner, !polarity, ctx);
+    }
+    // Bool-eq inside a disjunct (`(or … (= a b) …)`): the iff is a
+    // conjunction once rewritten, so it can't be split into OR-literals
+    // — Tseitin-encode it (via `encode`, which rewrites Bool-eq) and
+    // contribute the single (possibly negated) aux literal.
+    if rewrite_bool_iff(t).is_some() {
+        return Some(encoded_to_disjunct_lits(encode(t, ctx)?, polarity));
     }
     if polarity {
         if let Some((p, q)) = t.dest_or() {
@@ -595,6 +658,79 @@ mod tests {
                 .all(|l| !l.atom.to_string().starts_with("!tseitin!")),
             "no aux atom when the conjunction folds away"
         );
+    }
+
+    // ----- Bool-sorted equality = iff (verus-fork 3b) -----
+
+    /// `(= p q)` at sort Bool is the iff `(p ⟺ q)` = `(and (=> p q)
+    /// (=> q p))` → two binary clauses `[¬p ∨ q]` and `[¬q ∨ p]`, NOT a
+    /// single opaque literal. This is the propositional connection that
+    /// makes `(= p q) ∧ p ∧ ¬q` refutable.
+    #[test]
+    fn bool_eq_flattens_to_iff_clauses() {
+        let t = Term::mk_eq(p(), q()).unwrap();
+        let cs = flatten_to_clauses(&t).unwrap();
+        assert_eq!(cs.len(), 2, "iff = two implication clauses");
+        assert!(cs.iter().all(|c| c.len() == 2), "each clause binary");
+        // No aux atom — the operands are already literals.
+        assert!(
+            cs.iter()
+                .flatten()
+                .all(|l| !l.atom.to_string().starts_with("!tseitin!")),
+            "no Tseitin aux for a flat Bool-eq"
+        );
+        // The clause set must contain both (¬p ∨ q) and (¬q ∨ p).
+        let has = |neg: &Term, pos: &Term| {
+            cs.iter().any(|c| {
+                c.iter()
+                    .any(|l| !l.polarity && l.atom.alpha_eq(neg))
+                    && c.iter().any(|l| l.polarity && l.atom.alpha_eq(pos))
+            })
+        };
+        assert!(has(&p(), &q()), "clause (¬p ∨ q) present");
+        assert!(has(&q(), &p()), "clause (¬q ∨ p) present");
+    }
+
+    /// An *int*-sorted equality is NOT an iff — it stays an opaque
+    /// theory atom (a single unit clause), so `dest_iff`'s sort gate
+    /// holds and EUF/arith equalities are left for the theory.
+    #[test]
+    fn int_eq_stays_opaque_atom_not_iff() {
+        let int_ = Type::const_("Int", adsmt_core::Kind::Type);
+        let x = Term::var("x", int_.clone());
+        let y = Term::var("y", int_);
+        let t = Term::mk_eq(x, y).unwrap();
+        let cs = flatten_to_clauses(&t).unwrap();
+        assert_eq!(cs.len(), 1, "int-eq is one unit clause");
+        assert_eq!(cs[0].len(), 1);
+        assert!(cs[0][0].polarity);
+    }
+
+    /// `¬(= p q)` (Bool) is the xor — it must still flatten (not return
+    /// `None`); the verdict that it forbids `p = q` is exercised at the
+    /// solver level.
+    #[test]
+    fn negated_bool_eq_is_xor_and_flattens() {
+        let t = Term::mk_not(Term::mk_eq(p(), q()).unwrap()).unwrap();
+        assert!(
+            flatten_to_clauses(&t).is_some(),
+            "¬(p ⟺ q) must flatten via the connective machinery"
+        );
+    }
+
+    /// A Bool-eq buried in a disjunct (`(or r (= p q))`) is
+    /// Tseitin-encoded to a fresh aux literal, not left opaque.
+    #[test]
+    fn bool_eq_in_disjunct_is_tseitin_encoded() {
+        let t = Term::mk_or(r(), Term::mk_eq(p(), q()).unwrap()).unwrap();
+        let cs = flatten_to_clauses(&t).expect("disjunct Bool-eq must flatten");
+        let aux: std::collections::HashSet<String> = cs
+            .iter()
+            .flatten()
+            .map(|l| l.atom.to_string())
+            .filter(|n| n.starts_with("!tseitin!"))
+            .collect();
+        assert!(!aux.is_empty(), "the buried iff gets a Tseitin aux");
     }
 
     /// De Morgan dual: `(not (and (or p q) r))` flows through the
