@@ -8,7 +8,7 @@
 > ~44 k lines of Rust across 31 workspace crates, 1105 tests
 > green, 0 `cargo doc` warnings, triple-licensed
 > (BSD-2-Clause / Apache-2.0 / LGPL-2.1-or-later), workspace at
-> `1.0.0-rc.39` on 2026-06-18.
+> `1.0.0-rc.39.1` on 2026-06-19.
 
 ---
 
@@ -135,7 +135,7 @@ missing* when not (abductive, ranked) — a strictly better failure mode
 than "unknown / timeout". The abduct is advisory: the user justifies it
 (as a `requires`/`invariant`/lemma), never silently assumes it.
 
-**Active consumers (rc.39):**
+**Active consumers (rc.39.1):**
 - **Lean4's `smt_abduce` tactic** — synthesises matching `sorry` holes.
 - **Verus fork `-V adsmt` backend** — routes through the abductive
   JSON to produce verifier-level hints.
@@ -374,7 +374,7 @@ or proof-search strategies without touching the engine core.
 | `cargo build --workspace` | **0 warnings** |
 | `cargo test --workspace` | green at every commit on `main` since rc.7 |
 | License | BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later (consumer's choice) |
-| Workspace version | `1.0.0-rc.39` (2026-06-18) |
+| Workspace version | `1.0.0-rc.39.1` (2026-06-19) |
 
 ---
 
