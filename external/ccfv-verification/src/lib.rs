@@ -48,4 +48,5 @@ pub mod ground;
 pub mod terminate;
 pub mod rules;
 pub mod diseq;
+pub mod complete;
 pub mod capstone;
