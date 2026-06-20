@@ -47,4 +47,5 @@ pub mod congruence;
 pub mod ground;
 pub mod terminate;
 pub mod rules;
+pub mod diseq;
 pub mod capstone;
