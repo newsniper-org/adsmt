@@ -66,10 +66,12 @@ pub fn enumerate(
     let v_arc = Arc::new(var.clone());
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<Term> = Vec::new();
+    let mut matched_sort = false;
     for t in universe.iter() {
         if t.type_of() != var.ty {
             continue;
         }
+        matched_sort = true;
         let key = t.to_string();
         if !seen.insert(key) {
             continue;
@@ -81,6 +83,29 @@ pub fn enumerate(
             if out.len() >= budget {
                 break;
             }
+        }
+    }
+    // SOUNDNESS — fresh witness for an empty-domain sort. When the bound
+    // variable's SORT has NO ground term in the universe, the loop above
+    // instantiates NOTHING, and the engine's saturation rule ("no new
+    // instantiations ⇒ sat") would then conclude a DECISIVE `sat` it cannot
+    // justify: e.g. `∀x:U. (and (p x) (not (p x)))` with no ground `U`-term is
+    // `∀x. false`, UNSAT over a non-empty sort, yet never instantiated to expose
+    // the contradiction (filed by verus-fork 2026-06-21). SMT sorts are
+    // non-empty, so a fresh constant denotes SOME element of `U`, and
+    // `∀x.body ⊨ body[fresh]` is a SOUND consequence — adding it can only ever
+    // surface an existing unsat, never fabricate one (a satisfiable body stays
+    // satisfiable: the fresh point completes freely). The name is sort-keyed +
+    // deterministic, so the instance is identical every round (re-inserted into
+    // the engine's `IndexSet` and deduped → the fixpoint still terminates). Only
+    // fires when the sort is otherwise un-witnessed; a sort with ground terms
+    // enumerates over those as before.
+    if !matched_sort {
+        let fresh = Term::const_(&format!("!mbqi-fresh!{}", var.ty), var.ty.clone());
+        let mut sigma: IndexMap<Arc<Var>, Term> = IndexMap::new();
+        sigma.insert(v_arc.clone(), fresh);
+        if let Ok(instantiated) = body.subst(&sigma) {
+            out.push(instantiated);
         }
     }
     out

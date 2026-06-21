@@ -3540,6 +3540,44 @@ mod tests {
         assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
     }
 
+    #[test]
+    fn forall_contradictory_body_over_empty_universe_sort_is_unsat() {
+        // ∀x:U. (p x ∧ ¬(p x)) over an UNINTERPRETED sort `U` with NO ground
+        // term in the universe. The body is `false` for every x, so over a
+        // non-empty sort the universal is UNSAT — but with no ground `U`-term to
+        // instantiate at, native used to saturate ("no new instantiations ⇒
+        // sat") and return a spurious `sat` (verus-fork 2026-06-21 finding ii).
+        // The Tier-3 fresh-witness fallback (adsmt-quant::enumerate) instantiates
+        // at a fresh constant so the contradiction surfaces.
+        use adsmt_core::Kind;
+        let u = Type::const_("U", Kind::Type);
+        let p = unary_pred("p", u.clone());
+        let x = adsmt_core::Var { name: "x".into(), ty: u };
+        let px = Term::app(p, Term::Var(std::sync::Arc::new(x.clone()))).unwrap();
+        let body = Term::mk_and(px.clone(), Term::mk_not(px).unwrap()).unwrap();
+        let forall = Term::mk_forall(x, body).unwrap();
+        let mut s = Solver::new();
+        s.assert(forall);
+        assert!(matches!(s.check_sat(), SatResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn forall_satisfiable_body_over_empty_universe_sort_stays_sat() {
+        // The dual guard: ∀x:U. (p x) over an empty-universe sort must NOT become
+        // a spurious `unsat` from the fresh witness — the fresh point completes
+        // freely (`p := true`), so it stays `sat`. (Adding `body[fresh]` is a
+        // sound consequence, so it can only expose an unsat, never fabricate one.)
+        use adsmt_core::Kind;
+        let u = Type::const_("U", Kind::Type);
+        let p = unary_pred("p", u.clone());
+        let x = adsmt_core::Var { name: "x".into(), ty: u };
+        let body = Term::app(p, Term::Var(std::sync::Arc::new(x.clone()))).unwrap();
+        let forall = Term::mk_forall(x, body).unwrap();
+        let mut s = Solver::new();
+        s.assert(forall);
+        assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
+    }
+
     // === NNF + Skolemization pre-assert pipeline ===
 
     fn unary_pred(name: &str, dom: Type) -> Term {
