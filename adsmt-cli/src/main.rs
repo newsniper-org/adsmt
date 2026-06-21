@@ -1654,6 +1654,23 @@ fn strip_abductive_commands(history: &str) -> String {
     out
 }
 
+/// Per-subset native-solve budget for the theory-aware abduce search
+/// ([`Driver::decide_fh`]). The native engine is an incomplete quantifier
+/// solver, so over a quantified prelude its per-subset check churns to
+/// `unknown`; this caps each one (regardless of an unlimited session `:rlimit`)
+/// so the bounded search cannot hang. 300 ms gives an easy ground/QF subset
+/// room to refute outright while keeping the worst case bounded.
+const ABDUCE_NATIVE_DEADLINE_US: u64 = 300_000;
+
+/// Global wall-clock budget for one theory-aware abduce search
+/// ([`Driver::abduce_theory`]). A hard backstop so the whole subset sweep — up
+/// to `MAX_ABDUCT_SUBSETS` subsets, each an SMT solve over the full prelude,
+/// possibly delegated to OxiZ — always terminates with whatever abducts it has
+/// found, never an unbounded hang, even when the session `:rlimit` is `0`
+/// (unlimited). Generous enough that the early (small, strongest) subsets — the
+/// ones most likely to be the answer — are reached first.
+const ABDUCE_GLOBAL_BUDGET_US: u64 = 20_000_000;
+
 /// rc.35.1 — is the sorted index list `small` a subset of the sorted
 /// index list `big`? Used by `abduce_theory`'s minimality pruning (skip
 /// any subset that is a superset of an already-found minimal abduct).
@@ -2744,10 +2761,27 @@ impl Driver {
         for t in extra {
             self.solver.assert(t.clone());
         }
-        let deadline = self
-            .options
-            .rlimit_us
-            .map(|us| std::time::Instant::now() + std::time::Duration::from_micros(us));
+        // The abduce search runs THIS native check over the full (often
+        // quantified) prelude for up to `MAX_ABDUCT_SUBSETS` subsets, twice each
+        // (entailment + consistency). Over a quantified `F` the native engine is
+        // INCOMPLETE: its e-matching/instantiation loop can churn for many
+        // seconds and still only return `unknown` (the authoritative verdict
+        // comes from the OxiZ delegation below). So this per-subset native solve
+        // MUST always be bounded — when the session `:rlimit` is unlimited
+        // (`:rlimit 0`, which verus sets right before an abduce block) an
+        // un-capped per-subset solve churns unboundedly and the whole abduce
+        // hangs (verus-fork 2026-06-21 eqvars regression, exposed by the rc.39.2
+        // Bool-eq→iff CNF rewrite over the prelude's `Sub` `:pattern` axioms).
+        // Cap each native check at a short budget so it bails to `unknown` fast;
+        // the session `:rlimit` still applies when it is tighter.
+        let native_cap = std::time::Instant::now()
+            + std::time::Duration::from_micros(ABDUCE_NATIVE_DEADLINE_US);
+        let deadline = Some(
+            self.options
+                .rlimit_us
+                .map(|us| std::time::Instant::now() + std::time::Duration::from_micros(us))
+                .map_or(native_cap, |session| session.min(native_cap)),
+        );
         let native = self.solver.check_sat_with_deadline(deadline);
         self.solver.pop(1);
         // A native `Sat` is authoritative ONLY on the quantifier-free fragment.
@@ -2867,8 +2901,22 @@ impl Driver {
         // checks (the type carries the cvc5 invariant; see `mod abduct`).
         let mut minimal: Vec<(Vec<usize>, abduct::TheoryAbduct)> = Vec::new();
         let mut examined = 0usize;
+        // Hard wall-clock backstop for the WHOLE sweep — bounds the cumulative
+        // cost of the per-subset solves so the search always terminates with the
+        // abducts found so far, never a hang, even under an unlimited session
+        // `:rlimit` (verus-fork 2026-06-21 eqvars regression). The session rlimit
+        // applies too when it is tighter. Subsets are examined smallest-first, so
+        // a budget bail still returns the strongest abducts reached.
+        let global_deadline = std::time::Instant::now()
+            + std::time::Duration::from_micros(
+                self.options
+                    .rlimit_us
+                    .map_or(ABDUCE_GLOBAL_BUDGET_US, |us| us.min(ABDUCE_GLOBAL_BUDGET_US)),
+            );
+        let over_budget = || std::time::Instant::now() >= global_deadline;
         for size in 0..=MAX_ABDUCT_SIZE {
-            if minimal.len() >= MAX_ABDUCT_RESULTS || examined >= MAX_ABDUCT_SUBSETS {
+            if minimal.len() >= MAX_ABDUCT_RESULTS || examined >= MAX_ABDUCT_SUBSETS || over_budget()
+            {
                 break;
             }
             if size > n {
@@ -2876,7 +2924,10 @@ impl Driver {
             }
             let mut combo: Vec<usize> = (0..size).collect();
             loop {
-                if minimal.len() >= MAX_ABDUCT_RESULTS || examined >= MAX_ABDUCT_SUBSETS {
+                if minimal.len() >= MAX_ABDUCT_RESULTS
+                    || examined >= MAX_ABDUCT_SUBSETS
+                    || over_budget()
+                {
                     break;
                 }
                 examined += 1;
