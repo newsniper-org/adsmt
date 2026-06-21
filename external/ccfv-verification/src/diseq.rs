@@ -181,10 +181,13 @@ pub proof fn r_yield_sound(ctx: DCtx, eqs: Set<Pair>, neqs: Set<Pair>)
 ///
 /// This is the DUAL of `r_yield_sound` (which is "no FALSE yield"); completeness
 /// is "no MISSED yield" and is a strictly harder, model-exhibiting proof. It is
-/// NOT proved in this module — it is the documented precondition gating
-/// activation of the flip (the `ccfv_model_compl` flag stays OFF until
-/// `complete.rs` discharges it). Stated here as the explicit obligation so the
-/// gate is visible in the verified surface.
+/// proved in TWO halves outside this module: `complete::no_conflict_when_empty`
+/// (the search exhausts the FINITE witness domain — completeness by construction)
+/// and `model_compl::fresh_imposes_no_conflict` (a FRESH element outside that
+/// domain is entailed neither equal nor disequal to anything, so the infinite
+/// sort hides no conflict). Stated here as the explicit obligation so the gate is
+/// visible in the verified surface; the `ccfv_model_compl` flag's remaining gate
+/// is the corpus 0-spurious sweep (Phase 5), not a missing proof.
 pub open spec fn flip_is_sound(
     e_tot: DCtx,
     enumerated: Set<Pair>,

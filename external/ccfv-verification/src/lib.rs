@@ -33,6 +33,17 @@
 //! depth measure, proving each lowers the measure AND preserves grounding (so (ii)
 //! and (iii) hold per-rule, not just at the endpoints).
 //!
+//! The `diseq` module adds the DISEQUALITY half (the `R_*` rules' YIELD-soundness
+//! over `DCtx{eqs, neqs}`), and the two **P4 model-completion** modules close the
+//! verdict-flip's soundness in two halves: `complete` proves the brute-force
+//! conflict search is complete over the FINITE witness domain (the keystone
+//! `no_conflict_when_empty` — completeness by construction, no `fail_sound`
+//! needed); `model_compl` proves the CONSERVATIVE-EXTENSION half — a FRESH element
+//! outside the finite domain is entailed neither equal nor disequal to anything
+//! (`fresh_imposes_no_conflict`), so the infinite uninterpreted sort adds no
+//! hidden conflict. Together they discharge `diseq::flip_is_sound` over the whole
+//! sort, the `[선검증]` for activating the `ccfv_model_compl` flag by default.
+//!
 //! Remaining honest scope (mirroring `oxiz-sat-redesign-verification`'s discipline):
 //! the branching rules (U_GEN / R_* / SPLIT), `FAIL`, and the nondeterministic rule
 //! scheduler stay abstract (modelled only as "each step lowers a well-founded
@@ -49,4 +60,5 @@ pub mod terminate;
 pub mod rules;
 pub mod diseq;
 pub mod complete;
+pub mod model_compl;
 pub mod capstone;

@@ -12,7 +12,8 @@ a standalone cargo workspace, **not** part of AD1's cargo workspace.
 ## What is proved
 
 The three invariants the clean-MBQI **never-conclude-unsat firewall** and the CCFV
-inner search rest on (design §6 / §8) — `29 verified, 0 errors`:
+inner search rest on (design §6 / §8) — plus the **P4 model-completion** flip's
+disequality + completeness + conservative-extension proofs — `41 verified, 0 errors`:
 
 | invariant | module | theorem | why it matters |
 |---|---|---|---|
@@ -22,6 +23,9 @@ inner search rest on (design §6 / §8) — `29 verified, 0 errors`:
 | **(iii) Termination** (abstract) | `src/terminate.rs` | `step_decreases`, `solve_depth` (`decreases`) | a well-founded measure strictly decreases per step, so the inner search cannot diverge — the abstract one-step skeleton. |
 | **(iii+) Termination on the REAL rules** | `src/rules.rs` | `assign_decreases`, `decompose_decreases`, `assign_preserves_grounded`, `decompose_preserves_grounded` | refines (iii) onto the actual CCFV rules over a real state `(E_σ, pending)` and the paper's variable-depth measure `d(C)`: **ASSIGN** (bind a free var to a ground term — the firewall guard) and **DECOMPOSE** (`f(p)≃f(x)⟶p≃x`, the congruence match) each strictly lower `d_measure` **and** preserve grounding. So both termination *and* the firewall invariant (ii) are proved per-rule, not just at the endpoints. |
 | **firewall capstone** | `src/capstone.rs` | `admissible_yield_is_grounded_and_sound` | an admissible YIELD is **both** grounded (ii) **and** sound (i) — the pair that keeps the firewall intact when CCFV becomes the unified candidate source. |
+| **(i) YIELD-soundness (DISEQUALITY)** | `src/diseq.rs` | `r_yield_sound`, `entails_diseq_{member,sym,cong,mono}` | the disequality dual of (i) over a richer context `DCtx{eqs, neqs}`: the `R_VAR`/`R_FAPP`/`R_GEN` rules close a branch on `s ≄ t` soundly exactly when every model separates them. The completeness GATE `flip_is_sound` is *stated* here and *discharged* by the two modules below. |
+| **P4 completeness (DOMAIN)** | `src/complete.rs` | `solve_complete`, `no_conflict_when_empty` | THE KEYSTONE. The model-completion flip reads "search found no conflict ⇒ `Sat`"; that is sound only if the search is complete. A BRUTE-FORCE enumeration over the finite witness domain is complete **by construction** (no pruning ⇒ no research-hard `fail_sound`), so "search ∅ ⇒ no conflict over the witness domain". |
+| **P4 conservative extension (FRESH)** | `src/model_compl.rs` | `recolor_preserves_dmodels`, `fresh_imposes_no_conflict` | the infinite-sort half: a FRESH element outside the finite domain (one the context mentions nowhere) is entailed neither equal nor disequal to anything — recoloring it preserves every model — so it can never be a missed conflict. Together with `complete.rs`, the flip's `Sat` is sound over the WHOLE uninterpreted sort. |
 
 ## How to verify
 
@@ -32,7 +36,7 @@ verus --crate-type=lib src/lib.rs
 cargo verus verify
 ```
 
-Both report `ccfv-verification … 29 verified, 0 errors` on system verus
+Both report `ccfv-verification … 41 verified, 0 errors` on system verus
 `0.2026.06.07.cd03505`.
 
 ## Honest scope (what this does NOT establish)
@@ -57,6 +61,14 @@ hidden:
   **FAIL** (a dead branch), and the full nondeterministic driver that schedules
   rules — modelled here only as "each step lowers a well-founded `nat`", not the
   concrete branch enumeration.
+- **The P4 model-completion flip is verified in both halves** (`complete.rs`
+  domain-completeness + `model_compl.rs` conservative-extension), so `flip_is_sound`
+  is no longer an open obligation. What gates turning the `ccfv_model_compl` flag on
+  by DEFAULT is no longer a *proof* but an empirical sweep: the implementation
+  restricts the flip to the pure uninterpreted-sort (dis)equality fragment these
+  proofs cover (Bool predicates + arith/BV/array equalities DECLINE), and a corpus
+  0-spurious gate (Phase 5) confirms the refinement is faithful before the flip
+  ships on.
 - **No executable code.** Everything is `spec`/`proof` (ghost). The obligation an
   implementation must discharge is to refine these abstract states/steps — that is
   the P1 후검증 (post-verification) step.
