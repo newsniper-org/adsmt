@@ -15,3 +15,6 @@
 [submodule "external/oxiz-sat-redesign-verification"]
 	path = external/oxiz-sat-redesign-verification
 	url = https://github.com/newsniper-org/oxiz-sat-redesign-verification
+[submodule "external/ccfv-verification"]
+	path = external/ccfv-verification
+	url = https://codeberg.org/newsniper-org/ccfv-verification.git
