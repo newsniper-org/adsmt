@@ -1704,8 +1704,8 @@ fn is_index_subset(small: &[usize], big: &[usize]) -> bool {
     true
 }
 
-/// Goal-relevance score for ranking abductive search order (rc.39.3
-/// follow-up, verus-fork `eqvars`). The per-subset entailment check is a
+/// Goal-relevance score for ranking abductive search order (rc.40,
+/// verus-fork `eqvars`). The per-subset entailment check is a
 /// full SMT solve over the (quantified) prelude, so only the first ~30
 /// subsets fit the wall-clock budget; ranking the most goal-relevant
 /// abducibles first lets the budget reach a real abduct before it bails.
