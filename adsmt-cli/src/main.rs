@@ -982,12 +982,28 @@ fn oxiz_pick_last<'a, I: Iterator<Item = &'a str>>(lines: I) -> Option<LastStatu
 /// returning the per-`check-sat` verdicts).  No subprocess.
 #[cfg(feature = "oxiz")]
 fn oxiz_inproc(history: &str) -> Option<LastStatus> {
-    // Feed the buffered SMT-LIB to a persistent OxiZ `Context` ONE
-    // top-level command at a time.  OxiZ's batch `parse_script`
-    // mis-parses some larger multi-command inputs ("expected ')',
-    // found LParen"); the per-command path matches the robust
-    // incremental parsing the OxiZ CLI uses over stdin.
     let debug = std::env::var_os("ADSMT_OXIZ_DEBUG").is_some();
+    // Feed the WHOLE buffer as ONE `execute_script` (batch) FIRST — this is the
+    // exact call the z3-parity corpus harness and the OxiZ file CLI make, so it
+    // is the verdict-validated path. It is also faster than the per-command feed
+    // (the theory-aware abduce delegates the ~44 KB prelude once per subset;
+    // batch ≈0.7 s/subset vs the per-command ≈0.95 s, since the one-at-a-time
+    // feed pays a fresh parser setup per command). OxiZ's batch parse mis-handles
+    // SOME large multi-command inputs ("expected ')', found LParen"), so on a
+    // parse error fall back to the robust one-command-at-a-time feed (fresh
+    // Context, no partial state). verus-fork 2026-06-21 eqvars.
+    {
+        let mut ctx = oxiz_solver::Context::new();
+        if let Ok(out) = ctx.execute_script(history) {
+            let last = oxiz_pick_last(out.iter().map(String::as_str));
+            if debug {
+                eprintln!("[oxiz_inproc] BATCH ok {}B last={last:?}", history.len());
+            }
+            return last;
+        } else if debug {
+            eprintln!("[oxiz_inproc] batch parse failed, per-command fallback");
+        }
+    }
     let mut ctx = oxiz_solver::Context::new();
     let mut last = None;
     for cmd in split_top_level_sexprs(history) {
@@ -1006,7 +1022,7 @@ fn oxiz_inproc(history: &str) -> Option<LastStatus> {
         }
     }
     if debug {
-        eprintln!("[oxiz_inproc] OK history={}B last={last:?}", history.len());
+        eprintln!("[oxiz_inproc] per-command OK history={}B last={last:?}", history.len());
     }
     last
 }
@@ -1686,6 +1702,31 @@ fn is_index_subset(small: &[usize], big: &[usize]) -> bool {
         j += 1;
     }
     true
+}
+
+/// Goal-relevance score for ranking abductive search order (rc.39.3
+/// follow-up, verus-fork `eqvars`). The per-subset entailment check is a
+/// full SMT solve over the (quantified) prelude, so only the first ~30
+/// subsets fit the wall-clock budget; ranking the most goal-relevant
+/// abducibles first lets the budget reach a real abduct before it bails.
+/// This is a SEARCH-ORDER heuristic ONLY — every candidate still gets the
+/// full entailment + consistency check, so soundness/minimality are
+/// untouched. (A model-guided prune is unavailable over the verus prelude:
+/// `F ∧ ¬G` is itself `unknown`, so there is no counterexample model to
+/// read.) Score = `2·(# goal variables the abducible shares)` + `1` if the
+/// abducible is a top-level positive equality, since an equality is the
+/// strongest entailment driver (it collapses terms — e.g. `(= x! y!)`
+/// discharges `(= (Sub x! y!) 0)` against the prelude's `Sub x y = x − y`).
+fn abduct_goal_relevance(pattern: &Term, goal_vars: &std::collections::HashSet<String>) -> i64 {
+    let shared = pattern
+        .free_vars()
+        .iter()
+        .filter(|v| goal_vars.contains(v.name.as_str()))
+        .map(|v| v.name.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .len() as i64;
+    let top_eq = term_to_smtlib(pattern).starts_with("(= ");
+    2 * shared + i64::from(top_eq)
 }
 
 /// rc.35.1 — advance `combo` (a strictly-increasing length-`k` index
@@ -2892,7 +2933,28 @@ impl Driver {
         ]))?;
         // Clone the vocabulary out so the per-subset `&mut self` checks
         // don't conflict with iterating `self.declared_abducibles`.
-        let vocab: Vec<adsmt_abduce::Abducible> = self.declared_abducibles.clone();
+        let mut vocab: Vec<adsmt_abduce::Abducible> = self.declared_abducibles.clone();
+        // GOAL-RELEVANCE SEARCH ORDER — examine the most goal-relevant
+        // abducibles first so the wall-clock budget reaches a real abduct
+        // before it bails (verus-fork 2026-06-21 `eqvars`: the abduct
+        // `(= x! y!)` was the 15th of 19 declared abducibles for goal
+        // `(= (Sub x! y!) 0)` and the budget bailed at ~28 delegations *just*
+        // after reaching it; ranked first it now surfaces in ~3). See
+        // [`abduct_goal_relevance`] — this reorders ONLY the search; every
+        // candidate still gets the full entailment + consistency check.
+        {
+            let goal_vars: std::collections::HashSet<String> =
+                neg_goal.free_vars().iter().map(|v| v.name.clone()).collect();
+            // Precompute one score per abducible (avoid recomputing in the
+            // O(n log n) comparison closure), then stable-sort highest first
+            // (declaration order breaks ties).
+            let mut scored: Vec<(i64, adsmt_abduce::Abducible)> = vocab
+                .into_iter()
+                .map(|ab| (abduct_goal_relevance(&ab.pattern, &goal_vars), ab))
+                .collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            vocab = scored.into_iter().map(|(_, ab)| ab).collect();
+        }
         let n = vocab.len();
 
         // Each entry pairs the chosen index set (for minimality pruning +
@@ -3450,6 +3512,35 @@ mod abduct_render_tests {
         assert_eq!(render_abduct_body(&[]), "true");
         assert_eq!(render_abduct_body(std::slice::from_ref(&x)), "x");
         assert_eq!(render_abduct_body(&[x, y]), "(and x y)");
+    }
+
+    #[test]
+    fn abduct_goal_relevance_ranks_goal_equality_highest() {
+        // verus-fork `eqvars`: for goal `(= (Sub x! y!) 0)` the abduct
+        // `(= x! y!)` must outrank every inequality so the bounded search
+        // reaches it first. Score = 2·(shared goal vars) + (top-level `=`).
+        use std::collections::HashSet;
+        let inner = Type::fun(int(), Type::bool_()).unwrap();
+        let eq = Term::const_("=", Type::fun(int(), inner.clone()).unwrap());
+        let ge = Term::const_(">=", Type::fun(int(), inner).unwrap());
+        let x = Term::var("x!", int());
+        let y = Term::var("y!", int());
+        let zero = Term::const_("0", int());
+        let goal_vars: HashSet<String> =
+            ["x!".to_string(), "y!".to_string()].into_iter().collect();
+        // (= x! y!): both goal vars + top-level equality → 2·2 + 1 = 5
+        let eq_xy = Term::app(Term::app(eq, x.clone()).unwrap(), y.clone()).unwrap();
+        // (>= x! y!): both goal vars, not an equality → 2·2 + 0 = 4
+        let ge_xy = Term::app(Term::app(ge.clone(), x.clone()).unwrap(), y).unwrap();
+        // (>= x! 0): one goal var, not an equality → 2·1 + 0 = 2
+        let ge_x0 = Term::app(Term::app(ge, x).unwrap(), zero).unwrap();
+        assert_eq!(abduct_goal_relevance(&eq_xy, &goal_vars), 5);
+        assert_eq!(abduct_goal_relevance(&ge_xy, &goal_vars), 4);
+        assert_eq!(abduct_goal_relevance(&ge_x0, &goal_vars), 2);
+        assert!(
+            abduct_goal_relevance(&eq_xy, &goal_vars)
+                > abduct_goal_relevance(&ge_xy, &goal_vars)
+        );
     }
 
     #[test]
