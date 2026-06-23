@@ -25,3 +25,5 @@ perf.data.old
 # the README.md index is the only intentionally-shareable file. Kept out of
 # git so `git add -A` never stages the ~5.6 MB of papers.
 .claude-research-library/
+
+**/*DRAFT.md
