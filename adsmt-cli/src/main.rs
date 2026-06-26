@@ -1670,6 +1670,24 @@ fn strip_abductive_commands(history: &str) -> String {
     out
 }
 
+/// Drop the **negated-goal** assertion from a reconstructed history, leaving the
+/// in-scope assumptions `H` alone. Verus's adsmt emit path tags it
+/// `(assert (! <¬G> :goal-negation))` (the verus-fork goal-isolation Phase 0),
+/// so the linter can isolate `H` precisely — the flattened goal is otherwise an
+/// unmarked `(assert …)` indistinguishable from a hypothesis. Used by the
+/// vacuity lint ([`Driver::lint_vacuity`]) to decide `SAT(H)`.
+fn strip_goal_negation(history: &str) -> String {
+    let mut out = String::with_capacity(history.len());
+    for cmd in split_top_level_sexprs(history) {
+        let is_goal = command_head(cmd) == Some("assert") && cmd.contains(":goal-negation");
+        if !is_goal {
+            out.push_str(cmd);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// Per-subset native-solve budget for the theory-aware abduce search
 /// ([`Driver::decide_fh`]). The native engine is an incomplete quantifier
 /// solver, so over a quantified prelude its per-subset check churns to
@@ -1914,6 +1932,19 @@ struct Options {
     /// (which also covers the Horn-rule-base goals the theory search,
     /// reasoning only over `F`, cannot).
     abduct_theory: bool,
+    /// `(set-option :lint true)` / `--lint`. Enables the advisory
+    /// **unsoundness/vacuity linter** — a pure OBSERVER behind the soundness
+    /// firewall (it consumes only already-trusted verdicts and reports on a side
+    /// channel; it never changes a sat/unsat result). Default **off**, so the
+    /// un-opted (verus hot) path is byte-identical and pays nothing. Currently
+    /// fires `LINT-VAC` (vacuous context): when an obligation discharges (the
+    /// solver returns `unsat`), it independently checks whether the in-scope
+    /// assumptions `H` (the obligation minus the `:goal-negation`-tagged goal)
+    /// are *themselves* unsatisfiable — i.e. the obligation passed **vacuously**
+    /// (a false precondition / contradictory invariant / `requires false`).
+    /// `Info`/soft: intentional vacuity (dead branches) is common, so it is a
+    /// neutral note attributed to the solver, never a hard "your spec is broken".
+    lint: bool,
 }
 
 /// rc.35.1 — the abductive search strategy, derived **once** from the
@@ -2215,6 +2246,10 @@ impl Driver {
                 });
                 let r = self.solver.check_sat_with_deadline(deadline);
                 let status = self.record_result(r);
+                // Advisory linter (observer-only; no-op unless `:lint`): on a
+                // discharged obligation, note if it passed vacuously. Runs AFTER
+                // record_result and leaves `status` unchanged.
+                self.lint_vacuity(&status, history);
                 DispatchResult::CheckSat(status)
             }
             Command::CheckSatAssuming(assumptions) => {
@@ -2379,6 +2414,9 @@ impl Driver {
             // (`F ∧ H ⊨ G` over the declared abducibles, not just SLD
             // α-match). See `Options::abduct_theory` + `abduce_theory`.
             "abduct-theory" => self.options.abduct_theory = truthy,
+            // opt into the advisory unsoundness/vacuity linter (observer-only;
+            // never changes a verdict). See `Options::lint` + `lint_vacuity`.
+            "lint" => self.options.lint = truthy,
             "rlimit" => {
                 // Z3-extension: `(set-option :rlimit N)` where N is
                 // a resource-unit budget; one unit ≈ 1 µs on a
@@ -2898,6 +2936,41 @@ impl Driver {
         let mut extra: Vec<Term> = hyps.to_vec();
         extra.push(neg_goal.clone());
         matches!(self.decide_fh(&extra, history), FhVerdict::Unsat)
+    }
+
+    /// **LINT-VAC** — the advisory **vacuous-context** lint (a pure OBSERVER;
+    /// it never changes a verdict). Fires only when the linter is enabled
+    /// (`:lint`) and the obligation just DISCHARGED (`unsat`): a discharged
+    /// obligation `F ∧ ¬G` is *vacuous* iff the in-scope assumptions `H` (= `F`,
+    /// the obligation minus the `:goal-negation`-tagged goal) are *themselves*
+    /// unsatisfiable — the goal passed for the wrong reason (a false
+    /// precondition / contradictory invariant / `requires false`).
+    ///
+    /// `SAT(H)` is decided *independently* via the OxiZ delegation — NOT the
+    /// live solver, whose stack still holds `¬G` (so a live re-check would just
+    /// re-prove the obligation `unsat`, not `H`). A **definite** `unsat` of `H`
+    /// raises an `Info`/soft note **attributed to the solver** (intentional
+    /// vacuity is common, so never a hard "your spec is broken"); `Sat` /
+    /// `Unknown` / no complete backend ⇒ **no claim** (the
+    /// soundness-asymmetry-preserving silence). Cost is paid only on the opt-in
+    /// `:lint` path, so the un-opted verus hot path is byte-identical.
+    fn lint_vacuity(&self, status: &LastStatus, history: &str) {
+        if !self.options.lint || !matches!(status, LastStatus::Unsat) || !oxiz_available() {
+            return;
+        }
+        // H = assumptions, minus the negated goal and the abductive/interactive
+        // surface; a fresh self-contained query (the same delegation the main
+        // solve uses), so the live `F ∧ ¬G` stack is never consulted.
+        let mut query = strip_goal_negation(&strip_abductive_commands(history));
+        query.push_str("(check-sat)\n");
+        if let Some(LastStatus::Unsat) = oxiz_fallback(&query) {
+            eprintln!(
+                "lu-smt: lint[vacuous-context]: the solver found these in-scope assumptions \
+                 unsatisfiable on their own — this obligation discharges VACUOUSLY. If this \
+                 branch is meant to be reachable, your assumptions contradict; if it is dead \
+                 (e.g. `requires false` / an unreachable arm) this is expected."
+            );
+        }
     }
 
     /// rc.35.1 follow-up — **theory-aware abductive search**
@@ -3668,5 +3741,23 @@ mod abduct_render_tests {
         assert!(!f.contains("(check-sat)"), "prior (check-sat) must be stripped from the delegated F");
         assert!(!f.contains("(get-model)"));
         assert!(!f.contains("get-info"));
+    }
+
+    #[test]
+    fn strip_goal_negation_drops_only_the_tagged_goal() {
+        // The vacuity lint isolates H by dropping the `:goal-negation`-tagged
+        // goal assertion (the verus-fork Phase 0 tag) and keeping every other
+        // assert. An ordinary `(assert …)` hypothesis must survive verbatim.
+        let history = "(declare-const x Int)\n\
+            (assert (> x 0))\n\
+            (assert (! (not (=> %%loc%%0 (> x 5))) :goal-negation))\n";
+        let h = strip_goal_negation(history);
+        assert!(h.contains("(declare-const x Int)"));
+        assert!(h.contains("(assert (> x 0))"), "the hypothesis survives");
+        assert!(!h.contains(":goal-negation"), "the tagged goal is dropped");
+        assert!(!h.contains("(> x 5)"), "the goal body goes with it");
+        // No tag present ⇒ nothing dropped (idempotent on a tag-free history).
+        let plain = "(assert (> x 0))\n(assert (< x 9))\n";
+        assert_eq!(strip_goal_negation(plain), plain);
     }
 }
