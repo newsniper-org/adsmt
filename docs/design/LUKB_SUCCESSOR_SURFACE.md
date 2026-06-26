@@ -219,6 +219,21 @@ unambiguous because binding only occurs in the keyworded `let ident = term in �
 form (after `let ident`, `=` is the binder; everywhere else `=` is equality), so
 there is no parse conflict.
 
+**Quoted identifiers (slice 6 — added for the Phase 1c producer).** A symbol
+that a bare identifier cannot hold — special characters (`%`, `~`, `@`, `!`,
+`.`), an empty name, or a keyword spelling — is written backtick-quoted:
+`` `%%location_label%%0` ``, `` `lib.is_even` ``, `` `forall` `` (the *symbol*
+named `forall`, not the keyword). The content is any character except a
+backtick, taken verbatim as one `Ident` token (so the parser is unchanged — a
+quoted ident flows through anywhere a bare ident is accepted). **Backticks, not
+SMT-LIB `|…|`, are the delimiter** — `|…|` would collide with the `|-`
+turnstile (`a |- |b c|` is ambiguous). The pretty-printer re-quotes exactly the
+names that would not lex back bare (`lexer::ident_needs_quote`), so the
+round-trip is stable. This is what lets the AIR→lukb producer (§5) render
+Verus/AIR's internal mangled names **faithfully** rather than mangling them
+(which would be *more* lossy than SMT-LIB — the opposite of the surface's
+purpose).
+
 ### 3b. The term grammar (the centrepiece)
 
 Precedence, loosest → tightest (all left-assoc unless noted):
