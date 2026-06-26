@@ -10,15 +10,32 @@ is a tower\-lsp based Language Server Protocol server for the
 .B adsmt
 project. It activates on
 .B .smt2
-(SMT\-LIB v2) and
+(SMT\-LIB v2),
 .B .kb
-(lu\-kb) files, communicating with editors via stdin/stdout in the
+(lu\-kb), and
+.BR .asp / .lp
+(the typed\-ASP face, language id
+.BR asp )
+files, communicating with editors via stdin/stdout in the
 standard LSP framing.
 
 Six LSP capabilities are exposed (v1.0):
 .IP "\(bu" 2
 .B textDocument/publishDiagnostics
-\(em parser + audit diagnostics
+\(em parser + audit diagnostics for SMT\-LIB; for
+.BR .asp / .lp
+documents, the typed\-ASP advisory linter
+.RB ( asp\-unsafe ", " asp\-nonstratified ", " asp\-vacuity )
+\(em all advisory
+.RB ( Information )
+findings tagged
+.BR adsmt\-asp ,
+with the per\-item
+.B asp\-unsafe
+note squiggled at the offending rule. Compiled in by the
+default\-on
+.B asp
+build feature.
 .IP "\(bu" 2
 .B textDocument/definition
 \(em within\-document symbol resolution

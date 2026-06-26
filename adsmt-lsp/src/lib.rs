@@ -10,7 +10,12 @@
 //! Capability set (all built on the one `Backend` type):
 //!   - `initialize` / `initialized` / `shutdown` lifecycle
 //!   - `textDocument/didOpen` + `didChange` + `didClose` sync
-//!   - `publishDiagnostics` from the SMT-LIB parser
+//!   - `publishDiagnostics` from the SMT-LIB parser, and — for
+//!     `.asp` / `.lp` documents (language id `asp`) — from the
+//!     typed-ASP advisory linter (`adsmt_ir_asp::lint_source`:
+//!     unsafe-variable / negative-cycle / vacuity), behind the
+//!     default-on `asp` feature. The dialect is chosen per
+//!     document by [`document_kind`].
 //!   - `textDocument/definition` + a symbol → declaration index
 //!   - `textDocument/hover` (declaration line) and `completion`
 //!     (static SMT-LIB table)
@@ -161,8 +166,9 @@ impl LanguageServer for Backend {
         let uri = doc.uri.clone();
         let text = doc.text.clone();
         let version = doc.version;
+        let kind = document_kind(&doc.language_id, &doc.uri);
         self.state.write().await.documents.insert(uri.clone(), doc);
-        self.publish_smtlib_diagnostics(uri, &text, Some(version)).await;
+        self.publish_diagnostics_for(uri, kind, &text, Some(version)).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -175,9 +181,10 @@ impl LanguageServer for Backend {
             }
             doc.version = version;
             doc.symbols = build_symbol_index(&doc.text);
+            let kind = document_kind(&doc.language_id, &doc.uri);
             let text = doc.text.clone();
             drop(state);
-            self.publish_smtlib_diagnostics(uri, &text, Some(version)).await;
+            self.publish_diagnostics_for(uri, kind, &text, Some(version)).await;
         }
     }
 
@@ -279,20 +286,26 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
-    /// v0.25 25LSP.2 — run the SMT-LIB parser over the
-    /// document text and surface any errors as LSP Diagnostics.
+    /// v0.25 25LSP.2 — compute and publish diagnostics for a
+    /// document, choosing the linter by dialect ([`DocumentKind`]):
+    /// the SMT-LIB parser for `.smt2`, the typed-ASP advisory
+    /// linter for `.asp` / `.lp`.
     ///
-    /// Initial scope: parser-level errors only. Solver-level
-    /// audit (dead-pattern via `adsmt-lints::dead_pattern_audit`)
+    /// SMT-LIB scope: parser-level errors only. Solver-level audit
+    /// (dead-pattern via `adsmt-lints::dead_pattern_audit`)
     /// requires the full check-sat pipeline and will land as a
     /// separate background pass in 25LSP.2 follow-up.
-    async fn publish_smtlib_diagnostics(
+    async fn publish_diagnostics_for(
         &self,
         uri: Url,
+        kind: DocumentKind,
         text: &str,
         version: Option<i32>,
     ) {
-        let diagnostics = parse_diagnostics(text);
+        let diagnostics = match kind {
+            DocumentKind::SmtLib => parse_diagnostics(text),
+            DocumentKind::Asp => asp_diagnostics(text),
+        };
         self.client.publish_diagnostics(uri, diagnostics, version).await;
     }
 }
@@ -535,6 +548,106 @@ pub fn hover_content(
         }
     }
     None
+}
+
+/// Which surface dialect a document is — selects the linter that
+/// [`Backend::publish_diagnostics_for`] runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentKind {
+    /// SMT-LIB 2/3 (`.smt2`) — the default; uses [`parse_diagnostics`].
+    SmtLib,
+    /// The typed-ASP face (`.asp` / `.lp`, language id `asp`) — uses
+    /// [`asp_diagnostics`].
+    Asp,
+}
+
+/// Decide a document's [`DocumentKind`] from the editor-supplied
+/// `language_id` (authoritative when set) with a file-extension
+/// fallback. Anything not recognised as ASP defaults to SMT-LIB so
+/// the long-standing behaviour is unchanged.
+pub fn document_kind(language_id: &str, uri: &Url) -> DocumentKind {
+    let ext = uri
+        .path()
+        .rsplit('.')
+        .next()
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if language_id.eq_ignore_ascii_case("asp") || matches!(ext.as_str(), "asp" | "lp") {
+        DocumentKind::Asp
+    } else {
+        DocumentKind::SmtLib
+    }
+}
+
+/// Run the typed-ASP advisory linter ([`adsmt_ir_asp::lint_source`])
+/// over `text` and map each [`adsmt_ir_asp::AspDiagnostic`] to an LSP
+/// [`Diagnostic`]. A per-item finding (`asp-unsafe`) carries a precise
+/// source location → a single-line squiggle; the whole-program notes
+/// (`asp-nonstratified`, `asp-vacuity`) anchor at the file head and so
+/// surface in the Problems panel. The linter is a pure observer (it
+/// never changes a verdict), so these are advisory `Information`-level
+/// diagnostics.
+///
+/// `rule` becomes the diagnostic `code` (e.g. `"asp-vacuity"`) so a
+/// client can filter; `source` is `"adsmt-asp"` to distinguish it from
+/// the `"adsmt-parser"` SMT-LIB diagnostics.
+#[cfg(feature = "asp")]
+pub fn asp_diagnostics(text: &str) -> Vec<Diagnostic> {
+    use adsmt_ir_asp::Severity as AspSeverity;
+    adsmt_ir_asp::lint_source(text)
+        .into_iter()
+        .map(|d| {
+            // 1-based (line, column) from the ASP linter → 0-based LSP.
+            let range = match d.source_loc {
+                Some(loc) => {
+                    let line0 = loc.line.saturating_sub(1);
+                    let col0 = loc.column.saturating_sub(1);
+                    // No end span yet: squiggle from the item start to the
+                    // end of its line (a visible, item-scoped underline).
+                    let end_col = line_char_len(text, line0).max(col0);
+                    Range {
+                        start: Position::new(line0, col0),
+                        end: Position::new(line0, end_col),
+                    }
+                }
+                // File-level note (no location) → anchor at the head; it
+                // still lists in the Problems panel.
+                None => Range {
+                    start: Position::new(0, 0),
+                    end: Position::new(0, 0),
+                },
+            };
+            let severity = Some(match d.severity {
+                AspSeverity::Info => DiagnosticSeverity::INFORMATION,
+                AspSeverity::Warning => DiagnosticSeverity::WARNING,
+            });
+            Diagnostic {
+                range,
+                severity,
+                code: Some(NumberOrString::String(d.rule.to_string())),
+                source: Some("adsmt-asp".to_string()),
+                message: d.message,
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
+/// Stub when the `asp` feature is off — the ASP face crate is not
+/// compiled in, so an `.asp` document simply yields no diagnostics.
+#[cfg(not(feature = "asp"))]
+pub fn asp_diagnostics(_text: &str) -> Vec<Diagnostic> {
+    Vec::new()
+}
+
+/// The number of `char`s on 0-based line `line0` of `text` (the LSP
+/// end column for a full-line squiggle), or `0` if the line is absent.
+#[cfg(feature = "asp")]
+fn line_char_len(text: &str, line0: u32) -> u32 {
+    text.lines()
+        .nth(line0 as usize)
+        .map(|l| l.chars().count() as u32)
+        .unwrap_or(0)
 }
 
 /// Convert a SMT-LIB parser run on `text` into LSP Diagnostics.

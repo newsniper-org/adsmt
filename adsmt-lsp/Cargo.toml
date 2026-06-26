@@ -13,6 +13,12 @@ path = "src/main.rs"
 adsmt-cert.workspace = true
 adsmt-core.workspace = true
 adsmt-parser-smtlib2.workspace = true
+# The typed-ASP face — a sibling crate (its own repo, edition-2024, zero-dep
+# kernel), pulled in as a path dependency only when the `asp` feature is on
+# (default). It supplies the advisory `lint_source` we publish as ASP
+# diagnostics; keeping it optional lets the core SMT-LIB LSP build with
+# `--no-default-features` even when the sibling repo is absent.
+adsmt-ir-asp = { path = "../../adsmt-ir-asp", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -20,4 +26,7 @@ tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "io-std", "
 tower-lsp = "0.20"
 
 [features]
-default = []
+default = ["asp"]
+# Live typed-ASP advisory diagnostics (unsafe-variable / negative-cycle /
+# vacuity) published on .asp / .lp document open + change.
+asp = ["dep:adsmt-ir-asp"]

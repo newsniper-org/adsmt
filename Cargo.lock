@@ -211,6 +211,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-ir"
+version = "0.1.0"
+
+[[package]]
+name = "adsmt-ir-asp"
+version = "0.1.0"
+dependencies = [
+ "adsmt-ir",
+]
+
+[[package]]
 name = "adsmt-jit"
 version = "1.0.0-rc.40"
 dependencies = [
@@ -238,6 +249,7 @@ version = "1.0.0-rc.40"
 dependencies = [
  "adsmt-cert",
  "adsmt-core",
+ "adsmt-ir-asp",
  "adsmt-parser-smtlib2",
  "serde",
  "serde_json",

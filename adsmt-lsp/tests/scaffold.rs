@@ -220,3 +220,74 @@ fn completion_items_carry_kind_and_detail_for_keywords() {
     );
     assert_eq!(assert_item.detail.as_deref(), Some("SMT-LIB command"));
 }
+
+// === ASP face — live advisory diagnostics (the `asp` feature) ===
+
+use adsmt_lsp::{document_kind, DocumentKind};
+use tower_lsp::lsp_types::Url;
+
+#[test]
+fn document_kind_routes_asp_by_extension_and_language_id() {
+    let asp = Url::parse("file:///tmp/x.asp").unwrap();
+    let lp = Url::parse("file:///tmp/x.lp").unwrap();
+    let smt = Url::parse("file:///tmp/x.smt2").unwrap();
+    // extension routing
+    assert_eq!(document_kind("", &asp), DocumentKind::Asp);
+    assert_eq!(document_kind("", &lp), DocumentKind::Asp);
+    // language-id routing (extension-agnostic)
+    assert_eq!(document_kind("asp", &smt), DocumentKind::Asp);
+    assert_eq!(document_kind("ASP", &smt), DocumentKind::Asp);
+    // default stays SMT-LIB — long-standing behaviour unchanged
+    assert_eq!(document_kind("smt2", &smt), DocumentKind::SmtLib);
+    assert_eq!(document_kind("", &smt), DocumentKind::SmtLib);
+}
+
+#[cfg(feature = "asp")]
+#[test]
+fn asp_diagnostics_silent_for_clean_program() {
+    let src = "sort T.\npred p(T).\np(a).\n";
+    assert!(adsmt_lsp::asp_diagnostics(src).is_empty());
+}
+
+#[cfg(feature = "asp")]
+#[test]
+fn asp_diagnostics_reports_vacuity_as_file_level_info() {
+    // An integrity constraint eliminating every model ⇒ no answer set.
+    let src = "sort Node.\n\
+               pred node(Node).\n\
+               pred colored(Node).\n\
+               node(a). node(b).\n\
+               colored(a).\n\
+               :- node(X), not colored(X).\n";
+    let ds = adsmt_lsp::asp_diagnostics(src);
+    let d = ds
+        .iter()
+        .find(|d| matches!(&d.code, Some(tower_lsp::lsp_types::NumberOrString::String(s)) if s == "asp-vacuity"))
+        .expect("asp-vacuity diagnostic");
+    // advisory (never changes a verdict) ⇒ Information; tagged adsmt-asp.
+    assert_eq!(d.severity, Some(tower_lsp::lsp_types::DiagnosticSeverity::INFORMATION));
+    assert_eq!(d.source.as_deref(), Some("adsmt-asp"));
+    // whole-program note anchors at the file head.
+    assert_eq!(d.range.start, tower_lsp::lsp_types::Position::new(0, 0));
+}
+
+#[cfg(feature = "asp")]
+#[test]
+fn asp_diagnostics_anchors_unsafe_rule_at_its_line() {
+    // line 6 (0-based 5) is the unsafe rule: `Y` under `not` is unbound.
+    let src = "sort T.\n\
+               pred p(T).\n\
+               pred q(T).\n\
+               pred bad(T).\n\
+               p(a).\n\
+               bad(X) :- p(X), not q(Y).\n";
+    let ds = adsmt_lsp::asp_diagnostics(src);
+    let d = ds
+        .iter()
+        .find(|d| matches!(&d.code, Some(tower_lsp::lsp_types::NumberOrString::String(s)) if s == "asp-unsafe"))
+        .expect("asp-unsafe diagnostic");
+    // the squiggle sits on the offending rule's line (0-based 5) and spans
+    // a non-empty run (start → end-of-line).
+    assert_eq!(d.range.start.line, 5, "anchored at the unsafe rule's line");
+    assert!(d.range.end.character > d.range.start.character, "non-empty squiggle");
+}
