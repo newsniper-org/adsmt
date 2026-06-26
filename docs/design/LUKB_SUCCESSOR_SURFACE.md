@@ -391,9 +391,26 @@ needed) and human-readable.
   the Tier-2 boundary). The **verdict**-differential stays gated on the kernel
   CIC→HOL lowering (#325) — until the solver decides lukb obligations there is
   no successor verdict to compare against the SMT-LIB oracle.
+- **Phase 1b slice 7 — `data` + `fn=body` (the Phase-2 surface). LANDED**
+  (`adsmt-ir-lukb`): `data Peano = zero | succ(pred: Peano)` /
+  `data Lst = nil | cons(head: Int, tail: Lst)` → kernel `declare_inductive`
+  (non-parametric/non-indexed; named-or-positional fields; selector names are
+  surface sugar — the solver lowering synthesizes positional `{ctor}!sel{i}`);
+  and `fn f(x: T): U = body` → kernel `define` (`Modality::Def`, δ-unfolded at
+  lowering) vs the signature-only `postulate`. Lexer `data` kw + `|`; a
+  **recursive** `fn` body is rejected (the kernel `fix` is a later slice — the
+  self-reference is a sound "unknown symbol"). New keyword `Nat`/`Int`/… stay
+  reserved arith sorts (a datatype uses a fresh name). 6 tests; round-trips. This
+  retires the verus AIR→lukb producer's `# fallback (datatypes)` once the
+  producer is retargeted (Phase 2 proper).
 - **Phase 2 — native datatypes/defs** (the actual trigger win: drop the
-  box/unbox/height `:pattern` axioms), gated on kernel #317 + CIC→HOL #325 +
-  faces-in-workspace + a full A/B z3-differential.
+  box/unbox/height `:pattern` axioms), gated on kernel #317 + CIC→HOL #325
+  (datatype-eliminator lowering: the `Match` lowering LANDED, but verdict-
+  completeness rides on the engine datatype-theory SAT-core refinement, #331) +
+  faces-in-workspace (DONE, `0f9b007`) + a full A/B z3-differential. The lukb
+  surface for it (`data`/`fn=body`) is slice 7 above; remaining = the **VIR
+  producer retarget** (emit native datatypes + selectors instead of the
+  box/unbox/height axioms) + the verdict gate.
 - **Phase 3+ — Tier 2 theory** (BitVec / Array), recursive defs, and the
   **theorem-package** layer (§7).
 

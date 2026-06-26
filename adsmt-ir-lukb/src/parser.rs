@@ -91,7 +91,19 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen)?;
                 self.expect(&Tok::Colon)?;
                 let ret = self.type_()?;
-                Ok(Item::Fn { name, params, ret })
+                // an optional `= body` makes it a (non-recursive) definition.
+                let body = if self.eat(&Tok::Eq) { Some(self.term()?) } else { None };
+                Ok(Item::Fn { name, params, ret, body })
+            }
+            Some(Tok::Data) => {
+                self.advance();
+                let name = self.ident()?;
+                self.expect(&Tok::Eq)?;
+                let mut ctors = vec![self.ctor()?];
+                while self.eat(&Tok::Pipe) {
+                    ctors.push(self.ctor()?);
+                }
+                Ok(Item::Data { name, ctors })
             }
             Some(Tok::Axiom) => {
                 self.advance();
@@ -113,8 +125,42 @@ impl<'a> Parser<'a> {
             }
             other => Err(parse_err(
                 self.at(),
-                format!("expected an item (sort/const/axiom/assume/goal), found `{other:?}`"),
+                format!(
+                    "expected an item (sort/const/fn/data/axiom/assume/goal), found `{other:?}`"
+                ),
             )),
+        }
+    }
+
+    /// A datatype constructor `name` or `name(field, …)`.
+    fn ctor(&mut self) -> Result<Ctor, FaceError> {
+        let name = self.ident()?;
+        let mut fields = Vec::new();
+        if self.eat(&Tok::LParen) {
+            if !matches!(self.peek(), Some(Tok::RParen)) {
+                fields.push(self.ctor_field()?);
+                while self.eat(&Tok::Comma) {
+                    fields.push(self.ctor_field()?);
+                }
+            }
+            self.expect(&Tok::RParen)?;
+        }
+        Ok((name, fields))
+    }
+
+    /// A constructor field: `selname: Type` (a named selector) or a positional
+    /// `Type`. The selector name is surface sugar — it round-trips but the
+    /// kernel/solver synthesize positional selectors.
+    fn ctor_field(&mut self) -> Result<(Option<String>, Type), FaceError> {
+        // a leading `ident :` is a selector name; otherwise the field is a bare type.
+        if matches!(self.peek(), Some(Tok::Ident(_)))
+            && matches!(self.toks.get(self.pos + 1), Some((Tok::Colon, _)))
+        {
+            let name = self.ident()?;
+            self.expect(&Tok::Colon)?;
+            Ok((Some(name), self.type_()?))
+        } else {
+            Ok((None, self.type_()?))
         }
     }
 

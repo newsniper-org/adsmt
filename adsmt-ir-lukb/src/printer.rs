@@ -57,7 +57,7 @@ fn print_item(out: &mut String, it: &Item) {
             out.push_str(": ");
             print_type(out, ty);
         }
-        Item::Fn { name, params, ret } => {
+        Item::Fn { name, params, ret, body } => {
             out.push_str("fn ");
             id(out, name);
             out.push('(');
@@ -71,6 +71,35 @@ fn print_item(out: &mut String, it: &Item) {
             }
             out.push_str("): ");
             print_type(out, ret);
+            if let Some(b) = body {
+                out.push_str(" = ");
+                print_term(out, b, 0);
+            }
+        }
+        Item::Data { name, ctors } => {
+            out.push_str("data ");
+            id(out, name);
+            out.push_str(" = ");
+            for (i, (cname, fields)) in ctors.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(" | ");
+                }
+                id(out, cname);
+                if !fields.is_empty() {
+                    out.push('(');
+                    for (j, (sel, ty)) in fields.iter().enumerate() {
+                        if j > 0 {
+                            out.push_str(", ");
+                        }
+                        if let Some(s) = sel {
+                            id(out, s);
+                            out.push_str(": ");
+                        }
+                        print_type(out, ty);
+                    }
+                    out.push(')');
+                }
+            }
         }
         Item::Axiom(n, t) => print_keyed(out, "axiom", n, t),
         Item::Assume(n, t) => print_keyed(out, "assume", n, t),

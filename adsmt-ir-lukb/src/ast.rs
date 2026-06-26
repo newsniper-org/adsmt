@@ -15,11 +15,22 @@ pub enum Item {
     Sort(String),
     /// `const x: T` — a free constant (e.g. a VC variable).
     Const(String, Type),
-    /// `fn f(x: Int, y z: Bool): U` — an (opaque) function **signature**,
-    /// postulated as `f : T1 -> … -> U` (`Bool` → `Prop`). Each parameter group
-    /// `names: ty` shares a type. Function *definitions* (`= body`) are a later
-    /// slice (the closed-world modality contract).
-    Fn { name: String, params: Vec<(Vec<String>, Type)>, ret: Type },
+    /// `fn f(x: Int, y z: Bool): U [= body]` — a function. With **no** `= body`
+    /// it is an opaque (`open`) **signature** postulated as `f : T1 -> … -> U`
+    /// (`Bool` → `Prop`); with a `= body` it is a **non-recursive definition**
+    /// (`define`, `Modality::Def`) — `f := λ(params). body`, δ-unfolded at the
+    /// solver lowering. (A *recursive* body — one mentioning `f` — needs the
+    /// kernel `fix`; a later slice.) Each parameter group `names: ty` shares a
+    /// type.
+    Fn { name: String, params: Vec<(Vec<String>, Type)>, ret: Type, body: Option<Term> },
+    /// `data Nat = zero | succ(Nat)` / `data List = nil | cons(head: Int, tail:
+    /// List)` — a non-parametric inductive **datatype**, elaborated to a kernel
+    /// `declare_inductive`. Each constructor carries its field list; a field may
+    /// name its selector (`head: Int`) or be positional (`Int`) — the selector
+    /// names are surface sugar (round-tripped; the kernel + solver lowering
+    /// synthesize positional selectors). Constructors are usable as terms; case
+    /// analysis (`match`) is a later surface slice.
+    Data { name: String, ctors: Vec<Ctor> },
     /// `axiom [name]: φ` — a trusted hypothesis (∈ H).
     Axiom(Option<String>, Term),
     /// `assume [name]: φ` — a VC path condition (∈ H).
@@ -28,6 +39,10 @@ pub enum Item {
     /// `H1, …, Hk |- G`, desugared at parse time to `(H1 ∧ … ∧ Hk) ==> G`.
     Goal(Option<String>, Term),
 }
+
+/// One datatype constructor: its name + field list (each field = an optional
+/// selector name and a type) — the payload of a [`Item::Data`].
+pub type Ctor = (String, Vec<(Option<String>, Type)>);
 
 /// A type expression: a named sort or a parametric application.
 #[derive(Clone, Debug, PartialEq)]

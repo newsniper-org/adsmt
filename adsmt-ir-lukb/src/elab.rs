@@ -5,7 +5,9 @@
 //! trusted ill-typed term — the same firewall as the SMT-LIB / ASP faces.
 
 use adsmt_ir::theory;
-use adsmt_ir::{Ctx, Env, Term as K, infer, is_def_eq, postulate};
+use adsmt_ir::{
+    Ctx, Env, Term as K, Univ, declare_inductive, define, infer, is_def_eq, postulate,
+};
 
 use crate::ast::{BinOp, Binder, Item, Module, Term as S, Type};
 use crate::error::{FaceError, unsupported};
@@ -72,21 +74,60 @@ impl Elab {
                 let kty = self.elab_type(ty)?;
                 postulate(&mut self.env, x, kty)?;
             }
-            Item::Fn { name, params, ret } => {
-                // build the curried function type `T1 -> … -> ret` and postulate
-                // it as an opaque (`open`) function constant.
-                let mut ptypes = Vec::new();
+            Item::Fn { name, params, ret, body } => {
+                // build the curried function type `T1 -> … -> ret` + the flat
+                // (param-name, type) list in order.
+                let mut ptypes: Vec<K> = Vec::new();
+                let mut pnames: Vec<String> = Vec::new();
                 for (names, t) in params {
                     let kt = self.elab_type(t)?;
-                    for _ in names {
+                    for n in names {
                         ptypes.push(kt.clone());
+                        pnames.push(n.clone());
                     }
                 }
                 let mut ty = self.elab_type(ret)?;
-                for pt in ptypes.into_iter().rev() {
-                    ty = K::arrow(pt, ty);
+                for pt in ptypes.iter().rev() {
+                    ty = K::arrow(pt.clone(), ty);
                 }
-                postulate(&mut self.env, name, ty)?;
+                match body {
+                    // a signature: an opaque (`open`) function constant.
+                    None => {
+                        postulate(&mut self.env, name, ty)?;
+                    }
+                    // a definition `f := λ(params). body`. Elaborate the body
+                    // under the param binders, λ-abstract, and `define` it (a
+                    // `Modality::Def`, δ-unfolded at the solver lowering). The
+                    // body must NOT mention `f` — a recursive body needs the
+                    // kernel `fix` (a later slice; here it elaborates to an
+                    // "unknown symbol `f`" error, which is sound).
+                    Some(b) => {
+                        let mut ctx: Vec<(String, K)> =
+                            pnames.into_iter().zip(ptypes.iter().cloned()).collect();
+                        let kbody = self.elab_term(&mut ctx, b)?;
+                        let mut lam = kbody;
+                        for pt in ptypes.into_iter().rev() {
+                            lam = K::lam(pt, lam);
+                        }
+                        define(&mut self.env, name, ty, lam)?;
+                    }
+                }
+            }
+            Item::Data { name, ctors } => {
+                // a non-parametric inductive datatype → `declare_inductive`. A
+                // field type may reference THIS datatype (recursive) — it is not
+                // in `env` yet, so the self-reference resolves to `cnst(name)`.
+                // Selector names are surface-only (the solver lowering
+                // synthesizes positional selectors).
+                let mut kctors: Vec<(String, Vec<K>)> = Vec::with_capacity(ctors.len());
+                for (cname, fields) in ctors {
+                    let mut ftypes = Vec::with_capacity(fields.len());
+                    for (_selname, fty) in fields {
+                        ftypes.push(self.elab_field_type(fty, name)?);
+                    }
+                    kctors.push((cname.clone(), ftypes));
+                }
+                declare_inductive(&mut self.env, name, Vec::new(), Univ::Type(0), kctors)?;
             }
             Item::Axiom(_, t) | Item::Assume(_, t) => {
                 let kt = self.elab_prop(t)?;
@@ -109,6 +150,16 @@ impl Elab {
             return Err(unsupported(format!("item body has sort `{ty}`, expected Bool/Prop")));
         }
         Ok(kt)
+    }
+
+    /// A datatype constructor's **field type**, as [`Self::elab_type`] but with
+    /// the inductive being declared (`data_name`) allowed as a (recursive)
+    /// self-reference even though it is not yet in `env`.
+    fn elab_field_type(&self, ty: &Type, data_name: &str) -> Result<K, FaceError> {
+        match ty {
+            Type::Name(n) if n == data_name => Ok(K::cnst(n.clone())),
+            _ => self.elab_type(ty),
+        }
     }
 
     fn elab_type(&self, ty: &Type) -> Result<K, FaceError> {

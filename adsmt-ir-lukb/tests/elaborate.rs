@@ -371,3 +371,80 @@ fn unterminated_quoted_identifier_errors() {
         Ok(_) => panic!("expected a parse error, but it elaborated"),
     }
 }
+
+// ── slice 7: data datatypes + fn=body definitions ───────────────────────
+
+/// A `data` declaration admits a kernel inductive; its constructors are usable
+/// as terms. (`Nat`/`Int`/… are reserved arith-prelude sorts, so a datatype
+/// uses a fresh name — `Peano`.)
+#[test]
+fn data_datatype_elaborates() {
+    let r = all_props(
+        "data Peano = zero | succ(pred: Peano)\n\
+         goal g: succ(succ(zero)) = succ(succ(zero))\n",
+        0,
+        1,
+    );
+    assert!(r.env.lookup("Peano").is_some(), "the inductive is declared");
+    assert!(
+        r.env.lookup("zero").is_some() && r.env.lookup("succ").is_some(),
+        "constructors are declared"
+    );
+}
+
+/// A recursive datatype with named + positional fields (a `List` over `Int`),
+/// constructors applied to mixed arguments.
+#[test]
+fn data_recursive_with_fields() {
+    let r = all_props(
+        "data Lst = nil | cons(head: Int, tail: Lst)\n\
+         const p: Lst\n\
+         goal g: cons(1, p) = cons(1, p)\n",
+        0,
+        1,
+    );
+    assert!(r.env.lookup("cons").is_some());
+}
+
+/// A `fn f(..) = body` is a DEFINITION (`Modality::Def`), distinct from a
+/// signature postulate (`Modality::Open`); both are usable as terms.
+#[test]
+fn fn_definition_vs_signature() {
+    use adsmt_ir::Modality;
+    let r = elaborate(
+        "fn sig(x: Int): Int\n\
+         fn dbl(x: Int): Int = x + x\n\
+         goal g: dbl(sig(2)) > 0\n",
+    )
+    .expect("elaborates");
+    assert!(matches!(r.env.lookup("sig").unwrap().modality, Modality::Open), "signature → open");
+    assert!(matches!(r.env.lookup("dbl").unwrap().modality, Modality::Def(_)), "= body → def");
+}
+
+/// A predicate definition `fn p(..): Bool = <prop>` (`Bool` → `Prop`).
+#[test]
+fn fn_bool_definition_elaborates() {
+    all_props("fn pos(x: Int): Bool = x > 0\ngoal g: pos(5) or not pos(5)\n", 0, 1);
+}
+
+/// A **recursive** `fn` body (mentioning the function being defined) is rejected
+/// — the kernel `fix` is a later slice; the self-reference is an unknown symbol
+/// (sound: no ill-typed term escapes).
+#[test]
+fn recursive_fn_definition_is_rejected() {
+    assert!(matches!(
+        elaborate("fn loops(x: Int): Int = loops(x)\n"),
+        Err(FaceError::Unsupported(_))
+    ));
+}
+
+/// `data` + `fn=body` round-trip through the printer.
+#[test]
+fn data_and_fn_def_round_trip() {
+    let src = "data Tree = leaf | node(l: Tree, v: Int, r: Tree)\n\
+               fn inc(n: Int): Int = n + 1\n\
+               goal g: inc(0) >= 0\n";
+    let m1 = parse(src).expect("parses");
+    let m2 = parse(&print_module(&m1)).expect("re-parses");
+    assert_eq!(m1, m2, "data + fn def round-trip\n{}", print_module(&m1));
+}

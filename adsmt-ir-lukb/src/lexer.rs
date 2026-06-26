@@ -13,6 +13,7 @@ pub enum Tok {
     Sort,
     Const,
     Fn,
+    Data,
     Axiom,
     Assume,
     Goal,
@@ -49,6 +50,7 @@ pub enum Tok {
     Colon,     // :
     Comma,     // ,
     Dot,       // .
+    Pipe,      // | (datatype constructor separator)
     LParen,    // (
     RParen,    // )
     LBrace,    // {
@@ -60,6 +62,7 @@ fn keyword(s: &str) -> Option<Tok> {
         "sort" => Tok::Sort,
         "const" => Tok::Const,
         "fn" => Tok::Fn,
+        "data" => Tok::Data,
         "axiom" => Tok::Axiom,
         "assume" => Tok::Assume,
         "goal" => Tok::Goal,
@@ -195,6 +198,7 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, FaceError> {
             ':' => Some(Tok::Colon),
             ',' => Some(Tok::Comma),
             '.' => Some(Tok::Dot),
+            '|' => Some(Tok::Pipe),
             '(' => Some(Tok::LParen),
             ')' => Some(Tok::RParen),
             '{' => Some(Tok::LBrace),
