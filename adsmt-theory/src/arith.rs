@@ -376,6 +376,79 @@ impl LinArith {
         None
     }
 
+    /// Direct same-pair feasibility over the two-variable pool.
+    ///
+    /// Each `TwoVar` constrains the "virtual variable" `v = x + sign·y`.
+    /// `fm_cross_eliminate` only chains `≤`/`<` constraints (to cancel a
+    /// shared middle variable), so a direct clash between a `≤`/`<` and a
+    /// `≥`/`>` on the SAME `(x, y, sign)` pair was never tested — e.g. an
+    /// EUF-shared equality `x = y` (recorded as `x−y ≤ 0 ∧ x−y ≥ 0`)
+    /// against a comparison `x > y` (`x−y > 0`). Group every entry by its
+    /// pair, intersect the implied lower/upper bounds (the same interval
+    /// arithmetic `record_bound` uses for single variables, with the same
+    /// LIA strict→next-integer tightening), and flag an empty interval.
+    /// **Sound**: every grouped constraint genuinely bounds the same
+    /// linear term, so an empty intersection is a real conflict.
+    fn two_var_same_pair_conflict(&self) -> Option<TheoryWitness> {
+        type Bnd = Option<BoundValue>;
+        let is_lia = self.name_ == "LIA";
+        let mut groups: HashMap<(String, String, i128), (Bnd, Bnd)> = HashMap::new();
+        for tv in &self.two_vars {
+            // Canonicalize the pair so mirror constraints land in one
+            // group: `y − x op k` is the same virtual variable as
+            // `x − y` negated, so for `sign = −1` with `x > y` we swap
+            // the operands, flip the operator, and negate `k`
+            // (`y − x > 0` ⟺ `x − y < 0`). `sign = +1` (`x + y`, the
+            // symmetric sum) only needs the operands ordered. Without
+            // this, `x = y` (group `x−y`) and `y > x` (group `y−x`) miss
+            // each other → spurious `sat`.
+            let (kx, ky, op, k) = if tv.sign == -1 && tv.x > tv.y {
+                let flipped = match tv.op {
+                    "<=" => ">=", "<" => ">", ">=" => "<=", ">" => "<", o => o,
+                };
+                (tv.y.clone(), tv.x.clone(), flipped, -tv.k)
+            } else if tv.sign == 1 && tv.x > tv.y {
+                (tv.y.clone(), tv.x.clone(), tv.op, tv.k)
+            } else {
+                (tv.x.clone(), tv.y.clone(), tv.op, tv.k)
+            };
+            let (lower, upper) = groups.entry((kx, ky, tv.sign)).or_default();
+            match op {
+                "<=" => {
+                    let new = (k, false);
+                    *upper = Some(upper.map_or(new, |old| tighter_upper(old, new)));
+                }
+                "<" => {
+                    let new = if is_lia { (k - 1, false) } else { (k, true) };
+                    *upper = Some(upper.map_or(new, |old| tighter_upper(old, new)));
+                }
+                ">=" => {
+                    let new = (k, false);
+                    *lower = Some(lower.map_or(new, |old| tighter_lower(old, new)));
+                }
+                ">" => {
+                    let new = if is_lia { (k + 1, false) } else { (k, true) };
+                    *lower = Some(lower.map_or(new, |old| tighter_lower(old, new)));
+                }
+                _ => {}
+            }
+        }
+        for ((x, y, sign), (lower, upper)) in &groups {
+            if let (Some((lo, lstrict)), Some((up, ustrict))) = (lower, upper)
+                && (lo > up || (lo == up && (*lstrict || *ustrict)))
+            {
+                let pair = if *sign < 0 { format!("{x} - {y}") } else { format!("{x} + {y}") };
+                return Some(TheoryWitness::Opaque {
+                    kind: self.name_.into(),
+                    notes: format!(
+                        "two-var bounds infeasible on ({pair}): lower ({lo}, strict={lstrict}) vs upper ({up}, strict={ustrict})"
+                    ),
+                });
+            }
+        }
+        None
+    }
+
     /// Recognise `(<= x k)` / `(< x k)` / `(>= x k)` / `(> x k)`
     /// where `x` is a variable and `k` an integer literal.
     fn parse_comparison(t: &Term) -> Option<(String, &'static str, i128)> {
@@ -643,6 +716,14 @@ impl Theory for LinArith {
             self.conflict = Some(w.clone());
             return CheckResult::Unsat { witness: w };
         }
+        // Stage 1b: direct same-pair clash — run AFTER FM so it also
+        // tests the transitively-derived `≤` constraints against the
+        // `≥`/`>` constraints FM itself ignores. Catches the EUF-shared
+        // equality conflict `x = y ∧ x > y` (and `x = y = z ∧ x > z`).
+        if let Some(w) = self.two_var_same_pair_conflict() {
+            self.conflict = Some(w.clone());
+            return CheckResult::Unsat { witness: w };
+        }
         // Stage 2: use single-variable bounds to drive multi-variable
         // constraints into tightened single-variable bounds.
         if let Some(w) = self.propagate_two_var_via_bounds() {
@@ -772,6 +853,60 @@ mod tests {
             t.assert(Literal::positive(eq).unwrap()),
             AssertResult::Accepted
         ));
+        assert!(matches!(t.check(), CheckResult::Sat));
+    }
+
+    fn gt_vars(x: &str, y: &str) -> Term {
+        // `(> x y)`
+        let op_ty = Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap()).unwrap();
+        let op = Term::const_(">", op_ty);
+        Term::app(
+            Term::app(op, Term::var(x, int_ty())).unwrap(),
+            Term::var(y, int_ty()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn shared_equality_against_strict_is_unsat() {
+        // `x = y ∧ x > y` — the EUF-shared equality conflicts with the
+        // strict inequality on the SAME pair. Was a spurious `sat` (the
+        // interface-equality gap); the two-var same-pair check closes it.
+        let mut t = LinArith::lia();
+        let eq = Term::mk_eq(Term::var("x", int_ty()), Term::var("y", int_ty())).unwrap();
+        t.assert(Literal::positive(eq).unwrap());
+        t.assert(Literal::positive(gt_vars("x", "y")).unwrap());
+        assert!(matches!(t.check(), CheckResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn shared_equality_against_mirrored_strict_is_unsat() {
+        // `x = y ∧ y > x` — the comparison is stored under the mirrored
+        // pair `(y, x)`; pair canonicalization must merge it with the
+        // equality's `(x, y)` group.
+        let mut t = LinArith::lia();
+        let eq = Term::mk_eq(Term::var("x", int_ty()), Term::var("y", int_ty())).unwrap();
+        t.assert(Literal::positive(eq).unwrap());
+        t.assert(Literal::positive(gt_vars("y", "x")).unwrap());
+        assert!(matches!(t.check(), CheckResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn shared_equality_against_nonstrict_stays_sat() {
+        // `x = y ∧ x ≥ y` is satisfiable — the same-pair check must not
+        // over-fire on a consistent non-strict bound.
+        let mut t = LinArith::lia();
+        let eq = Term::mk_eq(Term::var("x", int_ty()), Term::var("y", int_ty())).unwrap();
+        let ge = {
+            let op_ty = Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap()).unwrap();
+            Term::app(
+                Term::app(Term::const_(">=", op_ty), Term::var("x", int_ty())).unwrap(),
+                Term::var("y", int_ty()),
+            )
+            .unwrap()
+        };
+        t.assert(Literal::positive(eq).unwrap());
+        t.assert(Literal::positive(ge).unwrap());
         assert!(matches!(t.check(), CheckResult::Sat));
     }
 
