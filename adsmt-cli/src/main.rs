@@ -110,6 +110,15 @@ struct Cli {
     /// encountered.
     #[arg(long)]
     strict_commands: bool,
+    /// Enable the advisory **unsoundness/vacuity linter** (an observer behind
+    /// the firewall — it never changes a verdict). Equivalent to
+    /// `(set-option :lint true)` at startup. On a discharged obligation it notes
+    /// when the proof is VACUOUS (the in-scope assumptions are themselves
+    /// unsatisfiable — a false precondition / `requires false`). Findings go to
+    /// stderr as a human line + a versioned `lint-json:` document. Default off,
+    /// so the un-opted solver path is byte-identical.
+    #[arg(long)]
+    lint: bool,
     /// Reject implicit `Bool` auto-declaration in `assert` bodies.
     /// Spec-strict mode requires explicit `declare-const`; without
     /// this flag, lu-smt's permissive default registers any unknown
@@ -308,6 +317,9 @@ fn main() -> ExitCode {
         },
         aot_prelude,
     );
+    // `--lint` mirrors `(set-option :lint true)` at startup (a later set-option
+    // can still flip it). Enables the advisory unsoundness/vacuity linter.
+    driver.options.lint = cli.lint;
     // §3.5.D / verus-fork rc.18 retry (b') — install the
     // tracer on the live solver so every CDCL state
     // transition the engine walks through during the
