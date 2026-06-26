@@ -1,0 +1,14 @@
+[package]
+name = "adsmt-ir-lower"
+version = "0.1.0"
+edition = "2024"
+description = "Lower the typed CIC kernel IR (adsmt-ir) down to the adsmt-core HOL solver term rep"
+
+[dependencies]
+adsmt-ir = { path = "../adsmt-ir" }
+adsmt-core = { path = "../adsmt-core" }
+adsmt-theory = { path = "../adsmt-theory" }
+
+[dev-dependencies]
+adsmt-ir-smtlib = { path = "../adsmt-ir-smtlib" }
+adsmt-engine = { path = "../adsmt-engine" }

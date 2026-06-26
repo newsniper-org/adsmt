@@ -71,6 +71,15 @@ members = [
     "lu-deps",
     "lu-multi",
     "logicutils-translator-to-oxiz-sat",
+    # adsmt-ir face group — the typed CIC kernel (`adsmt-ir`) + its surface
+    # faces (SMT-LIB / lu-kb-successor / typed-ASP) + the CIC→HOL lowering.
+    # Absorbed from sibling repos 2026-06-27 (faces-in-workspace = a Phase-2
+    # gate; the #325 lowering + the verus-fork lukb producer are downstream).
+    "adsmt-ir",
+    "adsmt-ir-smtlib",
+    "adsmt-ir-lukb",
+    "adsmt-ir-asp",
+    "adsmt-ir-lower",
 ]
 exclude = ["external/oxiz"]
 

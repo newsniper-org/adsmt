@@ -222,6 +222,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-ir-lower"
+version = "0.1.0"
+dependencies = [
+ "adsmt-core",
+ "adsmt-engine",
+ "adsmt-ir",
+ "adsmt-ir-smtlib",
+ "adsmt-theory",
+]
+
+[[package]]
+name = "adsmt-ir-lukb"
+version = "0.1.0"
+dependencies = [
+ "adsmt-ir",
+]
+
+[[package]]
+name = "adsmt-ir-smtlib"
+version = "0.1.0"
+dependencies = [
+ "adsmt-ir",
+]
+
+[[package]]
 name = "adsmt-jit"
 version = "1.0.0-rc.40"
 dependencies = [

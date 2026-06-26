@@ -1,0 +1,8 @@
+[package]
+name = "adsmt-ir-asp"
+version = "0.1.0"
+edition = "2024"
+description = "The typed-ASP face for adsmt-ir: a closed-world/stable-model surface that elaborates to the typed CIC kernel, with the abductive engine merged in"
+
+[dependencies]
+adsmt-ir = { path = "../adsmt-ir" }

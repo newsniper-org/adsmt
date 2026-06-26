@@ -17,8 +17,8 @@ adsmt-parser-smtlib2.workspace = true
 # kernel), pulled in as a path dependency only when the `asp` feature is on
 # (default). It supplies the advisory `lint_source` we publish as ASP
 # diagnostics; keeping it optional lets the core SMT-LIB LSP build with
-# `--no-default-features` even when the sibling repo is absent.
-adsmt-ir-asp = { path = "../../adsmt-ir-asp", optional = true }
+# `--no-default-features` (absorbed into the workspace 2026-06-27).
+adsmt-ir-asp = { path = "../adsmt-ir-asp", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

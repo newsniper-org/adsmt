@@ -1,0 +1,12 @@
+[package]
+name = "adsmt-ir-lukb"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
+description = "The lu-kb-successor unified surface face for adsmt-ir — a non-S-expr indentation/keyword language (axiom/assume/goal items + quantifiers + arithmetic) that elaborates into the typed CIC kernel IR"
+
+# A frontend, NOT the trusted core: everything it elaborates is re-checked by
+# the adsmt-ir kernel, so a face bug can only ever be *rejected*, never trusted.
+# Zero-dependency (a hand-written lexer + precedence-climbing parser).
+[dependencies]
+adsmt-ir = { path = "../adsmt-ir" }

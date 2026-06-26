@@ -1,0 +1,12 @@
+[package]
+name = "adsmt-ir-smtlib"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
+description = "The SMT-LIB-3.0 surface face for adsmt-ir — parse + elaborate SMT-LIB into the typed CIC kernel IR (a 1:1 subset of the unified superset)"
+
+# A frontend, NOT the trusted core: everything it elaborates is re-checked by
+# the adsmt-ir kernel, so a face bug can only ever be *rejected*, never trusted.
+# Zero-dependency (a hand-written S-expression parser).
+[dependencies]
+adsmt-ir = { path = "../adsmt-ir" }

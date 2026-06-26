@@ -1,0 +1,10 @@
+[package]
+name = "adsmt-ir"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later"
+description = "Typed CIC kernel IR — the language-agnostic core lingua franca for adsmt's multi-paradigm substrate (SMT-LIB-3.0 ⊕ typed-Datalog/ASP)"
+
+# Zero-dependency kernel: the trusted core stays small and auditable.
+# (Hash-consing / serde / surface parsers are out-of-kernel follow-ups.)
+[dependencies]
