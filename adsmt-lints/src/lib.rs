@@ -405,10 +405,153 @@ mod tests {
     }
 }
 
-// === Future lu-kb-side audits ===
+// === The unsoundness / vacuity LINTER wire (lu-kb / VC-side) ===
 //
-// Reserved space for runtime audits targeting lu-kb usage
-// patterns (e.g. dead-predicate detection over a parsed
-// `KbModule`, unused-rule detection). These share the same
-// `Severity` / `DiagnosticsDocument` / JSON shape so a single
-// VS Code extension can consume both surfaces uniformly.
+// The advisory unsoundness/vacuity linter (a pure OBSERVER behind the soundness
+// firewall — it reads already-trusted solver outputs and emits side-channel
+// diagnostics, never changing a verdict) shares the same `Severity` /
+// `SourceLocPayload` / `JSON_SCHEMA_VERSION` envelope as the dead-pattern audit,
+// so a single VS Code / Theia extension (and the `adsmt-lsp` server) consumes
+// both surfaces uniformly. This module is the SMT-LIB / ITP-side wire; the
+// typed-ASP face (`adsmt-ir-asp`, a separate crate) mirrors the same field
+// layout in its own serde shape.
+
+/// A stable identifier for a lint rule — lets an IDE / CI filter findings by
+/// rule without parsing the message. Serialised in `kebab-case` (e.g.
+/// `"vacuous-context"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LintRule {
+    /// The keystone: the in-scope assumptions `H` are unsatisfiable on their own
+    /// (the solver decided `unsat` for `SAT(H)`), so the obligation passes
+    /// **vacuously**. `Info`/soft by default — intentional vacuity (`requires
+    /// false`, unreachable arms) is common; hard only under an explicit opt-in.
+    VacuousContext,
+    /// The solver returned `unknown` on `H`, so vacuity could not be checked
+    /// (silence, not evidence). Off by default — a soft epistemic note only.
+    ContextUnknown,
+    /// A `forall` with no / an over-permissive `:pattern` (the solver / MBQI
+    /// guesses instantiations). `Info` — many trigger-free axioms are intentional.
+    MissingTrigger,
+    /// An ASP **unsafe variable** (a head / `not` / comparison variable not bound
+    /// by a positive body atom → grounding drops instances).
+    AspUnsafeVariable,
+    /// An ASP **negative cycle** (decided by the L3 stable-model gate, not the
+    /// perfect model).
+    AspNonStratified,
+    /// An ASP program with **no answer set** (the vacuity dual on the ASP face).
+    AspVacuity,
+}
+
+/// One advisory lint finding — the unsoundness/vacuity linter's payload, in a
+/// `serde::Serialize` shape for IDE / CI consumption (the same envelope as
+/// [`DeadPatternDiagnostic`], so one consumer reads both).
+#[derive(Clone, Debug, Serialize)]
+pub struct LintDiagnostic {
+    pub rule: LintRule,
+    pub severity: Severity,
+    /// Human-readable message ready for direct display. Per the linter's
+    /// attribution discipline, a vacuity finding is phrased "the solver found
+    /// these in-scope assumptions unsatisfiable on their own", never "your
+    /// context is contradictory".
+    pub message: String,
+    /// Source location for an editor squiggle (when the producer can supply one).
+    pub source_loc: Option<SourceLocPayload>,
+    /// The 0-based `(check-sat)` sequence number this finding attaches to, on the
+    /// SMT-LIB streaming face (`None` for a parse/elaborate-time finding).
+    pub check_sat_seq: Option<u32>,
+}
+
+impl LintDiagnostic {
+    /// Build a finding at a given severity.
+    pub fn new(rule: LintRule, severity: Severity, message: impl Into<String>) -> Self {
+        LintDiagnostic { rule, severity, message: message.into(), source_loc: None, check_sat_seq: None }
+    }
+    /// Attach a source location (builder style).
+    pub fn at(mut self, loc: SourceLocPayload) -> Self {
+        self.source_loc = Some(loc);
+        self
+    }
+    /// Attach a `(check-sat)` sequence number (builder style).
+    pub fn for_check_sat(mut self, seq: u32) -> Self {
+        self.check_sat_seq = Some(seq);
+        self
+    }
+}
+
+/// Top-level JSON document for lint findings — the same versioned envelope as
+/// [`DiagnosticsDocument`], with a `lints` array instead of `diagnostics`.
+#[derive(Clone, Debug, Serialize)]
+pub struct LintDocument {
+    pub schema_version: u32,
+    pub generator: &'static str,
+    pub lints: Vec<LintDiagnostic>,
+}
+
+impl LintDocument {
+    fn wrap(lints: &[LintDiagnostic]) -> Self {
+        LintDocument {
+            schema_version: JSON_SCHEMA_VERSION,
+            generator: concat!("adsmt-lints v", env!("CARGO_PKG_VERSION")),
+            lints: lints.to_vec(),
+        }
+    }
+}
+
+/// Render lint findings as a versioned, pretty-printed JSON document (for IDE /
+/// `(get-lints)` consumption).
+pub fn lints_to_json(lints: &[LintDiagnostic]) -> Result<String, AuditError> {
+    Ok(serde_json::to_string_pretty(&LintDocument::wrap(lints))?)
+}
+
+/// Compact one-line JSON, for log streams / `--lint-format=json` pipelines.
+pub fn lints_to_json_compact(lints: &[LintDiagnostic]) -> Result<String, AuditError> {
+    Ok(serde_json::to_string(&LintDocument::wrap(lints))?)
+}
+
+#[cfg(test)]
+mod vc_lint_tests {
+    use super::*;
+
+    #[test]
+    fn lint_document_is_versioned_and_kebab_ruled() {
+        let lints = [
+            LintDiagnostic::new(
+                LintRule::VacuousContext,
+                Severity::Info,
+                "the solver found these in-scope assumptions unsatisfiable on their own",
+            )
+            .for_check_sat(3),
+            LintDiagnostic::new(LintRule::MissingTrigger, Severity::Info, "forall with no :pattern")
+                .at(SourceLocPayload { line: 12, column: 4 }),
+        ];
+        let json = lints_to_json(&lints).expect("serialise");
+        assert!(json.contains("\"schema_version\""));
+        assert!(json.contains("\"generator\""));
+        assert!(json.contains("\"lints\""));
+        assert!(json.contains("\"vacuous-context\""), "rule id is kebab-case");
+        assert!(json.contains("\"missing-trigger\""));
+        assert!(json.contains("\"info\""), "severity is lowercase");
+        assert!(json.contains("\"check_sat_seq\": 3"));
+        assert!(json.contains("\"line\": 12"));
+    }
+
+    #[test]
+    fn empty_lints_still_a_valid_document() {
+        let json = lints_to_json(&[]).expect("serialise");
+        assert!(json.contains("\"schema_version\""));
+        assert!(json.contains("\"lints\": []"));
+    }
+
+    #[test]
+    fn compact_is_one_line() {
+        let json = lints_to_json_compact(&[LintDiagnostic::new(
+            LintRule::AspVacuity,
+            Severity::Info,
+            "no answer set",
+        )])
+        .expect("serialise");
+        assert!(!json.contains('\n'));
+        assert!(json.contains("\"asp-vacuity\""));
+    }
+}
