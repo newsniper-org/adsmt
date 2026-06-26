@@ -170,6 +170,102 @@ impl Datatypes {
         }
     }
 
+    /// Selector reduction **through congruence** — the companion to the literal
+    /// [`Self::collect_selector_reductions`], which only fires on a selector
+    /// applied to a *syntactic* constructor app `sel(C(x⃗))`. A `sel(y)` whose
+    /// argument `y` is merely *asserted equal* to a constructor (`y = C(x⃗)`)
+    /// must reduce too — otherwise `x = succ zero ∧ pred x ≠ zero` is wrongly
+    /// `sat` (a spurious-sat completeness gap).
+    ///
+    /// Close the asserted equalities into classes, find each class's constructor
+    /// representative, and for every `sel(y)` subterm whose `y` lands in a class
+    /// with a matching constructor `C(args)`, emit `sel(y) = args[idx]`. **Sound**:
+    /// `y = C(args) ⟹ sel_{C,idx}(y) = args[idx]` is a valid consequence, so this
+    /// only ever adds *true* equalities (it can derive a contradiction, never a
+    /// false one).
+    fn congruent_selector_reductions(&self, out: &mut Vec<(Term, Term)>) {
+        if self.asserted_eqs.is_empty() {
+            return;
+        }
+        // 1. union-find over the asserted equalities.
+        let mut parent: HashMap<Term, Term> = HashMap::new();
+        for (a, b) in &self.asserted_eqs {
+            Self::uf_union(&mut parent, a, b);
+        }
+        // 2. each class's constructor representative (the first one; a *second*,
+        //    distinct constructor in a class is a disjointness conflict already
+        //    caught in `assert`).
+        let mut ctor_of: HashMap<Term, (String, Vec<Term>)> = HashMap::new();
+        for t in parent.keys() {
+            if let Some(ctor) = Self::dest_constructor_app(t) {
+                let r = Self::uf_find(&parent, t);
+                ctor_of.entry(r).or_insert(ctor);
+            }
+        }
+        if ctor_of.is_empty() {
+            return;
+        }
+        // 3. each `sel(y)` subterm whose `y`'s class carries a matching ctor.
+        let mut sel_apps: Vec<(Term, Term)> = Vec::new(); // (sel_app, arg)
+        for t in &self.asserted_terms {
+            self.collect_selector_apps(t, &mut sel_apps);
+        }
+        for (sel_app, y) in sel_apps {
+            let TermInner::App(f, _) = sel_app.kind() else { continue };
+            let Some(name) = Self::atom_name(f) else { continue };
+            let Some((ctor, idx)) = self.selector_map.get(&name) else { continue };
+            let r = Self::uf_find(&parent, &y);
+            if let Some((cc, args)) = ctor_of.get(&r)
+                && cc == ctor
+                && *idx < args.len()
+            {
+                out.push((sel_app.clone(), args[*idx].clone()));
+            }
+        }
+    }
+
+    /// Collect `(sel_app, arg)` for every selector-application subterm of `t`.
+    fn collect_selector_apps(&self, t: &Term, out: &mut Vec<(Term, Term)>) {
+        if let TermInner::App(f, x) = t.kind()
+            && let Some(name) = Self::atom_name(f)
+            && self.selector_map.contains_key(&name)
+        {
+            out.push((t.clone(), x.clone()));
+        }
+        match t.kind() {
+            TermInner::App(f, x) => {
+                self.collect_selector_apps(f, out);
+                self.collect_selector_apps(x, out);
+            }
+            TermInner::Lam(_, body) => self.collect_selector_apps(body, out),
+            _ => {}
+        }
+    }
+
+    /// Union-find representative of `t` (no path compression — the asserted-
+    /// equality chains are short and this stays read-only for `&self` callers).
+    fn uf_find(parent: &HashMap<Term, Term>, t: &Term) -> Term {
+        let mut root = t.clone();
+        while let Some(p) = parent.get(&root) {
+            if p == &root {
+                break;
+            }
+            root = p.clone();
+        }
+        root
+    }
+
+    /// Union-find: merge the classes of `a` and `b`.
+    fn uf_union(parent: &mut HashMap<Term, Term>, a: &Term, b: &Term) {
+        parent.entry(a.clone()).or_insert_with(|| a.clone());
+        parent.entry(b.clone()).or_insert_with(|| b.clone());
+        let ra = Self::uf_find(parent, a);
+        let rb = Self::uf_find(parent, b);
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    }
+
     pub fn is_constructor_of(&self, ctor_name: &str) -> Option<&DatatypeDecl> {
         self.decls
             .values()
@@ -263,7 +359,16 @@ impl Theory for Datatypes {
                     // Otherwise: known-true disequality. Drop.
                     return AssertResult::Accepted;
                 }
-            self.asserted_eqs.push((a, b));
+            // SOUNDNESS — only a *positive* equality may seed injectivity /
+            // selector reduction. A **disequality** (`succ b ≠ succ c`, same
+            // constructor so not a disjointness conflict) was previously pushed
+            // here UNCONDITIONALLY → injectivity wrongly derived `b = c` →
+            // congruence `succ b = succ c` contradicted the disequality →
+            // spurious UNSAT (z3-differential: 57/400 false-unsat). Gate on
+            // polarity; a disequality is UF's to reason about, not ours.
+            if lit.polarity {
+                self.asserted_eqs.push((a, b));
+            }
             AssertResult::Accepted
         } else {
             AssertResult::Ignored
@@ -304,6 +409,9 @@ impl Theory for Datatypes {
         for t in &self.asserted_terms {
             self.collect_selector_reductions(t, &mut out);
         }
+        // and the same reduction *through congruence* — `sel(y)` with `y` only
+        // asserted-equal to a constructor (closes the spurious-sat gap).
+        self.congruent_selector_reductions(&mut out);
         out
     }
 
@@ -516,6 +624,64 @@ mod tests {
         assert_eq!(derived.len(), 2, "expected pointwise injectivity");
         assert!(derived.iter().any(|(a, b)| a.alpha_eq(&h1) && b.alpha_eq(&h2)));
         assert!(derived.iter().any(|(a, b)| a.alpha_eq(&t1) && b.alpha_eq(&t2)));
+    }
+
+    #[test]
+    fn disequality_is_not_treated_as_equality() {
+        // SOUNDNESS — a same-constructor **disequality** `Cons h1 t1 ≠ Cons h2 t2`
+        // is satisfiable (h1≠h2 or t1≠t2) and must NOT seed injectivity. Pushing
+        // it to `asserted_eqs` (ignoring polarity) wrongly derived `h1 = h2` →
+        // congruence → contradiction → spurious UNSAT (z3-differential: 57/400).
+        let int_ty = Type::const_("Int", Kind::Type);
+        let list_ty = Type::const_("List_Int", Kind::Type);
+        let cons_ty =
+            Type::fun(int_ty.clone(), Type::fun(list_ty.clone(), list_ty.clone()).unwrap()).unwrap();
+        let cons = Term::const_("Cons", cons_ty);
+        let mk = |h: &str, t: &str| {
+            Term::app(
+                Term::app(cons.clone(), Term::var(h, int_ty.clone())).unwrap(),
+                Term::var(t, list_ty.clone()),
+            )
+            .unwrap()
+        };
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("List_Int", vec!["Cons".into(), "Nil".into()])
+                .with_arities(vec![2, 0]),
+        );
+        let eq = Term::mk_eq(mk("h1", "t1"), mk("h2", "t2")).unwrap();
+        let r = dt.assert(Literal::negative(eq).unwrap());
+        assert!(matches!(r, AssertResult::Accepted), "a same-ctor disequality is sat, not a conflict");
+        assert!(dt.derive_equalities().is_empty(), "a DISEQUALITY must derive no injective equalities");
+    }
+
+    #[test]
+    fn selector_reduces_through_congruence() {
+        // `x = succ z` ⟹ `pred x = z` — selector reduction must chase the
+        // asserted equality, not only a *literal* `pred(succ z)`. Else
+        // `x = succ z ∧ pred x ≠ z` is wrongly `sat` (z3: unsat).
+        let nat = Type::const_("Nat", Kind::Type);
+        let x = Term::var("x", nat.clone());
+        let z = Term::var("z", nat.clone());
+        let succ_z =
+            Term::app(Term::const_("succ", Type::fun(nat.clone(), nat.clone()).unwrap()), z.clone())
+                .unwrap();
+        let pred_x =
+            Term::app(Term::const_("pred", Type::fun(nat.clone(), nat.clone()).unwrap()), x.clone())
+                .unwrap();
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("Nat", vec!["zero".into(), "succ".into()])
+                .with_selectors(vec![vec![], vec!["pred".into()]]),
+        );
+        let _ = dt.assert(Literal::positive(Term::mk_eq(x.clone(), succ_z).unwrap()).unwrap());
+        // mention `pred x` (a known subterm) without seeding an equality.
+        let _ = dt.assert(Literal::negative(Term::mk_eq(pred_x.clone(), z.clone()).unwrap()).unwrap());
+        let derived = dt.derive_equalities();
+        assert!(
+            derived.iter().any(|(a, b)| a.alpha_eq(&pred_x) && b.alpha_eq(&z)),
+            "expected the congruence selector reduction pred(x) = z; got {derived:?}"
+        );
     }
 
     #[test]
