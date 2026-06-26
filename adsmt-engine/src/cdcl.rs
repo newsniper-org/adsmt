@@ -1414,9 +1414,20 @@ pub fn analyze_conflict_1uip(
         }
     }
 
-    // The remaining seen literal at the current level is the UIP.
+    // The single remaining (unresolved) seen literal at the current
+    // level is the 1-UIP. It must be found by *continuing the backward
+    // walk from where the resolution loop stopped* (`trail_idx`): every
+    // seen current-level literal at or after that point has already been
+    // resolved away, yet it stays in `seen` (the set is never pruned).
+    // Re-scanning from the trail END would therefore re-pick the most
+    // recently *resolved* literal instead of the genuine UIP — learning
+    // a wrong (non-asserting) clause and corrupting the search into a
+    // spurious `unsat`. The UIP is the next seen current-level literal
+    // strictly earlier than `trail_idx`.
     if uip_lit.is_none() {
-        for entry in state.trail.iter().rev() {
+        while trail_idx > 0 {
+            trail_idx -= 1;
+            let entry = &state.trail[trail_idx];
             if entry.decision_level != current_level { continue; }
             if !seen.contains(&entry.atom) { continue; }
             uip_lit = Some(Lit::new(
@@ -1550,8 +1561,15 @@ pub fn analyze_conflict_1uip_deadline(
         }
     }
 
+    // See [`analyze_conflict_1uip`]: continue the backward walk from
+    // `trail_idx` (not the trail END) so the UIP is the genuinely
+    // unresolved current-level literal, never an already-resolved one
+    // still lingering in `seen` — the latter learns a non-asserting
+    // clause and yields a spurious `unsat`.
     if uip_lit.is_none() {
-        for entry in state.trail.iter().rev() {
+        while trail_idx > 0 {
+            trail_idx -= 1;
+            let entry = &state.trail[trail_idx];
             if entry.decision_level != current_level { continue; }
             if !seen.contains(&entry.atom) { continue; }
             uip_lit = Some(Lit::new(
@@ -2237,5 +2255,35 @@ mod tests {
         let events = vec![E::Decide { atom: h(&q()), polarity: true }];
         let r = replay_events(&events, |i| map.get(&i).cloned());
         assert!(r.diverged, "an unresolved atom must diverge");
+    }
+}
+
+#[cfg(test)]
+mod conflict_analysis_regressions {
+    use super::*;
+    use crate::cnf::Lit;
+    use adsmt_core::{Term, Type};
+
+    fn bv(n: &str) -> Term { Term::var(n, Type::bool_()) }
+
+    /// Regression for the 1-UIP spurious-`unsat` bug (the UIP-fallback
+    /// re-picked an already-resolved current-level literal still lingering
+    /// in `seen`, learning a non-asserting clause). The clause set
+    /// `{¬A1,¬A2} ∧ {¬A1,A2} ∧ {A1,¬A2}` is satisfiable at `A1=F, A2=F`;
+    /// the bug learned `[A2]` instead of the asserting `[¬A1]` and drove
+    /// the search to a spurious `unsat`.
+    #[test]
+    fn one_uip_does_not_learn_a_resolved_literal() {
+        let (a1, a2) = (bv("A1"), bv("A2"));
+        let clauses = vec![
+            vec![Lit::neg(a1.clone()), Lit::neg(a2.clone())],
+            vec![Lit::neg(a1.clone()), Lit::pos(a2.clone())],
+            vec![Lit::pos(a1.clone()), Lit::neg(a2.clone())],
+        ];
+        assert_eq!(
+            cdcl_solve(&clauses, 1000),
+            BoolResult::Sat,
+            "1-UIP learnt a non-asserting clause → spurious unsat",
+        );
     }
 }
