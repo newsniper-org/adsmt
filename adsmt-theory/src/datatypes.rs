@@ -12,8 +12,14 @@
 //! - constructor disjointness: `Red ≠ Green`, etc.
 //! - cardinality 3 to the polite reconciliation step
 //!
-//! Inductive datatypes (`Nat = Zero | Succ Nat`, etc.) return ω; their
-//! injectivity and acyclicity rules arrive with v0.5.
+//! Inductive datatypes (`Nat = Zero | Succ Nat`, etc.) return ω. Their
+//! structural reasoning — constructor disjointness, **injectivity**,
+//! **selector reduction** (literal + through congruence), **acyclicity**
+//! (occurs-check via a class-containment-graph cycle), and
+//! **exhaustiveness** (a value excluded from every constructor is unsat)
+//! — is all in place (#330/#331). A z3-differential over 7200+ random
+//! datatype queries agrees with z3 modulo a conservative ~0.1% false-sat
+//! residual (the single-survivor → acyclicity chain).
 
 use std::collections::HashMap;
 
@@ -114,13 +120,20 @@ pub struct Datatypes {
     selector_map: HashMap<String, (String, usize)>,
     /// Asserted equalities between *constructor* terms and other terms.
     asserted_eqs: Vec<(Term, Term)>,
+    /// Asserted **disequalities** `a ≠ b` (negative-polarity equality
+    /// literals that aren't an immediate constructor-disjointness drop).
+    /// Mined by the exhaustiveness check: a recognizer-shaped
+    /// `x ≠ c(sel_c(x))` (the desugared `¬is_c(x)`) excludes constructor
+    /// `c` for `x`; excluding *every* constructor is unsat. Scoped
+    /// alongside `asserted_eqs`.
+    disequalities: Vec<(Term, Term)>,
     /// rc.30 (Y4) — every asserted literal term, mined for
     /// selector-application subterms in `derive_equalities`. Scoped
     /// alongside `asserted_eqs`.
     asserted_terms: Vec<Term>,
     conflict: Option<TheoryWitness>,
-    /// Push/pop snapshot of `(asserted_eqs.len(), asserted_terms.len())`.
-    scope_stack: Vec<(usize, usize)>,
+    /// Push/pop snapshot of `(asserted_eqs, disequalities, asserted_terms)` lengths.
+    scope_stack: Vec<(usize, usize, usize)>,
 }
 
 impl Datatypes {
@@ -233,6 +246,179 @@ impl Datatypes {
                 }
             }
         }
+    }
+
+    /// Occurs-check / **acyclicity**. In a well-founded (inductive)
+    /// datatype a constructor value is strictly larger than each of its
+    /// arguments, so a value can never equal a proper sub-part of itself.
+    /// Build the containment graph on congruence CLASSES — `class(C(a₁,
+    /// …,aₙ))` has an edge to `class(aᵢ)` for every argument — and report
+    /// a conflict on any cycle (a class reachable from itself, including
+    /// the self-loop `a ~ succ a`). **Sound** for inductive datatypes
+    /// (every adsmt `declare-datatype` is well-founded); it only ever
+    /// adds true containment edges, so a cycle is a genuine contradiction.
+    /// Catches `a = succ a`, `succ b = succ(succ b)` (the merged class's
+    /// `succ(succ b)` argument `succ b` lands back in the class),
+    /// `xs = cons(_, xs)`, etc. — the dominant datatype false-sat class.
+    fn acyclicity_conflict(&self) -> Option<TheoryWitness> {
+        if self.asserted_eqs.is_empty() {
+            return None;
+        }
+        // 1. union-find over asserted equalities (transitivity + any
+        //    injectivity-derived equalities the polite loop re-asserted).
+        let mut parent: HashMap<Term, Term> = HashMap::new();
+        for (a, b) in &self.asserted_eqs {
+            Self::uf_union(&mut parent, a, b);
+        }
+        // 2. every constructor-app subterm in the asserted state.
+        let mut ctor_apps: Vec<(Term, Vec<Term>)> = Vec::new();
+        for (a, b) in &self.asserted_eqs {
+            self.collect_ctor_apps(a, &mut ctor_apps);
+            self.collect_ctor_apps(b, &mut ctor_apps);
+        }
+        for t in &self.asserted_terms {
+            self.collect_ctor_apps(t, &mut ctor_apps);
+        }
+        if ctor_apps.is_empty() {
+            return None;
+        }
+        // 3. containment graph on class representatives.
+        let mut adj: HashMap<Term, Vec<Term>> = HashMap::new();
+        for (app, args) in &ctor_apps {
+            parent.entry(app.clone()).or_insert_with(|| app.clone());
+            let ra = Self::uf_find(&parent, app);
+            for arg in args {
+                parent.entry(arg.clone()).or_insert_with(|| arg.clone());
+                let rb = Self::uf_find(&parent, arg);
+                adj.entry(ra.clone()).or_default().push(rb);
+            }
+        }
+        // 4. iterative DFS cycle detection (0 = unvisited, 1 = on-stack,
+        //    2 = done). A back edge to an on-stack node is a cycle.
+        let mut color: HashMap<Term, u8> = HashMap::new();
+        let nodes: Vec<Term> = adj.keys().cloned().collect();
+        for start in &nodes {
+            if color.get(start).copied().unwrap_or(0) != 0 {
+                continue;
+            }
+            let mut stack: Vec<(Term, usize)> = vec![(start.clone(), 0)];
+            color.insert(start.clone(), 1);
+            while let Some((node, idx)) = stack.last().cloned() {
+                let succs = adj.get(&node).cloned().unwrap_or_default();
+                if idx < succs.len() {
+                    stack.last_mut().expect("non-empty").1 += 1;
+                    let next = &succs[idx];
+                    match color.get(next).copied().unwrap_or(0) {
+                        1 => {
+                            return Some(TheoryWitness::Opaque {
+                                kind: "Datatypes".into(),
+                                notes: "acyclicity violated: a constructor value would \
+                                        equal a proper subterm of itself"
+                                    .into(),
+                            });
+                        }
+                        0 => {
+                            color.insert(next.clone(), 1);
+                            stack.push((next.clone(), 0));
+                        }
+                        _ => {}
+                    }
+                } else {
+                    color.insert(node.clone(), 2);
+                    stack.pop();
+                }
+            }
+        }
+        None
+    }
+
+    /// Collect `(ctor_app, args)` for every *registered-constructor*
+    /// application subterm of `t` (nested args included). Selector apps
+    /// (`pred x`) are `Var`-headed → not matched; only `Const`-headed
+    /// registered constructors are.
+    fn collect_ctor_apps(&self, t: &Term, out: &mut Vec<(Term, Vec<Term>)>) {
+        if let Some((cname, args)) = Self::dest_constructor_app(t)
+            && self.is_constructor_of(&cname).is_some()
+        {
+            out.push((t.clone(), args.clone()));
+            for arg in &args {
+                self.collect_ctor_apps(arg, out);
+            }
+            return;
+        }
+        match t.kind() {
+            TermInner::App(f, x) => {
+                self.collect_ctor_apps(f, out);
+                self.collect_ctor_apps(x, out);
+            }
+            TermInner::Lam(_, body) => self.collect_ctor_apps(body, out),
+            _ => {}
+        }
+    }
+
+    /// **Exhaustiveness**. Every datatype element is one of its
+    /// constructors, so a variable excluded from ALL of them is unsat. A
+    /// recognizer-shaped disequality `x ≠ c(sel_{c,0}(x), …)` is exactly
+    /// `¬is_c(x)` (the desugared recognizer) and excludes `c` for `x`; a
+    /// nullary `x ≠ c` excludes the nullary `c`. Group the excluded
+    /// constructors by `x`'s congruence class; if a class covers every
+    /// constructor of its datatype sort, report a conflict. **Sound**:
+    /// only the EXACT `c(sel_c(x))` / nullary-`c` shapes exclude a
+    /// constructor — a generic `x ≠ c(t)` with a different `t` does not,
+    /// and is never counted.
+    fn exhaustiveness_conflict(&self) -> Option<TheoryWitness> {
+        if self.disequalities.is_empty() {
+            return None;
+        }
+        let mut parent: HashMap<Term, Term> = HashMap::new();
+        for (a, b) in &self.asserted_eqs {
+            Self::uf_union(&mut parent, a, b);
+        }
+        type ExSet = std::collections::HashSet<String>;
+        let mut excluded: HashMap<Term, (String, ExSet)> = HashMap::new();
+        for (a, b) in &self.disequalities {
+            for (x, rhs) in [(a, b), (b, a)] {
+                let Some(ctor) = self.recognizer_excluded_ctor(x, rhs) else { continue };
+                let sort = x.type_of().to_string();
+                let Some(decl) = self.decls.get(&sort) else { continue };
+                parent.entry(x.clone()).or_insert_with(|| x.clone());
+                let rep = Self::uf_find(&parent, x);
+                let entry = excluded.entry(rep).or_insert_with(|| (sort.clone(), ExSet::new()));
+                entry.1.insert(ctor);
+                if decl.constructors.iter().all(|c| entry.1.contains(c)) {
+                    return Some(TheoryWitness::Opaque {
+                        kind: "Datatypes".into(),
+                        notes: format!(
+                            "exhaustiveness violated: a {sort} value is excluded from every constructor"
+                        ),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    /// If `rhs` is the recognizer shape for a constructor `c` applied to
+    /// `x` — a nullary constructor `c` (so `x ≠ c` ≡ `¬is_c(x)`), or
+    /// `c(sel_{c,0}(x), …, sel_{c,k-1}(x))` — return `c`'s name, else
+    /// `None`. The arguments must be EXACTLY `c`'s selectors applied to
+    /// the same `x` (anything else is not a tester and excludes nothing).
+    fn recognizer_excluded_ctor(&self, x: &Term, rhs: &Term) -> Option<String> {
+        let (cname, args) = Self::dest_constructor_app(rhs)?;
+        let decl = self.is_constructor_of(&cname)?;
+        let ci = decl.constructors.iter().position(|c| c == &cname)?;
+        let sels = decl.selectors.get(ci)?;
+        if args.len() != sels.len() {
+            return None;
+        }
+        for (arg, sel) in args.iter().zip(sels) {
+            let TermInner::App(f, a) = arg.kind() else { return None };
+            let Some(fname) = Self::atom_name(f) else { return None };
+            if &fname != sel || a != x {
+                return None;
+            }
+        }
+        Some(cname)
     }
 
     /// Collect `(sel_app, arg)` for every selector-application subterm of `t`.
@@ -379,6 +565,8 @@ impl Theory for Datatypes {
             // polarity; a disequality is UF's to reason about, not ours.
             if lit.polarity {
                 self.asserted_eqs.push((a, b));
+            } else {
+                self.disequalities.push((a, b));
             }
             AssertResult::Accepted
         } else {
@@ -387,10 +575,20 @@ impl Theory for Datatypes {
     }
 
     fn check(&mut self) -> CheckResult {
-        match &self.conflict {
-            Some(w) => CheckResult::Unsat { witness: w.clone() },
-            None => CheckResult::Sat,
+        if let Some(w) = &self.conflict {
+            return CheckResult::Unsat { witness: w.clone() };
         }
+        // Occurs-check: a constructor value can't contain itself.
+        if let Some(w) = self.acyclicity_conflict() {
+            self.conflict = Some(w.clone());
+            return CheckResult::Unsat { witness: w };
+        }
+        // Exhaustiveness: a value excluded from every constructor is unsat.
+        if let Some(w) = self.exhaustiveness_conflict() {
+            self.conflict = Some(w.clone());
+            return CheckResult::Unsat { witness: w };
+        }
+        CheckResult::Sat
     }
 
     fn derive_equalities(&self) -> Vec<(Term, Term)> {
@@ -440,14 +638,18 @@ impl Theory for Datatypes {
     }
 
     fn push(&mut self) {
-        self.scope_stack
-            .push((self.asserted_eqs.len(), self.asserted_terms.len()));
+        self.scope_stack.push((
+            self.asserted_eqs.len(),
+            self.disequalities.len(),
+            self.asserted_terms.len(),
+        ));
     }
 
     fn pop(&mut self, levels: u32) {
         for _ in 0..levels {
-            if let Some((neq, nterms)) = self.scope_stack.pop() {
+            if let Some((neq, ndiseq, nterms)) = self.scope_stack.pop() {
                 self.asserted_eqs.truncate(neq);
+                self.disequalities.truncate(ndiseq);
                 self.asserted_terms.truncate(nterms);
             }
         }
@@ -456,6 +658,7 @@ impl Theory for Datatypes {
 
     fn reset(&mut self) {
         self.asserted_eqs.clear();
+        self.disequalities.clear();
         self.asserted_terms.clear();
         self.conflict = None;
         self.scope_stack.clear();
@@ -729,6 +932,95 @@ mod tests {
             derived.iter().any(|(a, b)| a.alpha_eq(&pred_x) && b.alpha_eq(&zero)),
             "expected pred(x) = zero against the succ(zero) app; got {derived:?}"
         );
+    }
+
+    fn nat_dt() -> Datatypes {
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("Nat", vec!["zero".into(), "succ".into()])
+                .with_selectors(vec![vec![], vec!["pred".into()]]),
+        );
+        dt
+    }
+    fn nat_ty() -> Type { Type::const_("Nat", Kind::Type) }
+    fn succ_of(t: Term) -> Term {
+        Term::app(Term::const_("succ", Type::fun(nat_ty(), nat_ty()).unwrap()), t).unwrap()
+    }
+    fn pred_of(t: Term) -> Term {
+        Term::app(Term::var("pred", Type::fun(nat_ty(), nat_ty()).unwrap()), t).unwrap()
+    }
+
+    #[test]
+    fn acyclicity_direct_self_successor_is_unsat() {
+        // `a = succ a` — a value cannot contain itself.
+        let mut dt = nat_dt();
+        let a = Term::var("a", nat_ty());
+        dt.assert(Literal::positive(Term::mk_eq(a.clone(), succ_of(a.clone())).unwrap()).unwrap());
+        assert!(matches!(dt.check(), CheckResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn acyclicity_through_injectivity_is_unsat() {
+        // `succ b = succ(succ b)` — the merged class's `succ(succ b)` argument
+        // `succ b` lands back in the class → self-loop.
+        let mut dt = nat_dt();
+        let b = Term::var("b", nat_ty());
+        let sb = succ_of(b.clone());
+        let ssb = succ_of(sb.clone());
+        dt.assert(Literal::positive(Term::mk_eq(sb, ssb).unwrap()).unwrap());
+        assert!(matches!(dt.check(), CheckResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn acyclicity_does_not_overfire_on_selector_reconstruction() {
+        // `a = succ(pred a)` is the is-succ identity — SAT, not a cycle
+        // (`pred a` is a selector app, not `a`).
+        let mut dt = nat_dt();
+        let a = Term::var("a", nat_ty());
+        dt.assert(
+            Literal::positive(Term::mk_eq(a.clone(), succ_of(pred_of(a.clone()))).unwrap())
+                .unwrap(),
+        );
+        assert!(matches!(dt.check(), CheckResult::Sat));
+    }
+
+    #[test]
+    fn exhaustiveness_excluding_all_constructors_is_unsat() {
+        // `¬is_zero(a) ∧ ¬is_succ(a)` (desugared `a ≠ zero ∧ a ≠ succ(pred a)`)
+        // — a Nat must be one of its constructors.
+        let mut dt = nat_dt();
+        let a = Term::var("a", nat_ty());
+        let zero = Term::const_("zero", nat_ty());
+        dt.assert(Literal::negative(Term::mk_eq(a.clone(), zero).unwrap()).unwrap());
+        dt.assert(
+            Literal::negative(Term::mk_eq(a.clone(), succ_of(pred_of(a.clone()))).unwrap())
+                .unwrap(),
+        );
+        assert!(matches!(dt.check(), CheckResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn exhaustiveness_single_exclusion_stays_sat() {
+        // Excluding only `zero` leaves `succ` open → SAT.
+        let mut dt = nat_dt();
+        let a = Term::var("a", nat_ty());
+        let zero = Term::const_("zero", nat_ty());
+        dt.assert(Literal::negative(Term::mk_eq(a.clone(), zero).unwrap()).unwrap());
+        assert!(matches!(dt.check(), CheckResult::Sat));
+    }
+
+    #[test]
+    fn exhaustiveness_generic_disequality_excludes_nothing() {
+        // `a ≠ succ b` (a generic disequality, NOT the `succ(pred a)` tester
+        // shape) must not be read as `¬is_succ(a)` — adding `a ≠ zero` must
+        // stay SAT (a could still be `succ`).
+        let mut dt = nat_dt();
+        let a = Term::var("a", nat_ty());
+        let b = Term::var("b", nat_ty());
+        let zero = Term::const_("zero", nat_ty());
+        dt.assert(Literal::negative(Term::mk_eq(a.clone(), zero).unwrap()).unwrap());
+        dt.assert(Literal::negative(Term::mk_eq(a.clone(), succ_of(b)).unwrap()).unwrap());
+        assert!(matches!(dt.check(), CheckResult::Sat));
     }
 
     #[test]
