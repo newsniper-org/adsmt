@@ -21,6 +21,12 @@ use crate::sexpr::SExpr;
 pub struct SymbolTable {
     consts: HashMap<String, Type>,
     constructors: std::collections::HashSet<String>,
+    /// Per-constructor selector names, in field order — populated by
+    /// `declare-datatype`. Needed to desugar the recognizer
+    /// `((_ is c) t)` into the datatype biconditional `t = c(sel₀ t,
+    /// …)` at conversion (a nullary constructor maps to the empty
+    /// vector → `t = c`).
+    selectors: HashMap<String, Vec<String>>,
     sorts: HashMap<String, Type>,
 }
 
@@ -58,8 +64,25 @@ impl SymbolTable {
         self.sorts.insert(name.into(), ty);
     }
 
+    /// Record a constructor's selector names (field order). Call after
+    /// [`declare_constructor`]; an empty slice marks a nullary
+    /// constructor (the recognizer desugars to a bare `t = c`).
+    pub fn declare_constructor_selectors(
+        &mut self,
+        ctor: impl Into<String>,
+        selectors: Vec<String>,
+    ) {
+        self.selectors.insert(ctor.into(), selectors);
+    }
+
     pub fn is_constructor(&self, name: &str) -> bool {
         self.constructors.contains(name)
+    }
+
+    /// The selector names of a known constructor (field order), or
+    /// `None` if `name` is not a registered constructor.
+    pub fn constructor_selectors(&self, name: &str) -> Option<&[String]> {
+        self.selectors.get(name).map(Vec::as_slice)
     }
 
     pub fn lookup(&self, name: &str) -> Option<&Type> {
@@ -146,6 +169,14 @@ fn convert_list(items: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertErr
     let head = head_expr
         .as_symbol()
         .ok_or_else(|| ConvertError::Malformed("expected operator symbol at head".into()))?;
+    // Datatype recognizer in the Z3/Verus `is-C` spelling → the shape
+    // biconditional (see [`try_recognizer`]); guarded on `C` being a
+    // registered constructor so unrelated `is-*` functions are untouched.
+    if let Some(ctor) = head.strip_prefix("is-")
+        && let Some(res) = try_recognizer(ctor, args, table)
+    {
+        return res;
+    }
     match head {
         "not" => {
             if args.len() != 1 {
@@ -542,6 +573,16 @@ fn convert_indexed_app(
     args: &[SExpr],
     table: &SymbolTable,
 ) -> Result<Term, ConvertError> {
+    // SMT-LIB 2.6 datatype recognizer `((_ is c) t)` → the shape
+    // biconditional (see [`try_recognizer`]). Falls through for any
+    // other indexed identifier.
+    if idx_head.len() == 3
+        && idx_head.get(1).and_then(SExpr::as_symbol) == Some("is")
+        && let Some(ctor) = idx_head.get(2).and_then(SExpr::as_symbol)
+        && let Some(res) = try_recognizer(ctor, args, table)
+    {
+        return res;
+    }
     // `(_ name idx…)` → flat symbol `_name_idx…`.
     let name = std::iter::once("_".to_string())
         .chain(idx_head.iter().skip(1).map(|e| match e {
@@ -566,6 +607,73 @@ fn convert_indexed_app(
         acc = Term::app(acc, arg).map_err(|e| ConvertError::Malformed(e.to_string()))?;
     }
     Ok(acc)
+}
+
+/// Desugar a datatype **recognizer** — `(is-c t)` (Z3/Verus spelling)
+/// or `((_ is c) t)` (SMT-LIB 2.6) — into the datatype biconditional
+/// `t = c(sel₀ t, …, selₖ₋₁ t)` (a nullary `c` → the bare `t = c`).
+///
+/// `is_c(t) ⟺ t = c(sels(t))` is a logical equivalence and a theorem of
+/// the datatype theory for every `t` of the sort (true exactly when `t`
+/// is a `c`-application on both sides, false otherwise), so the rewrite
+/// is **polarity-safe** and **sound + complete**. Keeping the
+/// recognizer as a *fresh uninterpreted predicate* (the prior
+/// behaviour) drops these semantics — an over-approximation that can
+/// report a genuinely-unsat obligation as `sat` (e.g. `(is-succ x) ∧
+/// (= (pred x) zero) ∧ (x ≠ succ zero)`). Returns `None` when `ctor`
+/// is not a known constructor, so the caller keeps its existing
+/// uninterpreted-application path (Z3's `(_ partial-order 0)` etc.).
+fn try_recognizer(
+    ctor: &str,
+    args: &[SExpr],
+    table: &SymbolTable,
+) -> Option<Result<Term, ConvertError>> {
+    // A recognizer is unary; anything else is malformed — fall through
+    // to let the normal path raise the precise arity/type error.
+    if !table.is_constructor(ctor) || args.len() != 1 {
+        return None;
+    }
+    let selectors = table.constructor_selectors(ctor)?.to_vec();
+    Some(build_recognizer(ctor, &selectors, &args[0], table))
+}
+
+/// Build the `t = c(sel₀ t, …)` recognizer body (see [`try_recognizer`]).
+fn build_recognizer(
+    ctor: &str,
+    selectors: &[String],
+    arg: &SExpr,
+    table: &SymbolTable,
+) -> Result<Term, ConvertError> {
+    let arg_term = convert_expr(arg, table)?;
+    let ctor_ty = table
+        .lookup(ctor)
+        .ok_or_else(|| ConvertError::UnknownSymbol(ctor.into()))?
+        .clone();
+    // Peel the constructor's field arrows to its result sort, then unify
+    // that with the argument's sort — instantiating a parametric
+    // datatype (`Some : T → Option T` applied at `Option Int`).
+    // Monomorphic constructors leave the substitution empty.
+    let mut result_ty = ctor_ty.clone();
+    for _ in selectors {
+        let Some((_dom, cod)) = result_ty.dest_fun() else { break };
+        result_ty = cod;
+    }
+    let mut subst: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+    ty_unify(&result_ty, &arg_term.type_of(), &mut subst);
+    let inst_ctor_ty = ty_subst(&ctor_ty, &subst);
+    // c(sel₀ arg, …, selₖ₋₁ arg)
+    let mut acc = Term::const_(ctor, inst_ctor_ty);
+    for sel in selectors {
+        let sel_ty = table
+            .lookup(sel)
+            .ok_or_else(|| ConvertError::UnknownSymbol(sel.into()))?
+            .clone();
+        let sel_ty = ty_subst(&sel_ty, &subst);
+        let sel_app = Term::app(Term::var(sel, sel_ty), arg_term.clone())
+            .map_err(|e| ConvertError::Malformed(e.to_string()))?;
+        acc = Term::app(acc, sel_app).map_err(|e| ConvertError::Malformed(e.to_string()))?;
+    }
+    Term::mk_eq(arg_term, acc).map_err(|e| ConvertError::Malformed(e.to_string()))
 }
 
 /// rc.30 (Y4) — best-effort first-order type unification: bind the
@@ -746,6 +854,61 @@ mod tests {
         let s = parse_sexpr("p").unwrap();
         let t = convert_expr(&s, &table).unwrap();
         assert_eq!(t, Term::var("p", Type::bool_()));
+    }
+
+    /// A `Nat = zero | succ(pred Nat)` table, enough to exercise the
+    /// recognizer desugaring.
+    fn nat_table() -> SymbolTable {
+        let mut t = SymbolTable::new();
+        let nat = Type::const_("Nat", adsmt_core::Kind::Type);
+        t.declare_sort("Nat", nat.clone());
+        t.declare_constructor("zero", nat.clone());
+        t.declare_constructor_selectors("zero", vec![]);
+        t.declare_constructor("succ", Type::fun(nat.clone(), nat.clone()).unwrap());
+        t.declare_constructor_selectors("succ", vec!["pred".into()]);
+        t.declare("pred", Type::fun(nat.clone(), nat.clone()).unwrap());
+        t.declare("x", nat);
+        t
+    }
+
+    #[test]
+    fn recognizer_named_desugars_to_shape_equality() {
+        // `(is-succ x)` → `(= x (succ (pred x)))`
+        let table = nat_table();
+        let got = convert_expr(&parse_sexpr("(is-succ x)").unwrap(), &table).unwrap();
+        let want = convert_expr(&parse_sexpr("(= x (succ (pred x)))").unwrap(), &table).unwrap();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn recognizer_indexed_desugars_to_shape_equality() {
+        // `((_ is succ) x)` → `(= x (succ (pred x)))`
+        let table = nat_table();
+        let got = convert_expr(&parse_sexpr("((_ is succ) x)").unwrap(), &table).unwrap();
+        let want = convert_expr(&parse_sexpr("(= x (succ (pred x)))").unwrap(), &table).unwrap();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn recognizer_nullary_desugars_to_bare_equality() {
+        // `(is-zero x)` → `(= x zero)` (no selectors)
+        let table = nat_table();
+        let got = convert_expr(&parse_sexpr("(is-zero x)").unwrap(), &table).unwrap();
+        let want = convert_expr(&parse_sexpr("(= x zero)").unwrap(), &table).unwrap();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn non_constructor_is_prefix_left_uninterpreted() {
+        // `is-foo` where `foo` is not a constructor stays an ordinary
+        // (uninterpreted) predicate application — no recognizer rewrite.
+        let mut table = nat_table();
+        let nat = Type::const_("Nat", adsmt_core::Kind::Type);
+        table.declare("is-foo", Type::fun(nat, Type::bool_()).unwrap());
+        let got = convert_expr(&parse_sexpr("(is-foo x)").unwrap(), &table).unwrap();
+        // head stays the declared `is-foo` symbol, not an equality.
+        assert!(matches!(got.kind(), TermInner::App(..)));
+        assert!(format!("{got}").contains("is-foo"));
     }
 
     // === rc.30 (Y4) — bit-vector surface + polymorphic ctor app ===

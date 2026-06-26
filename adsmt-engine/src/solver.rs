@@ -117,6 +117,26 @@ pub(crate) fn atom_key_hash_u32(atom_key: &str) -> u32 {
 /// combiner is the right call.
 pub type ClauseFold = portable_algebraic_aotjit::ClauseFold;
 
+/// Outcome of one inner theory check on a fixed boolean model
+/// ([`Solver::check_via_theories_inner`]). Either a final SMT
+/// [`SatResult`], or — when the model is theory-infeasible — a
+/// theory-valid blocking clause for the bounded DPLL(T) refinement
+/// loop to add and re-solve.
+enum TheoryCheck {
+    Verdict(SatResult),
+    Infeasible { block: crate::cnf::Clause },
+}
+
+/// Maximum DPLL(T) theory-refinement rounds per `(check-sat)`. Each
+/// round adds one theory-valid blocking clause (sound for any bound)
+/// and re-solves; the cap converts a non-converging refinement into a
+/// sound `Unknown` (→ delegation) instead of spinning. Small because
+/// the target obligations (datatype case-splits, disjoint arith
+/// intervals) collapse the few free disjunct atoms in 1–3 rounds — a
+/// problem that needs more is one this whole-model blocking scheme
+/// would not finish anyway, so abstaining early is the right trade.
+const THEORY_REFINE_BOUND: usize = 16;
+
 /// The canonical KangarooTwelve-256 hash of a single clause, keyed by
 /// **atom name** (not a global index). Literals are rendered as
 /// `(atom.to_string(), polarity)` pairs, sorted + de-duplicated within
@@ -2483,6 +2503,109 @@ impl Solver {
         Some(builder.snapshot(conclusion))
     }
 
+    /// Route raw literals through the theory layer with a **bounded
+    /// DPLL(T) theory-refinement loop**, threading the boolean
+    /// assignment from the SAT layer through to the verdict's
+    /// `SatResult::Sat::model`.
+    ///
+    /// The first CDCL model commits truth values to the atoms *inside*
+    /// disjunctions (`(or (< x 0) (> x 0))` with `(= x 0)` picks one
+    /// disjunct; a datatype case-split `not(C(x) ⇒ φ)` forces a
+    /// selector atom). Those choices are not entailed, so a theory
+    /// conflict among them does not make the formula unsat — but it
+    /// does make THIS boolean model dead. Each refinement round adds
+    /// the **theory-valid blocking clause** the inner check returns
+    /// (the negation of the infeasible literal conjunction) and
+    /// re-solves the augmented propositional problem:
+    ///
+    /// * a fresh CDCL model ⇒ re-check it (next round);
+    /// * CDCL `Unsat` ⇒ every theory-infeasible model has been blocked
+    ///   and no propositional model survives, so the original formula
+    ///   is **`Unsat`** (each blocking clause is theory-valid, hence
+    ///   adds no models — soundness holds for *any* iteration bound);
+    /// * the [`THEORY_REFINE_BOUND`] cap ⇒ **`Unknown`** (→ OxiZ
+    ///   delegation), never an unsound `sat`.
+    ///
+    /// This is the piece that lets native datatype / disjoint-interval
+    /// obligations reach a sound `unsat` verdict instead of always
+    /// punting to delegation — without the full incremental lazy-SMT
+    /// machinery (no theory propagation, no learnt-clause minimization;
+    /// the block is the whole model, which collapses the handful of
+    /// free disjunct atoms in 1–3 rounds for the target shapes).
+    fn check_via_theories_with_model(
+        &mut self,
+        lits: &[(Term, bool)],
+        clauses: &[Clause],
+        bool_assignment: HashMap<String, bool>,
+        deadline: Option<std::time::Instant>,
+    ) -> SatResult {
+        // `work_clauses` is materialized lazily: a formula whose first
+        // model is already theory-feasible (the overwhelming common
+        // case) never pays the clause-set clone.
+        let mut work_clauses: Option<Vec<Clause>> = None;
+        let mut model = bool_assignment;
+        for round in 0..THEORY_REFINE_BOUND {
+            let clauses_ref: &[Clause] = work_clauses.as_deref().unwrap_or(clauses);
+            match self.check_via_theories_inner(lits, clauses_ref, &model, deadline) {
+                TheoryCheck::Verdict(v) => return v,
+                TheoryCheck::Infeasible { block } => {
+                    if deadline.is_some_and(|dl| std::time::Instant::now() >= dl) {
+                        return SatResult::Unknown {
+                            reason: "rlimit exceeded during theory refinement".to_string(),
+                        };
+                    }
+                    let wc = work_clauses.get_or_insert_with(|| clauses.to_vec());
+                    wc.push(block);
+                    match crate::cdcl::cdcl_with_restarts_with_model_deadline_with_seed(
+                        wc, 64, 12, deadline, None,
+                    ) {
+                        crate::cdcl::CdclOutcome::Sat { model: m } => model = m,
+                        crate::cdcl::CdclOutcome::Unsat => {
+                            return self.build_refinement_unsat(lits, round + 1);
+                        }
+                        crate::cdcl::CdclOutcome::Unknown => {
+                            return SatResult::Unknown {
+                                reason: "SAT backend returned Unknown during theory \
+                                         refinement"
+                                    .to_string(),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        // Refinement budget exhausted: theory-infeasible models persisted.
+        // Abstaining is sound (→ delegation); reporting `sat` would not be.
+        SatResult::Unknown {
+            reason: "theory-infeasible boolean models persisted past the native \
+                     DPLL(T) refinement bound"
+                .to_string(),
+        }
+    }
+
+    /// Build the `Unsat` verdict for a refutation closed by the bounded
+    /// DPLL(T) refinement loop: the propositional residue (original
+    /// clauses + the theory-valid blocking clauses accumulated over
+    /// `rounds` rounds) is unsatisfiable. The witness is `Opaque` — the
+    /// proof rests on theory lemmas the SAT-level DRAT trace does not
+    /// carry — but the verdict is sound and the per-assertion `:loc`
+    /// trail is preserved exactly like the other unsat paths.
+    fn build_refinement_unsat(&mut self, lits: &[(Term, bool)], rounds: usize) -> SatResult {
+        let witness = TheoryWitness::Opaque {
+            kind: "dpllt-refinement".to_string(),
+            notes: format!(
+                "unsat after {rounds} theory-refinement round(s): every satisfying \
+                 boolean model was theory-infeasible and the propositional residue \
+                 (original clauses + theory-valid blocking clauses) is unsatisfiable"
+            ),
+        };
+        let lits_with_locs = self.attach_locs(lits);
+        let cert =
+            self.build_unsat_cert_opt_with_locs(&lits_with_locs, "dpllt-refinement", witness);
+        let core = crate::result::UnsatCore::from_assertions(&self.all_assertions());
+        SatResult::Unsat { certificate: cert, core }
+    }
+
     /// Route raw literals through the theory layer, threading the
     /// boolean assignment from the SAT layer through to the
     /// verdict's `SatResult::Sat::model`.
@@ -2493,13 +2616,13 @@ impl Solver {
     /// the sound `had_opaque` path; this is the only theory-route
     /// entry point now, always reached *after* the SAT solve on
     /// the flattenable clause subset.
-    fn check_via_theories_with_model(
+    fn check_via_theories_inner(
         &mut self,
         lits: &[(Term, bool)],
         clauses: &[Clause],
-        bool_assignment: HashMap<String, bool>,
+        bool_assignment: &HashMap<String, bool>,
         deadline: Option<std::time::Instant>,
-    ) -> SatResult {
+    ) -> TheoryCheck {
         self.theories.reset();
         // rc.27 (S.3) — defence-in-depth: the theory layer only
         // reasons about equalities and never evaluates a bare
@@ -2526,7 +2649,7 @@ impl Solver {
                 );
                 let core =
                     crate::result::UnsatCore::from_assertions(&self.all_assertions());
-                return SatResult::Unsat { certificate: cert, core };
+                return TheoryCheck::Verdict(SatResult::Unsat { certificate: cert, core });
             }
         }
         // ── Stage 1: forced literals ── can soundly conclude `Unsat`.
@@ -2560,10 +2683,12 @@ impl Solver {
                     witness,
                 );
                 let core = crate::result::UnsatCore::from_assertions(&self.all_assertions());
-                return SatResult::Unsat { certificate: cert, core };
+                return TheoryCheck::Verdict(SatResult::Unsat { certificate: cert, core });
             }
             LoopOutcome::Unknown { theory, reason } => {
-                return SatResult::Unknown { reason: format!("{theory}: {reason}") };
+                return TheoryCheck::Verdict(SatResult::Unknown {
+                    reason: format!("{theory}: {reason}"),
+                });
             }
             // Forced literals are theory-consistent; record whether any
             // was uninterpreted for the backstop below, then validate
@@ -2578,12 +2703,12 @@ impl Solver {
         // (`(or (< x 0) (> x 0))` with `(= x 0)` picks one disjunct).
         // Those choices are not entailed, so a theory conflict among
         // them does NOT make the formula unsat — but it does mean THIS
-        // boolean model is theory-infeasible, and we do not run the full
-        // DPLL(T) refinement loop (theory conflict → learnt clause →
-        // re-solve). So re-check the full model's atoms (each clause
-        // atom at its model polarity) and, on a conflict, return
-        // `Unknown` (→ theory/OxiZ delegation) rather than an unsound
-        // `sat` — preserving soundness without the lazy-SMT machinery.
+        // boolean model is theory-infeasible. Re-check the full model's
+        // atoms (each clause atom at its model polarity); on a conflict,
+        // return `Infeasible { block }` so the caller's bounded
+        // DPLL(T) refinement loop ([`check_via_theories_with_model`])
+        // can add the theory-valid blocking clause and re-solve — sound
+        // for any bound, and never an unsound `sat`.
         self.theories.reset();
         let mut model_lits: Vec<(Term, bool)> = Vec::new();
         let mut seen: std::collections::HashSet<Term> = std::collections::HashSet::new();
@@ -2610,25 +2735,38 @@ impl Solver {
                 if forced_uninterpreted || self.theories.had_uninterpreted_atom() {
                     // Plain detail — the CLI wraps it as the Verus-canonical
                     // `(incomplete …)` reason-unknown (do not pre-wrap here).
-                    SatResult::Unknown {
+                    TheoryCheck::Verdict(SatResult::Unknown {
                         reason: "native theory abstraction: a theory atom was \
                                  assigned without theory interpretation"
                             .to_string(),
-                    }
+                    })
                 } else {
-                    SatResult::Sat {
-                        model: crate::result::Model::from_assignment(bool_assignment),
-                    }
+                    TheoryCheck::Verdict(SatResult::Sat {
+                        model: crate::result::Model::from_assignment(bool_assignment.clone()),
+                    })
                 }
             }
-            LoopOutcome::Unsat { .. } => SatResult::Unknown {
-                reason: "a satisfying boolean model was theory-infeasible and native \
-                         DPLL(T) does not refine across theory conflicts"
-                    .to_string(),
-            },
-            LoopOutcome::Unknown { theory, reason } => SatResult::Unknown {
-                reason: format!("{theory}: {reason}"),
-            },
+            // The full boolean model is theory-infeasible. This does NOT make
+            // the formula unsat (the disjunct choices are not entailed), but it
+            // does make THIS assignment dead — so hand the caller a theory-valid
+            // blocking clause (the negation of the infeasible literal
+            // conjunction). Adding it to the SAT problem rules out exactly this
+            // assignment and no model (every model already falsifies the
+            // conjunction), so the bounded DPLL(T) refinement loop in
+            // [`check_via_theories_with_model`] stays sound for any iteration
+            // bound: CDCL exhaustion ⇒ sound `Unsat`, the cap ⇒ `Unknown`.
+            LoopOutcome::Unsat { .. } => {
+                let block: Clause = model_lits
+                    .iter()
+                    .map(|(atom, pol)| Lit::new(atom.clone(), !pol))
+                    .collect();
+                TheoryCheck::Infeasible { block }
+            }
+            LoopOutcome::Unknown { theory, reason } => {
+                TheoryCheck::Verdict(SatResult::Unknown {
+                    reason: format!("{theory}: {reason}"),
+                })
+            }
         }
     }
 

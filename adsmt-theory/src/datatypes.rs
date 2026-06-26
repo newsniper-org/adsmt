@@ -192,20 +192,30 @@ impl Datatypes {
         for (a, b) in &self.asserted_eqs {
             Self::uf_union(&mut parent, a, b);
         }
-        // 2. each class's constructor representative (the first one; a *second*,
-        //    distinct constructor in a class is a disjointness conflict already
-        //    caught in `assert`).
-        let mut ctor_of: HashMap<Term, (String, Vec<Term>)> = HashMap::new();
+        // 2. ALL constructor applications in each class — keyed by the class
+        //    representative. A class may hold *several* constructor apps of the
+        //    same constructor (e.g. `x ~ succ(pred x) ~ succ zero`): keeping
+        //    only one (the prior `or_insert`) was both **order-dependent** (it
+        //    picked an arbitrary one per random `HashMap` iteration) and
+        //    **incomplete** — reducing `pred x` against `succ(pred x)` yields
+        //    the vacuous `pred x = pred x` and misses the load-bearing
+        //    `pred x = zero` from `succ zero`, silently dropping a conflict →
+        //    spurious `sat`. Collecting every app and emitting against all of
+        //    them is deterministic and complete (a redundant reduction is
+        //    harmless; the missing one is not). A *distinct* constructor in a
+        //    class is a disjointness conflict already caught in `assert`.
+        let mut ctors_of: HashMap<Term, Vec<(String, Vec<Term>)>> = HashMap::new();
         for t in parent.keys() {
             if let Some(ctor) = Self::dest_constructor_app(t) {
                 let r = Self::uf_find(&parent, t);
-                ctor_of.entry(r).or_insert(ctor);
+                ctors_of.entry(r).or_default().push(ctor);
             }
         }
-        if ctor_of.is_empty() {
+        if ctors_of.is_empty() {
             return;
         }
-        // 3. each `sel(y)` subterm whose `y`'s class carries a matching ctor.
+        // 3. each `sel(y)` subterm whose `y`'s class carries a matching ctor —
+        //    reduced against every such constructor app in the class.
         let mut sel_apps: Vec<(Term, Term)> = Vec::new(); // (sel_app, arg)
         for t in &self.asserted_terms {
             self.collect_selector_apps(t, &mut sel_apps);
@@ -215,11 +225,12 @@ impl Datatypes {
             let Some(name) = Self::atom_name(f) else { continue };
             let Some((ctor, idx)) = self.selector_map.get(&name) else { continue };
             let r = Self::uf_find(&parent, &y);
-            if let Some((cc, args)) = ctor_of.get(&r)
-                && cc == ctor
-                && *idx < args.len()
-            {
-                out.push((sel_app.clone(), args[*idx].clone()));
+            if let Some(apps) = ctors_of.get(&r) {
+                for (cc, args) in apps {
+                    if cc == ctor && *idx < args.len() {
+                        out.push((sel_app.clone(), args[*idx].clone()));
+                    }
+                }
             }
         }
     }
@@ -681,6 +692,42 @@ mod tests {
         assert!(
             derived.iter().any(|(a, b)| a.alpha_eq(&pred_x) && b.alpha_eq(&z)),
             "expected the congruence selector reduction pred(x) = z; got {derived:?}"
+        );
+    }
+
+    #[test]
+    fn selector_reduces_against_all_ctor_apps_in_a_class() {
+        // A class holding *two* constructor apps — `x ~ succ(p) ~ succ zero`
+        // (from `x = succ p` and `x = succ zero`). The congruence selector
+        // reduction must emit `pred x = zero` (against `succ zero`), not only
+        // the vacuous `pred x = p` (against `succ p`). Keeping a single
+        // arbitrary representative was order-dependent (random `HashMap`
+        // iteration) and could drop the load-bearing reduction → a
+        // nondeterministic spurious `sat`.
+        let nat = Type::const_("Nat", Kind::Type);
+        let succ = Type::fun(nat.clone(), nat.clone()).unwrap();
+        let x = Term::var("x", nat.clone());
+        let p = Term::var("p", nat.clone());
+        let zero = Term::const_("zero", nat.clone());
+        let succ_p = Term::app(Term::const_("succ", succ.clone()), p.clone()).unwrap();
+        let succ_zero = Term::app(Term::const_("succ", succ.clone()), zero.clone()).unwrap();
+        let pred_x = Term::app(
+            Term::const_("pred", Type::fun(nat.clone(), nat.clone()).unwrap()),
+            x.clone(),
+        )
+        .unwrap();
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("Nat", vec!["zero".into(), "succ".into()])
+                .with_selectors(vec![vec![], vec!["pred".into()]]),
+        );
+        let _ = dt.assert(Literal::positive(Term::mk_eq(x.clone(), succ_p).unwrap()).unwrap());
+        let _ = dt.assert(Literal::positive(Term::mk_eq(x.clone(), succ_zero).unwrap()).unwrap());
+        let _ = dt.assert(Literal::negative(Term::mk_eq(pred_x.clone(), zero.clone()).unwrap()).unwrap());
+        let derived = dt.derive_equalities();
+        assert!(
+            derived.iter().any(|(a, b)| a.alpha_eq(&pred_x) && b.alpha_eq(&zero)),
+            "expected pred(x) = zero against the succ(zero) app; got {derived:?}"
         );
     }
 

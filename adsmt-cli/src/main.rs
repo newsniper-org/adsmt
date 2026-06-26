@@ -2662,6 +2662,12 @@ impl Driver {
                 }
                 self.symbols
                     .declare_constructor(ctor.name.clone(), ctor_ty);
+                // Record the selector names so the parser can desugar the
+                // recognizer `(is-C t)` / `((_ is C) t)` into the shape
+                // biconditional `t = C(sel₀ t, …)` (sound + complete;
+                // an uninterpreted tester would over-approximate to `sat`).
+                self.symbols
+                    .declare_constructor_selectors(ctor.name.clone(), sel_names.clone());
                 // rc.30 (Y4) — the constructor's tester `is-C : DT → Bool`
                 // (Verus's SMT naming convention).
                 let tester_ty = Type::fun(dt_ty.clone(), Type::bool_())
