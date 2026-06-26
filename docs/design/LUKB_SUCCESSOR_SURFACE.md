@@ -335,19 +335,32 @@ needed) and human-readable.
   `adsmt-ir` kernel terms. Trust boundary identical to the other faces: untrusted
   elaborator, re-checked by the kernel admitters; a face bug yields `FaceError`
   or `Unknown`, never a manufactured verdict.
-- **Producer (verus-fork):** an AIR→successor printer dialect (`-V emit-lukb`,
-  adsmt path only). AIR `DeclX::Axiom`→`axiom`; the VC block's `StmtX::Assume`→
-  `assume`, `StmtX::Assert`→`goal`; AIR `ExprX`/`TypX`→the term grammar (Tier-0
-  ops native, Tier-1/2 → SMT-LIB fallback). Declarations (`declare-fun`/
-  `datatypes`) → successor `sort`/`fn`/`data` signatures.
+- **Producer (verus-fork) — LANDED Phase 1c (`748fc08fb`, branch `backend-pluggable`).**
+  A `-V emit-lukb` flag dual-emits each AIR obligation to a `.lukb` log
+  ALONGSIDE the canonical `.smt2`, in the lu-kb-successor surface. AIR
+  `DeclX::Sort`→`sort`, `Const`/`Var`→`const`, `Fun`→`fn` (synthetic param
+  names), `Axiom`→`axiom`; the assertion tree's `StmtX::Assume`→`assume`,
+  `StmtX::Assert`→`goal` (the **un-negated** goal); `ExprX`/`TypX`→the term
+  grammar (Tier-0/1 native; Tier-2+ → `#` fallback **comment** carrying the
+  reason, never a silent drop). Self-contained renderer `air/src/lukb.rs` (no
+  adsmt dep); arbitrary AIR symbols backtick-quoted (slice 6). The structural
+  (parse/elaborate) differential is `adsmt-ir-lukb`'s `check_lukb` example.
 
-  > **Corrected by review (faithfulness, 2026-06-26).** The assume/goal split
-  > only survives **pre-`block_to_assert`**: `block_to_assert::lower_query` WP-folds
-  > the whole statement block into a **single `StmtX::Assert`** (`Assume(Q)`→
-  > `Q ==> P`, `Assert(Q)`→`Q ∧ P`) before SMT. So the printer MUST hook the
-  > **pre-fold structured `StmtX::Block`**, not the post-fold single-Assert query.
-  > Control-flow stmts (`Switch`/`Breakable`/`Break`/`Havoc`/`Assign`/`Snapshot`)
-  > have no clean `assume`/`goal` image → explicit lowering or SMT-LIB fallback.
+  > **Two implementation choices that DIVERGE from the original review sketch
+  > (both validated empirically, 2026-06-26):** (1) **solver-independent**, not
+  > "adsmt path only" — the `.lukb` log is an inert artifact, so gating it on the
+  > solver would needlessly limit it; it emits under any `-V`/default z3. (2) The
+  > hook is the **post-`block_to_assert` final query** (`Context::check_valid`),
+  > NOT the pre-fold block the review worried about. `block_to_assert` does fold
+  > body path-conditions into the goal antecedent (`Assume(Q); Assert(P)` →
+  > `goal: Q ==> P`), but that is **semantically faithful** and simpler, and the
+  > USER-meaningful structure still comes through cleanly: Verus encodes a
+  > function's `requires` as query-local `DeclX::Axiom`s, so they render as
+  > separate `axiom:` hypotheses, and the `ensures` is the un-negated `goal:`.
+  > Confirmed: `requires x>0,y>0 ensures x+y>0` → `axiom: \`x!\` > 0` /
+  > `axiom: \`y!\` > 0` / `goal: Add(\`x!\`, \`y!\`) > 0`. Control-flow stmts
+  > (`Switch`/`Breakable`/`Havoc`/`Assign`/`Snapshot`/`Break`) — eliminated by the
+  > lowering before the final query; a stray survivor emits a `#` fallback comment.
 - **Consumer (adsmt):** `lu-smt` (or a face entry) parses the successor surface →
   kernel → existing solve/abduce/lint pipeline. `goal` routes to the entailment
   check (assume H, refute G). NB the existing `adsmt-shim-lu-kb` consumer lifts
@@ -370,8 +383,14 @@ needed) and human-readable.
   (Int/Bool/EUF/quant/enums **plus** Real, real `/`, Int `div`/`mod`), with a
   round-trip pretty-printer. (Plus: triggers carried as out-of-band solver
   metadata; `exists` asymmetric lowering; a top-level `const x: T` decl form.)
-- **Phase 1c — verus AIR→successor printer for Tier 0 + Tier 1**, dual-emit,
-  differential on the subset of vstd obligations that are Tier-0/1-representable.
+- **Phase 1c — verus AIR→successor printer for Tier 0 + Tier 1. LANDED**
+  (verus-fork `748fc08fb`; `air/src/lukb.rs` + `-V emit-lukb`). Dual-emit + the
+  structural (parse/elaborate) differential (`adsmt-ir-lukb`'s `check_lukb`
+  example); validated end-to-end on a real `verus -V emit-lukb` run (full
+  prelude → 301 well-formed lukb items, parses 100%, 5 `# fallback` comments at
+  the Tier-2 boundary). The **verdict**-differential stays gated on the kernel
+  CIC→HOL lowering (#325) — until the solver decides lukb obligations there is
+  no successor verdict to compare against the SMT-LIB oracle.
 - **Phase 2 — native datatypes/defs** (the actual trigger win: drop the
   box/unbox/height `:pattern` axioms), gated on kernel #317 + CIC→HOL #325 +
   faces-in-workspace + a full A/B z3-differential.
