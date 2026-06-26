@@ -2964,12 +2964,26 @@ impl Driver {
         let mut query = strip_goal_negation(&strip_abductive_commands(history));
         query.push_str("(check-sat)\n");
         if let Some(LastStatus::Unsat) = oxiz_fallback(&query) {
-            eprintln!(
-                "lu-smt: lint[vacuous-context]: the solver found these in-scope assumptions \
-                 unsatisfiable on their own — this obligation discharges VACUOUSLY. If this \
-                 branch is meant to be reachable, your assumptions contradict; if it is dead \
-                 (e.g. `requires false` / an unreachable arm) this is expected."
+            // Build the structured finding (the shared `adsmt-lints` wire) and
+            // emit it on the side channel(s) — both go to STDERR so stdout stays
+            // the pure verdict stream (the streaming `<<DONE>>` contract intact),
+            // and neither can change a verdict.
+            let diag = adsmt_lints::LintDiagnostic::new(
+                adsmt_lints::LintRule::VacuousContext,
+                adsmt_lints::Severity::Info,
+                "the solver found these in-scope assumptions unsatisfiable on their own — \
+                 this obligation discharges vacuously. If this branch is meant to be \
+                 reachable, your assumptions contradict; if it is dead (e.g. `requires \
+                 false` / an unreachable arm) this is expected.",
             );
+            // (1) human-readable WARNING line.
+            eprintln!("lu-smt: lint[vacuous-context]: {}", diag.message);
+            // (2) versioned compact JSON document — the IDE / adsmt-lsp / CI
+            // channel (a `DiagnosticsDocument`-compatible `{"schema_version":…,
+            // "lints":[…]}`), prefixed so a consumer can pick the lines out.
+            if let Ok(json) = adsmt_lints::lints_to_json_compact(std::slice::from_ref(&diag)) {
+                eprintln!("lu-smt: lint-json: {json}");
+            }
         }
     }
 
