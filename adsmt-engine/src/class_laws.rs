@@ -21,18 +21,21 @@
 //! incompleteness can never admit an unlawful instance — it can only over-reject
 //! a lawful one.
 //!
-//! **Native fragment (completeness caveat).** This prover uses the in-process
-//! native engine, whose `LinArith` reasons *pairwise* (two-variable
-//! Fourier–Motzkin) and does not propagate arith equalities into EUF. It
-//! therefore discharges the order laws that fall in that fragment — order
-//! *reflexivity* (`∀a. a ≤ a`) and *totality* (`∀a b. a ≤ b ∨ b ≤ a`) — but not
-//! *transitivity* (a three-variable chain) or *antisymmetry* (whose `a = b`
-//! conclusion needs the arith→EUF interface). Those return a conservative
-//! `false`. Proof-gated admission of a relation whose laws exceed this fragment
-//! (e.g. the full `PartialOrd`) therefore needs the OxiZ-delegating solver the
-//! CLI falls back to; wiring that delegation into a `LawProver` is the tracked
-//! follow-up. Until then `EngineLawProver` is a *sound* prover for the native
-//! fragment, and the type-class gate stays conservative for everything else.
+//! **Native reach.** This prover uses the in-process native engine. Its
+//! `LinArith` discharges the full integer/real order-law set over `Int.le` —
+//! reflexivity, antisymmetry, transitivity, totality — so the proof-gated gate
+//! admits `PartialOrd(Int)`/`Ord(Int)`. (Antisymmetry and transitivity became
+//! native-provable once the two-var false-sat fixes landed: direction-symmetric
+//! dominance, `≥`/`>`→`≤`/`<` normalization so the FM closure chains every
+//! direction, and the var-var-disequality pinned-equality rule for the
+//! arith→EUF interface.) Two reaches remain native-`Unknown` → conservative
+//! `false` (reject, never an unsound admit): richer linear-arith goals (where
+//! the production build delegates to OxiZ), and order laws over the refinement
+//! carriers `Nat`/`WNat` — their `le` routes through `nat2int`/`wnat2int`, and
+//! LinArith keys arith variables on bare `Var`s, not on a function application.
+//! An OxiZ-delegating `LawProver` (or LinArith treating an injection
+//! application as an arith atom) would close those — a possible follow-up, not
+//! needed for the `Int` order laws.
 
 use std::sync::Arc;
 
@@ -166,30 +169,58 @@ mod tests {
     }
 
     #[test]
-    fn engine_soundly_proves_the_pairwise_arith_order_laws() {
-        // The real bridge: adsmt's own engine discharges the order laws that
-        // live in its native LIA fragment — reflexivity (`∀a. a ≤ a`) and
-        // totality (`∀a b. a ≤ b ∨ b ≤ a`), both pairwise (≤ 2 variables).
+    fn engine_proves_the_full_order_law_set() {
+        // adsmt's own engine discharges every PartialOrd/Ord law over Int.le:
+        // reflexivity, antisymmetry, transitivity, totality. (Antisymmetry and
+        // transitivity became native-provable once the two-var LinArith
+        // false-sat fixes landed — direction-symmetric dominance + ≥/>→≤/<
+        // normalization + the var-var-disequality pinned-equality rule.)
         let d = int_le_dict();
         let prover = EngineLawProver;
-        assert!(prover.prove_valid(&law(&partial_ord(), "reflexivity", &d)), "reflexivity");
-        assert!(prover.prove_valid(&law(&ord(), "totality", &d)), "totality");
+        for (rel, name) in [
+            (partial_ord(), "reflexivity"),
+            (partial_ord(), "antisymmetry"),
+            (partial_ord(), "transitivity"),
+            (ord(), "totality"),
+        ] {
+            assert!(prover.prove_valid(&law(&rel, name, &d)), "{}::{name}", rel.name);
+        }
     }
 
     #[test]
-    fn engine_is_conservative_on_laws_outside_the_native_fragment() {
-        // Native LinArith reasons pairwise (two-variable Fourier–Motzkin) and
-        // does not propagate arith equalities into EUF, so it cannot yet
-        // discharge transitivity (a 3-variable chain) or antisymmetry (whose
-        // `a = b` conclusion needs the arith→EUF interface). The prover returns
-        // `false` for these — a *conservative* outcome: the lawful gate then
-        // rejects rather than admits, never unsound. (Full discharge of the
-        // whole order-law set awaits the OxiZ-delegating solver — see the
-        // module-level note.)
-        let d = int_le_dict();
-        let prover = EngineLawProver;
-        assert!(!prover.prove_valid(&law(&partial_ord(), "transitivity", &d)));
-        assert!(!prover.prove_valid(&law(&partial_ord(), "antisymmetry", &d)));
+    fn engine_lawfully_admits_the_int_order_instances() {
+        // The original goal, realised for the `Int` carrier: adsmt's own solver
+        // proves every order law over `Int.le`, so the proof-gated gate admits
+        // `PartialOrd(Int)` (reflexivity/antisymmetry/transitivity) and
+        // `Ord(Int)` (totality, resolving `le` through the PartialOrd premise).
+        //
+        // The refinement carriers `Nat`/`WNat` route `le` through `nat2int`/
+        // `wnat2int`, so their order obligations compare `nat2int(x)` terms;
+        // native LinArith keys arith variables on bare `Var`s, not on a
+        // function application, so those stay native-`Unknown` → conservative
+        // reject. Admitting them needs either an OxiZ-delegating prover or
+        // LinArith treating an injection application as an arith atom — tracked,
+        // not required for the order laws over `Int`.
+        use adsmt_class::{Instance, Premise};
+        use adsmt_core::{Kind, Type};
+        let int = Type::const_("Int", Kind::Type);
+        let le = Term::const_(
+            "Int.le",
+            Type::fun(int.clone(), Type::fun(int.clone(), Type::bool_()).unwrap()).unwrap(),
+        );
+        let mut db = InstanceDb::new();
+        db.declare_relation(partial_ord());
+        db.declare_relation(ord());
+        db.declare_instance_lawful(
+            Instance::new("PartialOrd", vec![int.clone()]).with_method("le", le),
+            &EngineLawProver,
+        )
+        .expect("engine proves PartialOrd(Int)'s reflexivity/antisymmetry/transitivity");
+        db.declare_instance_lawful(
+            Instance::new("Ord", vec![int.clone()]).with_premise(Premise::new("PartialOrd", vec![int])),
+            &EngineLawProver,
+        )
+        .expect("engine proves Ord(Int)'s totality via the PartialOrd premise");
     }
 
     #[test]

@@ -72,18 +72,31 @@ pub struct LinArith {
     /// what makes the open interval a singleton, so this is the type
     /// relation deciding. Scoped alongside `bounds`/`two_vars`.
     diseqs: Vec<(String, i128)>,
+    /// Asserted variable-vs-variable **disequalities** `x ≠ y`. A var-var
+    /// disequality is a *disjunction* of strict bounds (`x−y ≤ −1 ∨ x−y ≥ 1`)
+    /// a single bound store can't carry, but it DOES conflict when the two-var
+    /// closure pins the pair to equality: `x ≤ y ∧ y ≤ x` forces `x = y`, which
+    /// `x ≠ y` contradicts (antisymmetry). Recorded canonically (smaller name
+    /// first) and checked in `var_diseq_conflict`. Scoped like the others.
+    var_diseqs: Vec<(String, String)>,
     conflict: Option<TheoryWitness>,
-    scope_stack: Vec<(HashMap<String, Bounds>, Vec<TwoVar>, Vec<(String, i128)>)>,
+    #[allow(clippy::type_complexity)]
+    scope_stack: Vec<(
+        HashMap<String, Bounds>,
+        Vec<TwoVar>,
+        Vec<(String, i128)>,
+        Vec<(String, String)>,
+    )>,
 }
 
 impl LinArith {
     pub fn lia() -> Self {
         Self { name_: "LIA", bounds: HashMap::new(), two_vars: Vec::new(),
-               diseqs: Vec::new(), conflict: None, scope_stack: Vec::new() }
+               diseqs: Vec::new(), var_diseqs: Vec::new(), conflict: None, scope_stack: Vec::new() }
     }
     pub fn lra() -> Self {
         Self { name_: "LRA", bounds: HashMap::new(), two_vars: Vec::new(),
-               diseqs: Vec::new(), conflict: None, scope_stack: Vec::new() }
+               diseqs: Vec::new(), var_diseqs: Vec::new(), conflict: None, scope_stack: Vec::new() }
     }
 
     // === v0.19 C.2 — public introspection API ===
@@ -338,7 +351,7 @@ impl LinArith {
                     // vs non-strict at the same `k`, `<` is tighter.
                     let redundant = self.two_vars.iter().any(|t| {
                         t.x == new_x && t.y == new_y && t.sign == new_sign
-                            && existing_dominates_le(t.op, t.k, new_op, new_k)
+                            && existing_dominates(t.op, t.k, new_op, new_k)
                     });
                     if redundant { continue; }
                     let entry = TwoVar {
@@ -397,18 +410,35 @@ impl LinArith {
     /// **Sound**: every grouped constraint genuinely bounds the same
     /// linear term, so an empty intersection is a real conflict.
     fn two_var_same_pair_conflict(&self) -> Option<TheoryWitness> {
-        type Bnd = Option<BoundValue>;
+        for ((x, y, sign), (lower, upper)) in &self.pair_bound_groups() {
+            if let (Some((lo, lstrict)), Some((up, ustrict))) = (lower, upper)
+                && (lo > up || (lo == up && (*lstrict || *ustrict)))
+            {
+                let pair = if *sign < 0 { format!("{x} - {y}") } else { format!("{x} + {y}") };
+                return Some(TheoryWitness::Opaque {
+                    kind: self.name_.into(),
+                    notes: format!(
+                        "two-var bounds infeasible on ({pair}): lower ({lo}, strict={lstrict}) vs upper ({up}, strict={ustrict})"
+                    ),
+                });
+            }
+        }
+        None
+    }
+
+    /// Intersect every two-var constraint into per-pair `(lower, upper)` bounds
+    /// on the canonical virtual variable `kx + sign·ky` (operands ordered so
+    /// mirror constraints — `x−y` and `y−x` — land in one group). Shared by
+    /// [`Self::two_var_same_pair_conflict`] (empty-interval check) and
+    /// [`Self::var_diseq_conflict`] (pinned-equality vs `≠` check).
+    #[allow(clippy::type_complexity)]
+    fn pair_bound_groups(
+        &self,
+    ) -> HashMap<(String, String, i128), (Option<BoundValue>, Option<BoundValue>)> {
         let is_lia = self.name_ == "LIA";
-        let mut groups: HashMap<(String, String, i128), (Bnd, Bnd)> = HashMap::new();
+        let mut groups: HashMap<(String, String, i128), (Option<BoundValue>, Option<BoundValue>)> =
+            HashMap::new();
         for tv in &self.two_vars {
-            // Canonicalize the pair so mirror constraints land in one
-            // group: `y − x op k` is the same virtual variable as
-            // `x − y` negated, so for `sign = −1` with `x > y` we swap
-            // the operands, flip the operator, and negate `k`
-            // (`y − x > 0` ⟺ `x − y < 0`). `sign = +1` (`x + y`, the
-            // symmetric sum) only needs the operands ordered. Without
-            // this, `x = y` (group `x−y`) and `y > x` (group `y−x`) miss
-            // each other → spurious `sat`.
             let (kx, ky, op, k) = if tv.sign == -1 && tv.x > tv.y {
                 let flipped = match tv.op {
                     "<=" => ">=", "<" => ">", ">=" => "<=", ">" => "<", o => o,
@@ -440,16 +470,34 @@ impl LinArith {
                 _ => {}
             }
         }
-        for ((x, y, sign), (lower, upper)) in &groups {
-            if let (Some((lo, lstrict)), Some((up, ustrict))) = (lower, upper)
-                && (lo > up || (lo == up && (*lstrict || *ustrict)))
+        groups
+    }
+
+    /// A variable-variable disequality `x ≠ y` conflicts when the two-var
+    /// closure pins the pair to equality. After FM closure, the canonical group
+    /// `(x, y, −1)` for `x − y` is pinned to a single value `v` iff its lower
+    /// and upper bounds coincide non-strictly; `x = y` is exactly `v = 0`, which
+    /// `x ≠ y` contradicts (antisymmetry: `x ≤ y ∧ y ≤ x ∧ x ≠ y`).
+    ///
+    /// **Sound**: the pin is entailed by the asserted bounds (an empty-or-point
+    /// interval is a genuine consequence), and `x − y = 0 ∧ x ≠ y` is a real
+    /// contradiction. **Inert on reals where it should be**: a real pair pinned
+    /// to a nonzero value, or not pinned at all, never fires.
+    fn var_diseq_conflict(&self) -> Option<TheoryWitness> {
+        if self.var_diseqs.is_empty() {
+            return None;
+        }
+        let groups = self.pair_bound_groups();
+        for (x, y) in &self.var_diseqs {
+            // `var_diseqs` are stored canonical (x < y), matching the group key
+            // for the `x − y` virtual variable (sign = −1).
+            if let Some((Some((lo, false)), Some((up, false)))) = groups.get(&(x.clone(), y.clone(), -1))
+                && lo == up
+                && *lo == 0
             {
-                let pair = if *sign < 0 { format!("{x} - {y}") } else { format!("{x} + {y}") };
                 return Some(TheoryWitness::Opaque {
                     kind: self.name_.into(),
-                    notes: format!(
-                        "two-var bounds infeasible on ({pair}): lower ({lo}, strict={lstrict}) vs upper ({up}, strict={ustrict})"
-                    ),
+                    notes: format!("two-var bounds pin {x} = {y}, contradicting the disequality {x} ≠ {y}"),
                 });
             }
         }
@@ -597,23 +645,46 @@ impl LinArith {
     }
 }
 
-/// Does an existing `(op, k)` ≤-style constraint dominate (i.e.
-/// imply) the candidate? Returns true when the existing entry
+/// Does an existing `(op, k)` constraint dominate (i.e. imply) the candidate
+/// `(op, k)` on the same virtual variable? Returns true when the existing entry
 /// already proves the new one, so adding the new one is redundant.
 ///
-/// For `x ≤ k`, smaller `k` is stronger. `x < k` is stronger than
-/// `x ≤ k` at the same `k`, but `x ≤ k-1` and `x < k` are
-/// equivalent — caller has already LIA-tightened, so we just need
-/// the lexicographic compare here.
-fn existing_dominates_le(
+/// CRITICAL (soundness): dominance is **direction-symmetric**. An upper-bound
+/// op (`≤`/`<`) and a lower-bound op (`≥`/`>`) constrain *opposite* directions
+/// of the virtual variable, so neither ever dominates the other — mixed
+/// directions return `false`. Within one direction: for `≤` a smaller `k` is
+/// stronger; for `≥` a larger `k` is stronger; at equal `k` the strict op (`<`
+/// / `>`) dominates the non-strict. (The caller LIA-tightens first, so a plain
+/// lexicographic compare suffices.)
+///
+/// Getting this wrong drops an FM-derived `x − y ≤ k` as "redundant" whenever a
+/// `x − y > k'` is present (transitivity's `a ≤ b ∧ b ≤ c` derives `a ≤ c`
+/// while `¬(a ≤ c)` stored `a − c > 0`): the derived upper bound never reaches
+/// `two_var_same_pair_conflict`, which then never sees both directions → the
+/// engine reports a spurious `sat`. The earlier one-sided guard (existing must
+/// be `≤`/`<`) happened to suffice only because the sole caller always passes a
+/// `≤`/`<` candidate; the symmetric form is correct for any caller.
+fn existing_dominates(
     existing_op: &str,
     existing_k: i128,
     new_op: &str,
     new_k: i128,
 ) -> bool {
-    let ex_strict = matches!(existing_op, "<");
-    let nw_strict = matches!(new_op, "<");
-    if existing_k < new_k {
+    let ex_le = matches!(existing_op, "<=" | "<");
+    let nw_le = matches!(new_op, "<=" | "<");
+    if ex_le != nw_le {
+        // Opposite directions: an upper bound never proves a lower bound, or
+        // vice versa.
+        return false;
+    }
+    let ex_strict = matches!(existing_op, "<" | ">");
+    let nw_strict = matches!(new_op, "<" | ">");
+    let stronger_or_equal_k = if ex_le {
+        existing_k < new_k // ≤: smaller k stronger
+    } else {
+        existing_k > new_k // ≥: larger k stronger
+    };
+    if stronger_or_equal_k {
         return true;
     }
     if existing_k == new_k {
@@ -621,6 +692,25 @@ fn existing_dominates_le(
         return ex_strict || !nw_strict;
     }
     false
+}
+
+/// Build a two-var constraint, normalizing a `sign = −1` lower-bound op
+/// (`≥`/`>`) into its `≤`/`<` mirror so the whole pool has a uniform upper-bound
+/// direction: `x − y ≥ k ⟺ y − x ≤ −k`, `x − y > k ⟺ y − x < −k`. The FM closure
+/// (`fm_cross_eliminate`) only chains `≤`/`<`, so without normalization a chain
+/// that passes through a `≥`/`>` link (e.g. `b ≥ c ∧ b < a ∧ c > a`, which is
+/// `c ≤ b ∧ b < a ∧ c > a` ⟹ `c < a` contradicting `c > a`) is never closed and
+/// the engine reports a spurious `sat`. The mirror is logically identical, so
+/// this preserves meaning; `sign = +1` (the symmetric sum `x + y`) can't be
+/// mirrored into `≤` without a negative coefficient and is left as-is (it has no
+/// chainable middle variable anyway).
+fn norm_two_var(x: String, y: String, sign: i128, op: &'static str, k: i128) -> TwoVar {
+    if sign == -1 && matches!(op, ">=" | ">") {
+        let mop = if op == ">=" { "<=" } else { "<" };
+        TwoVar { x: y, y: x, sign: -1, op: mop, k: -k }
+    } else {
+        TwoVar { x, y, sign, op, k }
+    }
 }
 
 /// Is a `0 op k`-style self-loop entry infeasible?
@@ -729,12 +819,8 @@ impl Theory for LinArith {
                 return AssertResult::Accepted;
             }
             if let (TermInner::Var(vx), TermInner::Var(vy)) = (a.kind(), b.kind()) {
-                self.two_vars.push(TwoVar {
-                    x: vx.name.clone(), y: vy.name.clone(), sign: -1, op: "<=", k: 0,
-                });
-                self.two_vars.push(TwoVar {
-                    x: vx.name.clone(), y: vy.name.clone(), sign: -1, op: ">=", k: 0,
-                });
+                self.two_vars.push(norm_two_var(vx.name.clone(), vy.name.clone(), -1, "<=", 0));
+                self.two_vars.push(norm_two_var(vx.name.clone(), vy.name.clone(), -1, ">=", 0));
                 return AssertResult::Accepted;
             }
             // `x = y ± k` (var = var ± literal): an OFFSET two-var equality
@@ -750,8 +836,8 @@ impl Theory for LinArith {
             });
             if let Some((vx, vy, k)) = offset {
                 // x = y + k  ⟺  x − y = k.
-                self.two_vars.push(TwoVar { x: vx.clone(), y: vy.clone(), sign: -1, op: "<=", k });
-                self.two_vars.push(TwoVar { x: vx, y: vy, sign: -1, op: ">=", k });
+                self.two_vars.push(norm_two_var(vx.clone(), vy.clone(), -1, "<=", k));
+                self.two_vars.push(norm_two_var(vx, vy, -1, ">=", k));
                 return AssertResult::Accepted;
             }
             // Non-var/non-literal operands (e.g. `(= (f x) 5)`) — leave
@@ -775,6 +861,23 @@ impl Theory for LinArith {
                 self.diseqs.push((var, k));
                 return AssertResult::Accepted;
             }
+            // A *variable-variable* disequality `x ≠ y`: record the (canonical)
+            // pair. A single bound store can't carry the disjunction `x−y ≤ −1
+            // ∨ x−y ≥ 1`, but `var_diseq_conflict` flags it when the two-var
+            // closure later pins `x = y` (antisymmetry). UF still owns the
+            // disequality for congruence; recording it here ADDS an entailed
+            // conflict check, never drops a constraint.
+            if let (TermInner::Var(vx), TermInner::Var(vy)) = (a.kind(), b.kind())
+                && vx.name != vy.name
+            {
+                let (lo, hi) = if vx.name < vy.name {
+                    (vx.name.clone(), vy.name.clone())
+                } else {
+                    (vy.name.clone(), vx.name.clone())
+                };
+                self.var_diseqs.push((lo, hi));
+                return AssertResult::Accepted;
+            }
             return AssertResult::Ignored;
         }
         // Try two-variable comparison first (FM input).
@@ -784,7 +887,7 @@ impl Theory for LinArith {
             } else {
                 match op { "<=" => ">", "<" => ">=", ">=" => "<", ">" => "<=", _ => return AssertResult::Ignored }
             };
-            self.two_vars.push(TwoVar { x, y, sign, op: final_op, k });
+            self.two_vars.push(norm_two_var(x, y, sign, final_op, k));
             return AssertResult::Accepted;
         }
         if !lit.polarity {
@@ -833,6 +936,13 @@ impl Theory for LinArith {
             self.conflict = Some(w.clone());
             return CheckResult::Unsat { witness: w };
         }
+        // Stage 1d: variable-variable disequality vs a pair pinned to equality
+        // (`x ≤ y ∧ y ≤ x ∧ x ≠ y` — antisymmetry). After FM so a transitively
+        // pinned `x = y` is also caught.
+        if let Some(w) = self.var_diseq_conflict() {
+            self.conflict = Some(w.clone());
+            return CheckResult::Unsat { witness: w };
+        }
         // Stage 2: use single-variable bounds to drive multi-variable
         // constraints into tightened single-variable bounds.
         if let Some(w) = self.propagate_two_var_via_bounds() {
@@ -874,15 +984,17 @@ impl Theory for LinArith {
             self.bounds.clone(),
             self.two_vars.clone(),
             self.diseqs.clone(),
+            self.var_diseqs.clone(),
         ));
     }
 
     fn pop(&mut self, levels: u32) {
         for _ in 0..levels {
-            if let Some((b, tv, dq)) = self.scope_stack.pop() {
+            if let Some((b, tv, dq, vdq)) = self.scope_stack.pop() {
                 self.bounds = b;
                 self.two_vars = tv;
                 self.diseqs = dq;
+                self.var_diseqs = vdq;
             }
         }
         self.conflict = None;
@@ -892,6 +1004,7 @@ impl Theory for LinArith {
         self.bounds.clear();
         self.two_vars.clear();
         self.diseqs.clear();
+        self.var_diseqs.clear();
         self.conflict = None;
         self.scope_stack.clear();
     }
@@ -1042,17 +1155,39 @@ mod tests {
     }
 
     #[test]
-    fn nonliteral_disequality_is_left_to_uf() {
-        // `¬(x = y)` (var-var) has no literal to bound against → still
-        // Ignored, left to UF's congruence reasoning.
+    fn var_var_disequality_is_recorded_for_the_antisymmetry_rule() {
+        // `¬(x = y)` (var-var) is now Accepted and recorded so the two-var
+        // closure can refute it once the pair is pinned to equality (UF still
+        // independently owns it for congruence — the recording is additive).
+        // On its own (no bounds pinning x = y) the theory stays Sat.
         let mut t = LinArith::lia();
         let x = Term::var("x", int_ty());
         let y = Term::var("y", int_ty());
         let exy = Term::mk_eq(x, y).unwrap();
         assert!(matches!(
             t.assert(Literal::negative(exy).unwrap()),
-            AssertResult::Ignored
+            AssertResult::Accepted
         ));
+        assert!(matches!(t.check(), CheckResult::Sat), "x ≠ y alone is satisfiable");
+    }
+
+    #[test]
+    fn antisymmetry_pins_equality_and_refutes_the_disequality() {
+        // `x ≤ y ∧ y ≤ x ∧ x ≠ y` over LIA: the two ≤ pin x − y = 0, which the
+        // recorded var-var disequality refutes (antisymmetry). Was a spurious
+        // `sat` before the var_diseq_conflict rule.
+        let mut t = LinArith::lia();
+        let x = Term::var("x", int_ty());
+        let y = Term::var("y", int_ty());
+        let le = |a: Term, b: Term| {
+            let op_ty = Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap()).unwrap();
+            Term::app(Term::app(Term::const_("<=", op_ty), a).unwrap(), b).unwrap()
+        };
+        assert!(matches!(t.assert(Literal::positive(le(x.clone(), y.clone())).unwrap()), AssertResult::Accepted));
+        assert!(matches!(t.assert(Literal::positive(le(y.clone(), x.clone())).unwrap()), AssertResult::Accepted));
+        let neq = Term::mk_eq(x, y).unwrap();
+        assert!(matches!(t.assert(Literal::negative(neq).unwrap()), AssertResult::Accepted));
+        assert!(matches!(t.check(), CheckResult::Unsat { .. }), "antisymmetry: x = y contradicts x ≠ y");
     }
 
     #[test]
