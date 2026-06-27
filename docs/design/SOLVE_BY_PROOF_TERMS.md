@@ -157,15 +157,18 @@ Invariants:
   from f's *type*, not an unproven assumption — sound because supplying `f` at a
   refined-arrow type already obligated f's definer to establish it (the ② contract).
 
-**선검증 plan** (mirroring the Nat/WNat relativization pre-verification): in a
-separate Verus project, prove the cut soundness for the `solve/by` shape — that
-`(⊢ L) ∧ (L ⊢ G)` ⟹ `(⊢ G)` over the small FO/▢ AST with the §4 bridge as the
-witness for the `preserving` instance — and that the refined-arrow postcondition
-extraction is conservative. This gates the lukb implementation.
+**선검증 LANDED** (`~/solve-by-verification`, `verus src/solve_by.rs` → **5
+verified, 0 errors**). Over uninterpreted `spec_fn` predicates/function (holds for
+every model): `cut` (the `solve G by L` cut is unconditionally sound),
+`preserving_bridge` / `preserving_solve_by` (the §4 closed bridge
+`(post_f ∧ L) ⟹ G` = the modus-ponens term `pf_G = λx hp. (pf_L x hp)(post_f x hp)`),
+and `image_quantifier_desugar` (the inference-sugar binder `∀{y=f(x)|'p}. φ(y)`
+≡ the preimage form `∀x. p(x) ⟹ φ(f(x))`). This gates the lukb implementation.
 
 ## 7. Phasing
 
-1. **This doc** + 선검증 of the cut + the refined-arrow postcondition extraction.
+1. **This doc** + 선검증 of the cut + the inference-sugar desugar. **DONE**
+   (`~/solve-by-verification`, 5 verified, 0 errors).
 2. lukb `Type::Arrow` (refined function types) — parse/elab/print/round-trip.
 3. lukb **`solve … by …`** term over **blocks** (§5): the `solve`/`by` clauses are
    `let`-chain blocks; parse/elab to the cut obligations + proof term.
