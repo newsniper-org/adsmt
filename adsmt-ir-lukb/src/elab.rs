@@ -87,43 +87,7 @@ impl Elab {
                 }
             }
             Item::Fn { name, params, ret, body } => {
-                // build the curried function type `T1 -> … -> ret` + the flat
-                // (param-name, type) list in order.
-                let mut ptypes: Vec<K> = Vec::new();
-                let mut pnames: Vec<String> = Vec::new();
-                for (names, t) in params {
-                    let kt = self.elab_type(t)?;
-                    for n in names {
-                        ptypes.push(kt.clone());
-                        pnames.push(n.clone());
-                    }
-                }
-                let mut ty = self.elab_type(ret)?;
-                for pt in ptypes.iter().rev() {
-                    ty = K::arrow(pt.clone(), ty);
-                }
-                match body {
-                    // a signature: an opaque (`open`) function constant.
-                    None => {
-                        postulate(&mut self.env, name, ty)?;
-                    }
-                    // a definition `f := λ(params). body`. Elaborate the body
-                    // under the param binders, λ-abstract, and `define` it (a
-                    // `Modality::Def`, δ-unfolded at the solver lowering). The
-                    // body must NOT mention `f` — a recursive body needs the
-                    // kernel `fix` (a later slice; here it elaborates to an
-                    // "unknown symbol `f`" error, which is sound).
-                    Some(b) => {
-                        let mut ctx: Vec<(String, K)> =
-                            pnames.into_iter().zip(ptypes.iter().cloned()).collect();
-                        let kbody = self.elab_term(&mut ctx, b)?;
-                        let mut lam = kbody;
-                        for pt in ptypes.into_iter().rev() {
-                            lam = K::lam(pt, lam);
-                        }
-                        define(&mut self.env, name, ty, lam)?;
-                    }
-                }
+                self.elab_fn(name, params, ret, body)?;
             }
             Item::Data { name, ctors } => {
                 // a non-parametric inductive datatype → `declare_inductive`. A
@@ -148,6 +112,183 @@ impl Elab {
             Item::Goal(_, t) => {
                 let kt = self.elab_prop(t)?;
                 self.goals.push(kt);
+            }
+        }
+        Ok(())
+    }
+
+    /// Elaborate a `fn` item — possibly **predicate-polymorphic** in generic
+    /// refinement parameters `'p`. The kernel encoding (proofs `Prop`-irrelevant
+    /// + lowering-erased):
+    ///
+    /// ```text
+    ///   fn g(x: {v:T | 'p v}): {w:U | 'p w} [= body]
+    ///     g : Π('p: T→Prop). Π(x: T). U          -- value sorts erase refinements
+    ///     contract:  ∀'p. ∀x. 'p(x) ⟹ 'p(g('p, x))
+    /// ```
+    ///
+    /// The generic `'p` are collected from every param/return refinement and
+    /// bound implicitly at the head as `Π('p: base→Prop)` (predicate
+    /// polymorphism — the body type-checks ONCE with `'p` abstract; the
+    /// "checked-once" guarantee). Each param refinement becomes a **precondition**
+    /// (deduped conjunction — idempotence `r∧…∧r ⟺ r`), the return refinement a
+    /// **postcondition**: a definition emits the contract as a **goal** (the
+    /// construct-site obligation `prove φ(result)`); a signature postulates it as
+    /// a **trusted axiom** (the user asserts the contract). At a use site the
+    /// caller instantiates `'p := q` and discharges the now-monomorphic
+    /// precondition — the dictionary-passing of the pre-verified §5.2.
+    fn elab_fn(
+        &mut self,
+        name: &str,
+        params: &[(Vec<String>, Type)],
+        ret: &Type,
+        body: &Option<S>,
+    ) -> Result<(), FaceError> {
+        // 1. collect the generic predicate parameters `'p` (in first-seen order)
+        //    from every refinement predicate, each over its refinement's base.
+        let mut pred_names: Vec<String> = Vec::new();
+        let mut pred_bases: Vec<Type> = Vec::new();
+        let see_refinement = |ty: &Type, pn: &mut Vec<String>, pb: &mut Vec<Type>| {
+            if let Type::Refine { base, pred, .. } = ty {
+                let mut ticks = Vec::new();
+                collect_ticks(pred, &mut ticks);
+                for t in ticks {
+                    if let Some(i) = pn.iter().position(|x| *x == t) {
+                        // a `'p` reused across refinements must keep one domain.
+                        if pb[i] != **base {
+                            return Err(unsupported(format!(
+                                "generic predicate `{t}` used over two different domains"
+                            )));
+                        }
+                    } else {
+                        pn.push(t);
+                        pb.push((**base).clone());
+                    }
+                }
+            }
+            Ok(())
+        };
+        for (_, ty) in params {
+            see_refinement(ty, &mut pred_names, &mut pred_bases)?;
+        }
+        see_refinement(ret, &mut pred_names, &mut pred_bases)?;
+
+        // 2. kernel sorts for the `'p` binders: `'p : base → Prop`.
+        let mut pred_sorts: Vec<K> = Vec::with_capacity(pred_names.len());
+        for base in &pred_bases {
+            let kbase = self.elab_type(base)?;
+            pred_sorts.push(K::arrow(kbase, K::prop()));
+        }
+
+        // 3. flatten value params: (name, base type, optional (refvar, refpred)).
+        let mut vnames: Vec<String> = Vec::new();
+        let mut vbase_tys: Vec<Type> = Vec::new();
+        let mut vrefine: Vec<Option<(String, S)>> = Vec::new();
+        for (names, ty) in params {
+            let (base_ty, refine) = match ty {
+                Type::Refine { var, base, pred } => {
+                    ((**base).clone(), Some((var.clone(), (**pred).clone())))
+                }
+                other => (other.clone(), None),
+            };
+            for n in names {
+                vnames.push(n.clone());
+                vbase_tys.push(base_ty.clone());
+                vrefine.push(refine.clone());
+            }
+        }
+        let vsorts: Vec<K> =
+            vbase_tys.iter().map(|t| self.elab_type(t)).collect::<Result<_, _>>()?;
+
+        // 4. the fn kernel type: Π('p…). Π(x…). ret_base  (refinements erased).
+        let ret_base = match ret {
+            Type::Refine { base, .. } => (**base).clone(),
+            other => other.clone(),
+        };
+        let kret = self.elab_type(&ret_base)?;
+        let mut value_chain = kret;
+        for s in vsorts.iter().rev() {
+            value_chain = K::arrow(s.clone(), value_chain);
+        }
+        let ty = adsmt_ir::build_pi(&pred_sorts, value_chain);
+
+        // 5. define (with a body) or postulate (a signature).
+        match body {
+            None => {
+                postulate(&mut self.env, name, ty.clone())?;
+            }
+            Some(b) => {
+                let mut ctx: Vec<(String, K)> = Vec::new();
+                for (pn, ps) in pred_names.iter().zip(&pred_sorts) {
+                    ctx.push((pn.clone(), ps.clone()));
+                }
+                for (vn, vs) in vnames.iter().zip(&vsorts) {
+                    ctx.push((vn.clone(), vs.clone()));
+                }
+                let kbody = self.elab_term(&mut ctx, b)?;
+                let mut lam = kbody;
+                for s in vsorts.iter().rev() {
+                    lam = K::lam(s.clone(), lam);
+                }
+                for s in pred_sorts.iter().rev() {
+                    lam = K::lam(s.clone(), lam);
+                }
+                define(&mut self.env, name, ty.clone(), lam)?;
+            }
+        }
+
+        // 6. the contract obligation — only when the RETURN is refined.
+        if let Type::Refine { var: rv, pred: rp, .. } = ret {
+            // result = g('p…, x…); for a def it δ-unfolds to the body.
+            let mut result_args: Vec<S> = pred_names.iter().map(|n| S::Var(n.clone())).collect();
+            result_args.extend(vnames.iter().map(|n| S::Var(n.clone())));
+            let result = S::Call(name.to_string(), result_args);
+            let post = subst_surface(rp, rv, &result);
+            // precondition: the deduped conjunction of every param refinement,
+            // each instantiated at its parameter name (idempotence dedup).
+            let mut pre: Vec<S> = Vec::new();
+            for (vn, refine) in vnames.iter().zip(&vrefine) {
+                if let Some((rvar, rpred)) = refine {
+                    pre.push(subst_surface(rpred, rvar, &S::Var(vn.clone())));
+                }
+            }
+            let inner = match surface_conj_dedup(pre) {
+                Some(conj) => S::Bin(BinOp::Implies, Box::new(conj), Box::new(post)),
+                None => post,
+            };
+            // ∀ over the value params (plain typed binders).
+            let vc_body = if vnames.is_empty() {
+                inner
+            } else {
+                let binders = vnames
+                    .iter()
+                    .zip(&vbase_tys)
+                    .map(|(n, t)| Binder {
+                        names: vec![n.clone()],
+                        ty: t.clone(),
+                        constraint: None,
+                        range: None,
+                        refinement: None,
+                    })
+                    .collect();
+                S::Forall(binders, Box::new(inner), Vec::new())
+            };
+            // elaborate under the `'p` binders, then wrap them as `Π('p…)`.
+            let mut ctx: Vec<(String, K)> = pred_names
+                .iter()
+                .cloned()
+                .zip(pred_sorts.iter().cloned())
+                .collect();
+            let kvc_inner = self.elab_term(&mut ctx, &vc_body)?;
+            let kvc = adsmt_ir::build_pi(&pred_sorts, kvc_inner);
+            // a closed `Prop`, re-checked by the kernel.
+            let kty = infer(&self.env, &Ctx::new(), &kvc)?;
+            if !is_def_eq(&self.env, &kty, &K::prop()) {
+                return Err(unsupported(format!("fn contract is not a Prop: {kty}")));
+            }
+            match body {
+                Some(_) => self.goals.push(kvc),  // construct-site obligation
+                None => self.hyps.push(kvc),      // trusted contract axiom
             }
         }
         Ok(())
@@ -557,4 +698,128 @@ fn arith_binop(env: &Env, op: BinOp, s: &K) -> Option<&'static str> {
         }
         _ => return None,
     })
+}
+
+// ── refinement / generic-predicate (`'p`) helpers ───────────────────────────
+
+/// Capture-avoiding substitution of the free surface variable `from` by the
+/// term `to` (used to instantiate a refinement's bound value `v` at a concrete
+/// argument/result, and to rename `v` to a parameter name). Respects binder
+/// shadowing in `let`/quantifiers; a binder's `range`/`constraint` sub-terms are
+/// in the *enclosing* scope (substituted regardless), its `refinement` predicate
+/// and body are in the binder's scope (substituted only when not shadowed).
+fn subst_surface(t: &S, from: &str, to: &S) -> S {
+    let go = |x: &S| subst_surface(x, from, to);
+    match t {
+        S::Var(n) => if n == from { to.clone() } else { t.clone() },
+        S::IntLit(_) | S::RealLit(_) | S::Bool(_) => t.clone(),
+        S::Not(a) => S::Not(Box::new(go(a))),
+        S::Neg(a) => S::Neg(Box::new(go(a))),
+        S::Bin(op, a, b) => S::Bin(*op, Box::new(go(a)), Box::new(go(b))),
+        S::Call(f, args) => S::Call(f.clone(), args.iter().map(&go).collect()),
+        S::Let(x, e, body) => {
+            let e2 = go(e);
+            let body2 = if x == from { (**body).clone() } else { go(body) };
+            S::Let(x.clone(), Box::new(e2), Box::new(body2))
+        }
+        S::Forall(bs, body, trigs) => {
+            let (bs2, shadow) = subst_binders(bs, from, to);
+            let body2 = if shadow { (**body).clone() } else { go(body) };
+            S::Forall(bs2, Box::new(body2), subst_trigs(trigs, from, to, shadow))
+        }
+        S::Exists(bs, body, trigs) => {
+            let (bs2, shadow) = subst_binders(bs, from, to);
+            let body2 = if shadow { (**body).clone() } else { go(body) };
+            S::Exists(bs2, Box::new(body2), subst_trigs(trigs, from, to, shadow))
+        }
+    }
+}
+
+/// Substitute inside a binder group's sub-terms, returning the rewritten binders
+/// and whether the group shadows `from` (so the caller leaves the body alone).
+fn subst_binders(bs: &[Binder], from: &str, to: &S) -> (Vec<Binder>, bool) {
+    let shadow = bs.iter().any(|b| b.names.iter().any(|n| n == from));
+    let bs2 = bs
+        .iter()
+        .map(|b| Binder {
+            names: b.names.clone(),
+            ty: b.ty.clone(),
+            // range bounds + constraint rhs live in the ENCLOSING scope.
+            range: b
+                .range
+                .as_ref()
+                .map(|(lo, hi)| (Box::new(subst_surface(lo, from, to)), Box::new(subst_surface(hi, from, to)))),
+            constraint: b
+                .constraint
+                .as_ref()
+                .map(|(op, rhs)| (*op, Box::new(subst_surface(rhs, from, to)))),
+            // the refinement predicate is in the binder's own scope.
+            refinement: b.refinement.as_ref().map(|p| {
+                if shadow { p.clone() } else { Box::new(subst_surface(p, from, to)) }
+            }),
+        })
+        .collect();
+    (bs2, shadow)
+}
+
+fn subst_trigs(trigs: &[Vec<S>], from: &str, to: &S, shadow: bool) -> Vec<Vec<S>> {
+    if shadow {
+        return trigs.to_vec();
+    }
+    trigs.iter().map(|pats| pats.iter().map(|p| subst_surface(p, from, to)).collect()).collect()
+}
+
+/// Left-fold surface predicates with `and`, dropping structurally-identical
+/// conjuncts first (the idempotence `r ∧ … ∧ r ⟺ r`). `None` for the empty
+/// conjunction (a vacuous precondition).
+fn surface_conj_dedup(ts: Vec<S>) -> Option<S> {
+    let mut uniq: Vec<S> = Vec::new();
+    for t in ts {
+        if !uniq.contains(&t) {
+            uniq.push(t);
+        }
+    }
+    let mut it = uniq.into_iter();
+    let mut acc = it.next()?;
+    for t in it {
+        acc = S::Bin(BinOp::And, Box::new(acc), Box::new(t));
+    }
+    Some(acc)
+}
+
+/// Collect the free generic-predicate parameters (`'p`, [`is_tick_ident`]) used
+/// in a surface predicate, into `acc` (Call heads + bare Vars).
+fn collect_ticks(t: &S, acc: &mut Vec<String>) {
+    let push = |n: &str, acc: &mut Vec<String>| {
+        if crate::lexer::is_tick_ident(n) && !acc.iter().any(|x| x == n) {
+            acc.push(n.to_string());
+        }
+    };
+    match t {
+        S::Var(n) => push(n, acc),
+        S::Call(f, args) => {
+            push(f, acc);
+            for a in args {
+                collect_ticks(a, acc);
+            }
+        }
+        S::Not(a) | S::Neg(a) => collect_ticks(a, acc),
+        S::Bin(_, a, b) => {
+            collect_ticks(a, acc);
+            collect_ticks(b, acc);
+        }
+        S::Let(_, e, body) => {
+            collect_ticks(e, acc);
+            collect_ticks(body, acc);
+        }
+        S::Forall(bs, body, _) | S::Exists(bs, body, _) => {
+            for b in bs {
+                if let Some(p) = &b.refinement {
+                    collect_ticks(p, acc);
+                }
+            }
+            collect_ticks(body, acc);
+        }
+        S::IntLit(_) | S::RealLit(_) | S::Bool(_) => {}
+    }
 }

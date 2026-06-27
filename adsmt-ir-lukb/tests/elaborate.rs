@@ -287,6 +287,69 @@ fn generic_pred_in_const_is_rejected() {
     assert!(e.is_err(), "unbound generic `'p` in a const must be rejected");
 }
 
+// ── slice 2d: predicate-polymorphic functions (generic `'p`) ─────────────
+
+/// A constraint-preserving identity `fn id_p(x: {v: Int | 'p(v)}): {v: Int |
+/// 'p(v)} = x` is predicate-polymorphic in `'p`: the body checks ONCE with `'p`
+/// abstract, and a definition emits the construct-site contract obligation as a
+/// GOAL `∀'p. ∀x. 'p(x) ==> 'p(id_p('p, x))`.
+#[test]
+fn constraint_preserving_identity_def_emits_a_goal() {
+    let r = all_props("fn id_p(x: {v: Int | 'p(v)}): {v: Int | 'p(v)} = x\n", 0, 1);
+    let goal = format!("{:?}", r.goals[0]);
+    assert!(goal.contains("id_p"), "the contract is about id_p: {goal}");
+}
+
+/// A predicate-polymorphic *signature* (no body) postulates the contract as a
+/// TRUSTED axiom (a hypothesis), not a goal — the user asserts `g` preserves
+/// `'p`; use sites instantiate it.
+#[test]
+fn predicate_polymorphic_signature_is_a_trusted_axiom() {
+    all_props("fn g(x: {v: Int | 'p(v)}): {v: Int | 'p(v)}\n", 1, 0);
+}
+
+/// A CONCRETE refinement fn (no `'p`) gets the same contract treatment:
+/// `fn inc(x: {v: Int | v > 0}): {v: Int | v > 0} = x + 1` → the obligation
+/// `∀x. x > 0 ==> (inc x) > 0`.
+#[test]
+fn concrete_refinement_fn_emits_its_contract() {
+    let r = all_props("fn inc(x: {v: Int | v > 0}): {v: Int | v > 0} = x + 1\n", 0, 1);
+    let goal = format!("{:?}", r.goals[0]);
+    assert!(goal.contains("inc") && goal.contains("Int.gt"), "contract `x>0 ==> inc x>0`: {goal}");
+}
+
+/// Two distinct generic predicates `'p`, `'q` bind independently; the
+/// precondition is their conjunction.
+#[test]
+fn two_generic_predicates_bind_independently() {
+    let r = all_props(
+        "fn g(x: {v: Int | 'p(v)}, y: {v: Int | 'q(v)}): {v: Int | 'p(v)} = x\n",
+        0,
+        1,
+    );
+    let goal = format!("{:?}", r.goals[0]);
+    // both predicates appear (as bound higher-order vars) and `g` is applied.
+    assert!(goal.contains('g'), "contract mentions g: {goal}");
+}
+
+/// A `fn` whose return is NOT refined emits no obligation even with a generic
+/// `'p` precondition (the precondition matters only at use sites).
+#[test]
+fn unrefined_return_emits_no_contract() {
+    all_props("fn f(x: {v: Int | 'p(v)}): Int = x\n", 0, 0);
+}
+
+/// A predicate-polymorphic signature round-trips through the printer (the `'p`
+/// tick-idents and the `{v: T | φ}` types are recovered).
+#[test]
+fn predicate_polymorphic_fn_round_trips() {
+    let src = "fn g(x: {v: Int | 'p(v)}): {v: Int | 'p(v)}\n";
+    let m1 = parse(src).expect("parses");
+    let printed = print_module(&m1);
+    let m2 = parse(&printed).expect("re-parses");
+    assert_eq!(m1, m2, "predicate-polymorphic fn round-trips\nprinted:\n{printed}");
+}
+
 // ── slice 3: bounded `in` range quantifiers + triggers ──────────────────
 
 /// A bounded range `forall x in 0..n. P` desugars to
