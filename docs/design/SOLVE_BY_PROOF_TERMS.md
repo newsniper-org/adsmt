@@ -196,5 +196,10 @@ and `image_quantifier_desugar` (the inference-sugar binder `∀{y=f(x)|'p}. φ(y
    context-closing, whose kernel re-check validates the de Bruijn closing).
 4. The **inference-sugar binders** (§5): `forall {y = f(x) | 'p(x)}. …` →
    `forall x:{A|'p}. let y = f(x) in …`, with type inference recovering `x`'s sort.
+   **DONE** (`adsmt-ir-lukb`): `Binder.image: Option<(e, c)>` parsed via the `=`
+   (vs `:`) discriminator in `binder()`; `elab_quant` infers the preimage `x` + its
+   sort from `e = f(x)` (`f`'s domain, `image_preimage`), guards by `c`, and
+   unfolds `y := e` in the body (`subst_surface`). `{y=f(x)|p(x)}` and the explicit
+   `{x:Int|p(x)}` + `q(f(x))` elaborate to the SAME kernel term. +3 tests.
 5. `preserving` as a library/example higher-order predicate over a refined arrow,
    end-to-end (the §4 bridge), with the leaf `L` discharged by the engine.

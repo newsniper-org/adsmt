@@ -464,6 +464,42 @@ fn solve_by_round_trips() {
     assert_eq!(m1, m2, "solve/by round-trips\n{printed}");
 }
 
+// ── slice 2h: image binders `{y = f(x) | c}` (inference sugar) ───────────
+
+/// The image binder `forall {y = f(x) | p(x)}. q(y)` desugars to the preimage
+/// form `forall x:{Int|p(x)}. q(f(x))` — the quantifier ranges over the inferred
+/// preimage `x` (type = `f`'s domain), guarded by `p(x)`, with `y` unfolded to
+/// `f(x)`. The two elaborate to the SAME kernel term (the pre-verified
+/// `image_quantifier_desugar`).
+#[test]
+fn image_binder_desugars_to_the_preimage_form() {
+    let prelude = "const f: Int -> Int\nconst p: Int -> Bool\nconst q: Int -> Bool\n";
+    let img = elaborate(&format!("{prelude}goal h: forall {{y = f(x) | p(x)}}. q(y)\n"))
+        .expect("image binder elaborates");
+    let explicit = elaborate(&format!("{prelude}goal h: forall {{x: Int | p(x)}}. q(f(x))\n"))
+        .expect("explicit form elaborates");
+    assert_eq!(img.goals, explicit.goals, "`{{y=f(x)|p(x)}}` ≡ the preimage form");
+}
+
+/// A non-`f(x)` image expression is rejected (the MVP requires `e = f(x)`).
+#[test]
+fn image_binder_requires_an_application() {
+    let e = elaborate("const c: Int\ngoal h: forall {y = c | y = y}. y = y\n");
+    assert!(e.is_err(), "an image binder needs `e` of the form `f(x)`");
+}
+
+/// The image binder round-trips through the printer.
+#[test]
+fn image_binder_round_trips() {
+    let src = "const f: Int -> Int\nconst p: Int -> Bool\nconst q: Int -> Bool\n\
+               goal h: forall {y = f(x) | p(x)}. q(y)\n";
+    let m1 = parse(src).expect("parses");
+    let printed = print_module(&m1);
+    assert!(printed.contains("{ y = f(x) | p(x) }"), "printed: {printed}");
+    let m2 = parse(&printed).expect("re-parses");
+    assert_eq!(m1, m2, "image binder round-trips\n{printed}");
+}
+
 // ── slice 3: bounded `in` range quantifiers + triggers ──────────────────
 
 /// A bounded range `forall x in 0..n. P` desugars to

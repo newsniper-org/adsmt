@@ -282,6 +282,15 @@ fn print_quant(out: &mut String, kw: &str, bs: &[Binder], body: &Term, trigs: &[
                 o.push_str(" | ");
                 print_term(o, pred, 0);
                 o.push_str(" }");
+            } else if let Some((e, c)) = &b.image {
+                // `{ y = e | c }` — an image binder
+                o.push_str("{ ");
+                ids(o, &b.names);
+                o.push_str(" = ");
+                print_term(o, e, 0);
+                o.push_str(" | ");
+                print_term(o, c, 0);
+                o.push_str(" }");
             } else {
                 ids(o, &b.names);
                 o.push_str(": ");

@@ -298,7 +298,26 @@ impl<'a> Parser<'a> {
         // restriction by an arbitrary predicate `φ` (the generalisation of the
         // `(n:T) op rhs` comparison constraint below).
         if self.eat(&Tok::LBrace) {
-            let mut names = vec![self.ident()?];
+            let first = self.ident()?;
+            // an **image binder** `{ y = e | c }` — the `=` distinguishes it from
+            // the refinement binder `{ names : T | φ }` (which uses `:`). `y` is
+            // the image var, `e` (= `f(x)`) the image, `c` the preimage's
+            // constraint; the type is inferred from `f`'s domain at elaboration.
+            if self.eat(&Tok::Eq) {
+                let e = self.term()?;
+                self.expect(&Tok::Pipe)?;
+                let c = self.term()?;
+                self.expect(&Tok::RBrace)?;
+                return Ok(Binder {
+                    names: vec![first],
+                    ty: Type::Name("_".to_string()),
+                    constraint: None,
+                    range: None,
+                    refinement: None,
+                    image: Some((Box::new(e), Box::new(c))),
+                });
+            }
+            let mut names = vec![first];
             while matches!(self.peek(), Some(Tok::Ident(_))) {
                 names.push(self.ident()?);
             }
@@ -313,6 +332,7 @@ impl<'a> Parser<'a> {
                 constraint: None,
                 range: None,
                 refinement: Some(Box::new(pred)),
+                image: None,
             });
         }
         // a parenthesised group `(names: T)` may carry an inline refinement
@@ -331,7 +351,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            return Ok(Binder { names, ty, constraint, range: None, refinement: None });
+            return Ok(Binder { names, ty, constraint, range: None, refinement: None, image: None });
         }
         // bare form: either a bounded range `x in lo..hi` (single name) or a
         // plain `names: T`.
@@ -346,6 +366,7 @@ impl<'a> Parser<'a> {
                 constraint: None,
                 range: Some((Box::new(lo), Box::new(hi))),
                 refinement: None,
+                image: None,
             });
         }
         let mut names = vec![first];
@@ -354,7 +375,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(&Tok::Colon)?;
         let ty = self.type_()?;
-        Ok(Binder { names, ty, constraint: None, range: None, refinement: None })
+        Ok(Binder { names, ty, constraint: None, range: None, refinement: None, image: None })
     }
 
     /// Zero or more trigger clauses following a quantifier body: `trigger pat`

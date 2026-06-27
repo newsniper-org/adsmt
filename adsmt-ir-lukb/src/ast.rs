@@ -92,6 +92,14 @@ pub struct Binder {
     /// special case `{n:T | n op rhs}`). Elaborated identically: `∀ → ⟹`,
     /// `∃ → ∧` (the pre-verified relativization guard).
     pub refinement: Option<Box<Term>>,
+    /// `Some((e, c))` for an **image binder** `{y = e | c}` — a heavily
+    /// type-inference-driven abbreviation. `names = [y]` is the *image* var, `e`
+    /// (of the form `f(x)`) the image expression, and `c` the constraint on the
+    /// *preimage* `x`. It desugars to `∀ x:{dom(f) | c}. body[y := e]` — the
+    /// quantifier ranges over the inferred preimage `x` (type = `f`'s domain),
+    /// guarded by `c`, with `y` unfolded to `e` in the body. See
+    /// `docs/design/SOLVE_BY_PROOF_TERMS.md` §5 (pre-verified `image_quantifier_desugar`).
+    pub image: Option<(Box<Term>, Box<Term>)>,
 }
 
 /// A term (proposition or value).

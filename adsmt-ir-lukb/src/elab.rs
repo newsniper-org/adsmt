@@ -282,6 +282,7 @@ impl Elab {
                         constraint: None,
                         range: None,
                         refinement: None,
+                        image: None,
                     })
                     .collect();
                 S::Forall(binders, Box::new(inner), Vec::new())
@@ -471,6 +472,29 @@ impl Elab {
         Ok(K::apps(K::cnst(tok), args))
     }
 
+    /// The PREIMAGE name + its kernel sort for an image binder `{y = e | c}`.
+    /// `e` must have the form `f(x)`: the preimage is `x` and its sort is `f`'s
+    /// domain (inferred — the heavy abbreviation the surface relies on).
+    fn image_preimage(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        e: &S,
+    ) -> Result<(String, K), FaceError> {
+        if let S::Call(f, args) = e
+            && let [S::Var(x)] = args.as_slice()
+        {
+            let kf = self.elab_term(ctx, &S::Var(f.clone()))?;
+            let tf = infer(&self.env, &kernel_ctx(ctx), &kf)?;
+            if let adsmt_ir::TermKind::Pi(dom, _) = tf.kind() {
+                return Ok((x.clone(), dom.clone()));
+            }
+            return Err(unsupported(format!(
+                "image binder `{{… = {f}(…) | …}}`: `{f}` is not a function (type `{tf}`)"
+            )));
+        }
+        Err(unsupported("an image binder `{ y = e | c }` requires `e` of the form `f(x)`"))
+    }
+
     fn elab_quant(
         &mut self,
         ctx: &mut Vec<(String, K)>,
@@ -485,7 +509,20 @@ impl Elab {
         // into the antecedent (∀) / conjunct (∃), kept distinct from any body
         // antecedent the author writes.
         let mut guards: Vec<S> = Vec::new();
+        // image binders `{y = f(x) | c}` unfold `y := f(x)` in the body.
+        let mut body_substs: Vec<(String, S)> = Vec::new();
         for b in binders {
+            // an **image binder** `{y = f(x) | c}` ranges over the inferred
+            // PREIMAGE `x` (type = `f`'s domain), guards it by `c`, and unfolds
+            // `y := f(x)` in the body (the pre-verified `image_quantifier_desugar`).
+            if let Some((e, c)) = &b.image {
+                let (x, dom) = self.image_preimage(ctx, e)?;
+                sorts.push(dom.clone());
+                ctx.push((x, dom));
+                guards.push((**c).clone());
+                body_substs.push((b.names[0].clone(), (**e).clone()));
+                continue;
+            }
             let ty = self.elab_type(&b.ty)?;
             for name in &b.names {
                 sorts.push(ty.clone());
@@ -510,6 +547,18 @@ impl Elab {
                 guards.push((**pred).clone());
             }
         }
+        // unfold image-binder definitions (`y := f(x)`) in the body.
+        let body_owned;
+        let body = if body_substs.is_empty() {
+            body
+        } else {
+            let mut b = body.clone();
+            for (y, e) in &body_substs {
+                b = subst_surface(&b, y, e);
+            }
+            body_owned = b;
+            &body_owned
+        };
         // elaborate the guards + body in the binder context; restore the context
         // regardless of success so an error doesn't leave it dirty.
         let r = self.elab_guards_and_body(ctx, &guards, body);
@@ -834,6 +883,12 @@ fn subst_binders(bs: &[Binder], from: &str, to: &S) -> (Vec<Binder>, bool) {
             refinement: b.refinement.as_ref().map(|p| {
                 if shadow { p.clone() } else { Box::new(subst_surface(p, from, to)) }
             }),
+            // an image binder's `e`/`c` mention the (locally-introduced) preimage;
+            // substituting an outer var into them is sound (the common case —
+            // shadowing the preimage itself is not tracked, a known limitation).
+            image: b.image.as_ref().map(|(e, c)| {
+                (Box::new(subst_surface(e, from, to)), Box::new(subst_surface(c, from, to)))
+            }),
         })
         .collect();
     (bs2, shadow)
@@ -893,6 +948,10 @@ fn collect_ticks(t: &S, acc: &mut Vec<String>) {
             for b in bs {
                 if let Some(p) = &b.refinement {
                     collect_ticks(p, acc);
+                }
+                if let Some((e, c)) = &b.image {
+                    collect_ticks(e, acc);
+                    collect_ticks(c, acc);
                 }
             }
             collect_ticks(body, acc);
