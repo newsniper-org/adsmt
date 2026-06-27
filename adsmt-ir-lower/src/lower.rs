@@ -25,7 +25,8 @@
 //! dependent types, proof-as-data, higher-order applications — **abstain**
 //! (`Unlowerable`), degrading the whole query to `Unknown`.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 
 use adsmt_core::{Kind as CKind, Term as CTerm, Type as CType, Var as CVar};
 use adsmt_ir::{
@@ -57,7 +58,12 @@ pub struct Lowered {
 /// never a partial assertion set (dropping a constraint preserves `Unsat` but
 /// destroys `Sat`; DESIGN.md §5.1).
 pub fn lower(env: &Env, goals: &[Term]) -> Result<Lowered, LowerError> {
-    let lw = Lowerer { env, counter: Cell::new(0) };
+    let lw = Lowerer {
+        env,
+        counter: Cell::new(0),
+        extra_hyps: RefCell::new(Vec::new()),
+        seen_refinement_consts: RefCell::new(HashSet::new()),
+    };
     // datatype declarations first (from the admission journal) — if ANY
     // declared inductive is unlowerable (indexed/parametric/Prop-sorted/bad
     // field), the whole query abstains.
@@ -74,6 +80,10 @@ pub fn lower(env: &Env, goals: &[Term]) -> Result<Lowered, LowerError> {
         }
         out.push(t);
     }
+    // Nat/WNat refinement-collapse: append the positivity of every free
+    // Nat/WNat constant lowered above (a true fact — asserting it is sound and
+    // is what keeps the sort-collapse honest; see the design doc §4 invariant A⟺B).
+    out.extend(lw.extra_hyps.borrow_mut().drain(..));
     Ok(Lowered { datatypes, goals: out })
 }
 
@@ -96,6 +106,15 @@ struct Lowerer<'e> {
     /// distinct kernel binders sharing a name+sort would alias onto one `Var`
     /// and `mk_forall` would capture across them (DESIGN.md §5.1 P0-3).
     counter: Cell<usize>,
+    /// Positivity hypotheses for FREE `Nat`/`WNat` constants encountered while
+    /// lowering (the Nat/WNat refinement-collapse §3c free-variable case): a
+    /// declared `c : Nat` lowers to a free `Int` `Var`, and `c ≥ 1` must be
+    /// asserted alongside the goals or the collapse is a false-sat. Bound
+    /// `Nat`/`WNat` variables are guarded inline at the binder (`lower_pi` /
+    /// `exists`) instead. See `docs/design/NAT_WNAT_REFINEMENT_COLLAPSE.md`.
+    extra_hyps: RefCell<Vec<CTerm>>,
+    /// Free-constant names already given a positivity hypothesis (dedup).
+    seen_refinement_consts: RefCell<HashSet<String>>,
 }
 
 impl Lowerer<'_> {
@@ -237,7 +256,18 @@ impl Lowerer<'_> {
                         "bare function / constructor symbol `{name}` used as a value (higher-order)"
                     )));
                 }
-                Ok(leaf(name, ty, &decl.modality))
+                let leaf_t = leaf(name, ty, &decl.modality);
+                // Nat/WNat refinement-collapse (§3c free-variable case): a free
+                // `Nat`/`WNat` constant lowered to a free `Int` Var needs its
+                // positivity asserted (the sort-collapse forgets it otherwise →
+                // false-sat). Recorded once per name; `lower` appends them.
+                if let Some(lo) = self.refinement_lo(&decl.ty)
+                    && self.seen_refinement_consts.borrow_mut().insert(name.to_string())
+                {
+                    let hyp = self.positivity(lo, leaf_t.clone())?;
+                    self.extra_hyps.borrow_mut().push(hyp);
+                }
+                Ok(leaf_t)
             }
             Modality::Def(_) => Err(unl(format!("def `{name}` survived whnf as a value"))),
             Modality::Inductive => {
@@ -342,13 +372,19 @@ impl Lowerer<'_> {
                     return Err(unl("`exists` predicate is not a lambda"));
                 };
                 let v = CVar { name: self.fresh(), ty: asort };
-                frames.push(Frame {
-                    ir_sort: dom.clone(),
-                    value: CTerm::var(&v.name, v.ty.clone()),
-                });
+                let v_term = CTerm::var(&v.name, v.ty.clone());
+                frames.push(Frame { ir_sort: dom.clone(), value: v_term.clone() });
                 let body_c = self.lower_term(body, frames);
                 frames.pop();
-                CTerm::mk_exists(v, body_c?).map_err(meq)?
+                let body_c = body_c?;
+                // Nat/WNat refinement-collapse (§3c): `∃(x:S). P → ∃(x:Int). dom_S(x) ∧ P`
+                // (the ∧ polarity is the pre-verified soundness crux; swapping
+                // to ⟹ would let an out-of-domain witness satisfy it).
+                let body_c = match self.refinement_lo(&args[0]) {
+                    Some(lo) => CTerm::mk_and(self.positivity(lo, v_term)?, body_c).map_err(meq)?,
+                    None => body_c,
+                };
+                CTerm::mk_exists(v, body_c).map_err(meq)?
             }
             "ite" => {
                 // `ite : Π(A:Type0). Prop → A → A → A` — `(ite A c a b)`. The
@@ -401,6 +437,20 @@ impl Lowerer<'_> {
         frames: &mut Vec<Frame>,
     ) -> Result<Option<CTerm>, LowerError> {
         use adsmt_ir::theory as th;
+        // Nat/WNat refinement-collapse (§3b): the Int-internal injections
+        // `nat2int`/`wnat2int`/`nat2wnat` are the IDENTITY inclusion (their
+        // source and target both lower to the `Int` sort), so erase them and
+        // lower the argument directly — a `Nat` variable then reaches LinArith
+        // as a bare arith `Var`, not an opaque function application. (The Real
+        // injections `nat2real`/`wnat2real`/`int2real` stay EUF — a genuine
+        // coercion — sound but uninterpreted, as today.)
+        if matches!(name, th::NAT2INT | th::WNAT2INT | th::NAT2WNAT) {
+            if !matches!(self.env.lookup(name), Some(d) if matches!(d.modality, Modality::Open)) {
+                return Err(unl(format!("`{name}` is not bound as the prelude injection")));
+            }
+            self.arity(name, args, 1)?;
+            return self.lower_term(&args[0], frames).map(Some);
+        }
         let int = || CType::const_("Int", CKind::Type);
         let real = || CType::const_("Real", CKind::Type);
         // a binary operator → (smtlib op name, element sort, result-is-Bool).
@@ -659,24 +709,79 @@ impl Lowerer<'_> {
             return Err(unl("universal quantification over a function sort (higher-order)"));
         }
         let v = CVar { name: self.fresh(), ty: asort };
-        frames.push(Frame { ir_sort: dom.clone(), value: CTerm::var(&v.name, v.ty.clone()) });
+        let v_term = CTerm::var(&v.name, v.ty.clone());
+        frames.push(Frame { ir_sort: dom.clone(), value: v_term.clone() });
         let body = self.lower_term(cod, frames);
         frames.pop();
-        CTerm::mk_forall(v, body?).map_err(meq)
+        let body = body?;
+        // Nat/WNat refinement-collapse (§3c): `∀(x:S). P → ∀(x:Int). dom_S(x) ⟹ P`
+        // (the ⟹ polarity is the pre-verified soundness crux).
+        let body = match self.refinement_lo(dom) {
+            Some(lo) => CTerm::mk_imp(self.positivity(lo, v_term)?, body).map_err(meq)?,
+            None => body,
+        };
+        CTerm::mk_forall(v, body).map_err(meq)
     }
 
     /// A kernel **type** (a sort) → an adsmt-core `Type`. `Prop`↦`Bool`; a
     /// declared sort `S : Type(0)`↦`Type::const_(S)`; a *non-dependent* function
     /// type `A → B`↦`Type::fun`. A universe / dependent function type / datatype
     /// sort → abstain.
+    /// The carrier's positivity lower bound if `ir_sort` (reduced) is a
+    /// refinement carrier: `Nat ⟹ 1` (since `0 ∉ Nat`), `WNat ⟹ 0`. `None` for
+    /// any other sort. The Nat/WNat refinement-collapse treats these as `Int`
+    /// carved out by `x ≥ lo` (see the design doc).
+    fn refinement_lo(&self, ir_sort: &Term) -> Option<i128> {
+        use adsmt_ir::theory as th;
+        let t = whnf(self.env, ir_sort);
+        let TermKind::Const(n) = t.kind() else { return None };
+        let lo = if n == th::NAT {
+            1
+        } else if n == th::WNAT {
+            0
+        } else {
+            return None;
+        };
+        // ONLY the theory's built-in `Nat`/`WNat` (a postulated `Open` sort)
+        // collapses — a user `(declare-datatype Nat …)` is `Inductive` and stays
+        // a genuine datatype, never coerced to `Int`.
+        match self.env.lookup(n) {
+            Some(d) if matches!(d.modality, Modality::Open) => Some(lo),
+            _ => None,
+        }
+    }
+
+    /// The positivity atom `lo ≤ v` (engine form `(<= lo v)`, `<=` recognised by
+    /// LIA), for a carrier whose refinement lower bound is `lo`.
+    fn positivity(&self, lo: i128, v: CTerm) -> Result<CTerm, LowerError> {
+        let int = CType::const_("Int", CKind::Type);
+        let le_ty = cfun(int.clone(), cfun(int.clone(), CType::bool_())?)?;
+        let le = CTerm::const_("<=", le_ty);
+        let lit = CTerm::const_(&lo.to_string(), int);
+        capp(capp(le, lit)?, v)
+    }
+
     fn lower_sort(&self, ty: &Term) -> Result<CType, LowerError> {
         let t = whnf(self.env, ty);
         match t.kind() {
             TermKind::Sort(Univ::Prop) => Ok(CType::bool_()),
             TermKind::Sort(Univ::Type(_)) => Err(unl("a universe is not a first-order sort")),
             TermKind::Const(name) => {
+                use adsmt_ir::theory as th;
                 let decl =
                     self.env.lookup(name).ok_or_else(|| unl(format!("unknown sort `{name}`")))?;
+                // Nat/WNat refinement-collapse (§3a): the refinement carriers
+                // ARE the `Int` solver sort (carved out by a positivity
+                // predicate emitted at binders / free constants); the injections
+                // into Int become the identity. Soundness is coupled to that
+                // positivity — never collapse the sort without it. Guard on
+                // `Open` modality: ONLY the theory's built-in Nat/WNat collapses,
+                // never a user `(declare-datatype Nat …)` (which is `Inductive`).
+                if (name == th::NAT || name == th::WNAT)
+                    && matches!(decl.modality, Modality::Open)
+                {
+                    return Ok(CType::const_(th::INT, CKind::Type));
+                }
                 match &decl.modality {
                     // a declared sort `S : Type(0)`, or a datatype type former
                     // (the engine knows it is a datatype via its `DatatypeDecl`).
