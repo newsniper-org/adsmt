@@ -7,6 +7,11 @@ pub struct Instance {
     pub relation: String,
     /// Concrete types being instantiated (one per relation parameter).
     pub types: Vec<Type>,
+    /// Concrete **predicates** supplied for the relation's generic predicate
+    /// parameters (`'p`), in order — the dictionary entries a law/method body
+    /// resolves via [`crate::law::Dict::pred`]. Each is a closed
+    /// `domain → Prop` term (e.g. `λv. v > 0`).
+    pub preds: Vec<Term>,
     /// `where ...` premises that must be discharged.
     pub premises: Vec<Premise>,
     pub methods: Vec<MethodImpl>,
@@ -22,6 +27,7 @@ impl Instance {
         Self {
             relation: relation.into(),
             types,
+            preds: Vec::new(),
             premises: Vec::new(),
             methods: Vec::new(),
             overlap: false,
@@ -31,6 +37,13 @@ impl Instance {
 
     pub fn with_premise(mut self, p: Premise) -> Self {
         self.premises.push(p);
+        self
+    }
+
+    /// Supply a concrete predicate for the next generic predicate parameter
+    /// (in declaration order), e.g. `λv. v > 0` for `'p`.
+    pub fn with_pred(mut self, body: Term) -> Self {
+        self.preds.push(body);
         self
     }
 

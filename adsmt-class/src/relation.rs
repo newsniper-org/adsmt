@@ -12,6 +12,12 @@ pub struct Relation {
     pub name: String,
     /// Type parameters this relation quantifies over (each carrying its kind).
     pub params: Vec<Arc<TyVar>>,
+    /// **Generic predicate parameters** (`'p`) the relation is polymorphic in:
+    /// each is a refinement-style predicate `'p : domain → Prop` supplied by an
+    /// instance as a dictionary entry (the type-relation-level realisation of
+    /// the fn-level `'p` — `docs/design/REFINEMENT_TYPES_AND_GENERIC_CONSTRAINTS.md`).
+    /// A law/method body resolves them through [`crate::law::Dict::pred`].
+    pub pred_params: Vec<PredParam>,
     /// Functional dependencies between parameters.
     pub fundeps: Vec<Fundep>,
     /// Method signatures provided by instances.
@@ -25,6 +31,7 @@ impl Relation {
         Self {
             name: name.into(),
             params: Vec::new(),
+            pred_params: Vec::new(),
             fundeps: Vec::new(),
             methods: Vec::new(),
             laws: Vec::new(),
@@ -33,6 +40,12 @@ impl Relation {
 
     pub fn with_param(mut self, p: Arc<TyVar>) -> Self {
         self.params.push(p);
+        self
+    }
+
+    /// Add a generic predicate parameter `'p : domain → Prop`.
+    pub fn with_pred_param(mut self, name: impl Into<String>, domain: Type) -> Self {
+        self.pred_params.push(PredParam { name: name.into(), domain });
         self
     }
 
@@ -59,6 +72,15 @@ impl Relation {
 pub struct MethodSig {
     pub name: String,
     pub signature: Type,
+}
+
+/// A generic predicate parameter `'p : domain → Prop` of a [`Relation`]. The
+/// `domain` may name a relation type parameter (a `Type::Var`), so a relation
+/// can be polymorphic in both a carrier type and a predicate over it.
+#[derive(Clone, Debug)]
+pub struct PredParam {
+    pub name: String,
+    pub domain: Type,
 }
 
 #[cfg(test)]

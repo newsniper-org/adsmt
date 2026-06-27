@@ -46,6 +46,10 @@ pub enum ClassError {
     UnknownRelation(String),
     #[error("instance arity mismatch: relation {relation} expects {expected}, got {found}")]
     ArityMismatch { relation: String, expected: usize, found: usize },
+    #[error(
+        "predicate-parameter arity mismatch: relation {relation} expects {expected} `'p`, got {found}"
+    )]
+    PredArityMismatch { relation: String, expected: usize, found: usize },
     #[error("coherence violation: instance head overlaps an existing instance and `overlap` is not set")]
     CoherenceViolation,
     #[error("law `{law}` of relation `{relation}` is ill-formed for this instance: {reason}")]
@@ -71,6 +75,13 @@ impl InstanceDb {
                 relation: i.relation.clone(),
                 expected: rel.arity(),
                 found: i.types.len(),
+            });
+        }
+        if rel.pred_params.len() != i.preds.len() {
+            return Err(ClassError::PredArityMismatch {
+                relation: i.relation.clone(),
+                expected: rel.pred_params.len(),
+                found: i.preds.len(),
             });
         }
         if !i.overlap {
@@ -106,10 +117,13 @@ impl InstanceDb {
         i: Instance,
         prover: &dyn LawProver,
     ) -> Result<(), ClassError> {
-        // Clone the law set so no borrow of `self.relations` is held across the
-        // (immutable) obligation build and the (mutable) structural declare.
-        let laws = match self.relations.get(&i.relation) {
-            Some(r) => r.laws.clone(),
+        // Clone the law set + the predicate-parameter names so no borrow of
+        // `self.relations` is held across the (immutable) obligation build and
+        // the (mutable) structural declare.
+        let (laws, pred_param_names) = match self.relations.get(&i.relation) {
+            Some(r) => {
+                (r.laws.clone(), r.pred_params.iter().map(|p| p.name.clone()).collect::<Vec<_>>())
+            }
             None => return Err(ClassError::UnknownRelation(i.relation.clone())),
         };
         for law in &laws {
@@ -118,6 +132,8 @@ impl InstanceDb {
                 carriers: &i.types,
                 methods: &i.methods,
                 premises: &i.premises,
+                pred_param_names: &pred_param_names,
+                preds: &i.preds,
             };
             let goal = (law.build)(&dict).map_err(|e| ClassError::LawIllFormed {
                 relation: i.relation.clone(),
@@ -193,6 +209,10 @@ struct AdmissionDict<'a> {
     carriers: &'a [Type],
     methods: &'a [MethodImpl],
     premises: &'a [Premise],
+    /// The relation's predicate-parameter names, positionally aligned with
+    /// `preds` (the dictionary entries the instance supplied for `'p`).
+    pred_param_names: &'a [String],
+    preds: &'a [Term],
 }
 
 impl Dict for AdmissionDict<'_> {
@@ -210,6 +230,13 @@ impl Dict for AdmissionDict<'_> {
             }
         }
         None
+    }
+
+    fn pred(&self, name: &str) -> Option<Term> {
+        self.pred_param_names
+            .iter()
+            .position(|n| n == name)
+            .and_then(|i| self.preds.get(i).cloned())
     }
 }
 
@@ -376,5 +403,81 @@ mod tests {
         let bad = Instance::new("Functor", vec![]);
         let err = db.declare_instance(bad).unwrap_err();
         assert!(matches!(err, ClassError::ArityMismatch { .. }));
+    }
+
+    // ── generic predicate parameters `'p` (type-relation-level) ──────────
+
+    use crate::law::{Dict, Law, LawError, LawProver};
+
+    struct AlwaysValid;
+    impl LawProver for AlwaysValid {
+        fn prove_valid(&self, _goal: &Term) -> bool {
+            true
+        }
+    }
+
+    /// A law that resolves the relation's `'p` and asserts it is **exactly** the
+    /// predicate the instance supplied (`λv. v`), then returns `'p(x)` as the
+    /// obligation — so the test fails loudly if the dictionary threads the wrong
+    /// predicate (or none).
+    fn law_uses_pred(dict: &dyn Dict) -> Result<Term, LawError> {
+        let p = dict.require_pred("'p")?;
+        let expected = expected_pred();
+        if p != expected {
+            return Err(LawError::Malformed("`'p` resolved to the wrong predicate".into()));
+        }
+        Ok(Term::app(p, Term::var("x", int_()))?)
+    }
+
+    fn expected_pred() -> Term {
+        // `λ(v: Int). v` — a stand-in concrete predicate for `'p`.
+        let v = adsmt_core::Var { name: "v".into(), ty: int_() };
+        Term::lam(v, Term::var("v", int_()))
+    }
+
+    fn refined_relation() -> Relation {
+        let a = Arc::new(TyVar { name: "α".into(), kind: Kind::Type });
+        Relation::new("Refined").with_param(a).with_pred_param("'p", int_())
+    }
+
+    #[test]
+    fn missing_predicate_argument_is_rejected() {
+        let mut db = InstanceDb::new();
+        db.declare_relation(refined_relation());
+        // the relation declares one `'p`; an instance that supplies none is bad.
+        let err = db.declare_instance(Instance::new("Refined", vec![int_()])).unwrap_err();
+        assert!(matches!(err, ClassError::PredArityMismatch { expected: 1, found: 0, .. }));
+    }
+
+    #[test]
+    fn instance_supplies_a_predicate_dictionary() {
+        let mut db = InstanceDb::new();
+        db.declare_relation(refined_relation());
+        let inst = Instance::new("Refined", vec![int_()]).with_pred(expected_pred());
+        assert!(db.declare_instance(inst).is_ok(), "arity matches with the `'p` supplied");
+    }
+
+    #[test]
+    fn law_resolves_the_instance_predicate_through_the_dictionary() {
+        let mut db = InstanceDb::new();
+        db.declare_relation(refined_relation().with_law(Law::new("uses_pred", law_uses_pred)));
+        let inst = Instance::new("Refined", vec![int_()]).with_pred(expected_pred());
+        // the law builder resolves `'p` to the supplied predicate (else it errors
+        // before the prover ever runs).
+        assert!(db.declare_instance_lawful(inst, &AlwaysValid).is_ok());
+    }
+
+    #[test]
+    fn law_referencing_an_unsupplied_predicate_is_ill_formed() {
+        let mut db = InstanceDb::new();
+        // relation with a `'p`-using law but the instance omits the predicate —
+        // caught structurally (PredArityMismatch) before the law even builds.
+        db.declare_relation(refined_relation().with_law(Law::new("uses_pred", law_uses_pred)));
+        let inst = Instance::new("Refined", vec![int_()]); // no `.with_pred`
+        let err = db.declare_instance_lawful(inst, &AlwaysValid).unwrap_err();
+        assert!(matches!(
+            err,
+            ClassError::LawIllFormed { .. } | ClassError::PredArityMismatch { .. }
+        ));
     }
 }

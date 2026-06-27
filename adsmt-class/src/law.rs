@@ -88,6 +88,20 @@ pub trait Dict {
     fn require(&self, name: &str) -> Result<Term, LawError> {
         self.method(name).ok_or_else(|| LawError::MissingMethod(name.to_string()))
     }
+
+    /// Resolve a **generic predicate parameter** (`'p`) to the concrete
+    /// predicate the instance supplied (a closed `domain → Prop` term). `None`
+    /// if the relation has no such parameter / the instance did not supply it.
+    /// Default `None` — only the admission dictionary carries predicate
+    /// parameters.
+    fn pred(&self, _name: &str) -> Option<Term> {
+        None
+    }
+
+    /// Resolve a predicate parameter or report it missing.
+    fn require_pred(&self, name: &str) -> Result<Term, LawError> {
+        self.pred(name).ok_or_else(|| LawError::MissingMethod(name.to_string()))
+    }
 }
 
 /// Builds a law's concrete proof obligation from a [`Dict`] view of the
