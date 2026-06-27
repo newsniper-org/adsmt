@@ -108,12 +108,33 @@ New surface:
 - **Refined arrow types** in parameter/return position: `{u:A|'p} -> {v:A|'q}`
   (the arrow type does not yet exist in `ast::Type`; add `Type::Arrow` carrying
   refined domain/codomain, or desugar at parse).
-- **`solve <term> by <term>`** as a term form (a new `Term::SolveBy(goal, lemma)`),
-  elaborating per §3.
+- **`solve <G-block> by <L-block>`** as a term form (a new
+  `Term::SolveBy(g_block, l_block)`), elaborating per §3.
+
+**G and L are each a BLOCK, not a single term** (user, 2026-06-27). A block is a
+sequence that may bind intermediate results with `let` (and other structured
+forms) and ends in the proposition it denotes — e.g.
+`solve (let a = …; let b = …; <goal-prop>) by (let c = …; <lemma-prop>)`. A block
+elaborates to its final Prop with the `let`s folded in (lukb already has
+`let x = e in body`; a block is the layout/`;`-form of a `let`-chain). So G/L
+denote Props exactly as in §3–§4; the block form only adds local naming inside
+each.
+
+**Inference-sugar binders (user, 2026-06-27).** The surface
+`forall {y = f(x) | 'p(x)}. φ` is a HEAVILY ABBREVIATED, type-inference-driven
+form — NOT a naïve refinement binder. It introduces the **preimage** `x`
+(inferred `x:A` from `f`'s domain), constrains it by `'p(x)`, and binds the
+**image** `y = f(x)` (a `let`). It desugars to
+`forall x: {A | 'p(x)}. let y = f(x) in φ`  ≡  (with `y` unfolded)
+`forall x: {A | 'p}. φ[y := f(x)]`. So the example's `L` is exactly §4's
+`∀x:{A|'p}. 'q(f(x)) ⟹ 'p(f(x))`. The elaborator must run inference to recover
+`x`'s sort + the `y = …` definitional binding; it must NOT treat `{y = f(x) | …}`
+as the `{v:T | φ}` refinement-type binder of ①.
 
 Elaboration of `solve G by L` in `elab_term`:
-1. elaborate `G`, `L` to kernel Props (in the ambient ctx, which carries `post_f`
-   etc.).
+1. elaborate the `G`/`L` **blocks** to kernel Props (folding their `let`s),
+   in the ambient ctx (which carries `post_f` etc.), running inference for the
+   sugar binders above.
 2. construct the bridge proof term `pf_G` parameterised by `pf_L : L` and the
    in-scope facts (for the general case the bridge is itself an obligation
    `(ctx ∧ L) ⟹ G`; for the structural `preserving` shape it is the explicit term
@@ -146,6 +167,9 @@ extraction is conservative. This gates the lukb implementation.
 
 1. **This doc** + 선검증 of the cut + the refined-arrow postcondition extraction.
 2. lukb `Type::Arrow` (refined function types) — parse/elab/print/round-trip.
-3. lukb `solve … by …` term — parse/elab to the cut obligations + proof term.
-4. `preserving` as a library/example higher-order predicate over a refined arrow,
+3. lukb **`solve … by …`** term over **blocks** (§5): the `solve`/`by` clauses are
+   `let`-chain blocks; parse/elab to the cut obligations + proof term.
+4. The **inference-sugar binders** (§5): `forall {y = f(x) | 'p(x)}. …` →
+   `forall x:{A|'p}. let y = f(x) in …`, with type inference recovering `x`'s sort.
+5. `preserving` as a library/example higher-order predicate over a refined arrow,
    end-to-end (the §4 bridge), with the leaf `L` discharged by the engine.
