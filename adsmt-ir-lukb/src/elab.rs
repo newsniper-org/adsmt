@@ -6,7 +6,7 @@
 
 use adsmt_ir::theory;
 use adsmt_ir::{
-    Ctx, Env, Term as K, Univ, declare_inductive, define, infer, is_def_eq, postulate,
+    Ctx, Env, Term as K, Univ, declare_inductive, define, infer, is_def_eq, postulate, subst_top,
 };
 
 use crate::ast::{BinOp, Binder, Item, Module, Term as S, Type};
@@ -71,8 +71,20 @@ impl Elab {
                 postulate(&mut self.env, s, K::type_(0))?;
             }
             Item::Const(x, ty) => {
-                let kty = self.elab_type(ty)?;
-                postulate(&mut self.env, x, kty)?;
+                // a refinement-typed constant `const c: {v: T | φ}` postulates
+                // `c : T` PLUS the trusted fact `φ[v := c]` as a top-level
+                // hypothesis. Dropping it would be unsound: an arbitrary `T`
+                // value could violate `φ`, admitting a spurious model (the same
+                // reason the Nat/WNat collapse re-asserts free-const positivity).
+                if let Type::Refine { var, base, pred } = ty {
+                    let kbase = self.elab_type(base)?;
+                    postulate(&mut self.env, x, kbase.clone())?;
+                    let phi = self.refine_pred_at(var, &kbase, pred, &K::cnst(x.clone()))?;
+                    self.hyps.push(phi);
+                } else {
+                    let kty = self.elab_type(ty)?;
+                    postulate(&mut self.env, x, kty)?;
+                }
             }
             Item::Fn { name, params, ret, body } => {
                 // build the curried function type `T1 -> … -> ret` + the flat
@@ -173,7 +185,38 @@ impl Elab {
             Type::App(n, _) => {
                 Err(unsupported(format!("parametric sort `{n}(…)` is a later slice")))
             }
+            // a refinement `{v: T | φ}`'s *sort* is just its base `T` (the proof
+            // of `φ` is `Prop`-irrelevant + lowering-erased). The predicate `φ`
+            // becomes a separate contract obligation at the use site (const
+            // positivity hypothesis / fn pre-/post-condition), handled by the
+            // callers that own the binding name — never here.
+            Type::Refine { base, .. } => self.elab_type(base),
         }
+    }
+
+    /// Elaborate a refinement predicate `φ` (over its bound value `var`) as the
+    /// kernel proposition `φ[var := head]`: elaborate `φ` once under the binder
+    /// (`var` → de Bruijn `#0`), then β-substitute `head` for `#0`
+    /// ([`subst_top`]). Used to attach a refinement's contract to a concrete
+    /// term (`head = cnst(x)` for a const / a bound param). Errors if `φ` is not
+    /// a `Prop` (e.g. an unbound generic `'p` resolves to "unknown symbol").
+    fn refine_pred_at(
+        &mut self,
+        var: &str,
+        kbase: &K,
+        pred: &S,
+        head: &K,
+    ) -> Result<K, FaceError> {
+        let mut ctx: Vec<(String, K)> = vec![(var.to_string(), kbase.clone())];
+        let kpred = self.elab_term(&mut ctx, pred)?;
+        let phi = subst_top(&kpred, head);
+        let ty = infer(&self.env, &Ctx::new(), &phi)?;
+        if !is_def_eq(&self.env, &ty, &K::prop()) {
+            return Err(unsupported(format!(
+                "refinement predicate has sort `{ty}`, expected Bool/Prop"
+            )));
+        }
+        Ok(phi)
     }
 
     fn elab_term(&mut self, ctx: &mut Vec<(String, K)>, t: &S) -> Result<K, FaceError> {

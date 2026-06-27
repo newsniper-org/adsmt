@@ -131,6 +131,16 @@ fn print_type(out: &mut String, ty: &Type) {
             }
             out.push(')');
         }
+        Type::Refine { var, base, pred } => {
+            // `{ v : T | φ }`
+            out.push_str("{ ");
+            id(out, var);
+            out.push_str(": ");
+            print_type(out, base);
+            out.push_str(" | ");
+            print_term(out, pred, 0);
+            out.push_str(" }");
+        }
     }
 }
 

@@ -234,6 +234,19 @@ impl<'a> Parser<'a> {
 
     // ── types ────────────────────────────────────────────────────────────
     fn type_(&mut self) -> Result<Type, FaceError> {
+        // a **refinement type** `{ v : T | φ }` — a base sort carved by a
+        // predicate over the single bound value `v`. Usable wherever a type is
+        // (const / fn param / fn return). The predicate may mention generic
+        // predicate parameters `'p` (predicate-polymorphic; bound at the `fn`).
+        if self.eat(&Tok::LBrace) {
+            let var = self.ident()?;
+            self.expect(&Tok::Colon)?;
+            let base = self.type_()?;
+            self.expect(&Tok::Pipe)?;
+            let pred = self.term()?;
+            self.expect(&Tok::RBrace)?;
+            return Ok(Type::Refine { var, base: Box::new(base), pred: Box::new(pred) });
+        }
         let name = self.ident()?;
         if self.eat(&Tok::LParen) {
             let mut args = vec![self.type_()?];

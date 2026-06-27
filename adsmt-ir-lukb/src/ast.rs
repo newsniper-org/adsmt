@@ -44,7 +44,8 @@ pub enum Item {
 /// selector name and a type) — the payload of a [`Item::Data`].
 pub type Ctor = (String, Vec<(Option<String>, Type)>);
 
-/// A type expression: a named sort or a parametric application.
+/// A type expression: a named sort, a parametric application, or a refinement
+/// type carving a base sort down by a predicate.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
     /// `Int`, `Real`, `Bool`, `Nat`, `WNat`, or a declared sort `S`.
@@ -52,6 +53,14 @@ pub enum Type {
     /// `F(T, …)` — a parametric/theory sort (a later slice; carried for
     /// round-tripping).
     App(String, Vec<Type>),
+    /// `{v: T | φ}` — a **refinement type**: the base sort `T` carved down to
+    /// the values `v` satisfying the predicate `φ` (over `v`). In a `const`
+    /// type it postulates the value plus the trusted fact `φ`; in a `fn`
+    /// signature the predicate `φ` may mention **generic predicate parameters**
+    /// `'p` (predicate-polymorphic — bound implicitly at the `fn`, see
+    /// [`crate::lexer::is_tick_ident`]). The proof is `Prop`-irrelevant +
+    /// lowering-erased; the type's *sort* is just `T`.
+    Refine { var: String, base: Box<Type>, pred: Box<Term> },
 }
 
 /// A binder group: one or more names sharing a type (`x y: Int`), optionally

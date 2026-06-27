@@ -239,6 +239,54 @@ fn printer_round_trips_refinement() {
     assert_eq!(m1, m2, "refinement AST stable across print/re-parse\nprinted:\n{printed}");
 }
 
+// ── slice 2c: refinement TYPES in type position (const) + tick-idents ────
+
+/// `'p` lexes as a tick-identifier (a generic predicate parameter); a bare `p`
+/// and a lone `'` do not.
+#[test]
+fn tick_ident_recognised() {
+    use adsmt_ir_lukb::lexer::is_tick_ident;
+    assert!(is_tick_ident("'p"));
+    assert!(is_tick_ident("'pred1"));
+    assert!(!is_tick_ident("p"));
+    assert!(!is_tick_ident("'"));
+    assert!(!is_tick_ident("'1p"), "must start with an ident char after the quote");
+}
+
+/// A refinement-typed constant `const c: {v: Int | v > 0}` postulates `c: Int`
+/// PLUS the trusted positivity fact `c > 0` as a hypothesis (so it is sound:
+/// dropping it would admit a spurious model where `c <= 0`).
+#[test]
+fn const_refinement_adds_positivity_hypothesis() {
+    let r = all_props("const c: {v: Int | v > 0}\ngoal g: c > 0\n", 1, 1);
+    // the single hypothesis is the constant's refinement fact `c > 0`, with the
+    // bound var β-substituted by the constant (NOT left as a `(λv. …) c` redex).
+    let hyp = format!("{:?}", r.hypotheses[0]);
+    assert!(hyp.contains("Int.gt") && hyp.contains("c"), "positivity `c > 0`: {hyp}");
+    assert!(!hyp.contains('λ'), "the binder is β-substituted, not a redex: {hyp}");
+}
+
+/// The refinement fact is genuinely USED: `const c: {v: Int | v > 0}` makes the
+/// goal `c >= 1` provable shape-wise (1 hyp `c > 0`, 1 goal). Without the
+/// hypothesis the goal would be a bare `c >= 1` over an unconstrained Int.
+#[test]
+fn const_refinement_round_trips() {
+    let src = "const c: {v: Int | v > 0}\ngoal g: c >= 1\n";
+    let m1 = parse(src).expect("parses");
+    let printed = print_module(&m1);
+    let m2 = parse(&printed).expect("re-parses");
+    assert_eq!(m1, m2, "refinement-typed const round-trips\nprinted:\n{printed}");
+}
+
+/// A **generic** predicate parameter `'p` in a `const` type is rejected: there
+/// is no `fn` to bind it (a const cannot be predicate-polymorphic), so `'p`
+/// resolves to an unknown symbol.
+#[test]
+fn generic_pred_in_const_is_rejected() {
+    let e = elaborate("const c: {v: Int | 'p(v)}\ngoal g: c = c\n");
+    assert!(e.is_err(), "unbound generic `'p` in a const must be rejected");
+}
+
 // ── slice 3: bounded `in` range quantifiers + triggers ──────────────────
 
 /// A bounded range `forall x in 0..n. P` desugars to

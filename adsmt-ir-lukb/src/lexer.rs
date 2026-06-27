@@ -87,12 +87,28 @@ fn is_ident_cont(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// A **generic predicate parameter** identifier: a single leading `'` then a
+/// normal identifier (`'p`, `'pred1`). These name predicate-polymorphic
+/// constraint parameters in refinement types (`{v:T | 'p(v)}`); the `'` prefix
+/// disambiguates them from a *concrete* predicate `q` at PARSE time (no
+/// inference). The `'` is carried as part of the identifier text.
+pub fn is_tick_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next() == Some('\'')
+        && matches!(chars.next(), Some(c) if is_ident_start(c))
+        && chars.all(is_ident_cont)
+}
+
 /// Whether `s` must be **backtick-quoted** to lex back as *this exact*
 /// identifier: it is empty, contains a non-`[A-Za-z0-9_]` character, does not
 /// start with an ident-start character, or collides with a reserved keyword.
 /// (The producer/printer uses this to decide when to emit `` `…` ``; an
-/// arbitrary AIR/SMT symbol like `%%location_label%%0` always needs it.)
+/// arbitrary AIR/SMT symbol like `%%location_label%%0` always needs it.) A
+/// tick-ident `'p` lexes back bare (the `'p` form), so it never needs quoting.
 pub fn ident_needs_quote(s: &str) -> bool {
+    if is_tick_ident(s) {
+        return false;
+    }
     let mut chars = s.chars();
     let bare = match chars.next() {
         Some(c) if is_ident_start(c) => chars.all(is_ident_cont),
@@ -137,6 +153,26 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, FaceError> {
             out.push((Tok::Ident(src[i + 1..j].to_string()), start));
             i = j + 1; // consume the closing backtick
             continue;
+        }
+        // generic predicate parameter `'p` — a single quote followed by an
+        // identifier. The `'` prefix marks a predicate-polymorphic constraint
+        // parameter (refinement types `{v:T | 'p(v)}`) and is kept in the Ident
+        // text so the parser/elaborator can recognise it (see `is_tick_ident`).
+        if c == '\'' {
+            let mut j = i + 1;
+            if j < n && is_ident_start(b[j] as char) {
+                j += 1;
+                while j < n && is_ident_cont(b[j] as char) {
+                    j += 1;
+                }
+                out.push((Tok::Ident(src[i..j].to_string()), start));
+                i = j;
+                continue;
+            }
+            return Err(parse_err(
+                start,
+                "expected an identifier after `'` (a generic predicate parameter `'p`)".to_string(),
+            ));
         }
         // multi-char operators (longest first)
         let two = if i + 1 < n { &src[i..i + 2] } else { "" };
