@@ -408,6 +408,27 @@ fn refined_arrow_erases_to_base() {
     assert_eq!(m1, m2, "refined arrow round-trips\n{}", print_module(&m1));
 }
 
+// ── slice 2f: the trivial predicate `nop` (unrefined ≡ nop-refined) ──────
+
+/// `nop` is the built-in always-true predicate: `{v: Int | nop(v)}` is a vacuous
+/// refinement, so it adds NO hypothesis — `const c: {v: Int | nop(v)}` behaves
+/// exactly like `const c: Int` (the user's uniformity: unrefined ≡ nop-refined).
+#[test]
+fn nop_refinement_is_vacuous() {
+    // refined-with-nop: 0 hypotheses (the trivial refinement is dropped).
+    all_props("const c: {v: Int | nop(v)}\ngoal g: c = c\n", 0, 1);
+    // a plain const: also 0 hypotheses. The two are equivalent.
+    all_props("const d: Int\ngoal g: d = d\n", 0, 1);
+}
+
+/// `nop` is polymorphic — `nop(x)` infers its type argument and is a `Prop`
+/// regardless of the carrier sort.
+#[test]
+fn nop_is_polymorphic() {
+    all_props("sort S\nconst a: S\ngoal g: nop(a)\n", 0, 1);
+    all_props("const n: Int\ngoal h: nop(n)\n", 0, 1);
+}
+
 // ── slice 3: bounded `in` range quantifiers + triggers ──────────────────
 
 /// A bounded range `forall x in 0..n. P` desugars to

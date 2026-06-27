@@ -49,6 +49,16 @@ postcondition as a usable fact, rather than generating it as an obligation). The
 domain refinement `'p(u)` is the precondition: a use `f(x)` is only well-formed
 where `'p(x)` is in scope.
 
+**`nop` — unrefined ≡ nop-refined (user, 2026-06-27, LANDED in lukb).** The
+built-in trivial predicate `nop : Π(T:Type). T → Prop := λT x. true` makes the
+model UNIFORM: an unrefined `x: T` is `{x: T | nop(x)}`, so the refinement-aware
+logic always sees a *predicate* (φ or `nop`) — no "refined vs unrefined" special
+case. `nop(x) ≡ true`, so a `nop` refinement is vacuous: it is **dropped** (no
+guard/hypothesis/contract emitted), keeping output clean while the *structure*
+stays uniform (e.g. a plain arrow `A -> A` is `{u:A|nop} -> {v:A|nop}`, whose
+`post_f`/preservation obligations are trivially `true`). A `refinement_of(ty)`
+helper (returning `nop` for unrefined types) threads this through the §3-§5 logic.
+
 ## 3. `solve G by L` — the cut / lemma-introduction rule
 
 `solve G by L` is the structured-proof **cut**: "to prove `G`, it suffices to

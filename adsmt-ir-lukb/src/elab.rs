@@ -59,6 +59,13 @@ impl Elab {
         let ex_ty =
             K::pi(K::type_(0), K::arrow(K::arrow(K::bound(0), K::prop()), K::prop()));
         postulate(&mut env, "exists", ex_ty)?;
+        // `nop : Π(T: Type). T → Prop := λ T x. true` — the trivial (always-true)
+        // predicate. An UNREFINED type `x: T` is treated as `{x: T | nop(x)}`, so
+        // the refinement-aware logic always sees a predicate (the user's
+        // uniformity); a `nop`/true refinement is vacuous and dropped at use.
+        let nop_ty = K::pi(K::type_(0), K::arrow(K::bound(0), K::prop()));
+        let nop_body = K::lam(K::type_(0), K::lam(K::bound(0), K::cnst("true")));
+        define(&mut env, "nop", nop_ty, nop_body)?;
         // the FULL arithmetic prelude (Int/Real/Nat/WNat + ops + injections +
         // pow/odd/prime) — the lu-kb surface uses Nat/WNat/pow/… as built-ins.
         theory::install_arith(&mut env)?;
@@ -80,7 +87,11 @@ impl Elab {
                     let kbase = self.elab_type(base)?;
                     postulate(&mut self.env, x, kbase.clone())?;
                     let phi = self.refine_pred_at(var, &kbase, pred, &K::cnst(x.clone()))?;
-                    self.hyps.push(phi);
+                    // a vacuous (trivially-true, e.g. `nop`) refinement adds no
+                    // hypothesis — so `const c: {v:T | nop(v)}` ≡ `const c: T`.
+                    if !is_def_eq(&self.env, &phi, &K::cnst("true")) {
+                        self.hyps.push(phi);
+                    }
                 } else {
                     let kty = self.elab_type(ty)?;
                     postulate(&mut self.env, x, kty)?;
@@ -509,6 +520,13 @@ impl Elab {
         name: &str,
         args: &[S],
     ) -> Result<K, FaceError> {
+        // `nop(x)` — the trivial predicate. It is polymorphic (`Π(T).T→Prop`), so
+        // infer the implicit type argument from `x`'s sort: `nop[typeof(x)](x)`.
+        if name == "nop" && args.len() == 1 {
+            let kx = self.elab_term(ctx, &args[0])?;
+            let sort = infer(&self.env, &kernel_ctx(ctx), &kx)?;
+            return Ok(K::apps(K::cnst("nop"), [sort, kx]));
+        }
         let kargs: Vec<K> =
             args.iter().map(|a| self.elab_term(ctx, a)).collect::<Result<_, _>>()?;
         // built-in function names map to the arithmetic prelude constants;
