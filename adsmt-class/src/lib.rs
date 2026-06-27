@@ -9,12 +9,14 @@
 pub mod fundep;
 pub mod instance;
 pub mod matcher;
+pub mod numberlike;
 pub mod relation;
 pub mod resolve;
 pub mod tclass;
 
 pub use fundep::Fundep;
 pub use instance::{Instance, MethodImpl, Premise};
+pub use numberlike::{install_numberlike, integer_like, partial_integer_like};
 pub use relation::{MethodSig, Relation};
-pub use resolve::{ClassGoal, InstanceDb, InstanceMatch, Resolver, ResolutionResult};
+pub use resolve::{ClassError, ClassGoal, InstanceDb, InstanceMatch, Resolver, ResolutionResult};
 pub use tclass::TClass;
