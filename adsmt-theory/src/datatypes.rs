@@ -398,6 +398,98 @@ impl Datatypes {
         None
     }
 
+    /// **Single-survivor witness materialization** (the sound case-split
+    /// completion). When a class is excluded (via exact recognizer-shaped
+    /// disequalities `x ≠ c(sel_c(x))` / `x ≠ c` — see
+    /// [`Self::recognizer_excluded_ctor`]) from EVERY constructor of its
+    /// sort BUT ONE survivor `c'`, exhaustiveness forces `x = c'(…)`:
+    /// emit the witness equality `x = c'(sel_{c'}(x))`. **Sound** — on an
+    /// exhaustive datatype a value is some constructor; all-but-one
+    /// excluded ⟹ it is the last (this is the standard datatype
+    /// case-split made *definite*, not a guess). The downstream
+    /// injectivity / selector-reduction / **acyclicity** then discharge
+    /// what the disequality alone couldn't: e.g. `b ≠ zero ∧ pred b = b`
+    /// ⟹ (survivor succ) `b = succ(pred b)`, and with `pred b = b` this
+    /// is `b = succ(b)` → acyclicity unsat. NO arithmetic, NO ℕ-bridge.
+    ///
+    /// The witness term is built ONLY when an existing `sel_{c'}(t)` (for
+    /// some `t` in the class) is present, so the constructor's type is
+    /// recovered from that selector application (`field → sort`) — no
+    /// per-field sort metadata is needed. Absent the selector term the
+    /// witness is skipped (a sound completeness restriction).
+    fn single_survivor_witness(&self, out: &mut Vec<(Term, Term)>) {
+        if self.disequalities.is_empty() {
+            return;
+        }
+        let mut parent: HashMap<Term, Term> = HashMap::new();
+        for (a, b) in &self.asserted_eqs {
+            Self::uf_union(&mut parent, a, b);
+        }
+        type ExSet = std::collections::HashSet<String>;
+        let mut excluded: HashMap<Term, (String, ExSet)> = HashMap::new();
+        for (a, b) in &self.disequalities {
+            for (x, rhs) in [(a, b), (b, a)] {
+                let Some(ctor) = self.recognizer_excluded_ctor(x, rhs) else { continue };
+                let sort = x.type_of().to_string();
+                if !self.decls.contains_key(&sort) {
+                    continue;
+                }
+                parent.entry(x.clone()).or_insert_with(|| x.clone());
+                let rep = Self::uf_find(&parent, x);
+                excluded
+                    .entry(rep)
+                    .or_insert_with(|| (sort.clone(), ExSet::new()))
+                    .1
+                    .insert(ctor);
+            }
+        }
+        if excluded.is_empty() {
+            return;
+        }
+        // selector apps available to recover the survivor's witness term.
+        let mut sel_apps: Vec<(Term, Term)> = Vec::new();
+        for t in &self.asserted_terms {
+            self.collect_selector_apps(t, &mut sel_apps);
+        }
+        for (a, b) in &self.asserted_eqs {
+            self.collect_selector_apps(a, &mut sel_apps);
+            self.collect_selector_apps(b, &mut sel_apps);
+        }
+        for (rep, (sort, exset)) in &excluded {
+            let Some(decl) = self.decls.get(sort) else { continue };
+            let survivors: Vec<usize> = (0..decl.constructors.len())
+                .filter(|&i| !exset.contains(&decl.constructors[i]))
+                .collect();
+            if survivors.len() != 1 {
+                continue;
+            }
+            let ci = survivors[0];
+            // unary survivor with exactly one selector.
+            if decl.selectors.get(ci).map(Vec::len) != Some(1) {
+                continue;
+            }
+            let cname = decl.constructors[ci].clone();
+            let sel = &decl.selectors[ci][0];
+            for (sel_app, arg) in &sel_apps {
+                let TermInner::App(f, _) = sel_app.kind() else { continue };
+                if Self::atom_name(f).as_deref() != Some(sel.as_str()) {
+                    continue;
+                }
+                parent.entry(arg.clone()).or_insert_with(|| arg.clone());
+                if &Self::uf_find(&parent, arg) != rep {
+                    continue;
+                }
+                let Ok(ctor_ty) = Type::fun(sel_app.type_of(), arg.type_of()) else { continue };
+                let Ok(witness) = Term::app(Term::const_(&cname, ctor_ty), sel_app.clone())
+                else {
+                    continue;
+                };
+                out.push((arg.clone(), witness));
+                break;
+            }
+        }
+    }
+
     /// If `rhs` is the recognizer shape for a constructor `c` applied to
     /// `x` — a nullary constructor `c` (so `x ≠ c` ≡ `¬is_c(x)`), or
     /// `c(sel_{c,0}(x), …, sel_{c,k-1}(x))` — return `c`'s name, else
@@ -621,6 +713,10 @@ impl Theory for Datatypes {
         // and the same reduction *through congruence* — `sel(y)` with `y` only
         // asserted-equal to a constructor (closes the spurious-sat gap).
         self.congruent_selector_reductions(&mut out);
+        // Exhaustiveness made definite: an all-but-one-excluded class is
+        // forced to its surviving constructor (closes `b≠zero ∧ pred b=b`
+        // via the downstream acyclicity, no arithmetic bridge).
+        self.single_survivor_witness(&mut out);
         out
     }
 
@@ -997,6 +1093,46 @@ mod tests {
                 .unwrap(),
         );
         assert!(matches!(dt.check(), CheckResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn single_survivor_witness_closes_pred_self_chain() {
+        // `b ≠ zero ∧ pred b = b` (Nat): excluding `zero` leaves `succ`
+        // as the single survivor → witness `b = succ(pred b)`; with
+        // `pred b = b` that is `b = succ b` → acyclicity unsat. The
+        // exhaustiveness case-split made definite + the occurs-check.
+        let mut dt = nat_dt();
+        let b = Term::var("b", nat_ty());
+        let zero = Term::const_("zero", nat_ty());
+        let pred_b = pred_of(b.clone());
+        // mention `pred b` so the witness term can be recovered.
+        dt.assert(Literal::negative(Term::mk_eq(b.clone(), zero).unwrap()).unwrap());
+        dt.assert(Literal::positive(Term::mk_eq(pred_b.clone(), b.clone()).unwrap()).unwrap());
+        // derive_equalities must surface the witness `b = succ(pred b)`.
+        let derived = dt.derive_equalities();
+        let witness = succ_of(pred_b.clone());
+        assert!(
+            derived.iter().any(|(a, c)| a.alpha_eq(&b) && c.alpha_eq(&witness)),
+            "expected the single-survivor witness b = succ(pred b); got {derived:?}"
+        );
+    }
+
+    #[test]
+    fn single_survivor_does_not_overfire_when_a_ctor_survives() {
+        // Excluding only `zero` leaves `succ` possible and introduces no
+        // contradiction unless one is forced — `b ≠ zero ∧ pred b = zero`
+        // is satisfiable (b = succ zero). The witness must not manufacture
+        // a cycle.
+        let mut dt = nat_dt();
+        let b = Term::var("b", nat_ty());
+        let zero = Term::const_("zero", nat_ty());
+        dt.assert(Literal::negative(Term::mk_eq(b.clone(), zero.clone()).unwrap()).unwrap());
+        dt.assert(Literal::positive(Term::mk_eq(pred_of(b.clone()), zero).unwrap()).unwrap());
+        // route the witness back in (as the polite loop would) then check.
+        for (a, c) in dt.derive_equalities() {
+            dt.assert(Literal::positive(Term::mk_eq(a, c).unwrap()).unwrap());
+        }
+        assert!(matches!(dt.check(), CheckResult::Sat));
     }
 
     #[test]
