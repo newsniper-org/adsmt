@@ -167,9 +167,25 @@ same way a type-class method does.
      identities `(p⟹r)∧(q⟹r) ⟺ (p∨q)⟹r` and `(p⟹r)∨(q⟹r) ⟺ (p∧q)⟹r` are the
      simplifications to apply once refinement *combinators* (union/intersection
      of refined domains) land — they keep a merged contract minimal.
-   - **Still pending**: the `adsmt-class` predicate-dictionary *registry* (so a
-     `'p` resolves through the `Relation`/`Instance`/`Resolver` spine at a use
-     site rather than only via the per-fn contract) — the **type-relation-level**
-     `'p`, the next phase.
+   - **Type-relation-level `'p` (data model LANDED).** A type relation can carry
+     a predicate parameter: `Relation::pred_params` (`'p : domain → Prop`) +
+     `Instance::preds` (the concrete predicate dictionary) + `Dict::pred` /
+     `require_pred`; `declare_instance` validates predicate-parameter arity. This
+     is generic, neutral infra — a *genuine* type relation (one canonical
+     structure per type) MAY carry a `'p`.
+   - **CORRECTION (user, 2026-06-27): predicate PRESERVATION is NOT a type
+     relation.** A type relation is coherent — one instance per type — but a
+     datatype `A` can have MANY functions that preserve `'p`. Preservation is a
+     property of a **function**, so it is a **higher-order predicate**
+     `preserving(f)`, each function checked independently — not a `Preserving(A)`
+     type-class instance. The `adsmt-class::preserving` relation + its engine test
+     were **RETIRED** (wrong abstraction); the generic `pred_params` data model is
+     kept. The realisation is now a lukb higher-order predicate using a
+     `solve … by …` proof-term construct (chosen semantics **(B)** — `solve G by L`
+     builds a kernel-checked proof term: the kernel verifies the reduction skeleton
+     `G ⟸ (ambient ∧ L)`, the engine discharges the leaf obligation `L`; pure, no
+     runtime solving). The `'p`/`'q` generic predicate parameters (the fn-level
+     ②) carry over, now applied to a **refinement-typed function** argument
+     `{u:A|'p} -> {v:A|'q}`. See `[[feedback-preservation-is-higher-order-predicate]]`.
 4. z3-differential on concrete refinements + contracts (gated on the lower→solve
    wiring, #325), as for the Nat/WNat collapse.
