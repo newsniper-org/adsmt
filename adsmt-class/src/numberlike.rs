@@ -1,74 +1,77 @@
-//! The `*Like` number-system type-relation family — first slice.
+//! The `*Like` number-system type-relation family + the order relations it
+//! builds on.
 //!
-//! This module declares the two integer-side relations of the family the
-//! user calls *type relations* (each instance — single- or multi-parameter —
-//! is a relation between types/theories):
+//! This module declares, as real `adsmt-class` relations (the user's *type
+//! relations* — each instance is a relation between types/theories):
 //!
-//! * [`partial_integer_like`] — `PartialIntegerLike(I)`, the **superclass**:
-//!   an integer-like commutative core (closed under `+`, `*`) carrying a
-//!   per-carrier **validity / positivity predicate** `domain : I -> Bool`.
-//!   No `zero` (0 ∉ `Nat` in the lukb lattice), no `neg`/`sub` (`Nat`/`WNat`
-//!   are not closed under subtraction — guard G6), and no order (a future
-//!   `ComplexIntegerLike` sibling, ℤ[i]/ℤ[ω], has no total order).
-//! * [`integer_like`] — `IntegerLike(I)`, the **subtrait**: adds the order
-//!   operation `le : I -> I -> Bool` and (the deferred gating goal-member)
-//!   the **total-order law**. Every `IntegerLike` instance carries the
-//!   premise `PartialIntegerLike(I)`. This mirrors Rust's `Eq: PartialEq` /
-//!   `Ord: PartialOrd`: the subtrait adds a law a carrier must satisfy to be
-//!   admitted (ℤ[i] resolves to `PartialIntegerLike` but **not** `IntegerLike`,
-//!   exactly as float fails `Eq`).
+//! **Order axis** (standalone, so the `*Like` relations reuse it rather than
+//! each re-declaring an order):
+//! * [`partial_ord`] — `PartialOrd(I)`: a partial order `le : I -> I -> Bool`
+//!   with the goal-members (laws) *reflexivity*, *antisymmetry*, *transitivity*.
+//! * [`ord`] — `Ord(I) : PartialOrd(I)`: the total-order subtrait. Adds the
+//!   *totality* law (`∀a b. le a b ∨ le b a`) and **no new method** — `le` is
+//!   inherited through the `PartialOrd` premise (the Rust `Ord: PartialOrd` /
+//!   `Eq: PartialEq` shape).
 //!
-//! The three ground instances are the lukb arithmetic carriers
-//! `Int`/`Nat`/`WNat`. Their dictionaries' single soundly-expressible payload
-//! at this slice is the `domain` predicate — the **positivity** the type
-//! relation contributes that the engine does not already know:
-//! `Int ↦ ⊤`, `WNat ↦ wnat2int x ≥ 0`, `Nat ↦ nat2int x ≥ 1`. This is the
-//! lever the lukb-utilisation audit identified (`Nat ⟹ ≥1`, `WNat ⟹ ≥0`):
-//! routing a refinement-sort variable into LIA with its defining constraint.
+//! **Integer axis:**
+//! * [`partial_integer_like`] — `PartialIntegerLike(I)`: the integer-like
+//!   commutative core `{add, mul, domain}` (validity/positivity predicate). No
+//!   `zero` (0 ∉ `Nat`), no `neg`/`sub` (`Nat`/`WNat` not subtraction-closed),
+//!   no order.
+//! * [`integer_like`] — `IntegerLike(I) : PartialIntegerLike(I), Ord(I)`: an
+//!   integer-like carrier that is *also* totally ordered. A pure conjunction
+//!   marker — its laws and methods are inherited through the two premises.
+//!   ℤ, ℕ, WNat are `IntegerLike`; a future `ComplexIntegerLike` (ℤ[i]/ℤ[ω])
+//!   will premise `PartialIntegerLike` but **not** `Ord`.
 //!
-//! The arithmetic ops `add`/`mul` and the order `le` are declared as the
-//! dictionary *contract* (method signatures) but their refinement-sort
-//! bodies require the `Reduces` encode/decode reduction spine (carrier →
-//! Int image → LIA and back); those bodies land with the next slice. Only the
-//! `Int` carrier — a genuine ring — wires them directly to the engine ops
-//! here. Instance method-completeness is intentionally *not* enforced by
-//! [`InstanceDb`]; the dictionary is populated in stages.
+//! The order laws are the canonical use of proof-gated admission ([`Law`],
+//! [`crate::InstanceDb::declare_instance_lawful`]): an `Ord` instance is
+//! admitted only if the solver discharges *totality* for its `le`; a carrier
+//! with no compatible total order (e.g. a future `FloatingPoint(M, E)` with
+//! `NaN`) is rejected by that gate and stays `PartialOrd` only.
 //!
-//! Resolution is the same SLD walk type inference uses, so a single declared
-//! instance serves all four interlocking engines (type inference, abduction,
-//! ASP, SMT) — see the `four-way-interlock-design-intent` /
-//! `numberlike-family-design` design notes.
+//! Ground instances are the lukb arithmetic carriers `Int`/`Nat`/`WNat`. Their
+//! soundly-expressible dictionary content this slice:
+//! * `le` — `Int ↦ Int.le`; `Nat/WNat ↦ λa b. Int.le (ι a) (ι b)` (the order is
+//!   the restriction of ℤ's via the injection ι — a `Bool` result needs no
+//!   back-injection, so this is total and sound).
+//! * `domain` — `Int ↦ ⊤`, `WNat ↦ ι x ≥ 0`, `Nat ↦ ι x ≥ 1` (the #338
+//!   positivity lever).
+//!
+//! `add`/`mul` (carrier-valued results) await the `Reduces` encode/decode spine
+//! and are wired only for the `Int` ring here. Sort/op/injection names mirror
+//! `adsmt_ir::theory` by value (this crate sits below `adsmt-ir`).
 
 use std::sync::Arc;
 
 use adsmt_core::{Kind, Term, TyVar, Type, Var};
 
 use crate::instance::{Instance, Premise};
+use crate::law::{Dict, Law, LawError, LawProver};
 use crate::relation::Relation;
-use crate::resolve::InstanceDb;
+use crate::resolve::{ClassError, InstanceDb};
 
 // ── relation names ──────────────────────────────────────────────────────
+pub const PARTIAL_ORD: &str = "PartialOrd";
+pub const ORD: &str = "Ord";
 pub const PARTIAL_INTEGER_LIKE: &str = "PartialIntegerLike";
 pub const INTEGER_LIKE: &str = "IntegerLike";
 
 // ── method names ────────────────────────────────────────────────────────
+/// Order `I -> I -> Bool` (lives on `PartialOrd`).
+pub const M_LE: &str = "le";
 /// In-carrier validity / positivity predicate `I -> Bool`.
 pub const M_DOMAIN: &str = "domain";
 /// Carrier addition `I -> I -> I`.
 pub const M_ADD: &str = "add";
 /// Carrier multiplication `I -> I -> I`.
 pub const M_MUL: &str = "mul";
-/// Total order `I -> I -> Bool` (lives on `IntegerLike`).
-pub const M_LE: &str = "le";
 
 // ── carrier sort + engine op names ──────────────────────────────────────
 //
-// These mirror `adsmt_ir::theory` (the CIC kernel's postulated sorts,
-// injections, and Int operators) by *value*. They are duplicated here as
-// plain string literals rather than imported because the type-class layer
-// (`adsmt-class`) sits *below* `adsmt-ir` and must not depend on it; a
-// shared dependency would invert the workspace layering. The lowering slice
-// that consumes these dictionaries matches against the same names.
+// Mirrored by value from `adsmt_ir::theory`. `adsmt-class` sits below
+// `adsmt-ir` and must not depend on it; the lowering slice that consumes these
+// dictionaries matches against the same names.
 const SORT_INT: &str = "Int";
 const SORT_NAT: &str = "Nat";
 const SORT_WNAT: &str = "WNat";
@@ -88,10 +91,18 @@ fn carrier_ty(sort: &str) -> Type {
     Type::const_(sort, Kind::Type)
 }
 
+fn tyvar(name: &str) -> Arc<TyVar> {
+    Arc::new(TyVar { name: name.into(), kind: Kind::Type })
+}
+
+/// `a -> b -> c`.
+fn fun3(a: Type, b: Type, c: Type) -> Type {
+    Type::fun(a, Type::fun(b, c).expect("kind")).expect("kind")
+}
+
 /// `op : a -> b -> c`, a curried binary engine operator.
 fn binop_const(name: &str, a: Type, b: Type, c: Type) -> Term {
-    let ty = Type::fun(a, Type::fun(b, c).expect("kind")).expect("kind");
-    Term::const_(name, ty)
+    Term::const_(name, fun3(a, b, c))
 }
 
 /// `inj : from -> Int`, a kernel injection into the integers.
@@ -99,39 +110,33 @@ fn injection_const(name: &str, from: Type) -> Term {
     Term::const_(name, Type::fun(from, int_ty()).expect("kind"))
 }
 
-/// Build the `domain` dictionary body `λ(x : carrier). lo ≤ ι(x)`, i.e. the
-/// positivity guard `Int.le lo (inj x)`. For `Int` the injection is the
-/// identity and there is no lower bound, so the body is `λ(x : Int). ⊤`.
-fn domain_body(sort: &str) -> Term {
-    let carrier = carrier_ty(sort);
-    let x = Var { name: "x".into(), ty: carrier.clone() };
-    let xt = Term::Var(Arc::new(x.clone()));
+// ── relations ───────────────────────────────────────────────────────────
 
-    let body = match sort {
-        SORT_INT => Term::true_const(),
-        SORT_WNAT => positivity_guard(WNAT2INT, carrier.clone(), xt, 0),
-        SORT_NAT => positivity_guard(NAT2INT, carrier.clone(), xt, 1),
-        other => unreachable!("domain_body called on non-carrier sort {other}"),
-    };
-    Term::lam(x, body)
+/// `PartialOrd(I)`: a partial order with reflexivity / antisymmetry /
+/// transitivity laws.
+pub fn partial_ord() -> Relation {
+    let i = tyvar("I");
+    let it = Type::Var(i.clone());
+    Relation::new(PARTIAL_ORD)
+        .with_param(i)
+        .with_method(M_LE, fun3(it.clone(), it, Type::bool_()))
+        .with_law(Law::new("reflexivity", law_reflexivity))
+        .with_law(Law::new("antisymmetry", law_antisymmetry))
+        .with_law(Law::new("transitivity", law_transitivity))
 }
 
-/// `Int.le <lo> (inj x)` — the carrier's lower-bound positivity constraint
-/// over its integer image.
-fn positivity_guard(inj: &str, carrier: Type, xt: Term, lo: i128) -> Term {
-    let img = Term::app(injection_const(inj, carrier), xt).expect("injection well-typed");
-    let lo_lit = Term::const_(&lo.to_string(), int_ty());
-    let le = binop_const(INT_LE, int_ty(), int_ty(), Type::bool_());
-    let partial = Term::app(le, lo_lit).expect("Int.le on a literal");
-    Term::app(partial, img).expect("Int.le on the image")
+/// `Ord(I) : PartialOrd(I)`: the total-order subtrait. Adds the totality law
+/// and no new method (`le` is inherited through the `PartialOrd` premise).
+pub fn ord() -> Relation {
+    Relation::new(ORD)
+        .with_param(tyvar("I"))
+        .with_law(Law::new("totality", law_totality))
 }
 
-/// The `PartialIntegerLike(I)` relation: the integer-like commutative core
-/// plus a per-carrier validity predicate. `I : Type` is first-order (the HKT
-/// of the wider family is realised as a value-level `Premise` edge, never a
-/// kinded parameter).
+/// `PartialIntegerLike(I)`: the integer-like commutative core plus a per-carrier
+/// validity predicate. No `zero`, no `neg`/`sub`, no order.
 pub fn partial_integer_like() -> Relation {
-    let i = Arc::new(TyVar { name: "I".into(), kind: Kind::Type });
+    let i = tyvar("I");
     let it = Type::Var(i.clone());
     Relation::new(PARTIAL_INTEGER_LIKE)
         .with_param(i)
@@ -140,65 +145,214 @@ pub fn partial_integer_like() -> Relation {
         .with_method(M_DOMAIN, Type::fun(it, Type::bool_()).expect("kind"))
 }
 
-/// The `IntegerLike(I)` subtrait: adds the total order `le` (the total-order
-/// law is the deferred gating goal-member). Instances premise
-/// `PartialIntegerLike(I)`.
+/// `IntegerLike(I) : PartialIntegerLike(I), Ord(I)`: integer-like and totally
+/// ordered. A conjunction marker — instances carry both premises and no own
+/// methods or laws.
 pub fn integer_like() -> Relation {
-    let i = Arc::new(TyVar { name: "I".into(), kind: Kind::Type });
-    let it = Type::Var(i.clone());
-    Relation::new(INTEGER_LIKE)
-        .with_param(i)
-        .with_method(M_LE, fun3(it.clone(), it, Type::bool_()))
+    Relation::new(INTEGER_LIKE).with_param(tyvar("I"))
 }
 
-/// `a -> b -> c`.
-fn fun3(a: Type, b: Type, c: Type) -> Type {
-    Type::fun(a, Type::fun(b, c).expect("kind")).expect("kind")
+// ── order laws (goal-members) ───────────────────────────────────────────
+//
+// Each builds a closed `Bool`-typed obligation over the instance's `le` (which
+// the premise-aware `Dict` resolves, for an `Ord` instance, through its
+// `PartialOrd` premise). Applications are β-reduced so an injection-defined `le`
+// (`λa b. Int.le (ι a) (ι b)`) yields a clean atomic comparison.
+
+fn law_reflexivity(d: &dyn Dict) -> Result<Term, LawError> {
+    let c = d.carrier0()?;
+    let le = d.require(M_LE)?;
+    let a = Term::var("a", c.clone());
+    let body = apply2(&le, a.clone(), a)?; // le a a
+    close_forall(&c, &["a"], body)
 }
 
-/// `PartialIntegerLike(sort)` ground instance carrying the `domain`
-/// positivity dictionary. For `Int` the ring ops `add`/`mul` are wired
-/// directly to the engine operators; for the refinement carriers they await
-/// the `Reduces` reduction spine.
+fn law_antisymmetry(d: &dyn Dict) -> Result<Term, LawError> {
+    let c = d.carrier0()?;
+    let le = d.require(M_LE)?;
+    let a = Term::var("a", c.clone());
+    let b = Term::var("b", c.clone());
+    let ab = apply2(&le, a.clone(), b.clone())?;
+    let ba = apply2(&le, b.clone(), a.clone())?;
+    // (le a b ∧ le b a) ⟹ a = b
+    let imp = Term::mk_imp(Term::mk_and(ab, ba)?, Term::mk_eq(a, b)?)?;
+    close_forall(&c, &["a", "b"], imp)
+}
+
+fn law_transitivity(d: &dyn Dict) -> Result<Term, LawError> {
+    let c = d.carrier0()?;
+    let le = d.require(M_LE)?;
+    let a = Term::var("a", c.clone());
+    let b = Term::var("b", c.clone());
+    let cc = Term::var("c", c.clone());
+    let ab = apply2(&le, a.clone(), b.clone())?;
+    let bc = apply2(&le, b.clone(), cc.clone())?;
+    let ac = apply2(&le, a, cc)?;
+    // (le a b ∧ le b c) ⟹ le a c
+    let imp = Term::mk_imp(Term::mk_and(ab, bc)?, ac)?;
+    close_forall(&c, &["a", "b", "c"], imp)
+}
+
+fn law_totality(d: &dyn Dict) -> Result<Term, LawError> {
+    let c = d.carrier0()?;
+    let le = d.require(M_LE)?;
+    let a = Term::var("a", c.clone());
+    let b = Term::var("b", c.clone());
+    let ab = apply2(&le, a.clone(), b.clone())?;
+    let ba = apply2(&le, b, a)?;
+    let disj = Term::mk_or(ab, ba)?; // le a b ∨ le b a
+    close_forall(&c, &["a", "b"], disj)
+}
+
+/// `f x`, β-reducing the redex when `f` is a λ (so an injection-defined `le`
+/// collapses), and leaving the application as-is when `f`'s head is a constant.
+fn app_beta(f: Term, x: Term) -> Result<Term, LawError> {
+    let applied = Term::app(f, x)?;
+    Ok(applied.beta_reduce().unwrap_or(applied))
+}
+
+/// `f x y`, β-reduced.
+fn apply2(f: &Term, x: Term, y: Term) -> Result<Term, LawError> {
+    app_beta(app_beta(f.clone(), x)?, y)
+}
+
+/// Universally close `body` over `names`, each a binder of carrier sort.
+fn close_forall(carrier: &Type, names: &[&str], body: Term) -> Result<Term, LawError> {
+    let mut t = body;
+    for name in names.iter().rev() {
+        let v = Var { name: (*name).to_string(), ty: carrier.clone() };
+        t = Term::mk_forall(v, t)?;
+    }
+    Ok(t)
+}
+
+// ── ground instances ────────────────────────────────────────────────────
+
+/// The carrier's `le` body. `Int ↦ Int.le`; refinement carriers route through
+/// their integer injection (sound: the result is `Bool`, no back-injection).
+fn le_body(sort: &str) -> Term {
+    let carrier = carrier_ty(sort);
+    match sort {
+        SORT_INT => binop_const(INT_LE, carrier.clone(), carrier, Type::bool_()),
+        SORT_NAT => injected_le(NAT2INT, carrier),
+        SORT_WNAT => injected_le(WNAT2INT, carrier),
+        other => unreachable!("le_body on non-carrier {other}"),
+    }
+}
+
+/// `λ(x : carrier)(y : carrier). Int.le (inj x) (inj y)`.
+fn injected_le(inj: &str, carrier: Type) -> Term {
+    let x = Var { name: "x".into(), ty: carrier.clone() };
+    let y = Var { name: "y".into(), ty: carrier.clone() };
+    let ix = Term::app(injection_const(inj, carrier.clone()), Term::var("x", carrier.clone()))
+        .expect("injection on x");
+    let iy = Term::app(injection_const(inj, carrier.clone()), Term::var("y", carrier))
+        .expect("injection on y");
+    let le_int = binop_const(INT_LE, int_ty(), int_ty(), Type::bool_());
+    let body = Term::app(Term::app(le_int, ix).expect("Int.le ix"), iy).expect("Int.le ix iy");
+    Term::lam(x, Term::lam(y, body))
+}
+
+fn partial_ord_instance(sort: &str) -> Instance {
+    Instance::new(PARTIAL_ORD, vec![carrier_ty(sort)]).with_method(M_LE, le_body(sort))
+}
+
+fn ord_instance(sort: &str) -> Instance {
+    let carrier = carrier_ty(sort);
+    Instance::new(ORD, vec![carrier.clone()]).with_premise(Premise::new(PARTIAL_ORD, vec![carrier]))
+}
+
+/// `PartialIntegerLike(sort)` ground instance carrying the `domain` positivity
+/// dictionary (and, for `Int`, the ring ops).
 fn partial_instance(sort: &str) -> Instance {
     let carrier = carrier_ty(sort);
     let mut inst = Instance::new(PARTIAL_INTEGER_LIKE, vec![carrier.clone()])
         .with_method(M_DOMAIN, domain_body(sort));
     if sort == SORT_INT {
         inst = inst
-            .with_method(M_ADD, binop_const(INT_ADD, carrier.clone(), carrier.clone(), carrier.clone()))
+            .with_method(
+                M_ADD,
+                binop_const(INT_ADD, carrier.clone(), carrier.clone(), carrier.clone()),
+            )
             .with_method(M_MUL, binop_const(INT_MUL, carrier.clone(), carrier.clone(), carrier));
     }
     inst
 }
 
-/// `IntegerLike(sort)` ground instance: premises `PartialIntegerLike(sort)`
-/// and (for `Int`) wires the order op to the engine `Int.le`.
+/// `IntegerLike(sort)`: premises `PartialIntegerLike(sort)` and `Ord(sort)`.
 fn integer_instance(sort: &str) -> Instance {
     let carrier = carrier_ty(sort);
-    let mut inst = Instance::new(INTEGER_LIKE, vec![carrier.clone()])
-        .with_premise(Premise::new(PARTIAL_INTEGER_LIKE, vec![carrier.clone()]));
-    if sort == SORT_INT {
-        inst = inst.with_method(M_LE, binop_const(INT_LE, carrier.clone(), carrier, Type::bool_()));
-    }
-    inst
+    Instance::new(INTEGER_LIKE, vec![carrier.clone()])
+        .with_premise(Premise::new(PARTIAL_INTEGER_LIKE, vec![carrier.clone()]))
+        .with_premise(Premise::new(ORD, vec![carrier]))
 }
 
-/// Install the two integer-side relations and their `Int`/`Nat`/`WNat`
-/// ground instances into `db`. Returns the same `db` for chaining.
-///
-/// Panics only on an internal coherence/arity bug (the heads are distinct
-/// carrier constants, so no overlap is possible) — a failure here is a
-/// programming error in this module, not user input.
-pub fn install_numberlike(db: &mut InstanceDb) {
+/// Build the `domain` body `λ(x : carrier). lo ≤ ι(x)`. For `Int` the injection
+/// is the identity and there is no lower bound, so the body is `λx. ⊤`.
+fn domain_body(sort: &str) -> Term {
+    let carrier = carrier_ty(sort);
+    let x = Var { name: "x".into(), ty: carrier.clone() };
+    let xt = Term::Var(Arc::new(x.clone()));
+    let body = match sort {
+        SORT_INT => Term::true_const(),
+        SORT_WNAT => positivity_guard(WNAT2INT, carrier, xt, 0),
+        SORT_NAT => positivity_guard(NAT2INT, carrier, xt, 1),
+        other => unreachable!("domain_body on non-carrier {other}"),
+    };
+    Term::lam(x, body)
+}
+
+/// `Int.le <lo> (inj x)` — the carrier's lower-bound positivity constraint over
+/// its integer image.
+fn positivity_guard(inj: &str, carrier: Type, xt: Term, lo: i128) -> Term {
+    let img = Term::app(injection_const(inj, carrier), xt).expect("injection well-typed");
+    let lo_lit = Term::const_(&lo.to_string(), int_ty());
+    let le = binop_const(INT_LE, int_ty(), int_ty(), Type::bool_());
+    let partial = Term::app(le, lo_lit).expect("Int.le on a literal");
+    Term::app(partial, img).expect("Int.le on the image")
+}
+
+// ── installation ────────────────────────────────────────────────────────
+
+const CARRIERS: [&str; 3] = [SORT_INT, SORT_NAT, SORT_WNAT];
+
+fn declare_relations(db: &mut InstanceDb) {
+    db.declare_relation(partial_ord());
+    db.declare_relation(ord());
     db.declare_relation(partial_integer_like());
     db.declare_relation(integer_like());
-    for sort in [SORT_INT, SORT_NAT, SORT_WNAT] {
-        db.declare_instance(partial_instance(sort))
-            .expect("PartialIntegerLike ground instance");
-        db.declare_instance(integer_instance(sort))
-            .expect("IntegerLike ground instance");
+}
+
+/// Install the order + integer relations and their `Int`/`Nat`/`WNat` ground
+/// instances **structurally** (no law checking). Use when a consumer only needs
+/// resolution; [`install_numberlike_checked`] adds proof-gated admission.
+pub fn install_numberlike(db: &mut InstanceDb) {
+    declare_relations(db);
+    for sort in CARRIERS {
+        db.declare_instance(partial_ord_instance(sort)).expect("PartialOrd instance");
+        db.declare_instance(ord_instance(sort)).expect("Ord instance");
+        db.declare_instance(partial_instance(sort)).expect("PartialIntegerLike instance");
+        db.declare_instance(integer_instance(sort)).expect("IntegerLike instance");
     }
+}
+
+/// Install the family with **proof-gated admission**: every instance must
+/// discharge its relation's laws via `prover` or the declaration is rejected
+/// (the user's "걸리는 인스턴스 선언은 아예 빌드 거부" gate). Superclasses are
+/// admitted before subclasses so a subtrait law can resolve an inherited method
+/// (`Ord`'s totality resolves `le` through the already-admitted `PartialOrd`).
+pub fn install_numberlike_checked(
+    db: &mut InstanceDb,
+    prover: &dyn LawProver,
+) -> Result<(), ClassError> {
+    declare_relations(db);
+    for sort in CARRIERS {
+        db.declare_instance_lawful(partial_ord_instance(sort), prover)?;
+        db.declare_instance_lawful(ord_instance(sort), prover)?;
+        db.declare_instance_lawful(partial_instance(sort), prover)?;
+        db.declare_instance_lawful(integer_instance(sort), prover)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -213,26 +367,43 @@ mod tests {
         db
     }
 
+    fn found(db: &InstanceDb, rel: &str, sort: &str) -> ResolutionResult {
+        Resolver::new(db).resolve(&ClassGoal::new(rel, vec![carrier_ty(sort)]))
+    }
+
+    // ── hierarchy resolution ────────────────────────────────────────────
+
     #[test]
-    fn integer_like_resolves_with_partial_subgoal() {
+    fn integer_like_premises_partial_integer_like_and_ord() {
         let db = db();
-        let goal = ClassGoal::new(INTEGER_LIKE, vec![int_ty()]);
-        match Resolver::new(&db).resolve(&goal) {
+        match found(&db, INTEGER_LIKE, SORT_INT) {
             ResolutionResult::Found(m) => {
-                assert_eq!(m.sub_goals.len(), 1, "IntegerLike must premise PartialIntegerLike");
-                assert_eq!(m.sub_goals[0].relation, PARTIAL_INTEGER_LIKE);
-                assert_eq!(m.sub_goals[0].types[0], int_ty());
+                let rels: Vec<&str> = m.sub_goals.iter().map(|g| g.relation.as_str()).collect();
+                assert_eq!(m.sub_goals.len(), 2, "two premises");
+                assert!(rels.contains(&PARTIAL_INTEGER_LIKE));
+                assert!(rels.contains(&ORD));
             }
             other => panic!("expected Found, got {other:?}"),
         }
     }
 
     #[test]
-    fn partial_integer_like_resolves_without_subgoals() {
+    fn ord_premises_partial_ord() {
         let db = db();
-        for sort in [SORT_INT, SORT_NAT, SORT_WNAT] {
-            let goal = ClassGoal::new(PARTIAL_INTEGER_LIKE, vec![carrier_ty(sort)]);
-            match Resolver::new(&db).resolve(&goal) {
+        match found(&db, ORD, SORT_INT) {
+            ResolutionResult::Found(m) => {
+                assert_eq!(m.sub_goals.len(), 1);
+                assert_eq!(m.sub_goals[0].relation, PARTIAL_ORD);
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn partial_ord_resolves_without_subgoals() {
+        let db = db();
+        for sort in CARRIERS {
+            match found(&db, PARTIAL_ORD, sort) {
                 ResolutionResult::Found(m) => assert!(m.sub_goals.is_empty()),
                 other => panic!("expected Found for {sort}, got {other:?}"),
             }
@@ -242,54 +413,37 @@ mod tests {
     #[test]
     fn all_three_carriers_are_integer_like() {
         let db = db();
-        for sort in [SORT_INT, SORT_NAT, SORT_WNAT] {
-            let goal = ClassGoal::new(INTEGER_LIKE, vec![carrier_ty(sort)]);
-            assert!(
-                matches!(Resolver::new(&db).resolve(&goal), ResolutionResult::Found(_)),
-                "{sort} should be IntegerLike",
-            );
+        for sort in CARRIERS {
+            assert!(matches!(found(&db, INTEGER_LIKE, sort), ResolutionResult::Found(_)));
         }
     }
 
     #[test]
     fn unregistered_carrier_is_not_found() {
         let db = db();
-        // `Bool` is not an integer-like carrier — no instance head matches.
         let goal = ClassGoal::new(INTEGER_LIKE, vec![Type::bool_()]);
-        assert!(matches!(
-            Resolver::new(&db).resolve(&goal),
-            ResolutionResult::NotFound
-        ));
+        assert!(matches!(Resolver::new(&db).resolve(&goal), ResolutionResult::NotFound));
     }
+
+    // ── domain (positivity) dictionary ──────────────────────────────────
 
     #[test]
     fn nat_domain_is_the_positivity_predicate() {
-        // The Nat dictionary's `domain` body must be λx. Int.le 1 (nat2int x):
-        // a lambda whose body applies `Int.le` to the literal `1` and the
-        // `nat2int` image of the bound variable. This is the #338 lever.
         let inst = partial_instance(SORT_NAT);
-        let domain = inst
-            .methods
-            .iter()
-            .find(|m| m.name == M_DOMAIN)
-            .expect("Nat has a domain method");
-        // Outer shape: a lambda over a Nat-sorted binder, Bool body.
-        match domain.body.kind() {
+        let domain = &inst.methods.iter().find(|m| m.name == M_DOMAIN).unwrap().body;
+        match domain.kind() {
             TermInner::Lam(v, body) => {
                 assert_eq!(v.ty, carrier_ty(SORT_NAT));
                 assert_eq!(body.type_of(), Type::bool_());
-                // The body must mention nat2int and Int.le and the literal 1.
                 let s = format!("{body:?}");
-                assert!(s.contains(NAT2INT), "domain routes through nat2int: {s}");
-                assert!(s.contains(INT_LE), "domain asserts an Int.le bound: {s}");
+                assert!(s.contains(NAT2INT) && s.contains(INT_LE), "Nat ≥ 1 via nat2int: {s}");
             }
-            other => panic!("expected a lambda domain body, got {other:?}"),
+            other => panic!("expected λ domain body, got {other:?}"),
         }
     }
 
     #[test]
     fn wnat_lower_bound_is_zero_nat_is_one() {
-        // WNat admits 0 (≥0); Nat does not (≥1). The literals differ.
         let wnat = format!("{:?}", partial_instance(SORT_WNAT).methods[0].body);
         let nat = format!("{:?}", partial_instance(SORT_NAT).methods[0].body);
         assert!(wnat.contains(WNAT2INT) && wnat.contains("\"0\""), "WNat ≥ 0: {wnat}");
@@ -298,20 +452,159 @@ mod tests {
 
     #[test]
     fn int_domain_is_trivially_true() {
-        // Int admits every value — its validity predicate is ⊤, no injection.
         let inst = partial_instance(SORT_INT);
         let domain = &inst.methods.iter().find(|m| m.name == M_DOMAIN).unwrap().body;
         match domain.kind() {
-            TermInner::Lam(_, body) => assert!(body.is_true_const(), "Int domain is ⊤"),
+            TermInner::Lam(_, body) => assert!(body.is_true_const()),
             other => panic!("expected λ, got {other:?}"),
         }
     }
 
+    // ── law obligations ─────────────────────────────────────────────────
+
+    /// A self-contained dictionary view, for exercising a law builder directly.
+    struct TestDict {
+        carrier: Type,
+        methods: Vec<(String, Term)>,
+    }
+    impl Dict for TestDict {
+        fn carriers(&self) -> &[Type] {
+            std::slice::from_ref(&self.carrier)
+        }
+        fn method(&self, name: &str) -> Option<Term> {
+            self.methods.iter().find(|(n, _)| n == name).map(|(_, t)| t.clone())
+        }
+    }
+
     #[test]
-    fn re_declaring_a_carrier_violates_coherence() {
-        // Sanity: the DB enforces coherence on these heads.
-        let mut db = db();
-        let err = db.declare_instance(integer_instance(SORT_INT)).unwrap_err();
-        assert_eq!(err, crate::resolve::ClassError::CoherenceViolation);
+    fn totality_obligation_is_well_typed_int_le_disjunction() {
+        let dict = TestDict {
+            carrier: int_ty(),
+            methods: vec![(M_LE.into(), le_body(SORT_INT))],
+        };
+        let goal = law_totality(&dict).expect("build totality");
+        assert_eq!(goal.type_of(), Type::bool_(), "obligation is a Bool prop");
+        // ∀a. ∀b. (Int.le a b) ∨ (Int.le b a)
+        let (_, b1) = goal.dest_forall().expect("outer ∀");
+        let (_, inner) = b1.dest_forall().expect("inner ∀");
+        let (l, r) = inner.dest_or().expect("disjunction");
+        assert!(is_int_le_app(&l) && is_int_le_app(&r), "both sides are Int.le applications");
+    }
+
+    #[test]
+    fn injected_le_obligation_beta_reduces_to_a_clean_atom() {
+        // Nat's le is λa b. Int.le (nat2int a) (nat2int b); the reflexivity
+        // obligation must β-reduce to ∀a. Int.le (nat2int a) (nat2int a).
+        let dict = TestDict {
+            carrier: carrier_ty(SORT_NAT),
+            methods: vec![(M_LE.into(), le_body(SORT_NAT))],
+        };
+        let goal = law_reflexivity(&dict).expect("build reflexivity");
+        let (_, body) = goal.dest_forall().expect("∀a");
+        assert!(is_int_le_app(&body), "β-reduced to a bare Int.le app: {body:?}");
+        let s = format!("{body:?}");
+        assert!(s.contains(NAT2INT), "still routes through nat2int: {s}");
+    }
+
+    fn is_int_le_app(t: &Term) -> bool {
+        if let TermInner::App(f, _) = t.kind()
+            && let TermInner::App(g, _) = f.kind()
+            && let TermInner::Const(c) = g.kind()
+        {
+            return c.name == INT_LE;
+        }
+        false
+    }
+
+    // ── proof-gated admission ───────────────────────────────────────────
+
+    struct AlwaysValid;
+    impl LawProver for AlwaysValid {
+        fn prove_valid(&self, _: &Term) -> bool {
+            true
+        }
+    }
+    struct NeverValid;
+    impl LawProver for NeverValid {
+        fn prove_valid(&self, _: &Term) -> bool {
+            false
+        }
+    }
+    /// Proves exactly the standard-integer-order totality shape valid.
+    struct TotalityRecognizer;
+    impl LawProver for TotalityRecognizer {
+        fn prove_valid(&self, goal: &Term) -> bool {
+            // ∀a. ∀b. (Int.le a b) ∨ (Int.le b a)
+            let Some((_, b1)) = goal.dest_forall() else { return false };
+            let Some((_, inner)) = b1.dest_forall() else { return false };
+            let Some((l, r)) = inner.dest_or() else { return false };
+            is_int_le_app(&l) && is_int_le_app(&r)
+        }
+    }
+
+    #[test]
+    fn lawful_install_succeeds_with_a_capable_prover() {
+        let mut db = InstanceDb::new();
+        install_numberlike_checked(&mut db, &AlwaysValid).expect("admitted");
+        assert!(matches!(found(&db, INTEGER_LIKE, SORT_INT), ResolutionResult::Found(_)));
+    }
+
+    #[test]
+    fn lawful_install_rejects_when_a_law_is_unproven() {
+        let mut db = InstanceDb::new();
+        let err = install_numberlike_checked(&mut db, &NeverValid).unwrap_err();
+        match err {
+            ClassError::LawUnproven { relation, law } => {
+                // The first declared law-bearing instance is PartialOrd; its
+                // first law is reflexivity.
+                assert_eq!(relation, PARTIAL_ORD);
+                assert_eq!(law, "reflexivity");
+            }
+            other => panic!("expected LawUnproven, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn totality_gate_admits_a_total_order_and_rejects_a_non_total_one() {
+        // Int.le is total → Ord(Int) admitted.
+        let mut db = InstanceDb::new();
+        db.declare_relation(partial_ord());
+        db.declare_relation(ord());
+        db.declare_instance(partial_ord_instance(SORT_INT)).unwrap();
+        assert!(
+            db.declare_instance_lawful(ord_instance(SORT_INT), &TotalityRecognizer).is_ok(),
+            "Int is a total order → Ord(Int) admitted",
+        );
+
+        // A foreign carrier whose `le` the recognizer does not accept as total
+        // → Ord(Foo) build-rejected on the totality law.
+        let foo = Type::const_("Foo", Kind::Type);
+        let foo_le = binop_const("Foo.le", foo.clone(), foo.clone(), Type::bool_());
+        db.declare_instance(
+            Instance::new(PARTIAL_ORD, vec![foo.clone()]).with_method(M_LE, foo_le),
+        )
+        .unwrap();
+        let bogus = Instance::new(ORD, vec![foo.clone()])
+            .with_premise(Premise::new(PARTIAL_ORD, vec![foo]));
+        match db.declare_instance_lawful(bogus, &TotalityRecognizer) {
+            Err(ClassError::LawUnproven { relation, law }) => {
+                assert_eq!(relation, ORD);
+                assert_eq!(law, "totality");
+            }
+            other => panic!("expected totality rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ord_totality_resolves_le_through_the_partial_ord_premise() {
+        // Ord(Int) carries no `le` of its own; the totality obligation must
+        // still build by resolving `le` through the PartialOrd(Int) premise.
+        // A capable prover therefore admits it; AlwaysValid suffices to show
+        // the obligation *built* (LawIllFormed would fire first otherwise).
+        let mut db = InstanceDb::new();
+        db.declare_relation(partial_ord());
+        db.declare_relation(ord());
+        db.declare_instance(partial_ord_instance(SORT_INT)).unwrap();
+        assert!(db.declare_instance_lawful(ord_instance(SORT_INT), &TotalityRecognizer).is_ok());
     }
 }

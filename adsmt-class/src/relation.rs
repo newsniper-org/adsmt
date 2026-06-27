@@ -5,6 +5,7 @@ use std::sync::Arc;
 use adsmt_core::{TyVar, Type};
 
 use crate::fundep::Fundep;
+use crate::law::Law;
 
 #[derive(Clone, Debug)]
 pub struct Relation {
@@ -15,6 +16,8 @@ pub struct Relation {
     pub fundeps: Vec<Fundep>,
     /// Method signatures provided by instances.
     pub methods: Vec<MethodSig>,
+    /// Goal-members: proof obligations every admitted instance must discharge.
+    pub laws: Vec<Law>,
 }
 
 impl Relation {
@@ -24,6 +27,7 @@ impl Relation {
             params: Vec::new(),
             fundeps: Vec::new(),
             methods: Vec::new(),
+            laws: Vec::new(),
         }
     }
 
@@ -39,6 +43,12 @@ impl Relation {
 
     pub fn with_method(mut self, name: impl Into<String>, signature: Type) -> Self {
         self.methods.push(MethodSig { name: name.into(), signature });
+        self
+    }
+
+    /// Attach a goal-member (law) the relation's instances must prove.
+    pub fn with_law(mut self, law: Law) -> Self {
+        self.laws.push(law);
         self
     }
 

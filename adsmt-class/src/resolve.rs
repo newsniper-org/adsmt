@@ -13,11 +13,12 @@
 
 use std::sync::Arc;
 
-use adsmt_core::{TyVar, Type};
+use adsmt_core::{Term, TyVar, Type};
 use indexmap::IndexMap;
 use thiserror::Error;
 
-use crate::instance::{Instance, Premise};
+use crate::instance::{Instance, MethodImpl, Premise};
+use crate::law::{Dict, LawProver};
 use crate::matcher::match_types;
 use crate::relation::Relation;
 
@@ -47,6 +48,10 @@ pub enum ClassError {
     ArityMismatch { relation: String, expected: usize, found: usize },
     #[error("coherence violation: instance head overlaps an existing instance and `overlap` is not set")]
     CoherenceViolation,
+    #[error("law `{law}` of relation `{relation}` is ill-formed for this instance: {reason}")]
+    LawIllFormed { relation: String, law: String, reason: String },
+    #[error("law `{law}` of relation `{relation}` was not proven for this instance — declaration rejected")]
+    LawUnproven { relation: String, law: String },
 }
 
 impl InstanceDb {
@@ -85,6 +90,87 @@ impl InstanceDb {
         Ok(())
     }
 
+    /// Admit an instance only if it discharges every goal-member (law) of its
+    /// relation. Each law obligation is built from a premise-aware [`Dict`]
+    /// view of the instance and handed to `prover`; a law that cannot be built
+    /// (incomplete dictionary) or that the prover does not prove valid causes
+    /// the declaration to be **rejected** — the user's "걸리는 인스턴스 선언은
+    /// 아예 빌드 거부" gate. On success the instance is declared exactly as by
+    /// [`Self::declare_instance`] (structural coherence/arity still apply).
+    ///
+    /// Premises that a law references must already be declared (their
+    /// dictionaries are consulted when resolving inherited methods), so admit
+    /// superclasses before subclasses.
+    pub fn declare_instance_lawful(
+        &mut self,
+        i: Instance,
+        prover: &dyn LawProver,
+    ) -> Result<(), ClassError> {
+        // Clone the law set so no borrow of `self.relations` is held across the
+        // (immutable) obligation build and the (mutable) structural declare.
+        let laws = match self.relations.get(&i.relation) {
+            Some(r) => r.laws.clone(),
+            None => return Err(ClassError::UnknownRelation(i.relation.clone())),
+        };
+        for law in &laws {
+            let dict = AdmissionDict {
+                db: self,
+                carriers: &i.types,
+                methods: &i.methods,
+                premises: &i.premises,
+            };
+            let goal = (law.build)(&dict).map_err(|e| ClassError::LawIllFormed {
+                relation: i.relation.clone(),
+                law: law.name.clone(),
+                reason: e.to_string(),
+            })?;
+            if !prover.prove_valid(&goal) {
+                return Err(ClassError::LawUnproven {
+                    relation: i.relation.clone(),
+                    law: law.name.clone(),
+                });
+            }
+        }
+        self.declare_instance(i)
+    }
+
+    /// Resolve a dictionary method for the already-declared instance whose head
+    /// matches `(relation, types)`, searching its own methods first then its
+    /// premises transitively. `depth` guards against a premise cycle.
+    fn method_of_instance(
+        &self,
+        relation: &str,
+        types: &[Type],
+        name: &str,
+        depth: usize,
+    ) -> Option<Term> {
+        if depth > 64 {
+            return None;
+        }
+        for (_, inst) in self.instances_for(relation) {
+            let mut sigma: IndexMap<Arc<TyVar>, Type> = IndexMap::new();
+            if !match_types(&inst.types, types, &mut sigma) {
+                continue;
+            }
+            if let Some(m) = inst.methods.iter().find(|m| m.name == name) {
+                return Some(m.body.clone());
+            }
+            for p in &inst.premises {
+                // Thread the head-match substitution into the premise types
+                // before recursing, mirroring `substitute_premise` in
+                // `Resolver::resolve`. For a parametric instance (e.g.
+                // `Ord(List α) where Ord(α)`) this resolves the premise at the
+                // concrete type; for a ground instance σ is empty and `subst`
+                // is the identity.
+                let p_types: Vec<Type> = p.types.iter().map(|t| t.subst(&sigma)).collect();
+                if let Some(t) = self.method_of_instance(&p.relation, &p_types, name, depth + 1) {
+                    return Some(t);
+                }
+            }
+        }
+        None
+    }
+
     pub fn get_relation(&self, name: &str) -> Option<&Relation> {
         self.relations.get(name)
     }
@@ -94,6 +180,36 @@ impl InstanceDb {
             .iter()
             .enumerate()
             .filter(move |(_, i)| i.relation == relation)
+    }
+}
+
+/// A [`Dict`] view of the instance under lawful admission. `method` searches
+/// the instance's own dictionary first, then resolves through its premises
+/// against the already-declared instances in `db` (so a subtrait law can name a
+/// superclass method, e.g. `Ord`'s totality law referencing `PartialOrd`'s
+/// `le`).
+struct AdmissionDict<'a> {
+    db: &'a InstanceDb,
+    carriers: &'a [Type],
+    methods: &'a [MethodImpl],
+    premises: &'a [Premise],
+}
+
+impl Dict for AdmissionDict<'_> {
+    fn carriers(&self) -> &[Type] {
+        self.carriers
+    }
+
+    fn method(&self, name: &str) -> Option<Term> {
+        if let Some(m) = self.methods.iter().find(|m| m.name == name) {
+            return Some(m.body.clone());
+        }
+        for p in self.premises {
+            if let Some(t) = self.db.method_of_instance(&p.relation, &p.types, name, 0) {
+                return Some(t);
+            }
+        }
+        None
     }
 }
 

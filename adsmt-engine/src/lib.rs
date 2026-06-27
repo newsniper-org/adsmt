@@ -14,6 +14,7 @@ pub mod bool_solver;
 pub mod bv_blast;
 pub mod cadical_backend;
 pub mod cdcl;
+pub mod class_laws;
 pub mod cnf;
 pub mod dpllt;
 pub mod drat_trim;
@@ -28,6 +29,7 @@ pub mod result;
 pub mod solver;
 pub mod state;
 
+pub use class_laws::EngineLawProver;
 pub use result::{Abductive, SatResult};
 pub use solver::Solver;
 pub use state::Scope;
