@@ -22,6 +22,8 @@ pub enum Tok {
     Let,
     In,
     Trigger,
+    Solve,
+    By,
     // logical keywords
     Not,
     And,
@@ -72,6 +74,8 @@ fn keyword(s: &str) -> Option<Tok> {
         "let" => Tok::Let,
         "in" => Tok::In,
         "trigger" => Tok::Trigger,
+        "solve" => Tok::Solve,
+        "by" => Tok::By,
         "not" => Tok::Not,
         "and" => Tok::And,
         "or" => Tok::Or,

@@ -239,6 +239,12 @@ fn print_term(out: &mut String, t: &Term, ctx: u8) {
             o.push_str(" in ");
             print_term(o, body, 0);
         }),
+        Term::SolveBy(g, l) => paren_if(out, ctx > 0, |o| {
+            o.push_str("solve ");
+            print_term(o, g, 0);
+            o.push_str(" by ");
+            print_term(o, l, 0);
+        }),
     }
 }
 

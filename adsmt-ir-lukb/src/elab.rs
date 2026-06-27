@@ -39,6 +39,8 @@ struct Elab {
     env: Env,
     hyps: Vec<K>,
     goals: Vec<K>,
+    /// A counter for the fresh proof tokens of `solve … by …` (`!solve.N`).
+    solve_n: usize,
 }
 
 impl Elab {
@@ -69,7 +71,7 @@ impl Elab {
         // the FULL arithmetic prelude (Int/Real/Nat/WNat + ops + injections +
         // pow/odd/prime) — the lu-kb surface uses Nat/WNat/pow/… as built-ins.
         theory::install_arith(&mut env)?;
-        Ok(Elab { env, hyps: Vec::new(), goals: Vec::new() })
+        Ok(Elab { env, hyps: Vec::new(), goals: Vec::new(), solve_n: 0 })
     }
 
     fn item(&mut self, item: &Item) -> Result<(), FaceError> {
@@ -426,7 +428,47 @@ impl Elab {
                 ctx.pop();
                 Ok(K::let_(ty, ke, kb?))
             }
+            S::SolveBy(g, l) => self.elab_solve_by(ctx, g, l),
         }
+    }
+
+    /// Elaborate `solve G by L` (semantics B, the cut): elaborate `G`/`L` to
+    /// `Prop`s, emit the **leaf** `∀ctx. L` and the **bridge** `∀ctx. (L ⟹ G)` as
+    /// goals (both closed over the ambient context so they are well-formed at top
+    /// level), and return a **proof of `G`** — a fresh token `!solve.N : ∀ctx. G`
+    /// applied to the ambient binders. The token is admitted, but `G` only holds
+    /// once both obligations discharge (the cut), so the module is rejected if
+    /// either fails — no `by` shortcuts an obligation
+    /// (`docs/design/SOLVE_BY_PROOF_TERMS.md` §3, §6).
+    fn elab_solve_by(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        g: &S,
+        l: &S,
+    ) -> Result<K, FaceError> {
+        let kg = self.elab_term(ctx, g)?;
+        let kl = self.elab_term(ctx, l)?;
+        let prop = K::prop();
+        let tg = infer(&self.env, &kernel_ctx(ctx), &kg)?;
+        if !is_def_eq(&self.env, &tg, &prop) {
+            return Err(unsupported(format!("`solve` goal has sort `{tg}`, expected Bool/Prop")));
+        }
+        let tl = infer(&self.env, &kernel_ctx(ctx), &kl)?;
+        if !is_def_eq(&self.env, &tl, &prop) {
+            return Err(unsupported(format!("`solve … by` lemma has sort `{tl}`, expected Bool/Prop")));
+        }
+        // close the obligations over the ambient context (outermost binder first).
+        let ctx_sorts: Vec<K> = ctx.iter().map(|(_, t)| t.clone()).collect();
+        let leaf = adsmt_ir::build_pi(&ctx_sorts, kl.clone());
+        let bridge = adsmt_ir::build_pi(&ctx_sorts, K::arrow(kl, kg.clone()));
+        self.goals.push(leaf);
+        self.goals.push(bridge);
+        // the proof token `!solve.N : ∀ctx. G`, applied to the ambient binders.
+        let tok = format!("!solve.{}", self.solve_n);
+        self.solve_n += 1;
+        postulate(&mut self.env, &tok, adsmt_ir::build_pi(&ctx_sorts, kg))?;
+        let args: Vec<K> = (0..ctx.len()).rev().map(K::bound).collect();
+        Ok(K::apps(K::cnst(tok), args))
     }
 
     fn elab_quant(
@@ -766,6 +808,7 @@ fn subst_surface(t: &S, from: &str, to: &S) -> S {
             let body2 = if shadow { (**body).clone() } else { go(body) };
             S::Exists(bs2, Box::new(body2), subst_trigs(trigs, from, to, shadow))
         }
+        S::SolveBy(g, l) => S::SolveBy(Box::new(go(g)), Box::new(go(l))),
     }
 }
 
@@ -853,6 +896,10 @@ fn collect_ticks(t: &S, acc: &mut Vec<String>) {
                 }
             }
             collect_ticks(body, acc);
+        }
+        S::SolveBy(g, l) => {
+            collect_ticks(g, acc);
+            collect_ticks(l, acc);
         }
         S::IntLit(_) | S::RealLit(_) | S::Bool(_) => {}
     }

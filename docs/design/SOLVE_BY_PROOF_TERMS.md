@@ -185,7 +185,15 @@ and `image_quantifier_desugar` (the inference-sugar binder `∀{y=f(x)|'p}. φ(y
    `{u:A|'p} -> {v:A|'q}` elaborate to the value arrow `A -> A` (refinements
    erased); +4 tests.
 3. lukb **`solve … by …`** term over **blocks** (§5): the `solve`/`by` clauses are
-   `let`-chain blocks; parse/elab to the cut obligations + proof term.
+   `let`-chain blocks; parse/elab to the cut obligations + proof term. **DONE**
+   (`adsmt-ir-lukb`): `solve`/`by` keywords, `Term::SolveBy(g, l)` parsed in
+   `unary()` (each clause a full term / `let`-chain; optional `by:`), elaborated
+   by `elab_solve_by` — emits the leaf `∀ctx. L` + the bridge `∀ctx. (L ⟹ G)`
+   (both closed over the ambient context via `build_pi`, well-formed at top
+   level) as goals, and returns a fresh proof token `!solve.N : ∀ctx. G` applied
+   to the ambient binders. The token is admitted but `G` is gated on both
+   obligations (the cut) — no `by` shortcuts an obligation. +3 tests (incl. the
+   context-closing, whose kernel re-check validates the de Bruijn closing).
 4. The **inference-sugar binders** (§5): `forall {y = f(x) | 'p(x)}. …` →
    `forall x:{A|'p}. let y = f(x) in …`, with type inference recovering `x`'s sort.
 5. `preserving` as a library/example higher-order predicate over a refined arrow,

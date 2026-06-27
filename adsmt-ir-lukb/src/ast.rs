@@ -123,6 +123,13 @@ pub enum Term {
     Exists(Vec<Binder>, Box<Term>, Vec<Vec<Term>>),
     /// `let x = e in body`.
     Let(String, Box<Term>, Box<Term>),
+    /// `solve G by L` — an in-language **proof term** of the proposition `G`,
+    /// justified by the lemma `L` (the structured-proof *cut*). `G` and `L` are
+    /// each a block (a term, possibly a `let`-chain). Elaborates (semantics B) to
+    /// the leaf obligation `L` + the bridge obligation `L ⟹ G`, both closed over
+    /// the ambient context and emitted as goals, with the value a proof of `G`.
+    /// See `docs/design/SOLVE_BY_PROOF_TERMS.md`.
+    SolveBy(Box<Term>, Box<Term>),
 }
 
 /// An infix binary operator (precedence is in the parser, not here).

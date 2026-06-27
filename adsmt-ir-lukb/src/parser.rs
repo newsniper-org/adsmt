@@ -518,6 +518,18 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::In)?;
                 Ok(Term::Let(x, Box::new(e), Box::new(self.term()?)))
             }
+            // `solve <G-block> by [:] <L-block>` — each block is a full term (a
+            // `let`-chain ends in its denoted proposition). `by` is a keyword, so
+            // the `G` term parser stops at it; an optional `:` matches the `by:`
+            // surface style.
+            Some(Tok::Solve) => {
+                self.advance();
+                let g = self.term()?;
+                self.expect(&Tok::By)?;
+                self.eat(&Tok::Colon);
+                let l = self.term()?;
+                Ok(Term::SolveBy(Box::new(g), Box::new(l)))
+            }
             _ => self.app(),
         }
     }

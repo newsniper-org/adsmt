@@ -429,6 +429,41 @@ fn nop_is_polymorphic() {
     all_props("const n: Int\ngoal h: nop(n)\n", 0, 1);
 }
 
+// ── slice 2g: `solve … by …` proof-term construct (the cut) ──────────────
+
+/// `solve G by L` is a proof of `G` justified by `L`: it emits the **leaf** `L`
+/// and the **bridge** `L ⟹ G` as obligations (the cut), and yields a proof of
+/// `G`. Here `let pf = solve (c=c) by true in (c=c)` produces 3 goals — the leaf
+/// `true`, the bridge `true ⟹ c=c`, and the main goal — all closed `Prop`s.
+#[test]
+fn solve_by_emits_the_cut_obligations() {
+    let r = all_props("const c: Int\ngoal h: let pf = solve c = c by true in c = c\n", 0, 3);
+    let goals = format!("{:?}", r.goals);
+    assert!(goals.contains("true"), "the leaf obligation `true` is emitted: {goals}");
+}
+
+/// The obligations are **closed over the ambient context**: inside `forall x`,
+/// `solve (x=x) by true` emits `∀x. true` and `∀x. (true ⟹ x=x)` — well-formed at
+/// top level (the bound `x` is universally closed, not left dangling).
+#[test]
+fn solve_by_closes_over_the_context() {
+    // 3 goals: the ∀-closed leaf + bridge, and the main ∀ goal. All type-check
+    // (the kernel re-checks each), which is the proof that the de Bruijn
+    // context-closing is correct.
+    all_props("goal h: forall x: Int. let pf = solve x = x by true in x = x\n", 0, 3);
+}
+
+/// `solve … by …` round-trips through the printer.
+#[test]
+fn solve_by_round_trips() {
+    let src = "const c: Int\ngoal h: let pf = solve c = c by true in c = c\n";
+    let m1 = parse(src).expect("parses");
+    let printed = print_module(&m1);
+    assert!(printed.contains("solve c = c by true"), "printed: {printed}");
+    let m2 = parse(&printed).expect("re-parses");
+    assert_eq!(m1, m2, "solve/by round-trips\n{printed}");
+}
+
 // ── slice 3: bounded `in` range quantifiers + triggers ──────────────────
 
 /// A bounded range `forall x in 0..n. P` desugars to
