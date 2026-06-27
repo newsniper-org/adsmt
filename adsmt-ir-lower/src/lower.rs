@@ -12,7 +12,15 @@
 //! see [`Lowerer::try_arith`]). The lu-kb-only `Nat`/`WNat` injections,
 //! `int2real`, and `pow` / `odd` / `prime` are NOT theory-mapped: they fall
 //! through to **EUF** (an uninterpreted function — sound, since it can never
-//! manufacture an arithmetic fact, but incomplete; a later slice). Genuinely
+//! manufacture an arithmetic fact, but incomplete; a later slice). This is the
+//! point where the **lu-kb type relation is dropped**: a `Nat`/`WNat` variable
+//! reaches the engine as an opaque EUF element, so its defining positivity fact
+//! (`Nat ⟹ x≥1`, `WNat ⟹ x≥0`) decides nothing — synthesizing that guard +
+//! routing the injections through arithmetic is the soundness-monotone lever
+//! to make the type relation a decision input (a later slice). NOTE: this gap
+//! is unrelated to the datatype-acyclicity and LIA-singleton false-sat
+//! residuals — those live in `adsmt-theory`'s datatype / LIA solvers, NOT here,
+//! and are NOT fixed by routing positivity. Genuinely
 //! unlowerable terms — datatypes (`Match`/`Elim`/constructors), `Fix`,
 //! dependent types, proof-as-data, higher-order applications — **abstain**
 //! (`Unlowerable`), degrading the whole query to `Unknown`.
