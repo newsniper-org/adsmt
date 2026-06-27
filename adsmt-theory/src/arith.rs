@@ -65,18 +65,25 @@ pub struct LinArith {
     name_: &'static str,
     bounds: HashMap<String, Bounds>,
     two_vars: Vec<TwoVar>,
+    /// Asserted variable-vs-literal **disequalities** `v ≠ k`. Over LIA
+    /// these close the singleton gap: when the bounds pin `v` to the
+    /// single integer `k` (`0<v<2` ⟹ `v∈[1,1]`), the disequality
+    /// `v ≠ 1` is a conflict — the integrality (`IntegerLike(Int)`) is
+    /// what makes the open interval a singleton, so this is the type
+    /// relation deciding. Scoped alongside `bounds`/`two_vars`.
+    diseqs: Vec<(String, i128)>,
     conflict: Option<TheoryWitness>,
-    scope_stack: Vec<(HashMap<String, Bounds>, Vec<TwoVar>)>,
+    scope_stack: Vec<(HashMap<String, Bounds>, Vec<TwoVar>, Vec<(String, i128)>)>,
 }
 
 impl LinArith {
     pub fn lia() -> Self {
         Self { name_: "LIA", bounds: HashMap::new(), two_vars: Vec::new(),
-               conflict: None, scope_stack: Vec::new() }
+               diseqs: Vec::new(), conflict: None, scope_stack: Vec::new() }
     }
     pub fn lra() -> Self {
         Self { name_: "LRA", bounds: HashMap::new(), two_vars: Vec::new(),
-               conflict: None, scope_stack: Vec::new() }
+               diseqs: Vec::new(), conflict: None, scope_stack: Vec::new() }
     }
 
     // === v0.19 C.2 — public introspection API ===
@@ -449,6 +456,36 @@ impl LinArith {
         None
     }
 
+    /// Singleton-bound vs disequality: an asserted `v ≠ k` conflicts
+    /// with bounds that pin `v` to the single value `k`. The bounds must
+    /// be a **closed, non-strict, equal** pair `[k, k]` — over LIA this
+    /// is exactly what the strict→next-integer tightening produces for a
+    /// constrained interval like `0 < v < 2` (⟹ `v ∈ [1,1]`), so the
+    /// **integrality** (the `IntegerLike(Int)` instance) is what makes
+    /// the rule bite. **Sound + inert on reals**: `record_bound` under
+    /// LRA keeps strict inequalities strict (`0<v<2` ⟹ lower `(0,true)`,
+    /// upper `(2,true)` — never a non-strict singleton), so the rule
+    /// never fires on a real carrier where `0<v<2 ∧ v≠1` IS sat. The
+    /// emitted conflict is genuine: `v ∈ [k,k]` entails `v = k`, which
+    /// the asserted `v ≠ k` directly contradicts (we only ADD an
+    /// entailed equality, never drop a constraint).
+    fn singleton_diseq_conflict(&self) -> Option<TheoryWitness> {
+        for (v, k) in &self.diseqs {
+            if let (Some((lo, false)), Some((up, false))) = self.tight_bounds_strict(v)
+                && lo == up
+                && lo == *k
+            {
+                return Some(TheoryWitness::Opaque {
+                    kind: self.name_.into(),
+                    notes: format!(
+                        "singleton bound {v} ∈ [{k},{k}] contradicts the disequality {v} ≠ {k}"
+                    ),
+                });
+            }
+        }
+        None
+    }
+
     /// Recognise `(<= x k)` / `(< x k)` / `(>= x k)` / `(> x k)`
     /// where `x` is a variable and `k` an integer literal.
     fn parse_comparison(t: &Term) -> Option<(String, &'static str, i128)> {
@@ -674,6 +711,25 @@ impl Theory for LinArith {
             // to UF congruence; LIA has no variable to bound.
             return AssertResult::Ignored;
         }
+        // A *negative* equality `v ≠ k` (v a variable, k an integer
+        // literal): record it so the LIA singleton rule can refute a
+        // bound that pins `v` to the single value `k` (`0<v<2 ∧ v≠1`).
+        // (A var-var or non-literal disequality stays for UF — a single
+        // bound store can't represent it.)
+        if !lit.polarity && let Some((a, b)) = lit.term.dest_eq() {
+            let var_lit = match (a.kind(), Self::int_lit(&b)) {
+                (TermInner::Var(v), Some(k)) => Some((v.name.clone(), k)),
+                _ => match (Self::int_lit(&a), b.kind()) {
+                    (Some(k), TermInner::Var(v)) => Some((v.name.clone(), k)),
+                    _ => None,
+                },
+            };
+            if let Some((var, k)) = var_lit {
+                self.diseqs.push((var, k));
+                return AssertResult::Accepted;
+            }
+            return AssertResult::Ignored;
+        }
         // Try two-variable comparison first (FM input).
         if let Some((x, sign, y, op, k)) = Self::parse_sum_comparison(&lit.term) {
             let final_op = if lit.polarity {
@@ -724,6 +780,12 @@ impl Theory for LinArith {
             self.conflict = Some(w.clone());
             return CheckResult::Unsat { witness: w };
         }
+        // Stage 1c: integer singleton-bound vs disequality (`0<x<2 ∧ x≠1`).
+        // After FM/bound closure so a derived singleton is also caught.
+        if let Some(w) = self.singleton_diseq_conflict() {
+            self.conflict = Some(w.clone());
+            return CheckResult::Unsat { witness: w };
+        }
         // Stage 2: use single-variable bounds to drive multi-variable
         // constraints into tightened single-variable bounds.
         if let Some(w) = self.propagate_two_var_via_bounds() {
@@ -761,14 +823,19 @@ impl Theory for LinArith {
     }
 
     fn push(&mut self) {
-        self.scope_stack.push((self.bounds.clone(), self.two_vars.clone()));
+        self.scope_stack.push((
+            self.bounds.clone(),
+            self.two_vars.clone(),
+            self.diseqs.clone(),
+        ));
     }
 
     fn pop(&mut self, levels: u32) {
         for _ in 0..levels {
-            if let Some((b, tv)) = self.scope_stack.pop() {
+            if let Some((b, tv, dq)) = self.scope_stack.pop() {
                 self.bounds = b;
                 self.two_vars = tv;
+                self.diseqs = dq;
             }
         }
         self.conflict = None;
@@ -777,6 +844,7 @@ impl Theory for LinArith {
     fn reset(&mut self) {
         self.bounds.clear();
         self.two_vars.clear();
+        self.diseqs.clear();
         self.conflict = None;
         self.scope_stack.clear();
     }
@@ -911,17 +979,80 @@ mod tests {
     }
 
     #[test]
-    fn disequality_is_left_to_uf() {
-        // `¬(x = 5)` is a *disjunction* of strict bounds a single bound
-        // store can't represent; LinArith ignores it (UF reasons about
-        // the disequality, and the polite backstop exempts eq-shaped).
+    fn var_literal_disequality_is_recorded_for_the_singleton_rule() {
+        // `¬(x = 5)` over a var-vs-literal IS now interpreted: LinArith
+        // records it so the integer singleton rule can refute a bound
+        // that pins `x` to 5 (it used to be Ignored). It is still SAT on
+        // its own (no bound pins x).
         let mut t = LinArith::lia();
         let x = Term::var("x", int_ty());
         let e5 = Term::mk_eq(x, Term::const_("int:5", int_ty())).unwrap();
         assert!(matches!(
             t.assert(Literal::negative(e5).unwrap()),
+            AssertResult::Accepted
+        ));
+        assert!(matches!(t.check(), CheckResult::Sat));
+    }
+
+    #[test]
+    fn nonliteral_disequality_is_left_to_uf() {
+        // `¬(x = y)` (var-var) has no literal to bound against → still
+        // Ignored, left to UF's congruence reasoning.
+        let mut t = LinArith::lia();
+        let x = Term::var("x", int_ty());
+        let y = Term::var("y", int_ty());
+        let exy = Term::mk_eq(x, y).unwrap();
+        assert!(matches!(
+            t.assert(Literal::negative(exy).unwrap()),
             AssertResult::Ignored
         ));
+    }
+
+    #[test]
+    fn integer_singleton_bound_contradicts_disequality() {
+        // `x > 4 ∧ x < 6 ∧ x ≠ 5` over LIA: the bounds pin x to [5,5]
+        // (integer tightening), which `x ≠ 5` refutes. The integrality
+        // (IntegerLike(Int)) is what makes the open interval a singleton.
+        let mut t = LinArith::lia();
+        let x = Term::var("x", int_ty());
+        let lit = |v: &str, k: i128, op: &str| {
+            let op_ty = Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap()).unwrap();
+            Term::app(
+                Term::app(Term::const_(op, op_ty), Term::var(v, int_ty())).unwrap(),
+                Term::const_(&format!("int:{k}"), int_ty()),
+            )
+            .unwrap()
+        };
+        t.assert(Literal::positive(lit("x", 4, ">")).unwrap());
+        t.assert(Literal::positive(lit("x", 6, "<")).unwrap());
+        let ne5 = Term::mk_eq(x, Term::const_("int:5", int_ty())).unwrap();
+        t.assert(Literal::negative(ne5).unwrap());
+        assert!(matches!(t.check(), CheckResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn real_strict_interval_disequality_stays_sat() {
+        // The SAME `0 < x < 2 ∧ x ≠ 1` over LRA must stay SAT (x = 0.5):
+        // LRA keeps strict bounds strict, so no non-strict singleton is
+        // ever synthesized → the singleton rule is inert on reals.
+        let mut t = LinArith::lra();
+        let real_ty = Type::const_("Real", Kind::Type);
+        let x = Term::var("x", real_ty.clone());
+        let lit = |v: &str, k: i128, op: &str| {
+            let op_ty =
+                Type::fun(real_ty.clone(), Type::fun(real_ty.clone(), Type::bool_()).unwrap())
+                    .unwrap();
+            Term::app(
+                Term::app(Term::const_(op, op_ty), Term::var(v, real_ty.clone())).unwrap(),
+                Term::const_(&format!("int:{k}"), real_ty.clone()),
+            )
+            .unwrap()
+        };
+        t.assert(Literal::positive(lit("x", 0, ">")).unwrap());
+        t.assert(Literal::positive(lit("x", 2, "<")).unwrap());
+        let ne1 = Term::mk_eq(x, Term::const_("int:1", real_ty)).unwrap();
+        t.assert(Literal::negative(ne1).unwrap());
+        assert!(matches!(t.check(), CheckResult::Sat));
     }
 
     #[test]
