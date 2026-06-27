@@ -360,6 +360,54 @@ fn predicate_polymorphic_fn_round_trips() {
     assert_eq!(m1, m2, "predicate-polymorphic fn round-trips\nprinted:\n{printed}");
 }
 
+// ── slice 2e: function types `T -> U` (incl. refined arrows) ─────────────
+
+/// A function-typed constant `const g: Int -> Int` postulates `g : Int → Int`
+/// (a higher-order opaque constant); a goal may apply it.
+#[test]
+fn function_type_const_and_application() {
+    all_props("const g: Int -> Int\nconst x: Int\ngoal h: g(x) = g(x)\n", 0, 1);
+}
+
+/// A higher-order function parameter: `fn ap(f: Int -> Int, x: Int): Int = f(x)`
+/// applies its function argument. Applied to a real `Int -> Int` constant.
+#[test]
+fn higher_order_function_parameter() {
+    all_props(
+        "fn ap(f: Int -> Int, x: Int): Int = f(x)\n\
+         const sq: Int -> Int\nconst c: Int\ngoal h: ap(sq, c) = sq(c)\n",
+        0,
+        1,
+    );
+}
+
+/// `->` is right-associative: `A -> B -> C` parses as `A -> (B -> C)` and prints
+/// back without inner parens; `(A -> B) -> C` keeps its domain parens.
+#[test]
+fn arrow_is_right_associative() {
+    let src = "sort A\nsort B\nsort C\nconst g: A -> B -> C\nconst h: (A -> B) -> C\n";
+    let m1 = parse(src).expect("parses");
+    let printed = print_module(&m1);
+    assert!(printed.contains("A -> B -> C"), "right-assoc, no inner parens: {printed}");
+    assert!(printed.contains("(A -> B) -> C"), "left arrow keeps parens: {printed}");
+    let m2 = parse(&printed).expect("re-parses");
+    assert_eq!(m1, m2, "arrow types round-trip\n{printed}");
+}
+
+/// A **refined arrow** `{u: Int | u > 0} -> {v: Int | v > 0}` elaborates to the
+/// plain value arrow `Int → Int` (refinements erased at the type level), and
+/// round-trips.
+#[test]
+fn refined_arrow_erases_to_base() {
+    // the const postulates `g : Int → Int`; no positivity hypothesis (the
+    // refinements are on the arrow's domain/codomain, not a bare value).
+    all_props("const g: {u: Int | u > 0} -> {v: Int | v > 0}\ngoal h: true\n", 0, 1);
+    let src = "const g: {u: Int | u > 0} -> {v: Int | v > 0}\n";
+    let m1 = parse(src).expect("parses");
+    let m2 = parse(&print_module(&m1)).expect("re-parses");
+    assert_eq!(m1, m2, "refined arrow round-trips\n{}", print_module(&m1));
+}
+
 // ── slice 3: bounded `in` range quantifiers + triggers ──────────────────
 
 /// A bounded range `forall x in 0..n. P` desugars to

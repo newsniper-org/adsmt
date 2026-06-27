@@ -233,7 +233,21 @@ impl<'a> Parser<'a> {
     }
 
     // ── types ────────────────────────────────────────────────────────────
+    /// A type: a type atom optionally followed by `-> U` (a **function type**,
+    /// right-associative, so `A -> B -> C` = `A -> (B -> C)`).
     fn type_(&mut self) -> Result<Type, FaceError> {
+        let atom = self.type_atom()?;
+        if self.eat(&Tok::Arrow) {
+            let cod = self.type_()?; // right-associative
+            Ok(Type::Arrow(Box::new(atom), Box::new(cod)))
+        } else {
+            Ok(atom)
+        }
+    }
+
+    /// A type atom: a refinement type `{v:T|φ}`, a parametric `F(T, …)`, or a
+    /// named sort `S`.
+    fn type_atom(&mut self) -> Result<Type, FaceError> {
         // a **refinement type** `{ v : T | φ }` — a base sort carved by a
         // predicate over the single bound value `v`. Usable wherever a type is
         // (const / fn param / fn return). The predicate may mention generic
@@ -246,6 +260,13 @@ impl<'a> Parser<'a> {
             let pred = self.term()?;
             self.expect(&Tok::RBrace)?;
             return Ok(Type::Refine { var, base: Box::new(base), pred: Box::new(pred) });
+        }
+        // a parenthesised type `( T )` — needed to write an arrow DOMAIN, e.g.
+        // `(A -> B) -> C` (without the parens, `->` is right-associative).
+        if self.eat(&Tok::LParen) {
+            let t = self.type_()?;
+            self.expect(&Tok::RParen)?;
+            return Ok(t);
         }
         let name = self.ident()?;
         if self.eat(&Tok::LParen) {

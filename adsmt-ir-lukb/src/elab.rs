@@ -332,6 +332,12 @@ impl Elab {
             // positivity hypothesis / fn pre-/post-condition), handled by the
             // callers that own the binding name — never here.
             Type::Refine { base, .. } => self.elab_type(base),
+            // a function type `T -> U` → the kernel arrow. A refined arrow's
+            // value sort is the plain arrow over the base sorts (the `'p`/`'q`
+            // refinements are erased here; their pre-/postcondition role is
+            // realised when the arrow-typed value is used — see
+            // `docs/design/SOLVE_BY_PROOF_TERMS.md`).
+            Type::Arrow(dom, cod) => Ok(K::arrow(self.elab_type(dom)?, self.elab_type(cod)?)),
         }
     }
 

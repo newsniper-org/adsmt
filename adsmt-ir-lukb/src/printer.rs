@@ -141,6 +141,19 @@ fn print_type(out: &mut String, ty: &Type) {
             print_term(out, pred, 0);
             out.push_str(" }");
         }
+        Type::Arrow(dom, cod) => {
+            // `T -> U`, right-associative: parenthesise an arrow DOMAIN (the left
+            // of `->` binds tighter), leave an arrow codomain bare.
+            if matches!(**dom, Type::Arrow(..)) {
+                out.push('(');
+                print_type(out, dom);
+                out.push(')');
+            } else {
+                print_type(out, dom);
+            }
+            out.push_str(" -> ");
+            print_type(out, cod);
+        }
     }
 }
 

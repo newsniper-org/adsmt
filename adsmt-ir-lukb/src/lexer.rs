@@ -46,6 +46,7 @@ pub enum Tok {
     Implies,   // ==>
     Iff,       // <==>
     Turnstile, // |-
+    Arrow,     // -> (function type)
     DotDot,    // ..
     Colon,     // :
     Comma,     // ,
@@ -212,6 +213,11 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, FaceError> {
             }
             "|-" => {
                 out.push((Tok::Turnstile, start));
+                i += 2;
+                continue;
+            }
+            "->" => {
+                out.push((Tok::Arrow, start));
                 i += 2;
                 continue;
             }

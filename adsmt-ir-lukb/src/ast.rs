@@ -61,6 +61,13 @@ pub enum Type {
     /// [`crate::lexer::is_tick_ident`]). The proof is `Prop`-irrelevant +
     /// lowering-erased; the type's *sort* is just `T`.
     Refine { var: String, base: Box<Type>, pred: Box<Term> },
+    /// `T -> U` — a **function type** (right-associative). A *refined* arrow
+    /// `{u:A|'p} -> {v:A|'q}` carries the precondition `'p` on its domain and
+    /// the postcondition `'q` on its codomain; the type's *value sort* is the
+    /// plain `A -> A` (refinements `Prop`-irrelevant + lowering-erased), and an
+    /// argument supplied at this type provides its postcondition as a usable
+    /// fact (see `docs/design/SOLVE_BY_PROOF_TERMS.md` §2).
+    Arrow(Box<Type>, Box<Type>),
 }
 
 /// A binder group: one or more names sharing a type (`x y: Int`), optionally

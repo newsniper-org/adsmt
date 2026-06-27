@@ -170,6 +170,10 @@ and `image_quantifier_desugar` (the inference-sugar binder `∀{y=f(x)|'p}. φ(y
 1. **This doc** + 선검증 of the cut + the inference-sugar desugar. **DONE**
    (`~/solve-by-verification`, 5 verified, 0 errors).
 2. lukb `Type::Arrow` (refined function types) — parse/elab/print/round-trip.
+   **DONE** (`adsmt-ir-lukb`): `->` lexer token, `Type::Arrow(dom, cod)`
+   right-associative with parenthesised types `(A -> B) -> C`, refined arrows
+   `{u:A|'p} -> {v:A|'q}` elaborate to the value arrow `A -> A` (refinements
+   erased); +4 tests.
 3. lukb **`solve … by …`** term over **blocks** (§5): the `solve`/`by` clauses are
    `let`-chain blocks; parse/elab to the cut obligations + proof term.
 4. The **inference-sugar binders** (§5): `forall {y = f(x) | 'p(x)}. …` →
