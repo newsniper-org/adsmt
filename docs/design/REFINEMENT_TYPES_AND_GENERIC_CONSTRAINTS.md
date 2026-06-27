@@ -105,8 +105,11 @@ same way a type-class method does.
 - **lukb face** (`adsmt-ir-lukb`): parse `{v:T | φ}` and the `'p` single-quote
   binder; elaborate to the Π/Σ kernel encoding (§3), inserting the
   construct-obligation / use-hypothesis contracts.
-- **adsmt-ir-lower**: generalise `refinement_lo` (Nat/WNat → 1/0) to carry an
-  arbitrary predicate guard; the §2 collapse otherwise unchanged.
+- **adsmt-ir-lower**: nothing for the *brace* refinement — `{v:T|φ}` elaborates
+  to an explicit `Π(x:T). φ(x) → body`, which already lowers via the proof-binder
+  `⟹` path. `refinement_lo` (Nat/WNat → 1/0) stays the *named-sort* hook, where
+  the predicate is implicit in the sort and must be synthesised; the §2 collapse
+  is unchanged.
 - **adsmt-class**: predicate dictionaries for `'p` (the dictionary-pass), reusing
   the `Relation`/`Instance`/`Resolver` spine — a `'p` constraint resolves like a
   type-class constraint.
@@ -114,10 +117,25 @@ same way a type-class method does.
 ## 7. Phasing
 
 1. **This doc** + pre-verification of §5.1 (parametric relativization) and §5.2
-   (dictionary substitution).
-2. Concrete refinement types `{v:T | q}` end-to-end: lukb syntax + the
-   generalised `refinement_lo` (Nat/WNat become named instances of the same
-   mechanism).
+   (dictionary substitution). **DONE** (`~/nat-wnat-refinement-verification`
+   `src/generic_constraint.rs`, 7/0).
+2. Concrete refinement types `{v:T | q}` end-to-end: lukb syntax. **LANDED**
+   (`adsmt-ir-lukb`). The brace binder `{names : T | φ}` parses
+   (`parser.rs::binder`), elaborates as a domain guard with the pre-verified
+   polarity (`∀ → ⟹`, `∃ → ∧`; `elab.rs::elab_quant`, `refinement` arm), and
+   round-trips through the printer (`printer.rs::print_quant`). The comparison
+   sugar `(n:T) op rhs` is exactly the single-predicate special case
+   (`refinement_generalises_the_comparison_constraint` proves they elaborate to
+   the *same* kernel term). **Key simplification vs the original sketch: the
+   lukb path needs NO change to `adsmt-ir-lower`'s `refinement_lo`.** That hook
+   is only for the *named-sort* path (Nat/WNat), where the predicate is implicit
+   in the sort and must be synthesised. A brace refinement carries `φ` as an
+   explicit kernel term, so the elaborator emits `Π(x:T). φ(x) → body`
+   directly — which already lowers via the existing proof-binder `⟹` path
+   (`adsmt-ir-lower` `inline_refinement_lowers_to_a_guard_via_the_proof_binder`).
+   Nat/WNat remain the two named instances of the same feature (their predicate
+   lives in `refinement_lo`); a general `{v:T|q}` reuses the proof-binder lemma,
+   not `refinement_lo`.
 3. Generic `'p`: the `'`-binder syntax + the predicate dictionary in
    `adsmt-class` + the polymorphic-check + instantiation.
 4. z3-differential on concrete refinements (gated on the lower→solve wiring,

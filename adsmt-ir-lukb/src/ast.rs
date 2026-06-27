@@ -70,6 +70,12 @@ pub struct Binder {
     /// `x: Int` with the domain guard `lo <= x and x < hi` (half-open). When
     /// present, `ty` is the implicit `Int` and `constraint` is `None`.
     pub range: Option<(Box<Term>, Box<Term>)>,
+    /// `Some(φ)` for a **refinement-type** binder `{names : T | φ}` — a general
+    /// domain restriction by an arbitrary predicate `φ` (over each name), the
+    /// generalisation of `constraint` (a single comparison `(n:T) op rhs` is the
+    /// special case `{n:T | n op rhs}`). Elaborated identically: `∀ → ⟹`,
+    /// `∃ → ∧` (the pre-verified relativization guard).
+    pub refinement: Option<Box<Term>>,
 }
 
 /// A term (proposition or value).

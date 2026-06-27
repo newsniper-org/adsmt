@@ -260,6 +260,12 @@ impl Elab {
                 guards.push(S::Bin(BinOp::Le, lo.clone(), Box::new(x.clone())));
                 guards.push(S::Bin(BinOp::Lt, Box::new(x), hi.clone()));
             }
+            // a refinement-type binder `{names : T | φ}` adds the arbitrary
+            // predicate `φ` (in scope of the just-bound names) as one domain
+            // guard — the general form of the comparison constraint.
+            if let Some(pred) = &b.refinement {
+                guards.push((**pred).clone());
+            }
         }
         // elaborate the guards + body in the binder context; restore the context
         // regardless of success so an error doesn't leave it dirty.

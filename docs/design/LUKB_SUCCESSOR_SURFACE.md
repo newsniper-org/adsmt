@@ -124,14 +124,28 @@ forall (n: Nat) > 5. odd(n) ==> p(n)
 
 exists (a b c: Nat) >= 2, prime(a), prime(b), prime(c). a + b + c = n
 
-# general form:  QUANT "(" names ":" T ")" constraint* "." body
+# general REFINEMENT-TYPE form — an explicit brace literal `{ names : T | φ }`,
+# φ an arbitrary Bool term over the binders (the comparison `(n:T) op rhs` above
+# is its single-predicate special case; they elaborate to the SAME kernel term):
+forall { n: Int | n > 5 }. p(n)
+forall { a b: Int | a < b }. q(a, b)
+
+# general form:  QUANT binder ("," binder)* "." body
+#   binder  ::=  "(" names ":" T ")" constraint*    (paren + cmp/pred sugar)
+#             |  "{" names ":" T "|" pred-term "}"   (brace refinement type)
+#             |  names ("in" lo ".." hi | ":" T)     (range / plain)
 #   constraint  ::=  cmp e            (e.g. > 5 ;  applies to EACH name)
 #                 |  "," pred-term    (e.g. , prime(a) ;  a Bool term over the binders)
 #                 |  "in" collection  (membership / range, §2a′ above)
 ```
 
 **Semantics.** The bounded-quantifier lowering is the standard
-`∀ x:{T|C}. φ  ⤳  ∀ x:T. C ==> φ` and `∃ x:{T|C}. φ  ⤳  ∃ x:T. C ∧ φ`.
+`∀ x:{T|C}. φ  ⤳  ∀ x:T. C ==> φ` and `∃ x:{T|C}. φ  ⤳  ∃ x:T. C ∧ φ`. The brace
+form `{x:T | φ}` is the general realisation of this `{T|C}` refinement type (the
+predicate `φ` is carried verbatim as the guard `C`); the parenthesised comparison
+`(n:T) op rhs` is the special case `{n:T | n op rhs}`. The lowering polarity
+(`∀ → ⟹`, `∃ → ∧`) is pre-verified — see
+`docs/design/REFINEMENT_TYPES_AND_GENERIC_CONSTRAINTS.md`.
 
 > **Corrected by review (kernel-fit, 2026-06-26).** The adsmt-ir kernel
 > `TermKind` (Sort/Bound/Const/App/Lam/Pi/Let/Elim/Match/Fix) has **no

@@ -27,7 +27,11 @@
 //! - **Quantifiers:** `forall`/`exists` with space-shared typed binders
 //!   (`x y: Int`); **refinement-constrained** binders `(n: Nat) > 5` (a domain
 //!   restriction, desugared to a guard, kept distinct from a body antecedent);
-//!   **bounded ranges** `x in lo..hi` (sugar for `x: Int` + `lo <= x and x < hi`);
+//!   **refinement-type** binders `{n: Int | φ}` — the general form, an arbitrary
+//!   predicate `φ` as the domain guard (the comparison `(n:T) op rhs` is its
+//!   single-predicate special case; both desugar with the pre-verified polarity
+//!   `∀ → ⟹`, `∃ → ∧`); **bounded ranges** `x in lo..hi` (sugar for `x: Int` +
+//!   `lo <= x and x < hi`);
 //!   and **triggers** `… trigger f(x)` / `trigger { p1, p2 }` (carried in the AST,
 //!   round-tripped; dropped at elaboration since the kernel `Π` can't hold them —
 //!   to be threaded out-of-band to the solver later).

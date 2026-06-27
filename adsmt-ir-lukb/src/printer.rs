@@ -244,6 +244,15 @@ fn print_quant(out: &mut String, kw: &str, bs: &[Binder], body: &Term, trigs: &[
                 o.push(')');
                 let _ = write!(o, " {} ", op_str(*op));
                 print_term(o, rhs, 6); // rhs parsed at the `add` level
+            } else if let Some(pred) = &b.refinement {
+                // `{names : T | φ}` — a refinement-type binder
+                o.push_str("{ ");
+                ids(o, &b.names);
+                o.push_str(": ");
+                print_type(o, &b.ty);
+                o.push_str(" | ");
+                print_term(o, pred, 0);
+                o.push_str(" }");
             } else {
                 ids(o, &b.names);
                 o.push_str(": ");

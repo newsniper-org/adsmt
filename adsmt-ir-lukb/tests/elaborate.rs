@@ -188,6 +188,57 @@ fn printer_round_trips_constrained() {
     assert_eq!(m1, m2, "constrained AST stable across print/re-parse\nprinted:\n{printed}");
 }
 
+// ── slice 2b: general refinement-type binders `{v: T | φ}` ──────────────
+
+/// A **refinement-type** binder `{n: Int | n > 5}` is the general form of the
+/// comparison constraint: the predicate `φ` is an arbitrary Bool term over the
+/// bound name, conjoined into the domain guard (`∀ → ⟹`). Elaborates to a Prop.
+#[test]
+fn refinement_type_binder_forall() {
+    let r = parse("goal g: forall { n: Int | n > 5 }. n > 0\n").expect("parses brace form");
+    use adsmt_ir_lukb::ast::{Item, Term};
+    let Item::Goal(_, Term::Forall(bs, _, _)) = &r.items[0] else {
+        panic!("expected a forall goal");
+    };
+    assert!(bs[0].refinement.is_some(), "the binder carries a refinement predicate");
+    all_props("goal g: forall { n: Int | n > 5 }. n > 0\n", 0, 1);
+}
+
+/// The brace refinement `{n: Int | n > 5}` and the comparison sugar `(n: Int) > 5`
+/// elaborate to the **same** kernel term — the comparison is the single-predicate
+/// special case of the general refinement.
+#[test]
+fn refinement_generalises_the_comparison_constraint() {
+    let brace = elaborate("goal g: forall { n: Int | n > 5 }. n > 0\n").expect("brace");
+    let cmp = elaborate("goal g: forall (n: Int) > 5. n > 0\n").expect("cmp");
+    assert_eq!(brace.goals, cmp.goals, "`{{n|n>5}}` ≡ `(n)>5`");
+}
+
+/// In `∃`, the refinement guard is a **conjunction** (the soundness-critical
+/// polarity, mirroring the comparison/range forms).
+#[test]
+fn refinement_type_binder_exists() {
+    all_props("const k: Int\ngoal g: exists { n: Int | n > 5 }. n = k\n", 0, 1);
+}
+
+/// A multi-name refinement group `{a b: Int | a < b}` binds a predicate that
+/// mentions several of the bound names (the predicate is added once, verbatim —
+/// distinct from the comparison form which broadcasts per name).
+#[test]
+fn refinement_type_multi_name() {
+    all_props("goal g: forall { a b: Int | a < b }. a < b + 1\n", 0, 1);
+}
+
+/// Round-trip of the brace refinement form through the printer.
+#[test]
+fn printer_round_trips_refinement() {
+    let src = "goal g: forall { n: Int | n > 5 }. exists { m: Int | m < n }. n = m + 1\n";
+    let m1 = parse(src).expect("parses");
+    let printed = print_module(&m1);
+    let m2 = parse(&printed).expect("re-parses");
+    assert_eq!(m1, m2, "refinement AST stable across print/re-parse\nprinted:\n{printed}");
+}
+
 // ── slice 3: bounded `in` range quantifiers + triggers ──────────────────
 
 /// A bounded range `forall x in 0..n. P` desugars to

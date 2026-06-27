@@ -109,6 +109,32 @@ fn exists_nat_gets_a_conjunction_guard() {
     assert!(s.contains("\"<=\"") && s.contains("\"1\""), "Nat guard is `1 <= x`: {s}");
 }
 
+/// A GENERAL inline refinement `{v:Int | q v}` in a universal — encoded in CIC as
+/// `Π(x:Int). q(x) → P(x)` — already lowers to `∀(x:Int). q(x) ⟹ P(x)` via the
+/// EXISTING proof-binder path. So an arbitrary concrete refinement needs NO new
+/// lowering code (the relativization is the proof-binder `⟹`); Nat/WNat are just
+/// the named-sort special case where the predicate is implicit in the sort.
+#[test]
+fn inline_refinement_lowers_to_a_guard_via_the_proof_binder() {
+    let mut env = arith_env();
+    postulate(&mut env, "q", Term::arrow(Term::cnst("Int"), Term::prop())).unwrap();
+    postulate(&mut env, "p", Term::arrow(Term::cnst("Int"), Term::prop())).unwrap();
+    // ∀(x : {v:Int | q v}). p x   ≡   Π(x:Int). q x → p x
+    let goal = Term::pi(
+        Term::cnst("Int"),
+        Term::arrow(
+            Term::app(Term::cnst("q"), Term::bound(0)),
+            Term::app(Term::cnst("p"), Term::bound(0)),
+        ),
+    );
+    let l = lower(&env, &[goal]).expect("lowers");
+    let (v, body) = l.goals[0].dest_forall().expect("a ∀ over Int");
+    assert_eq!(v.ty, int_ty(), "the refinement's base sort");
+    let (hyp, concl) = body.dest_imp().expect("the refinement predicate is the ⟹ guard");
+    assert!(format!("{hyp:?}").contains("\"q\""), "guard is q(x)");
+    assert!(format!("{concl:?}").contains("\"p\""), "conclusion is p(x)");
+}
+
 /// A free `Nat` constant referenced twice contributes its positivity hypothesis
 /// exactly once (dedup).
 #[test]

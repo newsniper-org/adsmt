@@ -146,13 +146,22 @@ caught #340/#341.
 
 ## 7. Phasing
 
-1. **This doc** + the pre-verified relativization lemma (`~/nat-wnat-refinement-verification`).
-2. Quantifier-free core: 3a + 3b + free-var hypotheses (no binder guards yet) —
-   validates the sort-collapse + injection-identity + free-var positivity.
-3. Quantifier guards (3c for binders) — the relativization, gated on the lemma.
-4. Wire the `Reduces` instance data into `adsmt-class` (one source of truth).
-5. z3-differential gate (§6) before trusting any new `unsat`.
+1. **This doc** + the pre-verified relativization lemma
+   (`~/nat-wnat-refinement-verification`, 7/0). **DONE.**
+2. + 3. **LANDED** (`adsmt-ir-lower`, commit `f38d1b3`): 3a sort-collapse
+   (`lower_sort`, guarded on `Open` modality so a user `(declare-datatype Nat …)`
+   is never coerced), 3b injection-identity (`try_arith` erases
+   `nat2int`/`wnat2int`/`nat2wnat`), 3c quantifier guards (`lower_pi` `⟹`,
+   `exists` arm `∧`) + free-Nat/WNat-constant positivity hypotheses
+   (`extra_hyps`, deduped). 5 direct-kernel tests assert the produced shape
+   matches the pre-verified `relativize`; `adsmt-ir-lower` green, clippy-clean.
+4. Wire the `Reduces` instance data into `adsmt-class` (one source of truth) —
+   **pending.**
+5. The end-to-end kernel-term→render→z3 differential (§6) — **pending**, gated on
+   the lower→solve wiring (#325; no live consumer yet). The current gate is the
+   pre-verified lemma + the shape-match tests + the output being in the
+   already-differentialed `Int` fragment.
 
-Once landed: the `EngineLawProver` order laws over `Nat`/`WNat` become provable
-(their `le` no longer routes through an opaque `nat2int`), and the broad
-Nat/WNat-positivity proof class is decidable on the lukb→engine path.
+Once the lower→solve path is exercised: the `EngineLawProver` order laws over
+`Nat`/`WNat` become provable (their `le` no longer routes through an opaque
+`nat2int`), and the broad Nat/WNat-positivity proof class is decidable.

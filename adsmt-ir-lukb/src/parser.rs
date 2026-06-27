@@ -260,6 +260,27 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
     fn binder(&mut self) -> Result<Binder, FaceError> {
+        // a **refinement-type** group `{names : T | φ}` — a general domain
+        // restriction by an arbitrary predicate `φ` (the generalisation of the
+        // `(n:T) op rhs` comparison constraint below).
+        if self.eat(&Tok::LBrace) {
+            let mut names = vec![self.ident()?];
+            while matches!(self.peek(), Some(Tok::Ident(_))) {
+                names.push(self.ident()?);
+            }
+            self.expect(&Tok::Colon)?;
+            let ty = self.type_()?;
+            self.expect(&Tok::Pipe)?;
+            let pred = self.term()?; // an arbitrary Bool predicate over the names
+            self.expect(&Tok::RBrace)?;
+            return Ok(Binder {
+                names,
+                ty,
+                constraint: None,
+                range: None,
+                refinement: Some(Box::new(pred)),
+            });
+        }
         // a parenthesised group `(names: T)` may carry an inline refinement
         // constraint `op rhs`.
         if self.eat(&Tok::LParen) {
@@ -276,7 +297,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            return Ok(Binder { names, ty, constraint, range: None });
+            return Ok(Binder { names, ty, constraint, range: None, refinement: None });
         }
         // bare form: either a bounded range `x in lo..hi` (single name) or a
         // plain `names: T`.
@@ -290,6 +311,7 @@ impl<'a> Parser<'a> {
                 ty: Type::Name("Int".to_string()),
                 constraint: None,
                 range: Some((Box::new(lo), Box::new(hi))),
+                refinement: None,
             });
         }
         let mut names = vec![first];
@@ -298,7 +320,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(&Tok::Colon)?;
         let ty = self.type_()?;
-        Ok(Binder { names, ty, constraint: None, range: None })
+        Ok(Binder { names, ty, constraint: None, range: None, refinement: None })
     }
 
     /// Zero or more trigger clauses following a quantifier body: `trigger pat`
