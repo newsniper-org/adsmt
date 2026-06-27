@@ -159,32 +159,15 @@ impl Elab {
     ) -> Result<(), FaceError> {
         // 1. collect the generic predicate parameters `'p` (in first-seen order)
         //    from every refinement predicate, each over its refinement's base.
+        //    `collect_pred_params` recurses through `Type::Arrow`/`Type::App`, so
+        //    a **refined-arrow** parameter `{u:A|'p(u)} -> {v:A|'q(v)}` (the user's
+        //    `preserving` surface) contributes both `'p` and `'q`.
         let mut pred_names: Vec<String> = Vec::new();
         let mut pred_bases: Vec<Type> = Vec::new();
-        let see_refinement = |ty: &Type, pn: &mut Vec<String>, pb: &mut Vec<Type>| {
-            if let Type::Refine { base, pred, .. } = ty {
-                let mut ticks = Vec::new();
-                collect_ticks(pred, &mut ticks);
-                for t in ticks {
-                    if let Some(i) = pn.iter().position(|x| *x == t) {
-                        // a `'p` reused across refinements must keep one domain.
-                        if pb[i] != **base {
-                            return Err(unsupported(format!(
-                                "generic predicate `{t}` used over two different domains"
-                            )));
-                        }
-                    } else {
-                        pn.push(t);
-                        pb.push((**base).clone());
-                    }
-                }
-            }
-            Ok(())
-        };
         for (_, ty) in params {
-            see_refinement(ty, &mut pred_names, &mut pred_bases)?;
+            collect_pred_params(ty, &mut pred_names, &mut pred_bases)?;
         }
-        see_refinement(ret, &mut pred_names, &mut pred_bases)?;
+        collect_pred_params(ret, &mut pred_names, &mut pred_bases)?;
 
         // 2. kernel sorts for the `'p` binders: `'p : base → Prop`.
         let mut pred_sorts: Vec<K> = Vec::with_capacity(pred_names.len());
@@ -917,6 +900,54 @@ fn surface_conj_dedup(ts: Vec<S>) -> Option<S> {
         acc = S::Bin(BinOp::And, Box::new(acc), Box::new(t));
     }
     Some(acc)
+}
+
+/// Collect the generic predicate parameters (`'p`) of a (possibly compound)
+/// `fn` parameter/return **type**, recording each over its refinement's base
+/// sort (first-seen order). Recurses through `Type::Arrow`/`Type::App` so a
+/// **refined-arrow** type `{u:A|'p(u)} -> {v:A|'q(v)}` contributes both `'p` and
+/// `'q`: the value sort erases the refinements (an arrow argument is `A → A`),
+/// but its domain/codomain predicates are still bound at the `fn` head as
+/// `Π('p: A→Prop)`. This is what lets the user's `preserving` predicate —
+/// `fn preserving(f: {u:A|'p(u)} -> {v:A|'q(v)}): Bool = ∀x. 'p(x) ⟹ 'p(f(x))`
+/// — name `'p`/`'q` in its body (see `docs/design/SOLVE_BY_PROOF_TERMS.md` §7).
+/// A `'p` reused across refinements must keep a single domain.
+fn collect_pred_params(
+    ty: &Type,
+    pn: &mut Vec<String>,
+    pb: &mut Vec<Type>,
+) -> Result<(), FaceError> {
+    match ty {
+        Type::Name(_) => Ok(()),
+        Type::App(_, args) => {
+            for a in args {
+                collect_pred_params(a, pn, pb)?;
+            }
+            Ok(())
+        }
+        Type::Arrow(dom, cod) => {
+            collect_pred_params(dom, pn, pb)?;
+            collect_pred_params(cod, pn, pb)
+        }
+        Type::Refine { base, pred, .. } => {
+            let mut ticks = Vec::new();
+            collect_ticks(pred, &mut ticks);
+            for t in ticks {
+                if let Some(i) = pn.iter().position(|x| *x == t) {
+                    if pb[i] != **base {
+                        return Err(unsupported(format!(
+                            "generic predicate `{t}` used over two different domains"
+                        )));
+                    }
+                } else {
+                    pn.push(t);
+                    pb.push((**base).clone());
+                }
+            }
+            // a refinement's base may itself be compound (nested arrows etc.).
+            collect_pred_params(base, pn, pb)
+        }
+    }
 }
 
 /// Collect the free generic-predicate parameters (`'p`, [`is_tick_ident`]) used

@@ -527,6 +527,86 @@ fn preserving_proof_shape_composes_end_to_end() {
     assert_eq!(r.goals.len(), 3, "leaf + bridge + main goal");
 }
 
+// ── slice 2j: the reusable `preserving` higher-order predicate ───────────
+
+/// `preserving` is a **defined higher-order predicate** (not a proof-producing
+/// fn): `preserving(p, f) := ∀x. p(x) ⟹ p(f(x))`. In its plainest form the
+/// preserved predicate is an ordinary higher-order parameter `p: A -> Bool`, so
+/// it is fully reusable today — no generic machinery needed. A definition with
+/// an unrefined (`Bool`) return emits NO obligation; the obligation appears only
+/// at a USE site, where `preserving(even, dbl)` δ-unfolds to the concrete
+/// `∀x. even(x) ⟹ even(dbl(x))` for the engine to discharge.
+/// See `docs/design/SOLVE_BY_PROOF_TERMS.md` §7 (design D).
+#[test]
+fn preserving_as_a_defined_predicate_plain() {
+    // the definition itself: 0 obligations (a `Bool`-returning def is just a
+    // δ-definition of a Prop-valued predicate).
+    all_props(
+        "sort A\n\
+         fn preserving(p: A -> Bool, f: A -> A): Bool = forall x: A. p(x) ==> p(f(x))\n",
+        0,
+        0,
+    );
+    // a use site is one concrete goal (the applied predicate, δ-unfolded at the
+    // solver lowering).
+    let r = all_props(
+        "sort A\nconst even: A -> Bool\nconst dbl: A -> A\n\
+         fn preserving(p: A -> Bool, f: A -> A): Bool = forall x: A. p(x) ==> p(f(x))\n\
+         goal g: preserving(even, dbl)\n",
+        0,
+        1,
+    );
+    assert!(format!("{:?}", r.goals[0]).contains("preserving"), "the goal applies preserving");
+}
+
+/// The user's exact surface — `preserving` over a **refined-arrow** argument
+/// `f: {u:A|'p(u)} -> {v:A|'q(v)}`, generic in `'p`/`'q`. The refined arrow
+/// erases to the value arrow `A → A`, while `'p` and `'q` are collected (even
+/// though nested inside the arrow) and bound implicitly as `Π('p)Π('q)` at the
+/// head, so the body `∀x. 'p(x) ⟹ 'p(f(x))` may name `'p`. The return is
+/// unrefined, so the definition emits NO def-site obligation (resolving the
+/// §7 fork: the predicate IS the definition; the `'q⟹'p` leaf is not a
+/// def-site goal — it only arises at a concrete use, soundly).
+#[test]
+fn preserving_over_a_refined_arrow_generic() {
+    all_props(
+        "sort A\n\
+         fn preserving(f: {u: A | 'p(u)} -> {v: A | 'q(v)}): Bool = \
+            forall x: A. 'p(x) ==> 'p(f(x))\n",
+        0,
+        0,
+    );
+}
+
+/// A use site of the generic refined-arrow `preserving` instantiates `'p`/`'q`
+/// (and `f`) explicitly — the dictionary-passing of §5.2 as ordinary positional
+/// arguments — and δ-unfolds to the concrete preservation proposition.
+#[test]
+fn preserving_generic_use_site_instantiates_the_predicate() {
+    let r = all_props(
+        "sort A\nconst even: A -> Bool\nconst ge0: A -> Bool\nconst dbl: A -> A\n\
+         fn preserving(f: {u: A | 'p(u)} -> {v: A | 'q(v)}): Bool = \
+            forall x: A. 'p(x) ==> 'p(f(x))\n\
+         goal g: preserving(even, ge0, dbl)\n",
+        0,
+        1,
+    );
+    assert!(format!("{:?}", r.goals[0]).contains("preserving"), "the goal applies preserving");
+}
+
+/// The reusable `preserving` round-trips through the printer (the refined arrow
+/// and the generic `'p`/`'q` survive).
+#[test]
+fn preserving_refined_arrow_round_trips() {
+    let src = "sort A\n\
+        fn preserving(f: {u: A | 'p(u)} -> {v: A | 'q(v)}): Bool = \
+           forall x: A. 'p(x) ==> 'p(f(x))\n";
+    let m1 = parse(src).expect("parses");
+    let printed = print_module(&m1);
+    let m2 = parse(&printed).expect("re-parses");
+    assert_eq!(m1, m2, "reusable preserving round-trips\n{printed}");
+}
+
 // ── slice 3: bounded `in` range quantifiers + triggers ──────────────────
 
 /// A bounded range `forall x in 0..n. P` desugars to

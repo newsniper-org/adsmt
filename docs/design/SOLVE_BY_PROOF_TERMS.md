@@ -210,17 +210,62 @@ and `image_quantifier_desugar` (the inference-sugar binder `∀{y=f(x)|'p}. φ(y
    preserves p", L = "q ⟹ p on the image" via `{y=f(x)|p(x)}`) emits the leaf +
    the bridge; the bridge is discharged from `post_f` + `L`, the leaf is the
    genuine content (engine-gated on #325).
-   **Open design forks for a fully-reusable `preserving` *fn*** (not yet built —
-   to confirm with the user, having mis-read intent before):
-   - **return-type-is-a-proposition**: lukb `fn … : T` takes a `Type`, but
-     `preserving(f) : G` returns a *proof of a proposition* (`G` depends on `f`).
-     Needs either a Prop-in-return-position surface or a `Σ`/proof-carrying form.
-   - **generic-`'p` deferred obligations**: the `solve/by` leaf closed over a
-     *generic* `'p`/`'q` (`∀'p 'q f. L`) is NOT provable (L holds only when
-     `'q ⟹ 'p`); a reusable polymorphic `preserving` needs the leaf to become a
-     **use-site** obligation (instantiated at concrete `q`), i.e. the
-     dictionary-passing of §5.2 — not a definition-site goal.
-   - **`post_f` auto-extraction**: a refined-arrow *argument* should auto-supply
-     `post_f : ∀x.'p(x)⟹'q(f(x))` as a body hypothesis (a proof binder), rather
-     than the explicit `axiom` used in the composition demo. Extends ②-C's
-     contract handling to arrow params.
+## 7.1 The reusable `preserving` *fn* — design D (defined higher-order predicate)
+
+The three open forks are **resolved by reframing `preserving` as a *defined
+higher-order predicate*, not a proof-producing fn** (design D). This is exactly
+the user's own principle — "preservation is a higher-order predicate"
+(`[[feedback-preservation-is-higher-order-predicate]]`) — taken literally: a
+higher-order predicate is a *`Prop`-valued function*, i.e. a **definition**, not
+a value that carries its own proof.
+
+```
+fn preserving(f: {u: A | 'p(u)} -> {v: A | 'q(v)}): Bool
+    = forall x: A. 'p(x) ==> 'p(f(x))
+```
+
+- `preserving : Π('p: A→Prop). Π('q: A→Prop). Π(f: A→A). Prop`, body
+  `λ'p 'q f. ∀x. 'p(x) ⟹ 'p(f(x))` — a plain δ-definition of the *preservation
+  proposition*. The refined-arrow argument **erases** to the value arrow `A → A`;
+  `'p`/`'q` are collected (even though nested inside the arrow — `collect_pred_params`
+  recurses through `Type::Arrow`) and bound implicitly at the head, so the body
+  may name `'p`. `'q` is part of `f`'s declared type (it documents the codomain
+  refinement); the *definition* does not use it.
+- A use site `preserving(even, ge0, dbl)` instantiates `'p`/`'q`/`f` as ordinary
+  positional arguments (the §5.2 dictionary-passing) and δ-unfolds to the
+  concrete `∀x. even(x) ⟹ even(dbl(x))`, which the engine discharges.
+- The plainest reusable form takes the predicate as an *ordinary* higher-order
+  parameter `fn preserving(p: A -> Bool, f: A -> A): Bool = ∀x. p(x) ⟹ p(f(x))`
+  — fully reusable today, no generic machinery at all.
+
+**How this resolves each fork:**
+- **return-type-is-a-proposition** → dissolved. `preserving` returns `Bool`
+  (= `Prop`): it *defines* a proposition, it does not return a proof. No
+  Prop-in-return-position surface is needed.
+- **generic-`'p` deferred obligations** → dissolved. There is NO def-site leaf:
+  the definition is just the predicate. (The `solve/by` leaf `∀'p 'q f.
+  ('q(f x) ⟹ 'p(f x))` is genuinely *false* for generic `'p`/`'q` — counterexample
+  `'p := λn. n≥0`, `'q := λn. n≥−5`, `f := λn. n−3`: `f` inhabits the refined
+  arrow yet `f(0)=−3 ̸≥0`. So a def-site goal would *reject* `preserving`. The leaf
+  only ever appears at a concrete use site, where it is a sound, provable-or-not
+  obligation — and the landed `solve … by …` cut (Phase 5) is exactly the proof
+  *method* a user invokes to discharge a concrete `preserving(…)` goal via the
+  image lemma.)
+- **`post_f` auto-extraction** → **deferred** (documented future work). Design D
+  does not need `post_f` in the *definition*. It is wanted only when *proving* a
+  concrete `preserving(f)` goal via `solve/by` using `f`'s codomain refinement —
+  and auto-supplying `post_f : ∀x.'p(x)⟹'q(f(x))` from a refined-arrow argument
+  is **only sound if the call site also discharges the matching obligation that
+  the passed function actually inhabits that refined-arrow type** (refinements
+  erase to `A→A`, so the kernel cannot see it). That arrow-argument contract
+  obligation is a separate, larger feature (the dual of ②-C's precondition, for
+  arrow params); until it lands, `post_f` stays an *explicit* `axiom`/`assume`
+  as in the Phase 5 composition demo. (The alternative reading — `preserving` as
+  a proof-producing fn with a `solve/by` body and use-site-deferred leaves —
+  needs that same deferred-obligation machinery and was set aside in favour of
+  design D.)
+
+**LANDED** (`adsmt-ir-lukb`): `collect_pred_params` recurses through
+`Type::Arrow`/`Type::App`, so the refined-arrow `preserving` surface elaborates;
++4 tests (slice 2j) — the plain (ordinary-HO-param) and the generic
+(refined-arrow) `preserving`, a use-site goal that δ-unfolds, and the round-trip.
