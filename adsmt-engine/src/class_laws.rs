@@ -223,6 +223,74 @@ mod tests {
         .expect("engine proves Ord(Int)'s totality via the PartialOrd premise");
     }
 
+    /// `Preserving('p)` end-to-end: adsmt's own engine proves the preservation
+    /// law `∀x. 'p(x) ⟹ 'p(f(x))` for a function that genuinely preserves the
+    /// predicate, and refutes it for one that does not — so the proof-gated gate
+    /// admits the preserving instance and rejects the non-preserving one (the
+    /// type-relation-level dictionary-passing of §5.2, machine-checked).
+    ///
+    /// The cases are chosen to stay inside the **native** prover's decided
+    /// fragment (simple comparisons; no compound term inside a `<=`):
+    /// - identity `f = λx. x` preserves *any* `'p` — `'p(f(x))` β-reduces to the
+    ///   *same* atom as `'p(x)`, so the negation is a propositional contradiction
+    ///   (the canonical universally-preserving function of §5.2);
+    /// - a constant-to-unknown `f = λx. m` does NOT preserve `0 ≤ v` — the
+    ///   negation `0 ≤ x ∧ ¬(0 ≤ m)` has the genuine countermodel `m < 0`.
+    ///
+    /// (Richer preservation like `f = λx. x+1` is native-`Unknown` on the
+    /// compound `x+1` → conservatively rejected, never unsoundly admitted; it
+    /// awaits an OxiZ-delegating prover, as for the `Nat`/`WNat` order laws.)
+    #[test]
+    fn engine_admits_preserving_and_rejects_non_preserving() {
+        use adsmt_class::{preserving_instance, preserving_relation, ClassError, InstanceDb};
+        use adsmt_core::{Kind, Type, Var};
+
+        let int = Type::const_("Int", Kind::Type);
+        let lit = |n: &str| Term::const_(n, int.clone());
+        let int_le = Term::const_(
+            "Int.le",
+            Type::fun(int.clone(), Type::fun(int.clone(), Type::bool_()).unwrap()).unwrap(),
+        );
+        // 'p = λ(v: Int). Int.le 0 v   (0 ≤ v)
+        let nonneg = {
+            let v = Var { name: "v".into(), ty: int.clone() };
+            let body = Term::app(Term::app(int_le, lit("0")).unwrap(), Term::var("v", int.clone())).unwrap();
+            Term::lam(v, body)
+        };
+        // identity `λ(x: Int). x` — preserves any predicate.
+        let identity = {
+            let x = Var { name: "x".into(), ty: int.clone() };
+            Term::lam(x, Term::var("x", int.clone()))
+        };
+        // constant-to-unknown `λ(x: Int). m` (free `m`) — preserves nothing it
+        // is not told `m` satisfies.
+        let const_m = {
+            let x = Var { name: "x".into(), ty: int.clone() };
+            Term::lam(x, Term::var("m", int.clone()))
+        };
+
+        // identity preserves 0 ≤ v — admitted.
+        let mut db = InstanceDb::new();
+        db.declare_relation(preserving_relation());
+        db.declare_instance_lawful(
+            preserving_instance(int.clone(), nonneg.clone(), identity),
+            &EngineLawProver,
+        )
+        .expect("identity preserves 0 ≤ v");
+
+        // a function returning an unconstrained `m` does NOT — rejected (own db
+        // to avoid the coherence clash with the first `Preserving(Int)`).
+        let mut db2 = InstanceDb::new();
+        db2.declare_relation(preserving_relation());
+        let err = db2
+            .declare_instance_lawful(
+                preserving_instance(int, nonneg, const_m),
+                &EngineLawProver,
+            )
+            .unwrap_err();
+        assert!(matches!(err, ClassError::LawUnproven { .. }), "λx. m breaks 0 ≤ v: {err:?}");
+    }
+
     #[test]
     fn engine_rejects_a_false_order_law() {
         // A carrier whose `le` is a strict order is NOT reflexive, so the
