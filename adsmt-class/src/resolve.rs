@@ -292,10 +292,26 @@ impl<'a> Resolver<'a> {
                 .iter()
                 .map(|p| substitute_premise(p, &sigma))
                 .collect();
+            // Surface the instance's predicate dictionary at the USE site: each
+            // generic predicate parameter `'p` of the relation, mapped to the
+            // concrete predicate the matched instance supplied, with the
+            // head-match substitution applied (so a `'p` whose body mentions a
+            // relation type param is instantiated at the use's concrete type —
+            // mirroring `sub_goals` for premises and `AdmissionDict` at admission
+            // time). This is the type-relation-level realisation of the fn-level
+            // §5.2 dictionary-passing: a `'p` constraint resolved at a use site
+            // recovers the concrete predicate, not just the type substitution.
+            let pred_dict = rel
+                .pred_params
+                .iter()
+                .zip(&inst.preds)
+                .map(|(pp, body)| (pp.name.clone(), body.type_subst(&sigma)))
+                .collect();
             matches.push(InstanceMatch {
                 instance_index: idx,
                 type_subst: sigma.into_iter().collect(),
                 sub_goals,
+                pred_dict,
             });
         }
 
@@ -317,6 +333,22 @@ pub struct InstanceMatch {
     pub instance_index: usize,
     pub type_subst: Vec<(Arc<TyVar>, Type)>,
     pub sub_goals: Vec<ClassGoal>,
+    /// The resolved **predicate dictionary**: each relation generic predicate
+    /// parameter `'p` paired with the concrete predicate the matched instance
+    /// supplied (the head-match substitution already applied). Empty when the
+    /// relation declares no `'p`. This is what a use site threads into the
+    /// fn-level dictionary-passing (`'p := concrete`) — the type-relation-level
+    /// counterpart of the §5.2 fn-level `'p` instantiation.
+    pub pred_dict: Vec<(String, Term)>,
+}
+
+impl InstanceMatch {
+    /// The concrete predicate resolved for the relation's generic predicate
+    /// parameter `name` (`'p`), or `None` if the relation has no such parameter.
+    /// The use-site analogue of [`crate::law::Dict::pred`] (admission time).
+    pub fn pred(&self, name: &str) -> Option<&Term> {
+        self.pred_dict.iter().find(|(n, _)| n == name).map(|(_, t)| t)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -479,5 +511,74 @@ mod tests {
             err,
             ClassError::LawIllFormed { .. } | ClassError::PredArityMismatch { .. }
         ));
+    }
+
+    // ── use-site `'p` resolution (the Resolver, not admission) ───────────
+
+    /// A use-site resolution of a `'p`-carrying relation surfaces the matched
+    /// instance's concrete predicate dictionary on the [`InstanceMatch`] — the
+    /// use-site counterpart of [`crate::law::Dict::pred`]. A caller can then
+    /// thread `'p := concrete` into the fn-level dictionary-passing.
+    #[test]
+    fn use_site_resolution_surfaces_the_predicate_dictionary() {
+        let mut db = InstanceDb::new();
+        db.declare_relation(refined_relation());
+        db.declare_instance(Instance::new("Refined", vec![int_()]).with_pred(expected_pred()))
+            .unwrap();
+        match Resolver::new(&db).resolve(&ClassGoal::new("Refined", vec![int_()])) {
+            ResolutionResult::Found(m) => {
+                assert_eq!(
+                    m.pred("'p"),
+                    Some(&expected_pred()),
+                    "the use site recovers the instance's `'p`"
+                );
+                assert!(m.pred("'q").is_none(), "no such predicate parameter");
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    /// The resolved predicate is **instantiated at the use's concrete type**: a
+    /// parametric instance `Refined(Box α)` whose `'p` mentions `α` resolves, at
+    /// the goal `Refined(Box Int)`, to the predicate with `α := Int` substituted
+    /// (the head-match substitution applied to the dictionary entry — the same
+    /// threading `sub_goals` does for premises).
+    #[test]
+    fn use_site_predicate_is_instantiated_at_the_concrete_type() {
+        let alpha = Arc::new(TyVar { name: "α".into(), kind: Kind::Type });
+        let box_ = Type::const_("Box", Kind::first_order(1));
+        let box_alpha = Type::app(box_.clone(), Type::Var(alpha.clone())).unwrap();
+        let box_int = Type::app(box_, int_()).unwrap();
+
+        let mut db = InstanceDb::new();
+        db.declare_relation(
+            Relation::new("Refined").with_param(alpha.clone()).with_pred_param("'p", Type::Var(alpha.clone())),
+        );
+        // instance Refined(Box α) supplying `'p := λ(v: Box α). v`.
+        let v_a = adsmt_core::Var { name: "v".into(), ty: box_alpha.clone() };
+        let pred_a = Term::lam(v_a, Term::var("v", box_alpha.clone()));
+        db.declare_instance(Instance::new("Refined", vec![box_alpha]).with_pred(pred_a)).unwrap();
+
+        match Resolver::new(&db).resolve(&ClassGoal::new("Refined", vec![box_int.clone()])) {
+            ResolutionResult::Found(m) => {
+                let v_i = adsmt_core::Var { name: "v".into(), ty: box_int.clone() };
+                let expected = Term::lam(v_i, Term::var("v", box_int));
+                assert_eq!(m.pred("'p"), Some(&expected), "`'p` is substituted at α := Int");
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    /// A relation with no predicate parameters yields an empty use-site
+    /// dictionary (no spurious entries).
+    #[test]
+    fn use_site_dictionary_is_empty_without_predicate_params() {
+        let mut db = InstanceDb::new();
+        db.declare_relation(functor_relation());
+        db.declare_instance(Instance::new("Functor", vec![list()])).unwrap();
+        match Resolver::new(&db).resolve(&ClassGoal::new("Functor", vec![list()])) {
+            ResolutionResult::Found(m) => assert!(m.pred_dict.is_empty()),
+            other => panic!("expected Found, got {other:?}"),
+        }
     }
 }
