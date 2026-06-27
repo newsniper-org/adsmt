@@ -486,6 +486,36 @@ impl LinArith {
         None
     }
 
+    /// Decompose `t` as `var + k` where `var` is a variable and `k` a
+    /// (possibly negative) integer constant — accepting `(+ var lit)`,
+    /// `(+ lit var)`, and `(- var lit)`. Returns `(var_name, k)`.
+    /// `(- lit var)` (coefficient −1 on the variable) is NOT this shape
+    /// and returns `None`.
+    fn dest_var_offset(t: &Term) -> Option<(String, i128)> {
+        let TermInner::App(outer, rhs) = t.kind() else { return None };
+        let TermInner::App(head, lhs) = outer.kind() else { return None };
+        let TermInner::Const(c) = head.kind() else { return None };
+        match c.name.as_str() {
+            "+" => {
+                if let (TermInner::Var(v), Some(k)) = (lhs.kind(), Self::int_lit(rhs)) {
+                    return Some((v.name.clone(), k));
+                }
+                if let (Some(k), TermInner::Var(v)) = (Self::int_lit(lhs), rhs.kind()) {
+                    return Some((v.name.clone(), k));
+                }
+                None
+            }
+            "-" => {
+                if let (TermInner::Var(v), Some(k)) = (lhs.kind(), Self::int_lit(rhs)) {
+                    Some((v.name.clone(), -k))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Recognise `(<= x k)` / `(< x k)` / `(>= x k)` / `(> x k)`
     /// where `x` is a variable and `k` an integer literal.
     fn parse_comparison(t: &Term) -> Option<(String, &'static str, i128)> {
@@ -705,6 +735,23 @@ impl Theory for LinArith {
                 self.two_vars.push(TwoVar {
                     x: vx.name.clone(), y: vy.name.clone(), sign: -1, op: ">=", k: 0,
                 });
+                return AssertResult::Accepted;
+            }
+            // `x = y ± k` (var = var ± literal): an OFFSET two-var equality
+            // `x − y = ±k`. Needed by the Peano `IntegerLike` bridge's
+            // image relations `img(succ s) = img(s) + 1`; generally useful.
+            let offset = match a.kind() {
+                TermInner::Var(vx) => Self::dest_var_offset(&b).map(|(vy, k)| (vx.name.clone(), vy, k)),
+                _ => None,
+            }
+            .or_else(|| match b.kind() {
+                TermInner::Var(vx) => Self::dest_var_offset(&a).map(|(vy, k)| (vx.name.clone(), vy, k)),
+                _ => None,
+            });
+            if let Some((vx, vy, k)) = offset {
+                // x = y + k  ⟺  x − y = k.
+                self.two_vars.push(TwoVar { x: vx.clone(), y: vy.clone(), sign: -1, op: "<=", k });
+                self.two_vars.push(TwoVar { x: vx, y: vy, sign: -1, op: ">=", k });
                 return AssertResult::Accepted;
             }
             // Non-var/non-literal operands (e.g. `(= (f x) 5)`) — leave

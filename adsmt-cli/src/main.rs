@@ -2642,15 +2642,21 @@ impl Driver {
             let mut ctor_names = Vec::with_capacity(group.constructors.len());
             let mut selectors_per_ctor: Vec<Vec<String>> =
                 Vec::with_capacity(group.constructors.len());
+            let mut field_sorts_per_ctor: Vec<Vec<String>> =
+                Vec::with_capacity(group.constructors.len());
             for ctor in &group.constructors {
                 let mut field_tys = Vec::with_capacity(ctor.selectors.len());
                 let mut sel_names = Vec::with_capacity(ctor.selectors.len());
+                let mut field_sort_names = Vec::with_capacity(ctor.selectors.len());
                 for (sel, sort_sexpr) in &ctor.selectors {
                     let fty = resolve_sort_ctx(sort_sexpr, &self.registry, &group.params)?;
                     // selector : DT → field
                     let sel_ty = Type::fun(dt_ty.clone(), fty.clone())
                         .map_err(|e| format!("selector `{sel}` type failed: {e:?}"))?;
                     self.symbols.declare(sel.clone(), sel_ty);
+                    // The field sort NAME (so the Peano `IntegerLike` bridge
+                    // can tell a recursive `succ(pred Nat)` from `wrap(Int)`).
+                    field_sort_names.push(fty.to_string());
                     field_tys.push(fty);
                     sel_names.push(sel.clone());
                 }
@@ -2676,6 +2682,7 @@ impl Driver {
                     .declare(format!("is-{}", ctor.name), tester_ty);
                 ctor_names.push(ctor.name.clone());
                 selectors_per_ctor.push(sel_names);
+                field_sorts_per_ctor.push(field_sort_names);
             }
             // Finite enum iff monomorphic with all-nullary constructors.
             let all_nullary = group.params.is_empty()
@@ -2686,6 +2693,7 @@ impl Driver {
                 DatatypeDecl::inductive(name.clone(), ctor_names)
             }
             .with_selectors(selectors_per_ctor)
+            .with_field_sorts(field_sorts_per_ctor)
             .with_params(group.params.clone());
             self.solver.declare_datatype(decl);
         }

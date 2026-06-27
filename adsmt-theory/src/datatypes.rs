@@ -48,6 +48,15 @@ pub struct DatatypeDecl {
     /// rc.30 (Y4) — type parameters for a parametric datatype
     /// (`(Seq T)` → `["T"]`). Empty for monomorphic datatypes.
     pub params: Vec<String>,
+    /// Per-constructor **field SORT names** (not just selector names),
+    /// aligned with `selectors`. Empty (the default) when a producer
+    /// didn't thread them — recognizers that need the field sort (the
+    /// Peano `IntegerLike` bridge: "the unary ctor's field sort == the
+    /// carrier sort") must then FAIL CLOSED. Populated from the parser's
+    /// already-computed field types so the bridge can tell `succ(pred
+    /// Nat)` (recursive → Peano) from `wrap(Int)` (foreign field → NOT
+    /// Peano) — without this the structural shape alone over-fires.
+    pub field_sorts: Vec<Vec<String>>,
 }
 
 impl DatatypeDecl {
@@ -60,6 +69,7 @@ impl DatatypeDecl {
             arities: vec![0u32; len],
             selectors: vec![Vec::new(); len],
             params: Vec::new(),
+            field_sorts: vec![Vec::new(); len],
         }
     }
 
@@ -74,7 +84,21 @@ impl DatatypeDecl {
             arities: vec![0u32; len],
             selectors: vec![Vec::new(); len],
             params: Vec::new(),
+            field_sorts: vec![Vec::new(); len],
         }
+    }
+
+    /// Set per-constructor field SORT names (positional; aligned with
+    /// `constructors`). Needed by the Peano `IntegerLike` bridge to
+    /// verify a unary constructor recurses on its own sort.
+    pub fn with_field_sorts(mut self, field_sorts: Vec<Vec<String>>) -> Self {
+        assert_eq!(
+            self.constructors.len(),
+            field_sorts.len(),
+            "field_sorts length must match constructors length",
+        );
+        self.field_sorts = field_sorts;
+        self
     }
 
     /// v0.19 C.4 — set per-constructor arities (positional).
@@ -108,6 +132,19 @@ impl DatatypeDecl {
         self.params = params;
         self
     }
+}
+
+/// The structural shape of a **Peano-style** datatype
+/// `S = base | succ(sel: S)` — exactly one nullary constructor plus one
+/// unary constructor that recurses on its OWN sort. Such an `S` is the
+/// free term algebra on {base, succ}, isomorphic to ℕ via `base ↦ 0`,
+/// `succ(n) ↦ n+1`. Recognized (conservatively) to drive the
+/// `IntegerLike(S)` arithmetic bridge.
+#[derive(Clone, Debug)]
+struct PeanoShape {
+    base: String,     // the nullary constructor   (↦ 0)
+    succ: String,     // the unary recursive ctor   (↦ +1)
+    pred_sel: String, // the unary ctor's selector  (↦ −1)
 }
 
 #[derive(Default)]
@@ -490,6 +527,148 @@ impl Datatypes {
         }
     }
 
+    /// CONSERVATIVE Peano-shape recognizer. Returns `Some` iff `decl` is
+    /// `S = base | succ(sel: S)`: monomorphic, exactly two constructors
+    /// (one nullary + one unary), and — the load-bearing guard — the
+    /// unary constructor recurses on its OWN sort (`field_sort == S`).
+    /// **Fails closed** when `field_sorts` is absent, so a producer that
+    /// didn't thread field sorts disables the bridge (sound no-op) rather
+    /// than risk a structural-only over-fire on `wrap(Int)` (foreign
+    /// field) or a mutually-recursive group (field sort ≠ `S`).
+    fn peano_shape(decl: &DatatypeDecl) -> Option<PeanoShape> {
+        if !decl.params.is_empty() || decl.constructors.len() != 2 {
+            return None;
+        }
+        let (base_i, succ_i) = match (decl.arities[0], decl.arities[1]) {
+            (0, 1) => (0usize, 1usize),
+            (1, 0) => (1, 0),
+            _ => return None,
+        };
+        let fields = decl.field_sorts.get(succ_i)?;
+        if fields.len() != 1 || fields[0] != decl.sort_name {
+            return None;
+        }
+        let sel = decl.selectors.get(succ_i)?.first()?.clone();
+        Some(PeanoShape {
+            base: decl.constructors[base_i].clone(),
+            succ: decl.constructors[succ_i].clone(),
+            pred_sel: sel,
+        })
+    }
+
+    /// The selector/function head name of an application `(f x)`.
+    fn selector_head_name(app: &Term) -> Option<String> {
+        let TermInner::App(f, _) = app.kind() else { return None };
+        Self::atom_name(f)
+    }
+
+    /// **`IntegerLike(Peano)` arithmetic bridge.** For every Peano-shaped
+    /// sort `S` (free algebra ≅ ℕ), introduce an integer IMAGE variable
+    /// `img(t)` per `S`-term and emit the sound image equalities so the
+    /// LIA solver can reason about Peano structure arithmetically:
+    /// - `img(base) = 0`, `img(succ s) = img(s) + 1` — the isomorphism
+    ///   `φ(base)=0`, `φ(succ n)=φ(n)+1`.
+    /// - congruence: `t₁ = t₂` (asserted `S`-equality) ⟹ `img t₁ = img t₂`
+    ///   (`φ` is a function).
+    /// - GATED predecessor: `img(pred s) = img(s) − 1` ONLY when `s` is
+    ///   forced succ-shaped (its class is excluded from `base` via a
+    ///   recognizer disequality `s ≠ base`) — then `s = succ(p)`,
+    ///   `pred s = p`, `φ(p) = φ(s)−1`. For an `s` that could be `base`,
+    ///   nothing is emitted (`pred(base)` is under-specified, so its image
+    ///   stays a free integer — never forced to `−1`).
+    ///
+    /// **Sound**: every emitted equality is a true consequence of the
+    /// ℕ-isomorphism; the only conditional rule (predecessor) is gated on
+    /// the datatype's own exhaustiveness so `pred(base)` never leaks a
+    /// `−1`. The image vars are fresh (`!peano_img!…`, Int-sorted), so the
+    /// facts can never poison user arithmetic. This closes e.g.
+    /// `b ≠ zero ∧ pred b = b` as `img(pred b) = img(b) ∧ img(pred b) =
+    /// img(b) − 1` ⟹ LIA conflict — and, once a surface puts arithmetic
+    /// ON a Peano value, lets LIA decide Peano-depth obligations the
+    /// datatype theory alone cannot reach.
+    fn peano_arith_bridge(&self, out: &mut Vec<(Term, Term)>) {
+        let peanos: Vec<(String, PeanoShape)> = self
+            .decls
+            .iter()
+            .filter_map(|(s, d)| Self::peano_shape(d).map(|p| (s.clone(), p)))
+            .collect();
+        if peanos.is_empty() {
+            return;
+        }
+        let peano_of = |sort: &str| peanos.iter().find(|(s, _)| s == sort).map(|(_, p)| p.clone());
+        let int_ty = Type::const_("Int", adsmt_core::Kind::Type);
+        let img = |t: &Term| Term::var(&format!("!peano_img!{t}"), int_ty.clone());
+        let lit = |k: i128| Term::const_(&format!("int:{k}"), int_ty.clone());
+        let int_bin = |op: &str, a: Term, b: Term| -> Option<Term> {
+            let ty = Type::fun(int_ty.clone(), Type::fun(int_ty.clone(), int_ty.clone()).ok()?).ok()?;
+            Term::app(Term::app(Term::const_(op, ty), a).ok()?, b).ok()
+        };
+
+        // (1) congruence over Peano sorts: equal terms ⟹ equal images.
+        for (a, b) in &self.asserted_eqs {
+            if peano_of(&a.type_of().to_string()).is_some() {
+                out.push((img(a), img(b)));
+            }
+        }
+
+        // collect every constructor / selector application subterm.
+        let mut ctor_apps: Vec<(Term, Vec<Term>)> = Vec::new();
+        let mut sel_apps: Vec<(Term, Term)> = Vec::new();
+        for t in &self.asserted_terms {
+            self.collect_ctor_apps(t, &mut ctor_apps);
+            self.collect_selector_apps(t, &mut sel_apps);
+        }
+        for (a, b) in &self.asserted_eqs {
+            self.collect_ctor_apps(a, &mut ctor_apps);
+            self.collect_ctor_apps(b, &mut ctor_apps);
+            self.collect_selector_apps(a, &mut sel_apps);
+            self.collect_selector_apps(b, &mut sel_apps);
+        }
+
+        // (2) img(succ s) = img(s)+1 ; img(base) = 0.
+        for (app, args) in &ctor_apps {
+            let Some((cname, _)) = Self::dest_constructor_app(app) else { continue };
+            let Some(p) = peano_of(&app.type_of().to_string()) else { continue };
+            if cname == p.succ && args.len() == 1 {
+                if let Some(rhs) = int_bin("+", img(&args[0]), lit(1)) {
+                    out.push((img(app), rhs));
+                }
+            } else if cname == p.base && args.is_empty() {
+                out.push((img(app), lit(0)));
+            }
+        }
+
+        // (3) succ-shaped classes = those excluded from the base ctor.
+        let mut parent: HashMap<Term, Term> = HashMap::new();
+        for (a, b) in &self.asserted_eqs {
+            Self::uf_union(&mut parent, a, b);
+        }
+        let mut succ_shaped: std::collections::HashSet<Term> = std::collections::HashSet::new();
+        for (a, b) in &self.disequalities {
+            for (x, rhs) in [(a, b), (b, a)] {
+                let Some(p) = peano_of(&x.type_of().to_string()) else { continue };
+                if self.recognizer_excluded_ctor(x, rhs).as_deref() == Some(p.base.as_str()) {
+                    parent.entry(x.clone()).or_insert_with(|| x.clone());
+                    succ_shaped.insert(Self::uf_find(&parent, x));
+                }
+            }
+        }
+
+        // (4) gated predecessor: img(pred s) = img(s)−1 for succ-shaped s.
+        for (sel_app, arg) in &sel_apps {
+            let Some(p) = peano_of(&arg.type_of().to_string()) else { continue };
+            if Self::selector_head_name(sel_app).as_deref() != Some(p.pred_sel.as_str()) {
+                continue;
+            }
+            parent.entry(arg.clone()).or_insert_with(|| arg.clone());
+            if succ_shaped.contains(&Self::uf_find(&parent, arg))
+                && let Some(rhs) = int_bin("-", img(arg), lit(1))
+            {
+                out.push((img(sel_app), rhs));
+            }
+        }
+    }
+
     /// If `rhs` is the recognizer shape for a constructor `c` applied to
     /// `x` — a nullary constructor `c` (so `x ≠ c` ≡ `¬is_c(x)`), or
     /// `c(sel_{c,0}(x), …, sel_{c,k-1}(x))` — return `c`'s name, else
@@ -717,6 +896,9 @@ impl Theory for Datatypes {
         // forced to its surviving constructor (closes `b≠zero ∧ pred b=b`
         // via the downstream acyclicity, no arithmetic bridge).
         self.single_survivor_witness(&mut out);
+        // IntegerLike(Peano) bridge: emit integer image equalities for
+        // Peano-shaped sorts so LIA can reason about Peano arithmetic.
+        self.peano_arith_bridge(&mut out);
         out
     }
 
@@ -1093,6 +1275,80 @@ mod tests {
                 .unwrap(),
         );
         assert!(matches!(dt.check(), CheckResult::Unsat { .. }));
+    }
+
+    fn nat_dt_peano() -> Datatypes {
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("Nat", vec!["zero".into(), "succ".into()])
+                .with_selectors(vec![vec![], vec!["pred".into()]])
+                .with_field_sorts(vec![vec![], vec!["Nat".into()]]),
+        );
+        dt
+    }
+    fn img_of(t: &Term) -> Term {
+        Term::var(&format!("!peano_img!{t}"), Type::const_("Int", Kind::Type))
+    }
+
+    #[test]
+    fn peano_recognizer_accepts_nat_rejects_foreign_and_missing() {
+        let nat = DatatypeDecl::inductive("Nat", vec!["zero".into(), "succ".into()])
+            .with_selectors(vec![vec![], vec!["pred".into()]])
+            .with_field_sorts(vec![vec![], vec!["Nat".into()]]);
+        assert!(Datatypes::peano_shape(&nat).is_some());
+        // `wrap(Int)`: unary ctor over a FOREIGN sort → NOT Peano.
+        let wrap = DatatypeDecl::inductive("W", vec!["mt".into(), "wrap".into()])
+            .with_selectors(vec![vec![], vec!["un".into()]])
+            .with_field_sorts(vec![vec![], vec!["Int".into()]]);
+        assert!(Datatypes::peano_shape(&wrap).is_none());
+        // missing `field_sorts` → fails closed (bridge stays inert).
+        let no_fs = DatatypeDecl::inductive("Nat", vec!["zero".into(), "succ".into()])
+            .with_selectors(vec![vec![], vec!["pred".into()]]);
+        assert!(Datatypes::peano_shape(&no_fs).is_none());
+        // 3 constructors → not Peano.
+        let three = DatatypeDecl::inductive("T", vec!["a".into(), "b".into(), "c".into()])
+            .with_field_sorts(vec![vec![], vec![], vec![]]);
+        assert!(Datatypes::peano_shape(&three).is_none());
+    }
+
+    #[test]
+    fn peano_bridge_emits_image_relations() {
+        // `b ≠ zero ∧ pred b = b`: the bridge emits the congruence
+        // img(pred b)=img(b) AND the gated img(pred b)=img(b)−1.
+        let mut dt = nat_dt_peano();
+        let b = Term::var("b", nat_ty());
+        let zero = Term::const_("zero", nat_ty());
+        let pred_b = pred_of(b.clone());
+        dt.assert(Literal::negative(Term::mk_eq(b.clone(), zero).unwrap()).unwrap());
+        dt.assert(Literal::positive(Term::mk_eq(pred_b.clone(), b.clone()).unwrap()).unwrap());
+        let derived = dt.derive_equalities();
+        let (ib, ipb) = (img_of(&b), img_of(&pred_b));
+        assert!(
+            derived.iter().any(|(a, c)| a.alpha_eq(&ipb) && c.alpha_eq(&ib)),
+            "expected congruence img(pred b) = img(b); got {derived:?}"
+        );
+        // the gated predecessor fact: img(pred b) = (- img(b) 1).
+        assert!(
+            derived.iter().any(|(a, c)| a.alpha_eq(&ipb)
+                && matches!(c.kind(), TermInner::App(..))
+                && format!("{c}").contains("- ")),
+            "expected gated img(pred b) = img(b) - 1; got {derived:?}"
+        );
+    }
+
+    #[test]
+    fn peano_bridge_inert_on_non_peano() {
+        // A non-Peano datatype (zero field_sorts) emits NO image facts.
+        let mut dt = nat_dt(); // no field_sorts → peano_shape fails closed
+        let b = Term::var("b", nat_ty());
+        let zero = Term::const_("zero", nat_ty());
+        dt.assert(Literal::negative(Term::mk_eq(b.clone(), zero).unwrap()).unwrap());
+        dt.assert(Literal::positive(Term::mk_eq(pred_of(b.clone()), b).unwrap()).unwrap());
+        let derived = dt.derive_equalities();
+        assert!(
+            !derived.iter().any(|(a, _)| format!("{a}").contains("!peano_img!")),
+            "bridge must be inert without field_sorts; got {derived:?}"
+        );
     }
 
     #[test]

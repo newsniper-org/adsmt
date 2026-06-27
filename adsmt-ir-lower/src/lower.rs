@@ -151,15 +151,20 @@ impl Lowerer<'_> {
         let mut constructors = Vec::with_capacity(spec.ctors.len());
         let mut arities = Vec::with_capacity(spec.ctors.len());
         let mut selectors = Vec::with_capacity(spec.ctors.len());
+        let mut field_sorts = Vec::with_capacity(spec.ctors.len());
         for (cname, fields, _indices) in &spec.ctors {
             // every constructor field sort must lower to a first-order target
             // sort (recursive / cross-member refs resolve via `lower_sort`).
+            // Record the lowered field-sort NAME so the engine's Peano
+            // `IntegerLike` bridge can verify a recursive `succ(pred Nat)`.
+            let mut fs = Vec::with_capacity(fields.len());
             for f in fields {
-                self.lower_sort(f)?;
+                fs.push(self.lower_sort(f)?.to_string());
             }
             let n = u32::try_from(fields.len())
                 .map_err(|_| unl(format!("constructor `{cname}` has too many fields")))?;
             selectors.push((0..fields.len()).map(|i| format!("{cname}!sel{i}")).collect());
+            field_sorts.push(fs);
             arities.push(n);
             constructors.push(cname.clone());
         }
@@ -174,6 +179,7 @@ impl Lowerer<'_> {
             arities,
             selectors,
             params: vec![],
+            field_sorts,
         })
     }
 
