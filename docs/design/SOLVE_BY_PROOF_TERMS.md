@@ -203,3 +203,24 @@ and `image_quantifier_desugar` (the inference-sugar binder `∀{y=f(x)|'p}. φ(y
    `{x:Int|p(x)}` + `q(f(x))` elaborate to the SAME kernel term. +3 tests.
 5. `preserving` as a library/example higher-order predicate over a refined arrow,
    end-to-end (the §4 bridge), with the leaf `L` discharged by the engine.
+   **The proof shape COMPOSES end-to-end** (`adsmt-ir-lukb`,
+   `preserving_proof_shape_composes_end_to_end`): refinement types + the
+   refined-arrow postcondition `post_f` (an explicit `axiom` here) + the
+   `solve … by …` cut + the image binder all combine — `solve G by L` (G = "f
+   preserves p", L = "q ⟹ p on the image" via `{y=f(x)|p(x)}`) emits the leaf +
+   the bridge; the bridge is discharged from `post_f` + `L`, the leaf is the
+   genuine content (engine-gated on #325).
+   **Open design forks for a fully-reusable `preserving` *fn*** (not yet built —
+   to confirm with the user, having mis-read intent before):
+   - **return-type-is-a-proposition**: lukb `fn … : T` takes a `Type`, but
+     `preserving(f) : G` returns a *proof of a proposition* (`G` depends on `f`).
+     Needs either a Prop-in-return-position surface or a `Σ`/proof-carrying form.
+   - **generic-`'p` deferred obligations**: the `solve/by` leaf closed over a
+     *generic* `'p`/`'q` (`∀'p 'q f. L`) is NOT provable (L holds only when
+     `'q ⟹ 'p`); a reusable polymorphic `preserving` needs the leaf to become a
+     **use-site** obligation (instantiated at concrete `q`), i.e. the
+     dictionary-passing of §5.2 — not a definition-site goal.
+   - **`post_f` auto-extraction**: a refined-arrow *argument* should auto-supply
+     `post_f : ∀x.'p(x)⟹'q(f(x))` as a body hypothesis (a proof binder), rather
+     than the explicit `axiom` used in the composition demo. Extends ②-C's
+     contract handling to arrow params.

@@ -500,6 +500,33 @@ fn image_binder_round_trips() {
     assert_eq!(m1, m2, "image binder round-trips\n{printed}");
 }
 
+// ── slice 2i: `preserving` proof shape, end-to-end ──────────────────────
+
+/// The `preserving` proof (`docs/design/SOLVE_BY_PROOF_TERMS.md` §4) composes ALL
+/// the pieces end-to-end: refinement types, the refined-arrow postcondition
+/// `post_f` (here an explicit axiom `∀x:{A|p}. q(f(x))`), the `solve … by …` cut,
+/// and the image binder. `solve G by L` (G = "f preserves p", L = "q ⟹ p on the
+/// image", written with the `{y=f(x)|p(x)}` image binder) emits the leaf `L` and
+/// the bridge `L ⟹ G` as obligations — the bridge is discharged from `post_f` +
+/// `L`, the leaf is the genuine content.
+#[test]
+fn preserving_proof_shape_composes_end_to_end() {
+    let src = "sort A\n\
+        const p: A -> Bool\n\
+        const q: A -> Bool\n\
+        const f: A -> A\n\
+        axiom post_f: forall {x: A | p(x)}. q(f(x))\n\
+        goal preserved: \
+            let pf = solve forall {x: A | p(x)}. p(f(x)) \
+                     by forall {y = f(x) | p(x)}. q(y) ==> p(y) \
+            in forall {x: A | p(x)}. p(f(x))\n";
+    let r = elaborate(src).expect("the preserving proof shape elaborates");
+    // one hypothesis (post_f) + three goals (the solve/by leaf, the bridge, and
+    // the main goal) — the full §4 cut.
+    assert_eq!(r.hypotheses.len(), 1, "post_f hypothesis");
+    assert_eq!(r.goals.len(), 3, "leaf + bridge + main goal");
+}
+
 // ── slice 3: bounded `in` range quantifiers + triggers ──────────────────
 
 /// A bounded range `forall x in 0..n. P` desugars to
