@@ -229,6 +229,16 @@ fn refinement_type_multi_name() {
     all_props("goal g: forall { a b: Int | a < b }. a < b + 1\n", 0, 1);
 }
 
+/// Idempotence (`r ∧ … ∧ r ⟺ r`): two binders whose domain guards are the
+/// *same* predicate `a > 0` collapse to a single conjunct (no `and`).
+#[test]
+fn duplicate_guards_collapse_by_idempotence() {
+    let r = elaborate("goal g: forall { a: Int | a > 0 }, { b: Int | a > 0 }. b > a\n")
+        .expect("elaborates");
+    let goal = format!("{}", r.goals[0]);
+    assert!(!goal.contains("and"), "the duplicate `a > 0` guard is deduped: {goal}");
+}
+
 /// Round-trip of the brace refinement form through the printer.
 #[test]
 fn printer_round_trips_refinement() {

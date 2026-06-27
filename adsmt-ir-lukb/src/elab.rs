@@ -618,10 +618,20 @@ fn kernel_ctx(ctx: &[(String, K)]) -> Ctx {
     ctx.iter().map(|(_, t)| t.clone()).collect()
 }
 
-/// Left-fold non-empty kernel `Prop`s with `and` (a single term unchanged).
-fn and_chain_k(mut ts: Vec<K>) -> K {
-    let mut acc = ts.remove(0);
+/// Left-fold non-empty kernel `Prop`s with `and`, first dropping
+/// structurally-identical conjuncts (the idempotence `r ∧ … ∧ r ⟺ r`; cheap
+/// since kernel terms are hash-consed, so `==` is `Arc::ptr_eq`). A single term
+/// is returned unchanged.
+fn and_chain_k(ts: Vec<K>) -> K {
+    let mut uniq: Vec<K> = Vec::with_capacity(ts.len());
     for t in ts {
+        if !uniq.contains(&t) {
+            uniq.push(t);
+        }
+    }
+    let mut it = uniq.into_iter();
+    let mut acc = it.next().expect("and_chain_k: non-empty");
+    for t in it {
         acc = K::apps(K::cnst("and"), [acc, t]);
     }
     acc
