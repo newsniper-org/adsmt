@@ -147,6 +147,20 @@ predicate `φ` is carried verbatim as the guard `C`); the parenthesised comparis
 (`∀ → ⟹`, `∃ → ∧`) is pre-verified — see
 `docs/design/REFINEMENT_TYPES_AND_GENERIC_CONSTRAINTS.md`.
 
+**Refinement types in type position + generic `'p` (LANDED).** Beyond quantifier
+binders, `{v: T | φ}` is also a first-class **type** (`Type::Refine`) usable in
+`const` / `fn`-param / `fn`-return position. A `const c: {v:T|φ}` postulates
+`c: T` plus the fact `φ[v:=c]`. A predicate `φ` may name **generic predicate
+parameters `'p`** (a leading single quote — `is_tick_ident`; concrete `q` has no
+quote, the parse-time disambiguation). A `fn` collecting `'p`s from its
+refinements is **predicate-polymorphic**: each `'p` binds implicitly at the head
+as `Π('p: T→Prop)` (the body checks once with `'p` abstract), the param
+refinements are preconditions and the return refinement a postcondition, and the
+contract `∀'p⃗.∀x⃗. (⋀ φᵢ) ⟹ ψ(g('p⃗,x⃗))` is a **goal** for a definition / a
+**trusted axiom** for a signature. The constraint-preserving lambda
+`{v:T|'p v} -> {v:T|'p v}` is exactly this. See
+`docs/design/REFINEMENT_TYPES_AND_GENERIC_CONSTRAINTS.md` §7.
+
 > **Corrected by review (kernel-fit, 2026-06-26).** The adsmt-ir kernel
 > `TermKind` (Sort/Bound/Const/App/Lam/Pi/Let/Elim/Match/Fix) has **no
 > subset/refinement (`{x:T|C}` / Σ) constructor**, and a `Pi`/`Lam` binder

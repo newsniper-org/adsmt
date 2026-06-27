@@ -17,9 +17,19 @@
 //!
 //! ## Status — Phase 1b (Tier 0 + Tier 1, non-layout)
 //!
-//! - **Items:** `sort S`, `const x: T`, and `axiom`/`assume`/`goal` (the name is
-//!   optional); a `goal`'s body may be a sequent `H1, …, Hk |- G` (desugared to
-//!   `(H1 ∧ … ∧ Hk) ==> G`).
+//! - **Items:** `sort S`, `const x: T`, `fn f(…): U [= body]`, `data`, and
+//!   `axiom`/`assume`/`goal` (the name is optional); a `goal`'s body may be a
+//!   sequent `H1, …, Hk |- G` (desugared to `(H1 ∧ … ∧ Hk) ==> G`).
+//! - **Refinement types `{v: T | φ}` in type position** (const / fn-param /
+//!   fn-return): a base sort carved by a predicate. A `const c: {v:T|φ}` adds
+//!   the trusted fact `φ[v:=c]`. A `fn` whose param/return refinements mention
+//!   **generic predicate parameters `'p`** (a leading single quote) is
+//!   **predicate-polymorphic**: `'p` is bound implicitly at the `fn` as
+//!   `Π('p: T→Prop)` (the body checks ONCE with `'p` abstract), param
+//!   refinements are preconditions and the return refinement a postcondition —
+//!   the contract `∀'p⃗.∀x⃗. pre ⟹ post` is a goal for a definition (the
+//!   construct-site obligation) and a trusted axiom for a signature. A concrete
+//!   refinement (no `'p`) gets the same contract treatment.
 //! - **Terms:** propositional (`not`/`and`/`or`/`==>`/`<==>`), `=`/`!=` (`==` is
 //!   the legacy equality alias), chained comparisons (`0 < x < 10`), `Int`/`Real`
 //!   arithmetic (`+ - * /` + the `div`/`mod`/`abs`/`pow`/`odd`/`prime`/`to_real`

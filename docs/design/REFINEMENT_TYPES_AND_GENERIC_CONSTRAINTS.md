@@ -112,7 +112,10 @@ same way a type-class method does.
   is unchanged.
 - **adsmt-class**: predicate dictionaries for `'p` (the dictionary-pass), reusing
   the `Relation`/`Instance`/`Resolver` spine — a `'p` constraint resolves like a
-  type-class constraint.
+  type-class constraint. **Pending** — the fn-level `'p` (above) already realises
+  the *checked-once + per-fn contract* half via the kernel `Π('p)`; the
+  type-relation-level `'p` adds the dictionary *registry* so a `'p` flows through
+  the `Relation`/`Instance` spine across the four-way interlock.
 
 ## 7. Phasing
 
@@ -136,7 +139,37 @@ same way a type-class method does.
    Nat/WNat remain the two named instances of the same feature (their predicate
    lives in `refinement_lo`); a general `{v:T|q}` reuses the proof-binder lemma,
    not `refinement_lo`.
-3. Generic `'p`: the `'`-binder syntax + the predicate dictionary in
-   `adsmt-class` + the polymorphic-check + instantiation.
-4. z3-differential on concrete refinements (gated on the lower→solve wiring,
-   #325), as for the Nat/WNat collapse.
+3. Generic `'p` at **fn level**: the `'`-binder syntax + the polymorphic-check +
+   the contract obligation. **LANDED** (`adsmt-ir-lukb`).
+   - **②-A lexer**: a single leading `'` + an identifier (`'p`) lexes as a
+     *tick-ident* — a generic predicate parameter (`lexer::is_tick_ident`); it
+     lexes back bare (no backtick).
+   - **②-B refinement types in type position**: `Type::Refine { var, base, pred }`
+     usable in const / fn-param / fn-return (parse/print/round-trip). The
+     refinement's *sort* is its base; a `const c: {v:T|φ}` adds the trusted fact
+     `φ[v:=c]` as a hypothesis (β-substituted via `subst_top`; dropping it would
+     be unsound, as for Nat/WNat free-const positivity). A generic `'p` in a
+     const is rejected (no `fn` to bind it).
+   - **②-C predicate-polymorphic fns** (`elab.rs::elab_fn`): collect the `'p`
+     from every param/return refinement; bind them implicitly at the head as
+     `Π('p: base→Prop)` (the body type-checks ONCE with `'p` abstract — the
+     "checked-once" guarantee, free from the kernel `Π`). Each param refinement
+     is a **precondition**, the return refinement a **postcondition**; the
+     contract `∀'p⃗.∀x⃗. (⋀φᵢ) ⟹ ψ(g('p⃗,x⃗))` is a **goal** for a definition (the
+     construct-site obligation) and a **trusted axiom** for a signature (the user
+     asserts it; use sites instantiate `'p:=q` and discharge the now-monomorphic
+     precondition — the dictionary-passing of §5.2). The implication is the CIC
+     proof-binder `Π(_:pre). post`, lowering-erased into the relativization
+     guard (the §2 path). CONCRETE refinement fns (no `'p`) get the identical
+     contract treatment.
+   - **Guard algebra (used by `elab_fn`)**: the precondition conjunction is
+     structurally **deduped** (idempotence `r ∧ … ∧ r ⟺ r`); the companion
+     identities `(p⟹r)∧(q⟹r) ⟺ (p∨q)⟹r` and `(p⟹r)∨(q⟹r) ⟺ (p∧q)⟹r` are the
+     simplifications to apply once refinement *combinators* (union/intersection
+     of refined domains) land — they keep a merged contract minimal.
+   - **Still pending**: the `adsmt-class` predicate-dictionary *registry* (so a
+     `'p` resolves through the `Relation`/`Instance`/`Resolver` spine at a use
+     site rather than only via the per-fn contract) — the **type-relation-level**
+     `'p`, the next phase.
+4. z3-differential on concrete refinements + contracts (gated on the lower→solve
+   wiring, #325), as for the Nat/WNat collapse.
