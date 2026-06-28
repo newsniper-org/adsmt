@@ -24,6 +24,18 @@
 //!   ℤ, ℕ, WNat are `IntegerLike`; a future `ComplexIntegerLike` (ℤ[i]/ℤ[ω])
 //!   will premise `PartialIntegerLike` but **not** `Ord`.
 //!
+//! **Field axis** (the scalar-field sibling of the integer axis):
+//! * [`real_like`] — `RealLike(R)`: a field-like carrier `{add, mul, domain}`
+//!   whose order is supplied through its instance's `PartialOrd(R)` premise. The
+//!   genuine `Real` is additionally declared `Ord(Real)` (a separate instance,
+//!   not a `RealLike` premise) — a `FloatingPoint` carrier would be `RealLike` +
+//!   `PartialOrd` but **not** `Ord` (`NaN` breaks totality). `Real`'s `le` is the
+//!   native `Real.le` (LRA) and its `domain` is the whole field (`λx. ⊤`).
+//!   `ComplexIntegerLike` (ℤ[i]/ℤ[ω]) and `ComplexLike` (ℂ) — the `Pair`-rep
+//!   minpoly extensions over an `IntegerLike`/`RealLike` base — are the next
+//!   members (they need the `Reduces` encode/decode spine + the G1 irreducibility
+//!   gate; NIA/NRA-abstaining until oxiz-nl2 is on the polite bus).
+//!
 //! The order laws are the canonical use of proof-gated admission ([`Law`],
 //! [`crate::InstanceDb::declare_instance_lawful`]): an `Ord` instance is
 //! admitted only if the solver discharges *totality* for its `le`; a carrier
@@ -56,6 +68,13 @@ pub const PARTIAL_ORD: &str = "PartialOrd";
 pub const ORD: &str = "Ord";
 pub const PARTIAL_INTEGER_LIKE: &str = "PartialIntegerLike";
 pub const INTEGER_LIKE: &str = "IntegerLike";
+/// `RealLike(R)` — a totally-/densely-ordered field-like carrier (the field-side
+/// sibling of `IntegerLike`). Premises `PartialOrd(R)` at the instance level
+/// (every real-like carrier is at least partially ordered — a `FloatingPoint`
+/// carrier would be `RealLike` + `PartialOrd` but **not** `Ord`, since `NaN`
+/// breaks totality). The genuine mathematical `Real` is additionally declared
+/// `Ord(Real)` (a separate instance, not a `RealLike` premise).
+pub const REAL_LIKE: &str = "RealLike";
 
 // ── method names ────────────────────────────────────────────────────────
 /// Order `I -> I -> Bool` (lives on `PartialOrd`).
@@ -75,6 +94,7 @@ pub const M_MUL: &str = "mul";
 const SORT_INT: &str = "Int";
 const SORT_NAT: &str = "Nat";
 const SORT_WNAT: &str = "WNat";
+const SORT_REAL: &str = "Real";
 
 const NAT2INT: &str = "nat2int";
 const WNAT2INT: &str = "wnat2int";
@@ -82,6 +102,10 @@ const WNAT2INT: &str = "wnat2int";
 const INT_ADD: &str = "Int.add";
 const INT_MUL: &str = "Int.mul";
 const INT_LE: &str = "Int.le";
+
+const REAL_ADD: &str = "Real.add";
+const REAL_MUL: &str = "Real.mul";
+const REAL_LE: &str = "Real.le";
 
 fn int_ty() -> Type {
     Type::const_(SORT_INT, Kind::Type)
@@ -150,6 +174,21 @@ pub fn partial_integer_like() -> Relation {
 /// methods or laws.
 pub fn integer_like() -> Relation {
     Relation::new(INTEGER_LIKE).with_param(tyvar("I"))
+}
+
+/// `RealLike(R)`: the field-side scalar carrier (the totally-/densely-ordered
+/// field analogue of `PartialIntegerLike`). Same commutative core `{add, mul,
+/// domain}`; the order is supplied through the instance's `PartialOrd(R)` premise
+/// (and, for the genuine `Real`, a separate `Ord(Real)` instance). No own laws —
+/// the order laws live on `PartialOrd`/`Ord`.
+pub fn real_like() -> Relation {
+    let r = tyvar("R");
+    let rt = Type::Var(r.clone());
+    Relation::new(REAL_LIKE)
+        .with_param(r)
+        .with_method(M_ADD, fun3(rt.clone(), rt.clone(), rt.clone()))
+        .with_method(M_MUL, fun3(rt.clone(), rt.clone(), rt.clone()))
+        .with_method(M_DOMAIN, Type::fun(rt, Type::bool_()).expect("kind"))
 }
 
 // ── order laws (goal-members) ───────────────────────────────────────────
@@ -234,6 +273,7 @@ fn le_body(sort: &str) -> Term {
     let carrier = carrier_ty(sort);
     match sort {
         SORT_INT => binop_const(INT_LE, carrier.clone(), carrier, Type::bool_()),
+        SORT_REAL => binop_const(REAL_LE, carrier.clone(), carrier, Type::bool_()),
         SORT_NAT => injected_le(NAT2INT, carrier),
         SORT_WNAT => injected_le(WNAT2INT, carrier),
         other => unreachable!("le_body on non-carrier {other}"),
@@ -287,6 +327,19 @@ fn integer_instance(sort: &str) -> Instance {
         .with_premise(Premise::new(ORD, vec![carrier]))
 }
 
+/// `RealLike(Real)`: the field core `{add, mul, domain=⊤}`, with the order
+/// supplied through its `PartialOrd(Real)` premise. (`Real` is a ring-complete
+/// field, so `add`/`mul` are wired directly — unlike `Nat`/`WNat`, whose
+/// carrier-valued ops await the `Reduces` spine.)
+fn real_like_instance() -> Instance {
+    let carrier = carrier_ty(SORT_REAL);
+    Instance::new(REAL_LIKE, vec![carrier.clone()])
+        .with_premise(Premise::new(PARTIAL_ORD, vec![carrier.clone()]))
+        .with_method(M_ADD, binop_const(REAL_ADD, carrier.clone(), carrier.clone(), carrier.clone()))
+        .with_method(M_MUL, binop_const(REAL_MUL, carrier.clone(), carrier.clone(), carrier.clone()))
+        .with_method(M_DOMAIN, domain_body(SORT_REAL))
+}
+
 /// Build the `domain` body `λ(x : carrier). lo ≤ ι(x)`. For `Int` the injection
 /// is the identity and there is no lower bound, so the body is `λx. ⊤`.
 fn domain_body(sort: &str) -> Term {
@@ -294,7 +347,8 @@ fn domain_body(sort: &str) -> Term {
     let x = Var { name: "x".into(), ty: carrier.clone() };
     let xt = Term::Var(Arc::new(x.clone()));
     let body = match sort {
-        SORT_INT => Term::true_const(),
+        // `Int` and `Real` are whole sorts (no carved-out validity predicate).
+        SORT_INT | SORT_REAL => Term::true_const(),
         SORT_WNAT => positivity_guard(WNAT2INT, carrier, xt, 0),
         SORT_NAT => positivity_guard(NAT2INT, carrier, xt, 1),
         other => unreachable!("domain_body on non-carrier {other}"),
@@ -321,10 +375,13 @@ fn declare_relations(db: &mut InstanceDb) {
     db.declare_relation(ord());
     db.declare_relation(partial_integer_like());
     db.declare_relation(integer_like());
+    db.declare_relation(real_like());
 }
 
-/// Install the order + integer relations and their `Int`/`Nat`/`WNat` ground
-/// instances **structurally** (no law checking). Use when a consumer only needs
+/// Install the order + number relations and their ground instances
+/// **structurally** (no law checking): the integer carriers `Int`/`Nat`/`WNat`
+/// (`PartialOrd`/`Ord`/`PartialIntegerLike`/`IntegerLike`) and the field carrier
+/// `Real` (`PartialOrd`/`Ord`/`RealLike`). Use when a consumer only needs
 /// resolution; [`install_numberlike_checked`] adds proof-gated admission.
 pub fn install_numberlike(db: &mut InstanceDb) {
     declare_relations(db);
@@ -334,6 +391,10 @@ pub fn install_numberlike(db: &mut InstanceDb) {
         db.declare_instance(partial_instance(sort)).expect("PartialIntegerLike instance");
         db.declare_instance(integer_instance(sort)).expect("IntegerLike instance");
     }
+    // the field side: Real is PartialOrd + Ord (genuine total order) + RealLike.
+    db.declare_instance(partial_ord_instance(SORT_REAL)).expect("PartialOrd(Real)");
+    db.declare_instance(ord_instance(SORT_REAL)).expect("Ord(Real)");
+    db.declare_instance(real_like_instance()).expect("RealLike(Real)");
 }
 
 /// Install the family with **proof-gated admission**: every instance must
@@ -352,6 +413,12 @@ pub fn install_numberlike_checked(
         db.declare_instance_lawful(partial_instance(sort), prover)?;
         db.declare_instance_lawful(integer_instance(sort), prover)?;
     }
+    // the field side: Real's order is proof-gated exactly like the integers'
+    // (the prover discharges PartialOrd's reflexivity/antisymmetry/transitivity
+    // + Ord's totality over `Real.le`, an LRA-decidable dense total order).
+    db.declare_instance_lawful(partial_ord_instance(SORT_REAL), prover)?;
+    db.declare_instance_lawful(ord_instance(SORT_REAL), prover)?;
+    db.declare_instance_lawful(real_like_instance(), prover)?;
     Ok(())
 }
 
@@ -423,6 +490,47 @@ mod tests {
         let db = db();
         let goal = ClassGoal::new(INTEGER_LIKE, vec![Type::bool_()]);
         assert!(matches!(Resolver::new(&db).resolve(&goal), ResolutionResult::NotFound));
+    }
+
+    // ── field axis (RealLike) ───────────────────────────────────────────
+
+    #[test]
+    fn real_like_resolves_with_a_partial_ord_premise() {
+        let db = db();
+        match found(&db, REAL_LIKE, SORT_REAL) {
+            ResolutionResult::Found(m) => {
+                assert_eq!(m.sub_goals.len(), 1, "RealLike premises PartialOrd");
+                assert_eq!(m.sub_goals[0].relation, PARTIAL_ORD);
+                assert_eq!(m.sub_goals[0].types[0], carrier_ty(SORT_REAL));
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn real_is_ord_but_not_integer_like() {
+        let db = db();
+        // genuine Real has a total order (a separate Ord(Real) instance) …
+        assert!(matches!(found(&db, ORD, SORT_REAL), ResolutionResult::Found(_)));
+        // … but is NOT integer-like (no IntegerLike(Real) / PartialIntegerLike(Real)).
+        assert!(matches!(found(&db, INTEGER_LIKE, SORT_REAL), ResolutionResult::NotFound));
+        assert!(matches!(found(&db, PARTIAL_INTEGER_LIKE, SORT_REAL), ResolutionResult::NotFound));
+    }
+
+    #[test]
+    fn real_le_is_native_and_domain_is_total() {
+        // Real's `le` is the native `Real.le` (no injection wrapper) …
+        let le = le_body(SORT_REAL);
+        match le.kind() {
+            TermInner::Const(c) => assert_eq!(c.name, REAL_LE),
+            other => panic!("expected a bare Real.le const, got {other:?}"),
+        }
+        // … and its `domain` is the whole field (λx. ⊤).
+        let dom = real_like_instance().methods.iter().find(|m| m.name == M_DOMAIN).unwrap().body.clone();
+        match dom.kind() {
+            TermInner::Lam(_, body) => assert!(body.is_true_const(), "Real domain is ⊤"),
+            other => panic!("expected λ, got {other:?}"),
+        }
     }
 
     // ── domain (positivity) dictionary ──────────────────────────────────

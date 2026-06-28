@@ -223,6 +223,68 @@ mod tests {
         .expect("engine proves Ord(Int)'s totality via the PartialOrd premise");
     }
 
+    fn real_le_dict() -> IntLeDict {
+        let real = Type::const_("Real", Kind::Type);
+        let le = Term::const_(
+            "Real.le",
+            Type::fun(real.clone(), Type::fun(real.clone(), Type::bool_()).unwrap()).unwrap(),
+        );
+        IntLeDict(real, le)
+    }
+
+    #[test]
+    fn engine_proves_the_full_order_law_set_over_real() {
+        // The field-side sibling of `engine_proves_the_full_order_law_set`: adsmt's
+        // own engine discharges every PartialOrd/Ord law over `Real.le` too
+        // (`Real.le → "<="`, an LRA dense total order — the same LinArith path,
+        // over the rationals instead of the integers).
+        let d = real_le_dict();
+        let prover = EngineLawProver;
+        for (rel, name) in [
+            (partial_ord(), "reflexivity"),
+            (partial_ord(), "antisymmetry"),
+            (partial_ord(), "transitivity"),
+            (ord(), "totality"),
+        ] {
+            assert!(prover.prove_valid(&law(&rel, name, &d)), "Real {}::{name}", rel.name);
+        }
+    }
+
+    #[test]
+    fn engine_lawfully_admits_the_real_order_instances() {
+        // `RealLike`'s order is proof-gated exactly like the integers': the engine
+        // proves `PartialOrd(Real)`'s reflexivity/antisymmetry/transitivity and
+        // `Ord(Real)`'s totality over `Real.le`, then `RealLike(Real)` (no own
+        // laws) is admitted once its `PartialOrd(Real)` premise is in place.
+        use adsmt_class::{numberlike, Instance, Premise};
+        let real = Type::const_("Real", Kind::Type);
+        let le = Term::const_(
+            "Real.le",
+            Type::fun(real.clone(), Type::fun(real.clone(), Type::bool_()).unwrap()).unwrap(),
+        );
+        let mut db = InstanceDb::new();
+        db.declare_relation(partial_ord());
+        db.declare_relation(ord());
+        db.declare_relation(numberlike::real_like());
+        db.declare_instance_lawful(
+            Instance::new("PartialOrd", vec![real.clone()]).with_method("le", le),
+            &EngineLawProver,
+        )
+        .expect("engine proves PartialOrd(Real)'s order laws");
+        db.declare_instance_lawful(
+            Instance::new("Ord", vec![real.clone()])
+                .with_premise(Premise::new("PartialOrd", vec![real.clone()])),
+            &EngineLawProver,
+        )
+        .expect("engine proves Ord(Real)'s totality");
+        db.declare_instance_lawful(
+            Instance::new("RealLike", vec![real.clone()])
+                .with_premise(Premise::new("PartialOrd", vec![real])),
+            &EngineLawProver,
+        )
+        .expect("RealLike(Real) admitted (no own laws)");
+    }
+
     #[test]
     fn engine_rejects_a_false_order_law() {
         // A carrier whose `le` is a strict order is NOT reflexive, so the
