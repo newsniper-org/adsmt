@@ -36,10 +36,18 @@
 //!   refused): the [Gelfond–Lifschitz reduct] gate ([`GroundNProgram::is_stable`])
 //!   — `M` is stable iff `least_model(reduct(P, M)) == M`, reusing the trusted
 //!   `lfp` verbatim — driven by a **bounded guess-and-check** bracketed by the
-//!   monotone `L ⊆ M ⊆ U` envelope. Over a work budget it abstains loudly
-//!   ([`FaceError::Unsupported`]); the unfounded-set propagator + loop-formula
-//!   certificate (full L3) are a later slice. Queries are answered **cautiously**
-//!   (`∩` over the stable models); [`Solution::stable`] carries the answer sets.
+//!   **well-founded model** `L* ⊆ M ⊆ U*` (van Gelder's alternating fixpoint of
+//!   the antitone reduct least-model operator; `B \ U*` is the greatest unfounded
+//!   set — the unfounded-set propagator, computed as a fixpoint). The well-founded
+//!   bracket forces the maximal set of atoms in/out in polynomial time, so only
+//!   the *undefined* atoms remain to guess — strictly tighter than the one-step
+//!   reduct envelope (which is just the first fixpoint iteration), deciding more
+//!   programs within budget. Over the work budget it still abstains loudly
+//!   ([`FaceError::Unsupported`]); the **loop-formula certificate** + conflict
+//!   learning (so programs whose *undefined* fragment also exceeds budget get a
+//!   verdict, not an abstain) are the remaining full-L3 slice. Queries are
+//!   answered **cautiously** (`∩` over the stable models); [`Solution::stable`]
+//!   carries the answer sets.
 //! - **Abduction** — `declare`-`abducible` / `?- abduce G`: the ⊆-minimal
 //!   hypotheses that entail a goal (deduction = empty-abducible abduction), found
 //!   by **native backward-SLD relevance grounding** (the abducibles reachable
@@ -59,10 +67,12 @@
 //!   for an IDE squiggle (via the parser's span side-channel,
 //!   [`parse_with_spans`]). Default-off in a driver.
 //!
-//! Pending: the full L3 stable-model solver (clasp-style unfounded-set
-//! propagation + a loop-formula certificate checker, replacing the bounded
-//! guess-and-check); brave queries; choice / disjunction (L4); aggregates + weak
-//! constraints (L5). See `DESIGN.md` for the full ladder + build order.
+//! Pending: the remaining full-L3 slice (a loop-formula certificate checker +
+//! conflict learning, so the bounded guess-and-check over the *undefined* atoms
+//! is replaced by a clasp-style search when even that fragment is large — the
+//! well-founded unfounded-set propagation already landed); brave queries; choice
+//! / disjunction (L4); aggregates + weak constraints (L5). See `DESIGN.md` for
+//! the full ladder + build order.
 //!
 //! [Gelfond–Lifschitz reduct]: https://en.wikipedia.org/wiki/Stable_model_semantics
 

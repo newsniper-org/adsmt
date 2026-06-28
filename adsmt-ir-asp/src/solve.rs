@@ -453,25 +453,44 @@ fn ground_n_program(elab: &Elaborated, intern: &mut Interner) -> Result<GroundNP
     Ok(prog)
 }
 
+/// The **well-founded bracket** `[L*, U*]` of a ground normal program — van
+/// Gelder's *alternating fixpoint* of the antitone reduct least-model operator
+/// `Φ(S) = reduct(S).least_model()`. Iterating `K_{i+1} = Φ(Φ(K_i))` from `∅`
+/// (monotone in a finite base, so it converges) yields the **well-founded TRUE**
+/// atoms `L*`; `U* = Φ(L*)` is the upper bound, and `B \ U*` are the well-founded
+/// FALSE atoms — the **greatest unfounded set** (the unfounded-set propagator,
+/// computed as a fixpoint rather than incrementally). By the Van
+/// Gelder–Ross–Schlipf theorem the well-founded model brackets every stable model
+/// (`L* ⊆ M ⊆ U*` for every GL-stable `M`), so this only ever *shrinks* the free
+/// set the guess-and-check enumerates — never skips a stable model.
+fn well_founded_bracket(p: &GroundNProgram) -> (BTreeSet<AtomId>, BTreeSet<AtomId>) {
+    let phi = |s: &BTreeSet<AtomId>| p.reduct(s).least_model();
+    let mut k = BTreeSet::new();
+    loop {
+        let upper = phi(&k); // over-approx of the true atoms (= B \ false-so-far)
+        let k_next = phi(&upper); // Φ²(k) — a tighter under-approx (k_next ⊇ k)
+        if k_next == k {
+            return (k, upper); // (L*, U*) = (K*, Φ(K*)) at the fixpoint
+        }
+        k = k_next;
+    }
+}
+
 /// Enumerate the stable models of a ground normal program by **bounded
-/// guess-and-check**. Two sound (completeness-preserving) prunings bracket the
-/// search: the heads-only base `B` (every stable `M ⊆ B`, since `least_model`
-/// only inserts heads) and the monotone bracket `L ⊆ M ⊆ U` —
-/// `L = least_model(reduct(B))` (every negation-guarded rule dropped, the
-/// forced-in atoms) and `U = least_model(reduct(∅))` (the classical upper bound).
-/// Both follow from the rule-set monotonicity of the reduct + the lfp, so no
-/// stable model is skipped. Each subset of the free atoms `U \ L` is gated by the
-/// trusted [`GroundNProgram::is_stable`].
+/// guess-and-check** over the [`well_founded_bracket`] `L* ⊆ M ⊆ U*`. The
+/// well-founded model forces the maximal set of atoms in (`L*`) / out (`B \ U*`)
+/// in polynomial time, so only the *undefined* atoms `U* \ L*` remain to guess —
+/// strictly tighter than the old one-step reduct bracket
+/// (`Φ(B) ⊆ M ⊆ Φ(∅)`, which is just the first alternating-fixpoint iteration),
+/// so it decides more programs within the work budget. Each subset of the free
+/// atoms is gated by the trusted [`GroundNProgram::is_stable`].
 ///
 /// `Ok(vec)` is the complete (within-budget) set of stable models — an empty vec
 /// is the **sound "no answer set"** verdict. Over the work budget it is instead a
-/// loud `Err(Unsupported)` (the clasp/loop-formula solver is a later slice), so a
-/// caller can never confuse an abstain (`Err`) with "no answer set" (`Ok([])`).
+/// loud `Err(Unsupported)` (the loop-formula learning solver is a later slice), so
+/// a caller can never confuse an abstain (`Err`) with "no answer set" (`Ok([])`).
 fn stable_models(p: &GroundNProgram) -> Result<Vec<BTreeSet<AtomId>>, FaceError> {
-    let base = p.heads();
-    // monotone bracket (both via the trusted lfp): L forced-in, U the upper bound.
-    let lower = p.reduct(&base).least_model();
-    let upper = p.reduct(&BTreeSet::new()).least_model();
+    let (lower, upper) = well_founded_bracket(p);
     let free: Vec<AtomId> = upper.difference(&lower).copied().collect();
 
     // the exponential guards: a sharp structural cap on |FREE| (shift safety +
@@ -583,6 +602,43 @@ mod l3_tests {
 
             assert_eq!(got, brute, "bracket ≠ brute force for rules {:?}", p.rules);
         }
+    }
+
+    /// **Completeness gain of the well-founded bracket.** A program whose
+    /// negation resolves only on the *second* alternating-fixpoint iteration:
+    /// `c.`; `a_i :- not c.` (each `a_i` is unfounded ⇒ false, since `c` is true);
+    /// `b_i :- c, not a_i.` (each `b_i` ⇒ true). The well-founded model decides
+    /// EVERY atom (free set empty ⇒ one candidate), but the old one-step reduct
+    /// bracket leaves all `2N` of the `a_i`/`b_i` free — exceeding `MAX_STABLE_FREE`
+    /// for `N ≥ 13`, i.e. the old path would have abstained. Here `N = 20`
+    /// (one-step free = 40) yet the WFM path returns the unique answer set.
+    #[test]
+    fn well_founded_bracket_decides_what_one_step_abstains_on() {
+        const N: u32 = 20;
+        let c = 0u32;
+        let a = |i: u32| 1 + i; // a_0..a_{N-1}
+        let b = |i: u32| 1 + N + i; // b_0..b_{N-1}
+        let mut p = GroundNProgram::new();
+        p.push(GroundNRule::fact(c));
+        for i in 0..N {
+            p.push(GroundNRule::rule(a(i), vec![], vec![c])); // a_i :- not c
+            p.push(GroundNRule::rule(b(i), vec![c], vec![a(i)])); // b_i :- c, not a_i
+        }
+
+        // the OLD one-step bracket would leave 2N atoms free (→ abstain at N≥13).
+        let one_step_lo = p.reduct(&p.heads()).least_model();
+        let one_step_hi = p.reduct(&BTreeSet::new()).least_model();
+        let one_step_free = one_step_hi.difference(&one_step_lo).count();
+        assert_eq!(one_step_free, 2 * N as usize, "one-step bracket leaves 2N free");
+        assert!(one_step_free > MAX_STABLE_FREE, "old path would abstain");
+
+        // the WFM bracket decides every atom (free set empty) → the unique model.
+        let (wfm_lo, wfm_hi) = well_founded_bracket(&p);
+        assert_eq!(wfm_lo, wfm_hi, "well-founded model is total here (no undefined atoms)");
+
+        let models = stable_models(&p).expect("WFM bracket decides within budget");
+        let expected: BTreeSet<AtomId> = std::iter::once(c).chain((0..N).map(b)).collect();
+        assert_eq!(models, vec![expected], "the unique answer set {{c, b_0..b_N-1}}");
     }
 
     /// The bracket is sound on every accepted model: each model the production
