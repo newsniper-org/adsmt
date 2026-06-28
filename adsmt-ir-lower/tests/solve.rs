@@ -164,14 +164,12 @@ fn bool_match() -> Term {
 /// **Fidelity**: a Bool-valued match lowers to the equality-tester + selector +
 /// conjunction-of-implications encoding `⋀_j (x = c_j(sel(x)) ⇒ minor_j[sel])`.
 /// (This is the *sound* first-order form — z3 agrees the resulting formulas are
-/// decidable; the BARE engine's `Solver::new()` cannot yet DECIDE them, because
-/// its datatype theory reduces a selector only on a *literal* `sel(C(..))`, not
-/// on `sel(x)` with `x` congruent to a constructor — a pre-existing engine
-/// spurious-sat gap, z3-confirmed: `x = succ zero ∧ pred x ≠ zero` is wrongly
-/// `sat`. So `match` verdict-completeness is gated on the engine's
-/// selector-reduction-through-congruence, not on this lowering. The lowering is
-/// sound: an incomplete selector reduction under-approximates equalities, so it
-/// can only fail to find UNSAT, never claim a false one.)
+/// decidable, and the engine now DECIDES them: its datatype theory reduces a
+/// selector both on a *literal* `sel(C(..))` AND on `sel(x)` with `x` congruent
+/// to a constructor (`congruent_selector_reductions`), so the once-gating
+/// spurious-sat case `x = succ zero ∧ pred x ≠ zero` is correctly `unsat`. The
+/// end-to-end `match` verdict is exercised by
+/// `match_reaches_a_sound_unsat_through_selector_congruence` below.)
 #[test]
 fn match_lowers_to_tester_selector_encoding() {
     let env = nat_env();
@@ -198,4 +196,64 @@ fn data_valued_match_abstains() {
     );
     let goals = [eq_nat(dm, zero())]; // embed in a Bool goal to exercise the whole-query path
     assert!(lower(&env, &goals).is_err(), "a data-valued match must abstain");
+}
+
+// ── datatype `match` VERDICT (the #325 chokepoint, now decided) ──────────
+// The lowering tests above check the encoding SHAPE; these drive the real
+// engine to a verdict. The match-lowered selectors reduce **through congruence**
+// (`x ~ succ zero ⟹ sel(x)=zero`), so a `match` query combined with a
+// constructor equality reaches a SOUND verdict — the engine spurious-sat gap the
+// `match` completeness was once gated on (`x=succ zero ∧ pred x≠zero` wrongly
+// `sat`) is closed.
+
+fn succ(a: Term) -> Term {
+    Term::app(Term::cnst("succ"), a)
+}
+fn kernel_verdict(env: &Env, goals: &[Term]) -> SatResult {
+    let lowered = lower(env, goals).expect("lowers");
+    let mut s = Solver::new();
+    for d in lowered.datatypes {
+        assert!(s.declare_datatype(d), "engine accepts the datatype declaration");
+    }
+    for g in lowered.goals {
+        s.assert(g);
+    }
+    s.check_sat()
+}
+
+/// `x = succ zero ∧ (match x with zero => true | succ n => n ≠ zero)` is
+/// **unsat**: the selector reduces through the congruence `x ~ succ zero` to
+/// `sel(x) = zero`, so the `succ` branch is `zero ≠ zero` (false) under the
+/// (true) tester — the match cannot hold. This is the verdict the `match`
+/// completeness was gated on.
+#[test]
+fn match_reaches_a_sound_unsat_through_selector_congruence() {
+    let env = nat_env();
+    let match_ne = Term::mtch(
+        "Nat",
+        Term::lam(nat(), Term::prop()),
+        vec![
+            Term::cnst("true"),
+            Term::lam(nat(), Term::app(Term::cnst("not"), eq_nat(Term::bound(0), zero()))),
+        ],
+        Term::cnst("x"),
+    );
+    let goals = [eq_nat(Term::cnst("x"), succ(zero())), match_ne];
+    assert!(matches!(kernel_verdict(&env, &goals), SatResult::Unsat { .. }), "expected unsat");
+}
+
+/// The companion **sat** control: `x = succ zero ∧ (match … | succ n => n = zero)`
+/// is satisfiable (the `succ` branch `zero = zero` holds) — the selector
+/// reduction does not over-constrain into a spurious unsat.
+#[test]
+fn match_stays_sat_when_consistent() {
+    let env = nat_env();
+    let match_eq = Term::mtch(
+        "Nat",
+        Term::lam(nat(), Term::prop()),
+        vec![Term::cnst("true"), Term::lam(nat(), eq_nat(Term::bound(0), zero()))],
+        Term::cnst("x"),
+    );
+    let goals = [eq_nat(Term::cnst("x"), succ(zero())), match_eq];
+    assert!(matches!(kernel_verdict(&env, &goals), SatResult::Sat { .. }), "expected sat");
 }

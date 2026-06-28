@@ -9,21 +9,24 @@
 //! `< <= > >=`) lower to the adsmt-core arith-theory operators — the *same*
 //! const names the native SMT-LIB parser emits — so the engine's LIA/LRA solver
 //! decides them (numeric literals already lower as `const_(numeral, Int/Real)`;
-//! see [`Lowerer::try_arith`]). The lu-kb-only `Nat`/`WNat` injections,
-//! `int2real`, and `pow` / `odd` / `prime` are NOT theory-mapped: they fall
-//! through to **EUF** (an uninterpreted function — sound, since it can never
-//! manufacture an arithmetic fact, but incomplete; a later slice). This is the
-//! point where the **lu-kb type relation is dropped**: a `Nat`/`WNat` variable
-//! reaches the engine as an opaque EUF element, so its defining positivity fact
-//! (`Nat ⟹ x≥1`, `WNat ⟹ x≥0`) decides nothing — synthesizing that guard +
-//! routing the injections through arithmetic is the soundness-monotone lever
-//! to make the type relation a decision input (a later slice). NOTE: this gap
-//! is unrelated to the datatype-acyclicity and LIA-singleton false-sat
-//! residuals — those live in `adsmt-theory`'s datatype / LIA solvers, NOT here,
-//! and are NOT fixed by routing positivity. Genuinely
-//! unlowerable terms — datatypes (`Match`/`Elim`/constructors), `Fix`,
-//! dependent types, proof-as-data, higher-order applications — **abstain**
-//! (`Unlowerable`), degrading the whole query to `Unknown`.
+//! see [`Lowerer::try_arith`]). `int2real` and `pow` / `odd` / `prime` are NOT
+//! theory-mapped: they fall through to **EUF** (an uninterpreted function —
+//! sound, since it can never manufacture an arithmetic fact, but incomplete; a
+//! later slice). The `Nat`/`WNat` injections (`nat2int`/`wnat2int`/`nat2wnat`)
+//! are NOT EUF — they lower to the **identity** (the §3b refinement-collapse):
+//! a `Nat`/`WNat` variable reaches the engine as a bare `Int` Var carrying its
+//! **positivity guard** (`Nat ⟹ x≥1`, `WNat ⟹ x≥0`), emitted at binders and free
+//! constants in the canonical `(>= var lo)` orientation. So the **lu-kb type
+//! relation IS a decision input**: the positivity drives LIA (`c:Nat ∧ c<1` is
+//! `unsat`; #338 LANDED), the soundness-monotone lever — coupled to the
+//! sort-collapse (never collapse `Nat`→`Int` without re-asserting positivity).
+//! NOTE: this is unrelated to the datatype-acyclicity / LIA-singleton false-sat
+//! residuals (those live in `adsmt-theory`'s datatype / LIA solvers, NOT here).
+//! Genuinely unlowerable terms — *data-valued* `Match`, `Elim`/recursors,
+//! `Fix`, dependent types, proof-as-data, higher-order applications — **abstain**
+//! (`Unlowerable`), degrading the whole query to `Unknown`. A *Bool-valued*
+//! `Match` DOES lower (the tester+selector encoding) and the engine decides it
+//! (selector reduction through congruence).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -550,13 +553,16 @@ impl Lowerer<'_> {
     /// selector reduction only fails to derive equalities, so it can never claim
     /// a false UNSAT.
     ///
-    /// COMPLETENESS GATE: the bare engine cannot yet *decide* the result —
-    /// `adsmt-theory`'s datatype theory reduces a selector only on a **literal**
-    /// `sel(C(..))`, not on `sel(x)` with `x` congruent to a constructor (so
-    /// `x = succ zero ∧ pred x ≠ zero` is wrongly `sat`, z3-confirmed). `match`
-    /// verdict-completeness is gated on that engine
-    /// selector-reduction-through-congruence fix — a separate, trusted-core task —
-    /// NOT on this lowering, which is verified by the fidelity test instead.
+    /// VERDICT (gate CLOSED): the engine now *decides* the result —
+    /// `adsmt-theory`'s datatype theory reduces a selector both on a **literal**
+    /// `sel(C(..))` AND on `sel(x)` with `x` congruent to a constructor
+    /// (`congruent_selector_reductions`), so the once-gating
+    /// `x = succ zero ∧ pred x ≠ zero` is correctly `unsat`. The end-to-end match
+    /// verdict is covered by `tests/solve.rs`
+    /// `match_reaches_a_sound_unsat_through_selector_congruence`; the lowering
+    /// fidelity is verified separately. (Soundness holds regardless: an
+    /// under-approximated selector reduction can only fail to derive equalities,
+    /// never claim a false UNSAT.)
     fn lower_match(
         &self,
         ind_name: &str,
@@ -751,14 +757,20 @@ impl Lowerer<'_> {
         }
     }
 
-    /// The positivity atom `lo ≤ v` (engine form `(<= lo v)`, `<=` recognised by
-    /// LIA), for a carrier whose refinement lower bound is `lo`.
+    /// The positivity atom `v ≥ lo` for a carrier whose refinement lower bound is
+    /// `lo` (`Nat ⟹ ≥1`, `WNat ⟹ ≥0`). Emitted in the canonical
+    /// **`(op var literal)`** orientation `(>= v lo)` — *not* the equivalent
+    /// `(<= lo v)`. The engine's LinArith claims a comparison directly only in the
+    /// var-on-the-left form; a literal-on-the-left `(<= lo v)` is re-oriented only
+    /// by the lu-smt CLI's preprocessing, so it reached the bare solver as an
+    /// uninterpreted atom → `Unknown`, leaving the positivity un-decided (#338).
+    /// `v ≥ lo` ≡ `lo ≤ v`, so the §3c relativization polarity is unchanged.
     fn positivity(&self, lo: i128, v: CTerm) -> Result<CTerm, LowerError> {
         let int = CType::const_("Int", CKind::Type);
-        let le_ty = cfun(int.clone(), cfun(int.clone(), CType::bool_())?)?;
-        let le = CTerm::const_("<=", le_ty);
+        let ge_ty = cfun(int.clone(), cfun(int.clone(), CType::bool_())?)?;
+        let ge = CTerm::const_(">=", ge_ty);
         let lit = CTerm::const_(&lo.to_string(), int);
-        capp(capp(le, lit)?, v)
+        capp(capp(ge, v)?, lit)
     }
 
     fn lower_sort(&self, ty: &Term) -> Result<CType, LowerError> {
