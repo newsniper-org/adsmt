@@ -56,6 +56,17 @@ pub enum ClassError {
     LawIllFormed { relation: String, law: String, reason: String },
     #[error("law `{law}` of relation `{relation}` was not proven for this instance — declaration rejected")]
     LawUnproven { relation: String, law: String },
+    #[error(
+        "reducible minimal polynomial for `{carrier}`: x² + {c1}·x + {c0} has discriminant {disc} ≥ 0 \
+         (G1) — a reducible degree-2 minpoly has zero divisors and would admit a spurious unsat"
+    )]
+    ReducibleMinpoly { carrier: String, c0: i128, c1: i128, disc: i128 },
+    #[error(
+        "non-ring base `{base}` for extension carrier `{carrier}` (G6) — a degree-2 ring extension \
+         needs a subtraction-closed base; `Nat`/`WNat` have no negatives, so the reduction's base \
+         differences escape the carrier and the encode/decode is partial (unsound)"
+    )]
+    NonRingBase { carrier: String, base: String },
 }
 
 impl InstanceDb {

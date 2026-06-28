@@ -19,8 +19,8 @@ pub use fundep::Fundep;
 pub use instance::{Instance, MethodImpl, Premise};
 pub use law::{Dict, Law, LawBuilder, LawError, LawProver};
 pub use numberlike::{
-    install_numberlike, install_numberlike_checked, integer_like, ord, partial_integer_like,
-    partial_ord,
+    complex_integer_like, complex_like, declare_complex_instance, install_numberlike,
+    install_numberlike_checked, integer_like, ord, partial_integer_like, partial_ord, real_like,
 };
 pub use relation::{MethodSig, PredParam, Relation};
 pub use resolve::{ClassError, ClassGoal, InstanceDb, InstanceMatch, Resolver, ResolutionResult};

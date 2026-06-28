@@ -21,8 +21,9 @@
 //! * [`integer_like`] — `IntegerLike(I) : PartialIntegerLike(I), Ord(I)`: an
 //!   integer-like carrier that is *also* totally ordered. A pure conjunction
 //!   marker — its laws and methods are inherited through the two premises.
-//!   ℤ, ℕ, WNat are `IntegerLike`; a future `ComplexIntegerLike` (ℤ[i]/ℤ[ω])
-//!   will premise `PartialIntegerLike` but **not** `Ord`.
+//!   ℤ, ℕ, WNat are `IntegerLike`; its sibling [`complex_integer_like`]
+//!   (`ComplexIntegerLike`, ℤ[i]/ℤ[ω]) is integer-like-extension but **not**
+//!   `Ord` (no total order on ℂ — the extension axis below).
 //!
 //! **Field axis** (the scalar-field sibling of the integer axis):
 //! * [`real_like`] — `RealLike(R)`: a field-like carrier `{add, mul, domain}`
@@ -31,10 +32,28 @@
 //!   not a `RealLike` premise) — a `FloatingPoint` carrier would be `RealLike` +
 //!   `PartialOrd` but **not** `Ord` (`NaN` breaks totality). `Real`'s `le` is the
 //!   native `Real.le` (LRA) and its `domain` is the whole field (`λx. ⊤`).
-//!   `ComplexIntegerLike` (ℤ[i]/ℤ[ω]) and `ComplexLike` (ℂ) — the `Pair`-rep
-//!   minpoly extensions over an `IntegerLike`/`RealLike` base — are the next
-//!   members (they need the `Reduces` encode/decode spine + the G1 irreducibility
-//!   gate; NIA/NRA-abstaining until oxiz-nl2 is on the polite bus).
+//!
+//! **Extension axis** (degree-2 ring/field extensions, the `Pair`-rep minpoly
+//! members):
+//! * [`complex_integer_like`] — `ComplexIntegerLike(C, B)`: the integer-side
+//!   degree-2 ring extension `C = a + bζ` of an `IntegerLike` base `B`, ζ a root
+//!   of an imaginary-quadratic monic minpoly `x²+c1·x+c0`. A sibling of
+//!   `IntegerLike` under `PartialIntegerLike` — adds the complex-generator
+//!   structure, **no** `Ord` premise (G4: ℂ has no total order). Instances ℤ[i]
+//!   (`x²+1`) and ℤ[ω] (`x²+x+1`).
+//! * [`complex_like`] — `ComplexLike(C, B)`: the field-side mirror over a
+//!   `RealLike` base (instance ℂ = ℝ[i]). Differs from `ComplexIntegerLike` only
+//!   in the coefficient base (`RealLike` vs `IntegerLike`) and the routed theory
+//!   (NRA vs NIA).
+//!
+//!   Both extension relations are admitted through [`declare_complex_instance`],
+//!   the **G1 irreducibility gate** — a degree-2 minpoly is admitted only if its
+//!   discriminant `c1²−4c0 < 0` (imaginary-quadratic ⟹ irreducible ⟹ no zero
+//!   divisors; a reducible minpoly would admit a spurious unsat), plus the **G6**
+//!   ring-complete-base check. The reduction-algebra method bodies
+//!   (`add`/`mul`/`norm`) are `Reduces`-spine-deferred (G2 — NIA/NRA-abstaining
+//!   until oxiz-nl2 is on the polite bus); the soundness-critical algebra is
+//!   Verus-pre-verified (`~/complexlike-verification`).
 //!
 //! The order laws are the canonical use of proof-gated admission ([`Law`],
 //! [`crate::InstanceDb::declare_instance_lawful`]): an `Ord` instance is
@@ -75,6 +94,25 @@ pub const INTEGER_LIKE: &str = "IntegerLike";
 /// breaks totality). The genuine mathematical `Real` is additionally declared
 /// `Ord(Real)` (a separate instance, not a `RealLike` premise).
 pub const REAL_LIKE: &str = "RealLike";
+/// `ComplexIntegerLike(C, B)` — the integer-side degree-2 ring **extension** of a
+/// base `IntegerLike(B)`: a carrier `C = a + bζ` whose generator `ζ` is a root of
+/// an imaginary-quadratic monic minpoly `x² + c1·x + c0` (discriminant
+/// `c1²−4c0 < 0`). A **sibling of `IntegerLike` under `PartialIntegerLike`** that
+/// adds the complex-generator structure instead of a total order: it premises the
+/// base ring through `IntegerLike(B)` but carries **no `Ord` premise** (G4 — no
+/// total order on ℂ). Instances: **ℤ[i]** Gaussian (`x²+1`, `c0=1,c1=0`,
+/// disc=−4), **ℤ[ω]** Eisenstein (`x²+x+1`, `c0=1,c1=1`, disc=−3). The minpoly
+/// coefficients are static instance data gating admission ([`declare_complex_instance`]:
+/// the **G1** irreducibility gate — a reducible degree-2 minpoly has zero divisors
+/// and would admit a spurious unsat).
+pub const COMPLEX_INTEGER_LIKE: &str = "ComplexIntegerLike";
+/// `ComplexLike(C, B)` — the field-side mirror of `ComplexIntegerLike`: the
+/// degree-2 field **extension** of a base `RealLike(B)`. Same `Pair`-rep + minpoly
+/// structure; differs only in the coefficient base (`RealLike` vs `IntegerLike`)
+/// and the theory the reduction routes to (NRA vs NIA). Instance **ℂ = ℝ[i]**
+/// (`x²+1`, disc=−4). **No order at all** (G4 — `<≤>≥` are rejected at
+/// elaboration). Admitted through the same G1 discriminant gate.
+pub const COMPLEX_LIKE: &str = "ComplexLike";
 
 // ── method names ────────────────────────────────────────────────────────
 /// Order `I -> I -> Bool` (lives on `PartialOrd`).
@@ -85,6 +123,11 @@ pub const M_DOMAIN: &str = "domain";
 pub const M_ADD: &str = "add";
 /// Carrier multiplication `I -> I -> I`.
 pub const M_MUL: &str = "mul";
+/// The extension **norm** `C -> B` (`N(a+bζ) = a² − c1·ab + c0·b²`, the
+/// minpoly-derived field norm). Lives on the `Complex*Like` extensions; maps a
+/// carrier element to its base-ring norm. Body is `Reduces`-spine-deferred (G2 —
+/// NIA/NRA-abstaining until oxiz-nl2 is on the polite bus).
+pub const M_NORM: &str = "norm";
 
 // ── carrier sort + engine op names ──────────────────────────────────────
 //
@@ -95,6 +138,12 @@ const SORT_INT: &str = "Int";
 const SORT_NAT: &str = "Nat";
 const SORT_WNAT: &str = "WNat";
 const SORT_REAL: &str = "Real";
+/// ℤ[i] — the Gaussian integers (`x²+1`, disc=−4), a `ComplexIntegerLike` carrier.
+const SORT_GAUSSIAN: &str = "GaussianInt";
+/// ℤ[ω] — the Eisenstein integers (`x²+x+1`, disc=−3), a `ComplexIntegerLike` carrier.
+const SORT_EISENSTEIN: &str = "EisensteinInt";
+/// ℂ = ℝ[i] (`x²+1`, disc=−4), the `ComplexLike` field carrier.
+const SORT_COMPLEX: &str = "Complex";
 
 const NAT2INT: &str = "nat2int";
 const WNAT2INT: &str = "wnat2int";
@@ -189,6 +238,40 @@ pub fn real_like() -> Relation {
         .with_method(M_ADD, fun3(rt.clone(), rt.clone(), rt.clone()))
         .with_method(M_MUL, fun3(rt.clone(), rt.clone(), rt.clone()))
         .with_method(M_DOMAIN, Type::fun(rt, Type::bool_()).expect("kind"))
+}
+
+/// A degree-2 ring/field **extension** relation `Ext(C, B)`: a carrier `C` over a
+/// base `B`, with the ring core `{add, mul}` (carrier-valued) and the
+/// minpoly-derived `norm : C -> B` (base-valued). `[C] → [B]` is a functional
+/// dependency (the carrier determines its base). **No order laws** — the
+/// `Complex*Like` extensions are unordered (G4); the order axis lives entirely on
+/// `PartialOrd`/`Ord`, which these never premise.
+fn extension_relation(name: &str) -> Relation {
+    let c = tyvar("C");
+    let b = tyvar("B");
+    let ct = Type::Var(c.clone());
+    let bt = Type::Var(b.clone());
+    Relation::new(name)
+        .with_param(c)
+        .with_param(b)
+        .with_fundep(crate::fundep::Fundep::new(vec![0], vec![1]))
+        .with_method(M_ADD, fun3(ct.clone(), ct.clone(), ct.clone()))
+        .with_method(M_MUL, fun3(ct.clone(), ct.clone(), ct.clone()))
+        .with_method(M_NORM, Type::fun(ct, bt).expect("kind"))
+}
+
+/// `ComplexIntegerLike(C, B)`: the integer-side degree-2 ring extension (ℤ[i],
+/// ℤ[ω] over an `IntegerLike` base). A sibling of `IntegerLike` under
+/// `PartialIntegerLike` — adds the complex-generator structure, never a total
+/// order (G4 — no `Ord` premise).
+pub fn complex_integer_like() -> Relation {
+    extension_relation(COMPLEX_INTEGER_LIKE)
+}
+
+/// `ComplexLike(C, B)`: the field-side degree-2 extension (ℂ = ℝ[i] over a
+/// `RealLike` base). The field mirror of `ComplexIntegerLike`; no order at all.
+pub fn complex_like() -> Relation {
+    extension_relation(COMPLEX_LIKE)
 }
 
 // ── order laws (goal-members) ───────────────────────────────────────────
@@ -340,6 +423,89 @@ fn real_like_instance() -> Instance {
         .with_method(M_DOMAIN, domain_body(SORT_REAL))
 }
 
+/// A `Complex*Like` extension instance over `(carrier, base)` premising the base
+/// `*Like` relation. The reduction-algebra method bodies (`add`/`mul`/`norm`) are
+/// **deferred** (G2 — the `Reduces` spine routes to NIA/NRA, which abstain until
+/// oxiz-nl2 is on the polite bus): the instance carries the base premise and its
+/// minpoly is supplied to [`declare_complex_instance`] as the admission datum.
+fn extension_instance(relation: &str, carrier: &str, base_relation: &str, base: &str) -> Instance {
+    Instance::new(relation, vec![carrier_ty(carrier), carrier_ty(base)])
+        .with_premise(Premise::new(base_relation, vec![carrier_ty(base)]))
+}
+
+/// ℤ[i] — `ComplexIntegerLike(GaussianInt, Int)` over `IntegerLike(Int)`,
+/// minpoly `x²+1` (`c0=1, c1=0`, disc=−4).
+fn gaussian_instance() -> Instance {
+    extension_instance(COMPLEX_INTEGER_LIKE, SORT_GAUSSIAN, INTEGER_LIKE, SORT_INT)
+}
+
+/// ℤ[ω] — `ComplexIntegerLike(EisensteinInt, Int)` over `IntegerLike(Int)`,
+/// minpoly `x²+x+1` (`c0=1, c1=1`, disc=−3).
+fn eisenstein_instance() -> Instance {
+    extension_instance(COMPLEX_INTEGER_LIKE, SORT_EISENSTEIN, INTEGER_LIKE, SORT_INT)
+}
+
+/// ℂ — `ComplexLike(Complex, Real)` over `RealLike(Real)`, minpoly `x²+1`
+/// (`c0=1, c1=0`, disc=−4).
+fn complex_instance() -> Instance {
+    extension_instance(COMPLEX_LIKE, SORT_COMPLEX, REAL_LIKE, SORT_REAL)
+}
+
+/// The lower-bound-free sort name of a carrier type (for diagnostics / the G6
+/// base-ring check). Non-`Const` types report `"?"`.
+fn sort_name(ty: &Type) -> String {
+    match ty {
+        Type::Const(c) => c.name.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Admit a `Complex*Like` extension instance behind the soundness gates that the
+/// reduction algebra depends on (선검증 `~/complexlike-verification`):
+///
+/// * **G1 — minpoly irreducibility.** The generator's monic minpoly `x² + c1·x +
+///   c0` must be *irreducible* over the base, i.e. imaginary-quadratic
+///   (discriminant `c1²−4c0 < 0`). A reducible degree-2 minpoly factors, so the
+///   extension has **zero divisors** (`ζ−r` and `ζ−s` multiply to 0 with neither
+///   factor 0) — and the verified `no_zero_divisors`/`norm_positive_definite`
+///   lemmas (`N=0 ⟺ a=b=0`, `4N=(2a−c1b)²+(−disc)b²`) would no longer hold, so a
+///   ground equation could be reduced to a false `0 = nonzero` → **spurious
+///   unsat**. Rejected as [`ClassError::ReducibleMinpoly`].
+/// * **G6 — ring-complete base.** The base must be subtraction-closed (a genuine
+///   ring): the reduction `(a,b)·(c,d) = (ac−c0bd, …)` produces base
+///   *differences*, so a non-ring base (`Nat`/`WNat`, no negatives) makes the
+///   encode/decode partial → unsound. Rejected as [`ClassError::NonRingBase`].
+///
+/// On success the instance is declared exactly as [`InstanceDb::declare_instance`]
+/// (structural arity/coherence still apply). The minpoly `(c0, c1)` is the static
+/// admission datum (G8 — instance data, not a kernel `Poly` term); the z3
+/// differential of the reduction on concrete values runs at the solver-routing
+/// slice (G2-deferred here).
+pub fn declare_complex_instance(
+    db: &mut InstanceDb,
+    inst: Instance,
+    c0: i128,
+    c1: i128,
+) -> Result<(), ClassError> {
+    let carrier = sort_name(&inst.types[0]);
+    // G1: the discriminant must be strictly negative (irreducible quadratic).
+    let disc = c1.checked_mul(c1).and_then(|s| s.checked_sub(4i128.checked_mul(c0)?));
+    match disc {
+        Some(d) if d < 0 => {}
+        Some(d) => return Err(ClassError::ReducibleMinpoly { carrier, c0, c1, disc: d }),
+        // An overflow can only arise from absurdly large coeffs; treat as
+        // non-admissible rather than silently wrapping (conservative).
+        None => return Err(ClassError::ReducibleMinpoly { carrier, c0, c1, disc: i128::MAX }),
+    }
+    // G6: the base (second head type) must be a ring-complete carrier — not a
+    // subtraction-open refinement (`Nat`/`WNat`).
+    let base = sort_name(inst.types.get(1).unwrap_or(&inst.types[0]));
+    if base == SORT_NAT || base == SORT_WNAT {
+        return Err(ClassError::NonRingBase { carrier, base });
+    }
+    db.declare_instance(inst)
+}
+
 /// Build the `domain` body `λ(x : carrier). lo ≤ ι(x)`. For `Int` the injection
 /// is the identity and there is no lower bound, so the body is `λx. ⊤`.
 fn domain_body(sort: &str) -> Term {
@@ -376,6 +542,20 @@ fn declare_relations(db: &mut InstanceDb) {
     db.declare_relation(partial_integer_like());
     db.declare_relation(integer_like());
     db.declare_relation(real_like());
+    db.declare_relation(complex_integer_like());
+    db.declare_relation(complex_like());
+}
+
+/// The three `Complex*Like` ground instances paired with their monic minpoly
+/// `(c0, c1)` (`x² + c1·x + c0`) — the admission datum for [`declare_complex_instance`]'s
+/// G1 discriminant gate: ℤ[i] (`x²+1`, disc=−4), ℤ[ω] (`x²+x+1`, disc=−3),
+/// ℂ (`x²+1`, disc=−4). All three are imaginary-quadratic, so G1 admits them.
+fn complex_instances() -> [(Instance, i128, i128); 3] {
+    [
+        (gaussian_instance(), 1, 0),
+        (eisenstein_instance(), 1, 1),
+        (complex_instance(), 1, 0),
+    ]
 }
 
 /// Install the order + number relations and their ground instances
@@ -395,6 +575,11 @@ pub fn install_numberlike(db: &mut InstanceDb) {
     db.declare_instance(partial_ord_instance(SORT_REAL)).expect("PartialOrd(Real)");
     db.declare_instance(ord_instance(SORT_REAL)).expect("Ord(Real)");
     db.declare_instance(real_like_instance()).expect("RealLike(Real)");
+    // the extension members: ℤ[i]/ℤ[ω] (ComplexIntegerLike) + ℂ (ComplexLike),
+    // each behind the G1 discriminant gate (all three are imaginary-quadratic).
+    for (inst, c0, c1) in complex_instances() {
+        declare_complex_instance(db, inst, c0, c1).expect("imaginary-quadratic minpoly admits");
+    }
 }
 
 /// Install the family with **proof-gated admission**: every instance must
@@ -419,6 +604,13 @@ pub fn install_numberlike_checked(
     db.declare_instance_lawful(partial_ord_instance(SORT_REAL), prover)?;
     db.declare_instance_lawful(ord_instance(SORT_REAL), prover)?;
     db.declare_instance_lawful(real_like_instance(), prover)?;
+    // The extension members carry no order laws (G4 — no `Ord` premise); their
+    // soundness gate is the *decidable* G1 discriminant check, not an engine
+    // obligation, so admission goes through `declare_complex_instance` on both
+    // the structural and proof-gated paths.
+    for (inst, c0, c1) in complex_instances() {
+        declare_complex_instance(db, inst, c0, c1)?;
+    }
     Ok(())
 }
 
@@ -531,6 +723,171 @@ mod tests {
             TermInner::Lam(_, body) => assert!(body.is_true_const(), "Real domain is ⊤"),
             other => panic!("expected λ, got {other:?}"),
         }
+    }
+
+    // ── extension axis (ComplexIntegerLike / ComplexLike) ────────────────
+
+    fn found2(db: &InstanceDb, rel: &str, c: &str, b: &str) -> ResolutionResult {
+        Resolver::new(db).resolve(&ClassGoal::new(rel, vec![carrier_ty(c), carrier_ty(b)]))
+    }
+
+    #[test]
+    fn gaussian_and_eisenstein_are_complex_integer_like_over_an_integer_base() {
+        let db = db();
+        for carrier in [SORT_GAUSSIAN, SORT_EISENSTEIN] {
+            match found2(&db, COMPLEX_INTEGER_LIKE, carrier, SORT_INT) {
+                ResolutionResult::Found(m) => {
+                    assert_eq!(m.sub_goals.len(), 1, "premises the base ring");
+                    assert_eq!(m.sub_goals[0].relation, INTEGER_LIKE, "{carrier} base is IntegerLike");
+                    assert_eq!(m.sub_goals[0].types[0], carrier_ty(SORT_INT));
+                }
+                other => panic!("expected Found for {carrier}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn complex_is_complex_like_over_a_real_base() {
+        let db = db();
+        match found2(&db, COMPLEX_LIKE, SORT_COMPLEX, SORT_REAL) {
+            ResolutionResult::Found(m) => {
+                assert_eq!(m.sub_goals.len(), 1);
+                assert_eq!(m.sub_goals[0].relation, REAL_LIKE, "ℂ base is RealLike");
+                assert_eq!(m.sub_goals[0].types[0], carrier_ty(SORT_REAL));
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_extension_carriers_have_no_order_and_are_not_integer_like() {
+        // G4: ℤ[i]/ℤ[ω]/ℂ are unordered — no Ord/PartialOrd/IntegerLike instance.
+        let db = db();
+        for carrier in [SORT_GAUSSIAN, SORT_EISENSTEIN, SORT_COMPLEX] {
+            assert!(matches!(found(&db, ORD, carrier), ResolutionResult::NotFound), "{carrier} not Ord");
+            assert!(
+                matches!(found(&db, PARTIAL_ORD, carrier), ResolutionResult::NotFound),
+                "{carrier} not PartialOrd",
+            );
+            assert!(
+                matches!(found(&db, INTEGER_LIKE, carrier), ResolutionResult::NotFound),
+                "{carrier} not IntegerLike",
+            );
+        }
+    }
+
+    #[test]
+    fn the_extension_norm_maps_the_carrier_to_its_base() {
+        // The extension relation's `norm` signature is `C -> B` (carrier → base).
+        for rel in [complex_integer_like(), complex_like()] {
+            let norm = rel.methods.iter().find(|m| m.name == M_NORM).expect("has norm");
+            let (dom, cod) = norm.signature.dest_fun().expect("norm is an arrow");
+            assert_eq!(dom, Type::Var(rel.params[0].clone()), "norm domain is the carrier C");
+            assert_eq!(cod, Type::Var(rel.params[1].clone()), "norm codomain is the base B");
+            // add/mul stay carrier-valued endofunctions C -> C -> C.
+            for op in [M_ADD, M_MUL] {
+                let sig = &rel.methods.iter().find(|m| m.name == op).unwrap().signature;
+                let (_, rest) = sig.dest_fun().unwrap();
+                let (_, out) = rest.dest_fun().unwrap();
+                assert_eq!(out, Type::Var(rel.params[0].clone()), "{op} is C -> C -> C");
+            }
+        }
+    }
+
+    // ── G1 irreducibility gate + G6 ring-complete base ───────────────────
+
+    /// A db with the relations declared but no instances — for exercising the
+    /// admission gate directly.
+    fn empty_db() -> InstanceDb {
+        let mut db = InstanceDb::new();
+        declare_relations(&mut db);
+        db
+    }
+
+    #[test]
+    fn g1_admits_the_three_imaginary_quadratic_minpolys() {
+        // disc = c1²−4c0 < 0 for all three: ℤ[i] −4, ℤ[ω] −3, ℂ −4.
+        for (inst, c0, c1) in complex_instances() {
+            let mut db = empty_db();
+            assert!(
+                declare_complex_instance(&mut db, inst, c0, c1).is_ok(),
+                "imaginary-quadratic (disc {} < 0) admits",
+                c1 * c1 - 4 * c0,
+            );
+        }
+    }
+
+    #[test]
+    fn g1_rejects_a_reducible_minpoly() {
+        // x²−1 (c0=−1, c1=0) factors as (x−1)(x+1): disc = 0−4·(−1) = 4 ≥ 0 →
+        // reducible → zero divisors → would admit a spurious unsat. HARD-rejected.
+        let mut db = empty_db();
+        let synthetic =
+            Instance::new(COMPLEX_INTEGER_LIKE, vec![carrier_ty("Hyperbolic"), carrier_ty(SORT_INT)])
+                .with_premise(Premise::new(INTEGER_LIKE, vec![carrier_ty(SORT_INT)]));
+        match declare_complex_instance(&mut db, synthetic, -1, 0) {
+            Err(ClassError::ReducibleMinpoly { carrier, c0, c1, disc }) => {
+                assert_eq!(carrier, "Hyperbolic");
+                assert_eq!((c0, c1, disc), (-1, 0, 4));
+            }
+            other => panic!("expected ReducibleMinpoly, got {other:?}"),
+        }
+        // … and nothing was declared.
+        assert!(matches!(
+            found2(&db, COMPLEX_INTEGER_LIKE, "Hyperbolic", SORT_INT),
+            ResolutionResult::NotFound,
+        ));
+    }
+
+    #[test]
+    fn g1_rejects_a_repeated_root_minpoly_disc_zero() {
+        // x² (c0=0, c1=0): disc = 0 ≥ 0 — a repeated root ζ=0, the degenerate
+        // reducible case. Rejected (the gate is strict `< 0`).
+        let mut db = empty_db();
+        let degenerate =
+            Instance::new(COMPLEX_LIKE, vec![carrier_ty("Dual"), carrier_ty(SORT_REAL)])
+                .with_premise(Premise::new(REAL_LIKE, vec![carrier_ty(SORT_REAL)]));
+        assert!(matches!(
+            declare_complex_instance(&mut db, degenerate, 0, 0),
+            Err(ClassError::ReducibleMinpoly { disc: 0, .. }),
+        ));
+    }
+
+    #[test]
+    fn g6_rejects_a_non_ring_base() {
+        // A degree-2 extension over Nat (no subtraction) is rejected even with an
+        // irreducible minpoly — the reduction's base differences escape ℕ.
+        let mut db = empty_db();
+        // declare a PartialIntegerLike(Nat) so the premise *could* resolve; the
+        // G6 gate must still reject on the base sort, before resolution matters.
+        db.declare_relation(integer_like());
+        let bad_base =
+            Instance::new(COMPLEX_INTEGER_LIKE, vec![carrier_ty("GaussianNat"), carrier_ty(SORT_NAT)])
+                .with_premise(Premise::new(INTEGER_LIKE, vec![carrier_ty(SORT_NAT)]));
+        match declare_complex_instance(&mut db, bad_base, 1, 0) {
+            Err(ClassError::NonRingBase { carrier, base }) => {
+                assert_eq!(carrier, "GaussianNat");
+                assert_eq!(base, SORT_NAT);
+            }
+            other => panic!("expected NonRingBase, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lawful_install_admits_the_extension_members_through_g1() {
+        // install_numberlike_checked routes the extensions through the same G1
+        // gate; a capable order-prover suffices since the extensions carry no
+        // order laws of their own.
+        let mut db = InstanceDb::new();
+        install_numberlike_checked(&mut db, &AlwaysValid).expect("admitted");
+        assert!(matches!(
+            found2(&db, COMPLEX_INTEGER_LIKE, SORT_GAUSSIAN, SORT_INT),
+            ResolutionResult::Found(_),
+        ));
+        assert!(matches!(
+            found2(&db, COMPLEX_LIKE, SORT_COMPLEX, SORT_REAL),
+            ResolutionResult::Found(_),
+        ));
     }
 
     // ── domain (positivity) dictionary ──────────────────────────────────
