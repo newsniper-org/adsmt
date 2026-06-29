@@ -2145,6 +2145,20 @@ impl Solver {
         // path, exactly as a per-query opaque assert does on the
         // baseline path.  `false` for any non-AOT solve.
         let mut had_opaque = self.aot_prelude_had_opaque;
+        // #347 — set when an assertion carries a quantifier NESTED inside
+        // propositional structure (e.g. `(and (forall x q) ¬q)`, the
+        // skolemization of `(and (forall x q) (not (forall x q)))`). The
+        // partition above strips only *top-level* positive `forall`s (which the
+        // instantiation loop reaches via `partition_quantifiers`); a quantifier
+        // buried under `and`/`or`/`=>`/`ite` is left for `flatten_to_clauses`,
+        // which treats it as an OPAQUE propositional atom whose ∀/∃ semantics
+        // are never enforced. That is a *relaxation* (the atom is free): sound
+        // for `Unsat` (a relaxation only has MORE models), but a resulting `Sat`
+        // is unjustified — the engine must downgrade to `Unknown` (so the
+        // lu-smt CLI's OxiZ delegation, which fires on Unknown, runs its MBQI),
+        // NOT report a confident spurious `sat` (which would defeat the
+        // delegation safety net). Mirrors the `had_opaque` discipline below.
+        let mut had_unhandled_quantifier = false;
         // rc.20 — prepend the prelude clause-set cache when
         // `restore_cdcl_state_into` has populated it.  v0.x
         // scope ships the clause vec only; trail / watches /
@@ -2156,6 +2170,13 @@ impl Solver {
                 return SatResult::Unknown {
                     reason: "rlimit exceeded".to_string(),
                 };
+            }
+            // #347 — a quantifier surviving the top-level-forall partition is
+            // nested in propositional structure: the CNF flattener will leave it
+            // an opaque atom whose semantics go unenforced, so a final `Sat`
+            // must downgrade to `Unknown` (see the flag's declaration above).
+            if adsmt_quant::skolemize::contains_quantifier(term) {
+                had_unhandled_quantifier = true;
             }
             let asserted = if *polarity {
                 term.clone()
@@ -2337,16 +2358,31 @@ impl Solver {
                 // `Unknown`.  (`Unsat` / `Unknown` from the theory
                 // layer pass through unchanged — both are sound
                 // even with an ignored constraint.)
-                if had_opaque
+                if (had_opaque || had_unhandled_quantifier)
                     && matches!(theory_result, SatResult::Sat { .. })
                 {
                     return SatResult::Unknown {
-                        reason: "assertion set contains a boolean structure \
-                                 the CNF flattener cannot encode (e.g. nested \
-                                 OR-of-AND); the flattenable subset is \
-                                 satisfiable but the un-encoded assertions are \
-                                 unresolved"
-                            .to_string(),
+                        reason: if had_unhandled_quantifier {
+                            // #347 — a quantifier nested in propositional
+                            // structure was left an opaque atom; the ground
+                            // instantiation loop only reaches top-level
+                            // `forall` asserts, so the satisfying assignment
+                            // does not enforce the quantifier and `sat` cannot
+                            // be justified (delegate to the OxiZ MBQI fallback).
+                            "assertion set contains a quantifier nested in \
+                             propositional structure that the ground \
+                             instantiation loop does not reach; the \
+                             propositional model leaves the quantifier atom \
+                             uninterpreted, so satisfiability cannot be claimed"
+                                .to_string()
+                        } else {
+                            "assertion set contains a boolean structure \
+                             the CNF flattener cannot encode (e.g. nested \
+                             OR-of-AND); the flattenable subset is \
+                             satisfiable but the un-encoded assertions are \
+                             unresolved"
+                                .to_string()
+                        },
                     };
                 }
                 theory_result
@@ -3714,6 +3750,34 @@ mod tests {
         let mut s = Solver::new();
         s.assert(forall);
         assert!(matches!(s.check_sat(), SatResult::Sat { .. }));
+    }
+
+    #[test]
+    fn nested_forall_and_its_negation_is_not_spurious_sat() {
+        // #347 — `(and (∀x:S. q) (not (∀x:S. q)))` is `A ∧ ¬A`, propositionally
+        // UNSAT. But the NNF/skolemize pre-pass turns it into `(and (∀x:S. q) ¬q)`
+        // with the `forall` NESTED inside the `and`; the instantiation loop only
+        // reaches TOP-LEVEL `forall` asserts (`partition_quantifiers`), so the
+        // CNF flattener left the nested `forall` an opaque atom and the SAT layer
+        // satisfied `{forall-atom}, {¬q}` with `forall-atom = true, q = false` —
+        // a confident spurious `sat` that defeated the OxiZ-delegation safety net
+        // (which only fires on `Unknown`). The fix downgrades a `Sat` to
+        // `Unknown` whenever an assertion carries a quantifier nested in
+        // propositional structure (a relaxation: `Unsat` stays sound, `Sat`
+        // cannot be justified). The bare solver must therefore NOT return `Sat`.
+        use adsmt_core::Kind;
+        let s_sort = Type::const_("S", Kind::Type);
+        let q = Term::var("q", Type::bool_());
+        let x = adsmt_core::Var { name: "x".into(), ty: s_sort };
+        let forall = Term::mk_forall(x, q).unwrap();
+        let term = Term::mk_and(forall.clone(), Term::mk_not(forall).unwrap()).unwrap();
+        let mut s = Solver::new();
+        s.assert(term);
+        assert!(
+            !matches!(s.check_sat(), SatResult::Sat { .. }),
+            "A ∧ ¬A over a nested quantifier must not be a spurious `sat` \
+             (sound verdict is `Unknown` on the bare engine → delegate)"
+        );
     }
 
     // === NNF + Skolemization pre-assert pipeline ===

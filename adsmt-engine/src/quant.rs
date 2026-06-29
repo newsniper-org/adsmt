@@ -26,6 +26,15 @@ use indexmap::IndexMap;
 
 /// Pull every quantified assertion out of `assertions`, returning
 /// `(quantified, rest)`.
+///
+/// Only a **top-level** positive `forall` (`dest_forall` on the assertion
+/// itself) is extracted for instantiation. A quantifier NESTED inside
+/// propositional structure (`(and (∀x.…) …)`, `(=> g (∀x.…))`, …) stays in
+/// `rest`, where the CNF flattener treats it as an opaque propositional atom
+/// whose ∀/∃ semantics go unenforced. That is a relaxation — sound for `Unsat`
+/// but not for `Sat` — so `check_ground_with_deadline` flags any such surviving
+/// quantifier (`had_unhandled_quantifier`) and downgrades a resulting `Sat` to
+/// `Unknown` (→ the OxiZ MBQI fallback). See #347 (the `A ∧ ¬A` spurious-sat).
 #[allow(clippy::type_complexity)]
 pub fn partition_quantifiers(assertions: &[(Term, bool)]) -> (Vec<(Var, Term)>, Vec<(Term, bool)>) {
     let mut quants = Vec::new();
