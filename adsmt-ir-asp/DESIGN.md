@@ -173,7 +173,7 @@ their cartesian product, and body `let V = t` parse-time substitution), and the
 | `ast.rs` | `Item` / `Atom` / `Term` / `Literal` (`Pos`/`Neg`/`Theory`) / `Expr` |
 | `elab.rs` | declarations through checked admitters; rule Π-carriers; CanEq routing (`#int.*` / `#eq.S` / `#ne.S`); `#not`; `compute_strata` now a **classifier** (`Stratification::{Stratified, NonStratified}` — a negative cycle routes to L3 instead of erroring) |
 | `program.rs` | the semi-naïve forward Horn **least-fixpoint** (solver + re-check gate + abductive forward-chainer); the **GL reduct + `is_stable` gate** (`GroundNProgram`), reusing the `lfp` verbatim |
-| `solve.rs` | finite grounder + matching filter; theory/CanEq guard eval; **stratified perfect model** (L2) + the **bounded stable-model gate** (L3); query answering (membership / cautious `∩`); ⊆-minimal abduction |
+| `solve.rs` | finite grounder + matching filter; theory/CanEq guard eval; **stratified perfect model** (L2) + the **bounded stable-model gate** (L3) — the **well-founded bracket** `L* ⊆ M ⊆ U*` (alternating fixpoint) narrows the guess to the undefined atoms, and **connected-component decomposition** solves independent loop-clusters separately and cartesian-combines (the splitting-theorem base case; improvement-only — taken only when the monolithic sweep is infeasible); query answering (membership / cautious `∩`); ⊆-minimal abduction |
 | `lint.rs` | the **advisory unsoundness/vacuity linter** (a pure observer behind the firewall — no write path to a verdict): `asp-unsafe` / `asp-nonstratified` / `asp-vacuity` (the dual of the SMT-LIB vacuous-context lint), all `Info`/soft |
 
 **Advisory linter (ASP face, `lint.rs`).** The unsoundness/vacuity linter

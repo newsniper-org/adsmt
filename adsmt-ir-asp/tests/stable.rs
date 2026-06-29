@@ -291,3 +291,21 @@ fn cautious_query_is_the_intersection() {
     assert_eq!(p.mode, Entailment::Cautious);
     assert!(p.tuples.is_empty(), "p(x) is in only one model ⇒ not cautiously entailed");
 }
+
+/// DoS probe (connected-component decomposition): a single LARGE component must
+/// abstain *fast*, not enumerate. A shared atom `e(g)` in every rule body links
+/// all `a_i`/`b_i` loops into ONE component, so the program does NOT decompose;
+/// its global free set (> `MAX_STABLE_FREE`) takes the monolithic budget abstain
+/// in milliseconds. (Guards against a partition that under-merges, or a
+/// decomposition path that tries the cartesian over a huge single component.)
+#[test]
+fn single_large_component_abstains_fast() {
+    let mut src = String::from("sort T.\npred d(T).\npred e(T).\npred a(T).\npred b(T).\ne(g).\n");
+    for i in 0..25 {
+        src.push_str(&format!("d(c{i}).\n"));
+    }
+    src.push_str("a(X) :- d(X), e(g), not b(X).\n");
+    src.push_str("b(X) :- d(X), e(g), not a(X).\n");
+    let elab = elaborate(&parse(&src).unwrap()).unwrap();
+    assert!(matches!(solve(&elab), Err(FaceError::Unsupported(_))));
+}

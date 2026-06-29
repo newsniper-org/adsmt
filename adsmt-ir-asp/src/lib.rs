@@ -42,12 +42,18 @@
 //!   bracket forces the maximal set of atoms in/out in polynomial time, so only
 //!   the *undefined* atoms remain to guess — strictly tighter than the one-step
 //!   reduct envelope (which is just the first fixpoint iteration), deciding more
-//!   programs within budget. Over the work budget it still abstains loudly
-//!   ([`FaceError::Unsupported`]); the **loop-formula certificate** + conflict
-//!   learning (so programs whose *undefined* fragment also exceeds budget get a
-//!   verdict, not an abstain) are the remaining full-L3 slice. Queries are
-//!   answered **cautiously** (`∩` over the stable models); [`Solution::stable`]
-//!   carries the answer sets.
+//!   programs within budget. The program is also split into the **connected
+//!   components** of its atom-co-occurrence graph — independent subprograms whose
+//!   answer sets combine by **cartesian product** (the disjoint-union base case of
+//!   the splitting theorem) — so a program of many independent loops is decided
+//!   component-by-component at each one's smaller `|FREE|` (improvement-only: the
+//!   decomposition is taken only when the monolithic sweep is itself infeasible,
+//!   so it never abstains where the monolithic path would have succeeded). Over
+//!   the work budget it still abstains loudly ([`FaceError::Unsupported`]); the
+//!   **loop-formula certificate** + conflict learning (so a single large *undefined*
+//!   fragment — not decomposable — also gets a verdict, not an abstain) are the
+//!   remaining full-L3 slice. Queries are answered **cautiously** (`∩` over the
+//!   stable models); [`Solution::stable`] carries the answer sets.
 //! - **Abduction** — `declare`-`abducible` / `?- abduce G`: the ⊆-minimal
 //!   hypotheses that entail a goal (deduction = empty-abducible abduction), found
 //!   by **native backward-SLD relevance grounding** (the abducibles reachable

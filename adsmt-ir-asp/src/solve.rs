@@ -153,6 +153,15 @@ const MAX_STABLE_FREE: usize = 24;
 /// [`FaceError::Unsupported`] naming the loop-formula deferral — never a hang.
 /// Empirically calibratable (the per-candidate cost is ~0.1 µs per ground rule).
 const MAX_STABLE_WORK: u128 = 12_000_000;
+/// The cap on the **materialised stable-model count** when a program decomposes
+/// into independent components (the cartesian product of the components' answer
+/// sets can be exponential in the number of components). The cap applies ONLY on
+/// the decomposition path, which is reached only when the monolithic sweep is
+/// already infeasible — so it never regresses a monolithic-decidable program; it
+/// only bounds how many of the *previously-abstained* programs the cartesian
+/// combine will enumerate. A SEARCH-bound program (few answer sets) stays well
+/// under it; a COUNT-bound one (`2^k` answer sets) abstains soundly past it.
+const MAX_STABLE_MODELS: usize = 1 << 14;
 
 /// Solve the elaborated program: route on its [`Stratification`] —
 /// `Stratified` ⇒ the L0–L2 perfect-model path (unchanged); `NonStratified` ⇒
@@ -489,7 +498,71 @@ fn well_founded_bracket(p: &GroundNProgram) -> (BTreeSet<AtomId>, BTreeSet<AtomI
 /// is the **sound "no answer set"** verdict. Over the work budget it is instead a
 /// loud `Err(Unsupported)` (the loop-formula learning solver is a later slice), so
 /// a caller can never confuse an abstain (`Err`) with "no answer set" (`Ok([])`).
+///
+/// **Decomposition (the splitting-theorem base case).** The program is first split
+/// into the connected components of its atom-co-occurrence graph
+/// ([`connected_components`]) — independent subprograms over DISJOINT atom sets.
+/// The answer sets of a disjoint union are exactly the cartesian product of the
+/// components' answer sets, so each component runs the well-founded bracket +
+/// guess at its OWN (smaller) `|FREE|`. A program of `k` independent small loops
+/// — whose GLOBAL `|FREE|` blows the monolithic `MAX_STABLE_FREE` budget — is now
+/// decided component-by-component. Pure improvement: a single-component program
+/// takes the unchanged monolithic path, and the per-component `|FREE|` never
+/// exceeds the global one, so decomposition never abstains where the monolithic
+/// sweep would have succeeded (the cartesian product is bounded by the same
+/// `2^{global free}` ceiling the monolithic sweep already materialises).
 fn stable_models(p: &GroundNProgram) -> Result<Vec<BTreeSet<AtomId>>, FaceError> {
+    let components = connected_components(p);
+    if components.len() <= 1 {
+        return stable_models_component(p); // monolithic path (unchanged)
+    }
+    // Multi-component. If the MONOLITHIC sweep over the whole program is itself
+    // within budget, run it — same models, no model-count cap — so decomposition
+    // **never abstains where the monolithic path would have succeeded**. Only when
+    // the global free set / work blows the monolithic budget do we decompose; the
+    // cartesian model-count cap then applies, but only to programs the monolithic
+    // sweep already abstained on (improvement-only). A program of `k` independent
+    // SEARCH-bound loops (large global `|FREE|`, FEW answer sets each) is now
+    // decided; a COUNT-bound program (`k` independent binary choices ⇒ `2^k`
+    // answer sets) is inherently un-enumerable and abstains past the cap.
+    let (lower, upper) = well_founded_bracket(p);
+    let gfree = upper.difference(&lower).count();
+    if gfree <= MAX_STABLE_FREE
+        && (1u128 << gfree).saturating_mul(p.rules.len().max(1) as u128) <= MAX_STABLE_WORK
+    {
+        return stable_models_component(p);
+    }
+    // Solve each independent subprogram, then cartesian-combine. A component with
+    // NO stable model makes the whole disjoint union inconsistent (cartesian with
+    // ∅ = ∅) — a sound "no answer set".
+    let mut combos: Vec<BTreeSet<AtomId>> = vec![BTreeSet::new()];
+    for comp in &components {
+        let comp_models = stable_models_component(comp)?;
+        if comp_models.is_empty() {
+            return Ok(Vec::new());
+        }
+        // guard the materialised model count (the cartesian product can be
+        // exponential in the number of components — a sound abstain, never a hang).
+        if combos.len().saturating_mul(comp_models.len()) > MAX_STABLE_MODELS {
+            return Err(stable_models_overrun(components.len()));
+        }
+        let mut next: Vec<BTreeSet<AtomId>> = Vec::with_capacity(combos.len() * comp_models.len());
+        for acc in &combos {
+            for m in &comp_models {
+                let mut u = acc.clone();
+                u.extend(m.iter().copied());
+                next.push(u);
+            }
+        }
+        combos = next;
+    }
+    Ok(combos)
+}
+
+/// The monolithic stable-model sweep over one (connected) program: bounded
+/// guess-and-check over the [`well_founded_bracket`] `L* ⊆ M ⊆ U*`, each subset of
+/// the free atoms `U* \ L*` gated by the trusted [`GroundNProgram::is_stable`].
+fn stable_models_component(p: &GroundNProgram) -> Result<Vec<BTreeSet<AtomId>>, FaceError> {
     let (lower, upper) = well_founded_bracket(p);
     let free: Vec<AtomId> = upper.difference(&lower).copied().collect();
 
@@ -517,6 +590,65 @@ fn stable_models(p: &GroundNProgram) -> Result<Vec<BTreeSet<AtomId>>, FaceError>
         }
     }
     Ok(models)
+}
+
+/// Split a ground normal program into the **connected components** of its
+/// atom-co-occurrence graph: two atoms are adjacent iff they share a rule (head,
+/// positive, or negative body), and each rule is assigned to the component of its
+/// atoms. Components are over DISJOINT atom sets, so they are independent
+/// subprograms — the answer sets of the whole program are the cartesian product
+/// of the components' (the disjoint-union base case of the splitting theorem).
+/// Returns one [`GroundNProgram`] per component (the partition of `p.rules`); an
+/// empty program yields no components (the caller's `len() <= 1` short-circuit
+/// then takes the unchanged monolithic path).
+fn connected_components(p: &GroundNProgram) -> Vec<GroundNProgram> {
+    if p.rules.is_empty() {
+        return Vec::new();
+    }
+    let rule_atoms = |r: &GroundNRule| -> Vec<AtomId> {
+        std::iter::once(r.head)
+            .chain(r.pos.iter().copied())
+            .chain(r.neg.iter().copied())
+            .collect()
+    };
+    // index every atom, then union the atoms within each rule (union–find).
+    let atoms: BTreeSet<AtomId> = p.rules.iter().flat_map(rule_atoms).collect();
+    let idx: HashMap<AtomId, usize> = atoms.iter().enumerate().map(|(i, &a)| (a, i)).collect();
+    let mut parent: Vec<usize> = (0..atoms.len()).collect();
+    for r in &p.rules {
+        let ra = rule_atoms(r);
+        let first = idx[&ra[0]];
+        for a in &ra[1..] {
+            let (x, y) = (uf_find(&mut parent, first), uf_find(&mut parent, idx[a]));
+            if x != y {
+                parent[x] = y;
+            }
+        }
+    }
+    // group rules by their head atom's component root.
+    let mut groups: HashMap<usize, GroundNProgram> = HashMap::new();
+    for r in &p.rules {
+        let root = uf_find(&mut parent, idx[&r.head]);
+        groups.entry(root).or_default().push(r.clone());
+    }
+    groups.into_values().collect()
+}
+
+/// Union–find `find` with path halving.
+fn uf_find(parent: &mut [usize], mut x: usize) -> usize {
+    while parent[x] != x {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    x
+}
+
+fn stable_models_overrun(components: usize) -> FaceError {
+    FaceError::Unsupported(format!(
+        "the L3 answer-set count exceeds {MAX_STABLE_MODELS} (the cartesian product over \
+         {components} independent components — a model-enumeration limit; the loop-formula \
+         learning solver is a later slice)"
+    ))
 }
 
 fn grounding_overrun() -> FaceError {
@@ -670,6 +802,101 @@ mod l3_tests {
                 assert!(p.is_stable(&m), "returned a non-stable model");
             }
         }
+    }
+
+    /// **Completeness gain of connected-component decomposition.** `N` independent
+    /// even-loops `a_i :- not b_i. b_i :- not a_i.` — global `|FREE| = 2N`. For
+    /// `N = 13` the global free set is 26, over `MAX_STABLE_FREE = 24`, so the
+    /// monolithic sweep abstains; decomposition solves each 2-atom loop and
+    /// cartesian-combines into the `2^13 = 8192` answer sets (under the model cap).
+    #[test]
+    fn decomposition_decides_what_monolithic_abstains() {
+        const N: u32 = 13;
+        let mut p = GroundNProgram::new();
+        for i in 0..N {
+            let (a, b) = (2 * i, 2 * i + 1);
+            p.push(GroundNRule::rule(a, vec![], vec![b])); // a_i :- not b_i
+            p.push(GroundNRule::rule(b, vec![], vec![a])); // b_i :- not a_i
+        }
+        // monolithic would abstain (global free = 26 > 24)…
+        assert!(well_founded_bracket(&p).1.len() >= MAX_STABLE_FREE + 1);
+        // …but the decomposition decides all 2^N answer sets, each picking one of
+        // {a_i, b_i} per loop.
+        let models = stable_models(&p).expect("decomposition decides the independent loops");
+        assert_eq!(models.len(), 1usize << N, "2^N answer sets (one per loop choice)");
+        for m in &models {
+            assert!(p.is_stable(m), "every combined model is GL-stable");
+            assert_eq!(m.len() as u32, N, "exactly one of each loop pair");
+        }
+    }
+
+    /// **The decomposition differential** (the keystone for THIS slice). The base
+    /// `stable_models_match_brute_force_differential` rarely builds a multi-component
+    /// program (its 2–5 atoms usually connect), so it under-exercises the cartesian
+    /// path. Here we deliberately generate `k` subprograms over DISJOINT atom
+    /// ranges, concatenate them (forcing `k` connected components), and assert the
+    /// production decomposition still matches an exhaustive `is_stable` sweep over
+    /// the WHOLE base — a partition bug (mixing components), a cartesian bug, or a
+    /// monolithic-feasibility-routing bug all fail here.
+    #[test]
+    fn decomposition_matches_brute_force_differential() {
+        let mut rng = Lcg(0x0bad_c0de_dead_beef);
+        for _ in 0..15_000 {
+            let k = 2 + rng.below(2) as u32; // 2..=3 components
+            let per = 2 + rng.below(2) as u32; // 2..=3 atoms each
+            let n_atoms = k * per; // ≤ 9 ⇒ brute force ≤ 2^9 (keeps the sweep fast)
+            let mut p = GroundNProgram::new();
+            for c in 0..k {
+                let base = c * per; // this component's disjoint atom range
+                let n_rules = 1 + rng.below(4) as usize;
+                for _ in 0..n_rules {
+                    let head = base + rng.below(per as u64) as AtomId;
+                    let (mut pos, mut neg) = (Vec::new(), Vec::new());
+                    for off in 0..per {
+                        match rng.below(5) {
+                            0 => pos.push(base + off),
+                            1 => neg.push(base + off),
+                            _ => {}
+                        }
+                    }
+                    p.push(GroundNRule::rule(head, pos, neg));
+                }
+            }
+
+            let got: BTreeSet<BTreeSet<AtomId>> = stable_models(&p).unwrap().into_iter().collect();
+            let mut brute = BTreeSet::new();
+            for mask in 0u32..(1u32 << n_atoms) {
+                let m: BTreeSet<AtomId> = (0..n_atoms).filter(|a| (mask >> a) & 1 == 1).collect();
+                if p.is_stable(&m) {
+                    brute.insert(m);
+                }
+            }
+            assert_eq!(got, brute, "decomposition ≠ brute force for {:?}", p.rules);
+        }
+    }
+
+    /// Decomposition must AGREE with the monolithic enumeration on a program small
+    /// enough that the monolithic path also runs: three independent loops give
+    /// `2^3` models via either route (the cartesian product is the true set).
+    #[test]
+    fn decomposition_matches_monolithic_on_small_independent_loops() {
+        let mut p = GroundNProgram::new();
+        for i in 0..3u32 {
+            let (a, b) = (2 * i, 2 * i + 1);
+            p.push(GroundNRule::rule(a, vec![], vec![b]));
+            p.push(GroundNRule::rule(b, vec![], vec![a]));
+        }
+        let got: BTreeSet<BTreeSet<AtomId>> = stable_models(&p).unwrap().into_iter().collect();
+        // brute force over the whole 6-atom base.
+        let mut brute = BTreeSet::new();
+        for mask in 0u32..(1u32 << 6) {
+            let m: BTreeSet<AtomId> = (0..6).filter(|a| (mask >> a) & 1 == 1).collect();
+            if p.is_stable(&m) {
+                brute.insert(m);
+            }
+        }
+        assert_eq!(got, brute, "decomposition's cartesian == brute force");
+        assert_eq!(got.len(), 8);
     }
 }
 
