@@ -17,6 +17,18 @@
 //!    converts two-var constraints to tightened single-var
 //!    bounds whenever one variable's bound is already known.
 //!
+//! 3. **Compound linear-equality normalization** (#348). For an
+//!    equality whose operands the shape handlers above do not
+//!    claim, both sides are reduced to `Σ cᵢ·xᵢ + c` (see
+//!    [`LinArith::linearize`]) and the difference inspected: a
+//!    zero-variable residue `c ≠ 0` (`(= 4 (- j j))` ⤳ `4 = 0`)
+//!    or a single-variable `c1·x + c = 0` with `c1 ∤ c` under LIA
+//!    (`(= i (+ (+ j j) (- i 3)))` ⤳ `2j = 3`) is a genuine
+//!    conflict; a solvable single-variable form pins `x` to its
+//!    integer value. ≥2-variable / non-integer-LRA / non-linear
+//!    shapes fall through to UF — sound, just incomplete (the
+//!    residual general-LIA gap the simplex backend below closes).
+//!
 //! Simplex tableau (`adsmt-theory::arith_simplex`) is the
 //! eventual strategic backend for multi-coefficient inequalities;
 //! integration with this theory's assert/check path lands
@@ -27,7 +39,7 @@
 //! - `(<= (+ x y) k)`, `(<= (- x y) k)`, `(<= x y)` plus
 //!   strict / reversed variants for two-variable forms
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
 use adsmt_core::{Term, TermInner, Type};
@@ -599,6 +611,60 @@ impl LinArith {
         None
     }
 
+    /// Parse `t` into a linear combination `Σ cᵢ·xᵢ + c` — the coefficient map
+    /// (by variable NAME) plus the constant. Handles `+`, `-` (binary; unary
+    /// `-x` reaches as `(- 0 x)` from the parser), `*` by a constant factor, bare
+    /// variables, and integer literals. `None` for any non-linear shape (a
+    /// variable·variable `*`, `div`/`mod`, a function application) or an `i128`
+    /// overflow — the caller then stays conservative. Used by the #348 compound
+    /// linear-equality normalization (the simple `(var,lit)`/`(var,var±k)` shapes
+    /// are claimed earlier; a compound equality with variable cancellation such
+    /// as `(= 4 (- j j))` used to fall through to UF and merge opaquely).
+    fn linearize(t: &Term) -> Option<(BTreeMap<String, i128>, i128)> {
+        if let Some(k) = Self::int_lit(t) {
+            return Some((BTreeMap::new(), k));
+        }
+        if let TermInner::Var(v) = t.kind() {
+            let mut m = BTreeMap::new();
+            m.insert(v.name.clone(), 1);
+            return Some((m, 0));
+        }
+        let TermInner::App(outer, b) = t.kind() else { return None };
+        let TermInner::App(head, a) = outer.kind() else { return None };
+        let TermInner::Const(c) = head.kind() else { return None };
+        match c.name.as_str() {
+            "+" | "-" => {
+                let (mut ma, ca) = Self::linearize(a)?;
+                let (mb, cb) = Self::linearize(b)?;
+                let neg = c.name == "-";
+                for (k, v) in mb {
+                    let e = ma.entry(k).or_insert(0);
+                    *e = if neg { e.checked_sub(v)? } else { e.checked_add(v)? };
+                }
+                let cc = if neg { ca.checked_sub(cb)? } else { ca.checked_add(cb)? };
+                Some((ma, cc))
+            }
+            "*" => {
+                // Linear only when at least one factor is a pure constant.
+                let la = Self::linearize(a)?;
+                let lb = Self::linearize(b)?;
+                let (coeffs, c0, s) = if la.0.is_empty() {
+                    (lb.0, lb.1, la.1)
+                } else if lb.0.is_empty() {
+                    (la.0, la.1, lb.1)
+                } else {
+                    return None;
+                };
+                let mut m = BTreeMap::new();
+                for (k, v) in coeffs {
+                    m.insert(k, v.checked_mul(s)?);
+                }
+                Some((m, c0.checked_mul(s)?))
+            }
+            _ => None,
+        }
+    }
+
     /// Combine an incoming bound with the existing one for `var`.
     /// Returns Some(conflict_witness) if the combined bounds become
     /// infeasible.
@@ -840,6 +906,82 @@ impl Theory for LinArith {
                 self.two_vars.push(norm_two_var(vx, vy, -1, ">=", k));
                 return AssertResult::Accepted;
             }
+            // #348 — general linear-equality normalization for a COMPOUND
+            // equality the shape handlers above did not claim. Reduce `a − b` to
+            // `Σ cᵢ·xᵢ + c`:
+            //   • 0 variables → `c = 0`: `c ≠ 0` is unsat (`(= 4 (- j j))` ⤳
+            //     `4 = 0`); `c = 0` is trivially true.
+            //   • 1 variable  → `c1·x + c = 0` → `x = −c/c1`: under LIA, `c1 ∤ c`
+            //     is unsat (`(= i (+ (+ j j) (- i 3)))` ⤳ `2j = 3`), else pin `x`
+            //     to the integer value via its bounds.
+            // (≥2 variables, a non-integer LRA value, or a non-linear shape ⇒
+            // leave to UF / the two-var FM, exactly as before — sound, just
+            // incomplete.) The reduction is exact, so this only ever DERIVES a
+            // genuine `unsat`, never fabricates one.
+            if let (Some((ma, ca)), Some((mb, cb))) =
+                (Self::linearize(&a), Self::linearize(&b))
+                && let Some(c) = ca.checked_sub(cb)
+            {
+                let mut diff = ma;
+                let mut overflow = false;
+                for (k, v) in mb {
+                    let e = diff.entry(k).or_insert(0);
+                    match e.checked_sub(v) {
+                        Some(r) => *e = r,
+                        None => overflow = true,
+                    }
+                }
+                diff.retain(|_, v| *v != 0);
+                if !overflow {
+                    match diff.len() {
+                        0 => {
+                            if c != 0 {
+                                let w = TheoryWitness::Opaque {
+                                    kind: self.name_.into(),
+                                    notes: format!(
+                                        "linear equality reduces to the false ground equation {c} = 0"
+                                    ),
+                                };
+                                self.conflict = Some(w.clone());
+                                return AssertResult::Conflict { witness: w };
+                            }
+                            return AssertResult::Accepted; // `0 = 0`
+                        }
+                        1 => {
+                            let (var, &coeff) = diff.iter().next().expect("len == 1");
+                            let var = var.clone();
+                            // `coeff·x + c = 0` → `x = −c / coeff` (coeff ≠ 0).
+                            if let Some(neg_c) = c.checked_neg() {
+                                let divides = neg_c % coeff == 0;
+                                if !divides {
+                                    if self.name_ == "LIA" {
+                                        let w = TheoryWitness::Opaque {
+                                            kind: "LIA".into(),
+                                            notes: format!(
+                                                "{coeff}·{var} = {neg_c} has no integer solution"
+                                            ),
+                                        };
+                                        self.conflict = Some(w.clone());
+                                        return AssertResult::Conflict { witness: w };
+                                    }
+                                    // LRA: a real solution exists ⇒ satisfiable in
+                                    // isolation; leave it (fall through to Ignored).
+                                } else {
+                                    let val = neg_c / coeff;
+                                    for op in ["<=", ">="] {
+                                        if let Some(w) = self.record_bound(var.clone(), op, val) {
+                                            self.conflict = Some(w.clone());
+                                            return AssertResult::Conflict { witness: w };
+                                        }
+                                    }
+                                    return AssertResult::Accepted;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             // Non-var/non-literal operands (e.g. `(= (f x) 5)`) — leave
             // to UF congruence; LIA has no variable to bound.
             return AssertResult::Ignored;
@@ -1068,6 +1210,83 @@ mod tests {
         ));
         let r = t.assert(Literal::positive(e6).unwrap());
         assert!(matches!(r, AssertResult::Conflict { .. }));
+    }
+
+    fn binop(op: &str, a: Term, b: Term) -> Term {
+        let ft = Type::fun(int_ty(), Type::fun(int_ty(), int_ty()).unwrap()).unwrap();
+        Term::app(Term::app(Term::const_(op, ft), a).unwrap(), b).unwrap()
+    }
+
+    #[test]
+    fn compound_equality_zero_var_false_is_unsat() {
+        // #348 — `(= 4 (- j j))` ⤳ `4 = 0` after cancellation: unsat. The shape
+        // handlers don't claim a `(lit, compound)` equality, so it used to fall
+        // through to UF, which merged `(- j j)` with `4` opaquely → spurious sat.
+        let mut t = LinArith::lia();
+        let j = Term::var("j", int_ty());
+        let eq = Term::mk_eq(
+            Term::const_("4", int_ty()),
+            binop("-", j.clone(), j),
+        )
+        .unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(eq).unwrap()),
+            AssertResult::Conflict { .. }
+        ));
+    }
+
+    #[test]
+    fn compound_equality_one_var_no_integer_solution_is_unsat() {
+        // #348 — `(= i (+ (+ j j) (- i 3)))` ⤳ `i = 2j + i − 3` ⤳ `2j = 3`: no
+        // integer solution under LIA → unsat.
+        let mut t = LinArith::lia();
+        let i = Term::var("i", int_ty());
+        let j = Term::var("j", int_ty());
+        let rhs = binop(
+            "+",
+            binop("+", j.clone(), j.clone()),
+            binop("-", i.clone(), Term::const_("3", int_ty())),
+        );
+        let eq = Term::mk_eq(i, rhs).unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(eq).unwrap()),
+            AssertResult::Conflict { .. }
+        ));
+    }
+
+    #[test]
+    fn compound_equality_one_var_integer_solution_pins_value() {
+        // Soundness control: `(= (+ j j) 4)` ⤳ `2j = 4` ⤳ `j = 2` — satisfiable,
+        // pinned to 2; a later `j = 3` then conflicts (the pin is recorded as a
+        // bound, not silently dropped). Never a spurious unsat in isolation.
+        let mut t = LinArith::lia();
+        let j = Term::var("j", int_ty());
+        let eq = Term::mk_eq(binop("+", j.clone(), j.clone()), Term::const_("4", int_ty())).unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(eq).unwrap()),
+            AssertResult::Accepted
+        ));
+        assert!(matches!(t.check(), CheckResult::Sat));
+        let e3 = Term::mk_eq(j, Term::const_("3", int_ty())).unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(e3).unwrap()),
+            AssertResult::Conflict { .. }
+        ));
+    }
+
+    #[test]
+    fn compound_equality_tautology_stays_sat() {
+        // Soundness control: `(= (+ i j) (+ j i))` ⤳ `0 = 0` — trivially true,
+        // must stay sat (the fix must not turn a tautology into a conflict).
+        let mut t = LinArith::lia();
+        let i = Term::var("i", int_ty());
+        let j = Term::var("j", int_ty());
+        let eq = Term::mk_eq(binop("+", i.clone(), j.clone()), binop("+", j, i)).unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(eq).unwrap()),
+            AssertResult::Accepted
+        ));
+        assert!(matches!(t.check(), CheckResult::Sat));
     }
 
     #[test]
