@@ -161,6 +161,19 @@ impl Uf {
             self.register(a);
             self.register(b);
         }
+        // #349 — register the predicate (Bool-sorted) atoms so they PARTICIPATE
+        // in congruence: a `p(a)` app must merge with `p(b)` when `a ~ b`. The
+        // theory used to keep these only as opaque `pos_atoms`/`neg_atoms` (catching
+        // just a same-atom `p(a) ∧ ¬p(a)`), so `a = b ∧ p(a) ∧ ¬p(b)` came back a
+        // spurious `sat` — the predicate-congruence / EUF↔Bool interface equality
+        // gap. With the atoms in the congruence universe the signature pass below
+        // merges `p(a) ~ p(b)`, and `detect_predicate_polarity_conflict` turns an
+        // opposite-polarity pair in one class into the sound `unsat`.
+        let atoms: Vec<Term> =
+            self.pos_atoms.iter().chain(self.neg_atoms.iter()).cloned().collect();
+        for t in &atoms {
+            self.register(t);
+        }
         // Seed union-find with asserted equalities.
         for (a, b) in &eqs {
             self.union(a, b);
@@ -257,6 +270,36 @@ impl Uf {
         }
         None
     }
+
+    /// After closure, check the **predicate-congruence / EUF↔Bool interface
+    /// equality** (#349): two Bool-sorted atoms in the SAME congruence class
+    /// (e.g. `p(a)` and `p(b)` once `a ~ b`) must hold the SAME truth value, so
+    /// one asserted positively and the other negatively is a conflict
+    /// (`a = b ∧ p(a) ∧ ¬p(b)` is unsat). Group atoms by class root and flag a
+    /// class carrying both polarities. Sound: congruence only merges genuinely
+    /// equal terms, so this fires only on a real contradiction (never a spurious
+    /// `unsat`).
+    fn detect_predicate_polarity_conflict(&mut self) -> Option<TheoryWitness> {
+        let pos: Vec<Term> = self.pos_atoms.iter().cloned().collect();
+        let neg: Vec<Term> = self.neg_atoms.iter().cloned().collect();
+        let mut class_pos: HashMap<Term, Term> = HashMap::new();
+        for p in &pos {
+            let root = self.find(p);
+            class_pos.entry(root).or_insert_with(|| p.clone());
+        }
+        for n in &neg {
+            let root = self.find(n);
+            if let Some(p) = class_pos.get(&root) {
+                return Some(TheoryWitness::Opaque {
+                    kind: "UF".into(),
+                    notes: format!(
+                        "congruence forces {p} = {n}, but they were asserted with opposite polarities"
+                    ),
+                });
+            }
+        }
+        None
+    }
 }
 
 impl Theory for Uf {
@@ -326,6 +369,10 @@ impl Theory for Uf {
             };
         }
         if let Some(w) = self.detect_diseq_conflict() {
+            self.conflict = Some(w.clone());
+            return CheckResult::Unsat { witness: w };
+        }
+        if let Some(w) = self.detect_predicate_polarity_conflict() {
             self.conflict = Some(w.clone());
             return CheckResult::Unsat { witness: w };
         }
@@ -530,6 +577,37 @@ mod tests {
         uf.assert(Literal::positive(Term::mk_eq(a(), b()).unwrap()).unwrap());
         uf.assert(Literal::negative(Term::mk_eq(fa, fb).unwrap()).unwrap());
         assert!(matches!(uf.check(), CheckResult::Unsat { .. }));
+    }
+
+    #[test]
+    fn predicate_congruence_interface_equality_is_unsat() {
+        // #349 — `a = b ∧ p(a) ∧ ¬p(b)`: congruence merges `p(a) ~ p(b)`, so the
+        // opposite asserted polarities are a conflict. The predicate atoms used
+        // to be opaque `pos_atoms`/`neg_atoms` OUTSIDE the congruence universe
+        // (only a same-atom `p(a) ∧ ¬p(a)` was caught) → spurious `sat`.
+        let mut uf = Uf::new();
+        let p = Term::const_("p", Type::fun(int_(), Type::bool_()).unwrap());
+        let pa = Term::app(p.clone(), a()).unwrap();
+        let pb = Term::app(p, b()).unwrap();
+        uf.assert(Literal::positive(Term::mk_eq(a(), b()).unwrap()).unwrap());
+        uf.assert(Literal::positive(pa).unwrap());
+        uf.assert(Literal::negative(pb).unwrap());
+        assert!(matches!(uf.check(), CheckResult::Unsat { .. }), "a=b ∧ p(a) ∧ ¬p(b) must be unsat");
+    }
+
+    #[test]
+    fn predicate_congruence_non_congruent_stays_sat() {
+        // Soundness control: `a = b ∧ p(a) ∧ ¬p(c)` with `c` unconstrained — `p(a)`
+        // and `p(c)` are NOT congruent, so this stays `sat`. The interface-equality
+        // conflict must fire ONLY on a genuinely-congruent pair (no over-firing).
+        let mut uf = Uf::new();
+        let p = Term::const_("p", Type::fun(int_(), Type::bool_()).unwrap());
+        let pa = Term::app(p.clone(), a()).unwrap();
+        let pc = Term::app(p, c()).unwrap();
+        uf.assert(Literal::positive(Term::mk_eq(a(), b()).unwrap()).unwrap());
+        uf.assert(Literal::positive(pa).unwrap());
+        uf.assert(Literal::negative(pc).unwrap());
+        assert!(matches!(uf.check(), CheckResult::Sat), "p(a) and p(c) are not congruent → sat");
     }
 
     #[test]
