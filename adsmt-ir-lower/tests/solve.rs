@@ -100,10 +100,15 @@ fn bool_ite_unsat() {
 // `tests/lower.rs::arith_fidelity` / `real_arith_fidelity`).
 //
 // NB the BARE `Solver::new()` path here decides exactly the fragment `LinArith`
-// claims directly — `(op var literal)` comparisons and their sums. Constant
-// folding (`1+1`), comparison re-orientation (`5 < x`), Real-decimal literals,
-// and unsat-via-OxiZ-delegation are the native lu-smt CLI's preprocessing /
-// fallback, exercised at the full-pipeline differential, not at this unit gate.
+// claims directly — `(op var literal)` comparisons and their sums — PLUS any
+// **ground** arithmetic / (dis)equality / comparison, which the lowering itself
+// constant-folds (`(+ 2 1)`→`3`, `(= 4 3)`→`false`, `(< 4 3)`→`false`) so the
+// bare engine never sees a lit-vs-lit atom its UF would merge unsoundly (the
+// `4 ≠ 3` false-`sat` the #317 differential found; see `lower::as_int_lit`).
+// Re-orientation of a NON-ground comparison (`5 < x`, literal-on-the-left with a
+// free var), Real-decimal literals, and unsat-via-OxiZ-delegation remain the
+// native lu-smt CLI's preprocessing / fallback, exercised at the full-pipeline
+// differential, not at this unit gate.
 
 /// Linear Int entailment `x>0 ∧ y>0 ⊢ x+y>0`: asserting the hypotheses with the
 /// **negated** goal is unsat (the lowered `+` / `>` drive the simplex).
@@ -128,6 +133,61 @@ fn int_arith_sat() {
 #[test]
 fn int_bound_box_unsat() {
     let src = "(declare-const x Int) (assert (> x 5)) (assert (< x 3))";
+    assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
+}
+
+// ── ground constant-fold (the #317 differential gate: the bare engine merges
+// two distinct integer-literal `Const`s in UF — it has no built-in `4 ≠ 3`,
+// `LinArith::assert` `Ignored`s a lit-vs-lit `=` — so the lowering DECIDES a
+// ground literal (dis)equality / arithmetic / comparison itself).
+
+/// A false ground literal equality `(= 4 3)` is **unsat** — WITHOUT the fold
+/// the bare engine's UF merges the two numerals into a spurious `sat`.
+#[test]
+fn ground_literal_eq_unsat() {
+    let src = "(assert (= 4 3))";
+    assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
+}
+
+/// A false ground equality over nested arithmetic `(= (+ 2 1) 4)` folds bottom-up
+/// (`(+ 2 1)`→`3`, then `(= 3 4)`→`false`) → **unsat**.
+#[test]
+fn ground_arith_eq_unsat() {
+    let src = "(assert (= (+ 2 1) 4))";
+    assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
+}
+
+/// A true ground equality `(= (* 2 3) 6)` folds to `true` → **sat** (no
+/// over-fold into a spurious unsat).
+#[test]
+fn ground_arith_eq_sat() {
+    let src = "(assert (= (* 2 3) 6))";
+    assert!(matches!(verdict(src), SatResult::Sat { .. }), "expected sat");
+}
+
+/// A false ground comparison `(< 4 3)` folds to `false` → **unsat** (the bare
+/// LinArith does not claim a literal-on-the-left comparison, so without the fold
+/// this was a sound-but-incomplete `unknown`).
+#[test]
+fn ground_comparison_unsat() {
+    let src = "(assert (< 4 3))";
+    assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
+}
+
+/// A ground unary-minus comparison `(>= (- 0 2) 0)` folds (`(- 0 2)`→`-2`, then
+/// `(>= -2 0)`→`false`) → **unsat**; exercises the negative-literal fold path.
+#[test]
+fn ground_neg_comparison_unsat() {
+    let src = "(assert (>= (- 0 2) 0))";
+    assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
+}
+
+/// A folded literal still composes with a free variable: `(< i (+ 1 1)) ∧ (> i 5)`
+/// is **unsat** — `(+ 1 1)` folds to `2`, leaving the canonical `(< i 2)` the
+/// bare LinArith claims against `(> i 5)`.
+#[test]
+fn folded_literal_composes_with_var_unsat() {
+    let src = "(declare-const i Int) (assert (< i (+ 1 1))) (assert (> i 5))";
     assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
 }
 

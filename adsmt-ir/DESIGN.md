@@ -410,7 +410,16 @@ used as data, a type that depends on a term value) → **abstain**.
   (`+`/`-`/`*`/`div`/`mod`/`/`/`<`/`<=`/`>`/`>=`, unary `-` as `(- 0 x)`, `abs`)
   so the engine's LIA/LRA decides them** (the `Nat`/`WNat` injections, `int2real`,
   and `pow`/`odd`/`prime` stay uninterpreted EUF — sound, incomplete; a later
-  slice). **Dispatch on the resolved decl's identity + prelude
+  slice). **Ground integer arithmetic is constant-folded** (`(+ 2 1)`↦`3`,
+  `(= 4 3)`↦`false`, `(< 4 3)`↦`false`, unary `(- 0 2)`↦`-2`): the bare engine
+  merges two distinct integer-literal `Const`s in UF (no built-in `4 ≠ 3` —
+  `LinArith::assert` `Ignored`s a lit-vs-lit `=`), so the lowering DECIDES a
+  literal (dis)equality / comparison itself rather than hand the engine an atom
+  it closes unsoundly (the `4 ≠ 3` false-`sat` the #317 three-way differential
+  found). This replicates, soundly, the text preprocessing the native CLI does
+  but the lowering path bypasses — it only ever replaces an under-determined
+  atom with its true value (overflow / `div`/`mod` / Real abstain to the plain
+  term). **Dispatch on the resolved decl's identity + prelude
   type, NOT the bare string** (a user `(declare-fun and …)` / a bound var named
   `and` must not be mis-routed), **arity-exactly** (a *partial* application —
   `(and p)`, `(= S)` — abstains, never builds an under-applied target). The
@@ -549,13 +558,25 @@ carry an explicit abstain:
 **Two process/structural invariants.** (1) Lowering runs against an
 **immutable, fully-admitted `Env`** — it never admits or mutates mid-lowering
 (so the kernel's conversion memo it leans on for `whnf`/`is_def_eq`
-classification can never go stale under it). (2) The **end-to-end
-z3-differential is a per-slice LANDING GATE, not a closing 후검증**: every
-`unsat` the lowered path produces is cross-checked against z3/cvc5 on the
-*original* SMT-LIB, run through the **real** face→kernel→lower→solver pipeline
-(not unit-built target terms — [[feedback_roundtrip_through_real_producer]]),
-over a **randomized** corpus ([[feedback_z3_differential_for_unsat_trust]]: a
-13/13 battery hid a 119/600 false-unsat).
+classification can never go stale under it). (2) The **end-to-end differential
+is a per-slice LANDING GATE, not a closing 후검증** — and it is a **THREE-WAY**
+(`z3_differential.py`), not z3-only, because the lowering and the engine share a
+trust boundary that z3 alone cannot separate: the lowering's job is to hand the
+engine the **same** input the native parser would, so a wrong verdict z3 catches
+could be a *lowering* bug OR a shared *engine* bug. Each random script
+(`adsmt-ir-smtlib` fragment, run through the **real** face→kernel→lower→solver
+pipeline — not unit-built target terms, [[feedback_roundtrip_through_real_producer]])
+is decided by THREE engines: **LOWERING** (the subject), **NATIVE** `lu-smt`
+(same engine, no lowering — the reference) and **Z3** (oracle). Comparing
+LOWERING against NATIVE **cancels the shared engine**: a verdict the native path
+gets wrong too (`lowering == native ≠ z3`) is a pre-existing **engine** bug
+(quantifier opacity #347 / linear var-cancellation #348 — tracked, NOT a lowering
+defect); a verdict ONLY the lowering gets wrong (`native == z3 ≠ lowering`) is
+the genuine lowering mistranslation **the gate fails on**. The lowering being
+*more* decisive than native and matching z3 (the ground constant-fold deciding
+`(= 4 3)` the bare native path merges in UF) is a sound **improvement**. Run
+over a **randomized**, multi-seed corpus ([[feedback_z3_differential_for_unsat_trust]]:
+a 13/13 battery hid a 119/600 false-unsat) — 0 lowering-attributable verdicts.
 
 **Increment plan (M3-8, slices, each design→impl→adversarial-review→후검증):**
 **M3-8a ✅ (landed, `adsmt-ir-lower` crate)** = the first-order / EUF /
@@ -583,9 +604,11 @@ structure-preserving `Const`+axiom form is a deferred optimization, and the
 recursion-axiom form stays deferred to the initial-algebra theory). **후검증** target = *meaning-preservation*: abstract over the
 denotation, prove the lowered image is logically equivalent on the lowerable
 fragment and whole-query-abstain ⇒ no false verdict; plus an **end-to-end
-z3-differential** (lower a face-elaborated query, solve, cross-check the verdict
-against a reference — the [[feedback_z3_differential_for_unsat_trust]]
-discipline). Lowering lives in a **new sibling crate** (e.g. `adsmt-ir-lower`,
+three-way differential** (lower a face-elaborated query, solve, cross-check the
+verdict against BOTH the native `lu-smt` reference — to cancel shared engine
+bugs — and z3 the oracle; see invariant (2) above — the
+[[feedback_z3_differential_for_unsat_trust]] discipline). Lowering lives in a
+**new sibling crate** (e.g. `adsmt-ir-lower`,
 path-dep on both `adsmt-ir` and the frozen `adsmt-core`/engine) so the rc.40
 stabilization workspace stays untouched — a downstream *consumer*, not a
 workspace edit.

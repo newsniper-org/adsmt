@@ -9,7 +9,15 @@
 //! `< <= > >=`) lower to the adsmt-core arith-theory operators — the *same*
 //! const names the native SMT-LIB parser emits — so the engine's LIA/LRA solver
 //! decides them (numeric literals already lower as `const_(numeral, Int/Real)`;
-//! see [`Lowerer::try_arith`]). `int2real` and `pow` / `odd` / `prime` are NOT
+//! see [`Lowerer::try_arith`]). **Ground integer arithmetic is constant-folded**
+//! in the lowering (`(+ 2 1)`↦`3`, `(= 4 3)`↦`false`, `(< 4 3)`↦`false`): the
+//! bare engine merges two distinct integer-literal `Const`s in UF (it has no
+//! built-in `4 ≠ 3` — `LinArith::assert` `Ignored`s a lit-vs-lit `=`), so the
+//! lowering DECIDES a literal (dis)equality / comparison rather than hand the
+//! engine an atom it would close unsoundly. This is the native-CLI text
+//! preprocessing the lowering path bypasses, replicated soundly (it only ever
+//! replaces an under-determined atom with its true value); see [`as_int_lit`] /
+//! [`fold_int_binop`]. `int2real` and `pow` / `odd` / `prime` are NOT
 //! theory-mapped: they fall through to **EUF** (an uninterpreted function —
 //! sound, since it can never manufacture an arithmetic fact, but incomplete; a
 //! later slice). The `Nat`/`WNat` injections (`nat2int`/`wnat2int`/`nat2wnat`)
@@ -31,7 +39,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
-use adsmt_core::{Kind as CKind, Term as CTerm, Type as CType, Var as CVar};
+use adsmt_core::{Kind as CKind, Term as CTerm, TermInner as CTermInner, Type as CType, Var as CVar};
 use adsmt_ir::{
     AdmissionStep, Ctx, Env, IndSpec, Modality, Term, TermKind, Univ, as_const_app, infer,
     is_def_eq, whnf,
@@ -362,7 +370,16 @@ impl Lowerer<'_> {
                 if a.type_of().is_fun() {
                     return Err(unl("equality over a function sort (extensional, unsupported)"));
                 }
-                CTerm::mk_eq(a, b).map_err(meq)?
+                // Ground constant-fold: a literal-vs-literal **integer** equality
+                // is DECIDED here. The bare engine's UF merges two distinct
+                // integer-literal `Const`s (it has no built-in `4 ≠ 3` —
+                // `LinArith::assert` returns `Ignored` for a lit-vs-lit `=`,
+                // leaving it to congruence, which happily unifies them), so
+                // handing it `(= 4 3)` is a false-`sat`. See [`as_int_lit`].
+                match (as_int_lit(&a), as_int_lit(&b)) {
+                    (Some(x), Some(y)) => bool_lit(x == y),
+                    _ => CTerm::mk_eq(a, b).map_err(meq)?,
+                }
             }
             "exists" => {
                 // `exists : Π(A:Type0). (A → Prop) → Prop` — `(exists S (λ. ·))`.
@@ -503,6 +520,18 @@ impl Lowerer<'_> {
         self.arity(name, args, 2)?;
         let a = self.lower_term(&args[0], frames)?;
         let b = self.lower_term(&args[1], frames)?;
+        // Ground constant-fold over **integer** literals: a literal-vs-literal
+        // `+`/`-`/`*` folds to its value and a comparison to `true`/`false`, so
+        // the bare engine never sees a lit-vs-lit atom its arith/UF mishandles
+        // (a comparison whose lhs is a literal is not claimed by
+        // `LinArith::parse_comparison` → `Unknown`; a lit-vs-lit `=` is merged
+        // by UF → false-`sat`). Overflow / div / mod / Real abstain to the
+        // plain term (sound — the engine still tries). See [`fold_int_binop`].
+        if let (Some(x), Some(y)) = (as_int_lit(&a), as_int_lit(&b))
+            && let Some(folded) = fold_int_binop(op, x, y)
+        {
+            return Ok(Some(folded));
+        }
         let result = if is_rel { CType::bool_() } else { elem.clone() };
         let op_ty = cfun(elem.clone(), cfun(elem, result)?)?;
         let head = CTerm::const_(op, op_ty);
@@ -521,6 +550,14 @@ impl Lowerer<'_> {
     ) -> Result<CTerm, LowerError> {
         self.arity(name, args, 1)?;
         let x = self.lower_term(&args[0], frames)?;
+        // Ground fold of `-lit` (integer only; `i128::MIN` abstains to the
+        // `(- 0 x)` form). Keeps a folded negative literal flowing into outer
+        // folds / the engine's `int_lit` reader. See [`as_int_lit`].
+        if let Some(v) = as_int_lit(&x)
+            && let Some(n) = v.checked_neg()
+        {
+            return Ok(CTerm::const_(&n.to_string(), int_ty()));
+        }
         let op_ty = cfun(elem.clone(), cfun(elem.clone(), elem.clone())?)?;
         let zero = CTerm::const_("0", elem);
         let head = CTerm::const_("-", op_ty);
@@ -846,6 +883,58 @@ fn db_occurs(t: &Term, idx: usize) -> bool {
 
 fn unl(m: impl Into<String>) -> LowerError {
     LowerError::unlowerable(m)
+}
+
+/// The adsmt-core `Int` sort (the arith/datatype theories key on its
+/// `to_string()`), used by the ground constant-fold.
+fn int_ty() -> CType {
+    CType::const_("Int", CKind::Type)
+}
+
+/// `true`/`false` as an adsmt-core `Bool` literal — the folded value of a
+/// ground comparison / (dis)equality.
+fn bool_lit(b: bool) -> CTerm {
+    if b { CTerm::true_const() } else { CTerm::false_const() }
+}
+
+/// An `Int`-sorted integer-literal `Const` as its `i128` value, or `None`.
+/// Mirrors the engine's own numeral reader (`adsmt_theory`'s
+/// `LinArith::int_lit`): the name `parse::<i128>()`s (so a folded negative
+/// literal `Const("-3", Int)` round-trips) **and** the sort is `Int` (so a
+/// datatype constructor or a `Real`/`Color` `Const` is never mistaken for a
+/// numeral). This is the gate for the ground constant-fold: the bare engine
+/// treats two distinct integer-literal `Const`s as opaque UF atoms and merges
+/// them (it has no built-in `4 ≠ 3` — `LinArith::assert` `Ignored`s a
+/// lit-vs-lit `=`), so the lowering must DECIDE a ground literal
+/// (dis)equality / comparison itself rather than hand the engine an atom it
+/// would close unsoundly. Soundness-monotone: folding only ever replaces an
+/// under-determined atom with its true value (DESIGN.md §5.1 — produce terms
+/// the engine decides soundly).
+fn as_int_lit(t: &CTerm) -> Option<i128> {
+    let CTermInner::Const(c) = t.kind() else { return None };
+    if c.ty != int_ty() {
+        return None;
+    }
+    c.name.parse::<i128>().ok()
+}
+
+/// Fold a binary integer-arithmetic operator over two literal operands: the
+/// `+`/`-`/`*` arms return the value literal, the `<`/`<=`/`>`/`>=` arms the
+/// boolean. `None` (→ no fold, emit the plain term, sound) on a non-foldable
+/// operator (`div`/`mod`/`/` — Euclidean / Real semantics, left to the engine)
+/// or on `i128` overflow.
+fn fold_int_binop(op: &str, x: i128, y: i128) -> Option<CTerm> {
+    let lit = |n: i128| CTerm::const_(&n.to_string(), int_ty());
+    Some(match op {
+        "+" => lit(x.checked_add(y)?),
+        "-" => lit(x.checked_sub(y)?),
+        "*" => lit(x.checked_mul(y)?),
+        "<" => bool_lit(x < y),
+        "<=" => bool_lit(x <= y),
+        ">" => bool_lit(x > y),
+        ">=" => bool_lit(x >= y),
+        _ => return None,
+    })
 }
 
 /// A nullary value / applied-function head → the **same adsmt-core leaf the
