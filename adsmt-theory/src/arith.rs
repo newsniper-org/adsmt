@@ -92,23 +92,91 @@ pub struct LinArith {
     /// first) and checked in `var_diseq_conflict`. Scoped like the others.
     var_diseqs: Vec<(String, String)>,
     conflict: Option<TheoryWitness>,
+    /// #351 — a *soundness backstop* for the hand-rolled propagator's
+    /// incompleteness. The bound + two-var FM pool can represent only
+    /// single-variable bounds and two-variable (in)equalities; a genuinely
+    /// multi-variable linear constraint (e.g. `x + y = z`, `x + y + z ≤ 5`,
+    /// or a fractional LRA bound `2x = 3`) has no slot, so `assert` drops it
+    /// (`Ignored`). Dropping a constraint is sound for *Unsat* but DESTROYS
+    /// *Sat* — see [[feedback_soundness_opaque_fallback]]: a path that ignored
+    /// any constraint may answer Unsat/Unknown but NEVER a confident Sat.
+    /// When a drop happens this records *why*, and [`check`](Self::check)
+    /// downgrades an otherwise-`Sat` verdict to `Unknown` (the AFT discipline:
+    /// offer `PossiblySat`, not `DefiniteSat`). `lu-smt`'s OxiZ delegation —
+    /// z3-parity-complete on linear arithmetic — then recovers the precise
+    /// verdict; the bare native engine stays sound at `Unknown`. Scoped
+    /// alongside `bounds`/`two_vars` so a `pop` un-drops the constraint.
+    incomplete: Option<String>,
     #[allow(clippy::type_complexity)]
     scope_stack: Vec<(
         HashMap<String, Bounds>,
         Vec<TwoVar>,
         Vec<(String, i128)>,
         Vec<(String, String)>,
+        Option<String>,
     )>,
 }
 
 impl LinArith {
     pub fn lia() -> Self {
         Self { name_: "LIA", bounds: HashMap::new(), two_vars: Vec::new(),
-               diseqs: Vec::new(), var_diseqs: Vec::new(), conflict: None, scope_stack: Vec::new() }
+               diseqs: Vec::new(), var_diseqs: Vec::new(), conflict: None,
+               incomplete: None, scope_stack: Vec::new() }
     }
     pub fn lra() -> Self {
         Self { name_: "LRA", bounds: HashMap::new(), two_vars: Vec::new(),
-               diseqs: Vec::new(), var_diseqs: Vec::new(), conflict: None, scope_stack: Vec::new() }
+               diseqs: Vec::new(), var_diseqs: Vec::new(), conflict: None,
+               incomplete: None, scope_stack: Vec::new() }
+    }
+
+    /// Record that an arithmetic constraint was dropped because the
+    /// hand-rolled pool can't represent it (see [`incomplete`](Self::incomplete)).
+    /// Keeps the *first* reason — that's the constraint closest to the live
+    /// assertion the user would recognise. Cheap: the closure runs only on the
+    /// (cold) first drop.
+    fn note_incomplete(&mut self, reason: impl FnOnce() -> String) {
+        self.incomplete.get_or_insert_with(reason);
+    }
+
+    /// Count the distinct variables in an arithmetic *atom* (a comparison or
+    /// equality over Int/Real) by linearizing `lhs − rhs` to `Σ cᵢ·xᵢ + c` and
+    /// counting the non-zero `cᵢ`. Returns `None` when the atom is not a
+    /// recognizable *linear-arithmetic* comparison/equality — i.e. it's
+    /// genuinely another theory's literal (`(= (f x) 5)` for UF), so dropping
+    /// it from LIA is sound and must NOT trip the incompleteness backstop.
+    /// `Some(0|1)` is representable (a ground (dis)equation or a single-var
+    /// bound); `Some(n) for n ≥ 2` is the multi-variable case the pool can't
+    /// carry.
+    fn arith_atom_arity(t: &Term) -> Option<usize> {
+        let TermInner::App(outer, rhs) = t.kind() else { return None; };
+        let TermInner::App(head, lhs) = outer.kind() else { return None; };
+        let TermInner::Const(c) = head.kind() else { return None; };
+        if !matches!(
+            c.name.as_str(),
+            "<=" | "<" | ">=" | ">" | "=" | "le" | "lt" | "ge" | "gt" | "eq"
+        ) {
+            return None;
+        }
+        let (ma, _) = Self::linearize(lhs)?;
+        let (mb, _) = Self::linearize(rhs)?;
+        let mut diff = ma;
+        for (k, v) in mb {
+            // The exact coefficient is irrelevant — only zero-vs-non-zero
+            // matters for the var count — so an overflow conservatively keeps
+            // the variable (a non-zero coefficient).
+            let e = diff.entry(k).or_insert(0);
+            *e = e.checked_sub(v).unwrap_or(1);
+        }
+        diff.retain(|_, v| *v != 0);
+        Some(diff.len())
+    }
+
+    /// `true` when `lit.term` is a linear-arithmetic atom with ≥ 2 distinct
+    /// variables — the multi-variable shape the hand-rolled pool can't
+    /// represent. Used at the `assert` drop points to arm the incompleteness
+    /// backstop only for genuinely-arithmetic constraints.
+    fn is_multivar_arith(term: &Term) -> bool {
+        matches!(Self::arith_atom_arity(term), Some(n) if n >= 2)
     }
 
     // === v0.19 C.2 — public introspection API ===
@@ -964,8 +1032,16 @@ impl Theory for LinArith {
                                         self.conflict = Some(w.clone());
                                         return AssertResult::Conflict { witness: w };
                                     }
-                                    // LRA: a real solution exists ⇒ satisfiable in
-                                    // isolation; leave it (fall through to Ignored).
+                                    // LRA: a real solution exists ⇒ satisfiable
+                                    // in isolation, but its value `−c/coeff` is
+                                    // fractional and the bound store is integer
+                                    // (`i128`), so we can't record it — it might
+                                    // yet clash with another bound (`2x = 3 ∧
+                                    // x ≥ 2`). Drop it, but arm the backstop so
+                                    // `check` can't claim a confident Sat.
+                                    self.note_incomplete(|| {
+                                        format!("LRA {coeff}·{var} = {neg_c}: fractional bound not representable")
+                                    });
                                 } else {
                                     let val = neg_c / coeff;
                                     for op in ["<=", ">="] {
@@ -982,8 +1058,17 @@ impl Theory for LinArith {
                     }
                 }
             }
-            // Non-var/non-literal operands (e.g. `(= (f x) 5)`) — leave
-            // to UF congruence; LIA has no variable to bound.
+            // Non-var/non-literal operands. A *multi-variable* linear equality
+            // (`x + y = z`) is genuinely ours but the bound + two-var pool has
+            // no slot for it — drop it, but arm the backstop (#351) so `check`
+            // can't fabricate a Sat. A non-arithmetic shape (`(= (f x) 5)`)
+            // linearizes to `None`, so `is_multivar_arith` is false and it
+            // stays a pure UF literal — sound to leave for congruence.
+            if Self::is_multivar_arith(&lit.term) {
+                self.note_incomplete(|| {
+                    format!("multi-variable linear equality `{}` not representable", lit.term)
+                });
+            }
             return AssertResult::Ignored;
         }
         // A *negative* equality `v ≠ k` (v a variable, k an integer
@@ -1020,6 +1105,16 @@ impl Theory for LinArith {
                 self.var_diseqs.push((lo, hi));
                 return AssertResult::Accepted;
             }
+            // A *compound* disequality (`x + y ≠ z`) is dropped to UF, which can
+            // only refute it by congruence (it can't evaluate the arithmetic),
+            // so a model violating it could slip through as a confident Sat.
+            // Arm the backstop (#351); a non-arithmetic disequality (`(f x) ≠ 5`)
+            // linearizes to `None` and stays a sound pure-UF literal.
+            if Self::is_multivar_arith(&lit.term) {
+                self.note_incomplete(|| {
+                    format!("multi-variable linear disequality `{}` not representable", lit.term)
+                });
+            }
             return AssertResult::Ignored;
         }
         // Try two-variable comparison first (FM input).
@@ -1045,6 +1140,14 @@ impl Theory for LinArith {
                 }
                 return AssertResult::Accepted;
             }
+            // A negated multi-variable comparison the 1-var/2-var parsers
+            // didn't claim (e.g. `(not (<= (+ x y z) 5))`) is dropped — arm
+            // the backstop (#351) so `check` can't fabricate a Sat.
+            if Self::is_multivar_arith(&lit.term) {
+                self.note_incomplete(|| {
+                    format!("multi-variable linear comparison `{}` not representable", lit.term)
+                });
+            }
             return AssertResult::Ignored;
         }
         if let Some((var, op, k)) = Self::parse_comparison(&lit.term) {
@@ -1053,6 +1156,14 @@ impl Theory for LinArith {
                 return AssertResult::Conflict { witness: w };
             }
             return AssertResult::Accepted;
+        }
+        // A multi-variable comparison (`x + y + z ≤ 5`) the 1-var/2-var parsers
+        // couldn't represent — arm the backstop (#351). Non-arithmetic atoms
+        // linearize to `None` and stay sound pure-UF / other-theory literals.
+        if Self::is_multivar_arith(&lit.term) {
+            self.note_incomplete(|| {
+                format!("multi-variable linear comparison `{}` not representable", lit.term)
+            });
         }
         AssertResult::Ignored
     }
@@ -1111,7 +1222,15 @@ impl Theory for LinArith {
         }
         match &self.conflict {
             Some(w) => CheckResult::Unsat { witness: w.clone() },
-            None => CheckResult::Sat,
+            // #351 — no conflict found, but if a multi-variable constraint was
+            // dropped the hand-rolled pool never *saw* it, so a `Sat` here would
+            // be unsound (the soundness asymmetry: dropping a constraint
+            // preserves Unsat, destroys Sat). Downgrade to the sound `Unknown`;
+            // OxiZ delegation recovers the precise verdict.
+            None => match &self.incomplete {
+                Some(reason) => CheckResult::Unknown { reason: reason.clone() },
+                None => CheckResult::Sat,
+            },
         }
     }
 
@@ -1127,16 +1246,20 @@ impl Theory for LinArith {
             self.two_vars.clone(),
             self.diseqs.clone(),
             self.var_diseqs.clone(),
+            self.incomplete.clone(),
         ));
     }
 
     fn pop(&mut self, levels: u32) {
         for _ in 0..levels {
-            if let Some((b, tv, dq, vdq)) = self.scope_stack.pop() {
+            if let Some((b, tv, dq, vdq, inc)) = self.scope_stack.pop() {
                 self.bounds = b;
                 self.two_vars = tv;
                 self.diseqs = dq;
                 self.var_diseqs = vdq;
+                // A popped constraint is un-dropped: restore the
+                // incompleteness flag to its value at the matching `push`.
+                self.incomplete = inc;
             }
         }
         self.conflict = None;
@@ -1148,6 +1271,7 @@ impl Theory for LinArith {
         self.diseqs.clear();
         self.var_diseqs.clear();
         self.conflict = None;
+        self.incomplete = None;
         self.scope_stack.clear();
     }
 }
@@ -1215,6 +1339,94 @@ mod tests {
     fn binop(op: &str, a: Term, b: Term) -> Term {
         let ft = Type::fun(int_ty(), Type::fun(int_ty(), int_ty()).unwrap()).unwrap();
         Term::app(Term::app(Term::const_(op, ft), a).unwrap(), b).unwrap()
+    }
+
+    #[test]
+    fn multivar_equality_drops_to_unknown_not_false_sat() {
+        // #351 — `x + y = z ∧ x = 1 ∧ y = 1 ∧ z = 3` is UNSAT (1 + 1 = 2 ≠ 3),
+        // but the bound + two-var pool has no slot for the three-variable
+        // equality, so it's dropped. A confident `Sat` would be unsound; the
+        // backstop downgrades the verdict to `Unknown` (OxiZ delegation then
+        // recovers the precise `unsat`).
+        let mut t = LinArith::lia();
+        let x = Term::var("x", int_ty());
+        let y = Term::var("y", int_ty());
+        let z = Term::var("z", int_ty());
+        let sum_eq = Term::mk_eq(binop("+", x.clone(), y.clone()), z.clone()).unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(sum_eq).unwrap()),
+            AssertResult::Ignored
+        ));
+        t.assert(Literal::positive(Term::mk_eq(x, Term::const_("int:1", int_ty())).unwrap()).unwrap());
+        t.assert(Literal::positive(Term::mk_eq(y, Term::const_("int:1", int_ty())).unwrap()).unwrap());
+        t.assert(Literal::positive(Term::mk_eq(z, Term::const_("int:3", int_ty())).unwrap()).unwrap());
+        assert!(
+            matches!(t.check(), CheckResult::Unknown { .. }),
+            "a dropped multi-variable equality must NOT yield a confident Sat"
+        );
+    }
+
+    #[test]
+    fn multivar_equality_pop_restores_completeness() {
+        // The incompleteness flag is scoped: popping the level that asserted the
+        // unrepresentable equality un-drops it, so the cleared state is a
+        // confident Sat again.
+        let mut t = LinArith::lia();
+        t.push();
+        let x = Term::var("x", int_ty());
+        let y = Term::var("y", int_ty());
+        let z = Term::var("z", int_ty());
+        let sum_eq = Term::mk_eq(binop("+", x, y), z).unwrap();
+        t.assert(Literal::positive(sum_eq).unwrap());
+        assert!(matches!(t.check(), CheckResult::Unknown { .. }));
+        t.pop(1);
+        assert!(
+            matches!(t.check(), CheckResult::Sat),
+            "popping the dropped constraint must restore a confident Sat"
+        );
+    }
+
+    #[test]
+    fn non_arith_compound_equality_stays_sat() {
+        // `(= (f x) 5)` is genuinely UF's — `(f x)` does not linearize, so it is
+        // NOT counted as a dropped arithmetic constraint and LIA stays Sat in
+        // isolation (UF owns the congruence). The backstop must not over-fire.
+        let mut t = LinArith::lia();
+        let fx = {
+            let ft = Type::fun(int_ty(), int_ty()).unwrap();
+            Term::app(Term::const_("f", ft), Term::var("x", int_ty())).unwrap()
+        };
+        let eq = Term::mk_eq(fx, Term::const_("int:5", int_ty())).unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(eq).unwrap()),
+            AssertResult::Ignored
+        ));
+        assert!(
+            matches!(t.check(), CheckResult::Sat),
+            "a non-arithmetic compound equality must not trip the LIA backstop"
+        );
+    }
+
+    #[test]
+    fn multivar_comparison_drops_to_unknown() {
+        // `x + y + z ≤ 5` is a three-variable comparison the 1-var/2-var parsers
+        // can't claim — dropped, so the verdict downgrades to `Unknown`.
+        let mut t = LinArith::lia();
+        let x = Term::var("x", int_ty());
+        let y = Term::var("y", int_ty());
+        let z = Term::var("z", int_ty());
+        let le_ty = Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap()).unwrap();
+        let sum = binop("+", binop("+", x, y), z);
+        let cmp = Term::app(
+            Term::app(Term::const_("<=", le_ty), sum).unwrap(),
+            Term::const_("int:5", int_ty()),
+        )
+        .unwrap();
+        assert!(matches!(
+            t.assert(Literal::positive(cmp).unwrap()),
+            AssertResult::Ignored
+        ));
+        assert!(matches!(t.check(), CheckResult::Unknown { .. }));
     }
 
     #[test]

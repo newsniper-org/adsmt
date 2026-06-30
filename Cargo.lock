@@ -284,6 +284,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-lukb-driver"
+version = "1.0.0-rc.40"
+dependencies = [
+ "adsmt-core",
+ "adsmt-engine",
+ "adsmt-ir-lower",
+ "adsmt-ir-lukb",
+]
+
+[[package]]
 name = "adsmt-meta"
 version = "1.0.0-rc.40"
 dependencies = [
@@ -384,6 +394,23 @@ dependencies = [
  "adsmt-core",
  "adsmt-theory",
  "smallvec",
+]
+
+[[package]]
+name = "adsmtc"
+version = "1.0.0-rc.40"
+dependencies = [
+ "adsmt-ir-lukb",
+ "adsmt-lukb-driver",
+]
+
+[[package]]
+name = "adsmtr"
+version = "1.0.0-rc.40"
+dependencies = [
+ "adsmt-ir-asp",
+ "adsmt-ir-lukb",
+ "adsmt-lukb-driver",
 ]
 
 [[package]]

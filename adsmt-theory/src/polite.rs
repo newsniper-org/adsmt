@@ -160,6 +160,15 @@ impl Combination {
         let mut seen: std::collections::HashSet<(Term, Term)> =
             std::collections::HashSet::new();
 
+        // `Unknown` is the WEAKEST verdict — a theory that can't decide must not
+        // pre-empt a conflict another theory (or a later propagation round) can
+        // still find. So a theory `Unknown` is *remembered*, not returned: we
+        // keep scanning for an `Unsat`, and only surface `Unknown` once the
+        // full Nelson-Oppen fixpoint has closed without one. (#351 — native
+        // arith downgrades to `Unknown` when it drops a multi-variable
+        // constraint; this keeps a UF-detectable `Unsat` winning over it.)
+        let mut pending_unknown: Option<(String, String)> = None;
+
         for _round in 0..PROP_BUDGET {
             // (1) Individual theory checks first.
             for i in 0..self.theories.len() {
@@ -170,7 +179,7 @@ impl Combination {
                         return CombinedCheck::Unsat { theory: name, witness };
                     }
                     CheckResult::Unknown { reason } => {
-                        return CombinedCheck::Unknown { theory: name, reason };
+                        pending_unknown.get_or_insert((name, reason));
                     }
                 }
             }
@@ -191,7 +200,14 @@ impl Combination {
                 if let Some(unsat) = self.enforce_cardinality() {
                     return unsat;
                 }
-                return CombinedCheck::Sat;
+                // Fixpoint reached with no conflict. A confident `Sat` is only
+                // sound if every theory could fully account for its literals;
+                // if one downgraded to `Unknown` (dropped a constraint), surface
+                // that instead of fabricating a Sat (#351).
+                return match pending_unknown {
+                    Some((theory, reason)) => CombinedCheck::Unknown { theory, reason },
+                    None => CombinedCheck::Sat,
+                };
             }
 
             // (3) Re-broadcast.
