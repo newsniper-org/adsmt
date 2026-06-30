@@ -67,8 +67,10 @@ pub mod error;
 pub mod lexer;
 pub mod parser;
 pub mod printer;
+pub mod verdict;
 
 pub use elab::{Elaborated, elaborate};
 pub use error::FaceError;
 pub use parser::parse;
 pub use printer::print_module;
+pub use verdict::{AspVerdictView, Confidence, LuKbOutputMode, TriState, UnifiedVerdict};

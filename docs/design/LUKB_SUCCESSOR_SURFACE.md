@@ -694,12 +694,18 @@ sub-verdicts verbatim (the 5 tokens + the true/false/undefined partition).
 ### 10.2 Hybrid programs (the merge the doc previously left open)
 
 A genuinely mixed obligation (SMT theory atoms `x+y>0` AND Horn rules
-`q :- p, not r`) yields BOTH a `SatLevel` and a `ThreeValued`. The conjunction is
-satisfiable only if BOTH faces agree it can be; so `collapse()` is the **meet** of
-the two collapsed sides (an `Unsat`/contradiction on either side makes the whole
-`Unsat`; two `Unknown`/`Possibly` sides stay `Unknown`). Full mode keeps both so a
-consumer can see *which* paradigm was undecided. (This meet reuses the same
-`SatLevel::meet` discipline now wired into OxiZ's `check_level`.)
+`q :- p, not r`) yields BOTH a `SatLevel` and a `ThreeValued`. The two halves are
+DIFFERENT sub-problems whose **conjunction** is the whole — so `collapse()` is the
+3-valued **Kleene conjunction** of the two collapsed sides, NOT a `meet` (`meet`
+combines verdicts about the SAME formula; here `meet(DefiniteSat,DefiniteUnsat)`
+would wrongly give `Unknown` instead of `Unsat`). Kleene AND: `Unsat` on EITHER
+side ⇒ whole `Unsat` (a refutation of either sub-problem refutes the whole —
+always sound); `Sat` is the identity (an absent side imposes no constraint);
+otherwise `Unknown`. A both-`Sat` hybrid is reported `Sat` under the
+disjoint-atom (jointly-satisfiable) assumption — a shared-atom joint-model check
+is the refinement. Full mode keeps BOTH sub-verdicts so a consumer sees *which*
+paradigm was undecided. (Implemented + unit-tested in
+`adsmt-ir-lukb/src/verdict.rs`: `TriState::and`, `UnifiedVerdict::collapse`.)
 
 ### 10.3 The §5 verdict-differential, made precise
 
@@ -732,16 +738,32 @@ silent drop) — unchanged from §5.
    they must be threaded out-of-band to the MBQI loop or the successor path loses
    trigger-guided instantiation (completeness, not soundness).
 
-### 10.5 Bring-up & v1.0.0 scope
+### 10.5 Bring-up & v1.0.0 scope — DECIDED (user, 2026-06-30)
 
-Per §5/§6's own plan, the successor ships **AST + elaborate only** with SMT-LIB as
-the canonical oracle/fallback; the `UnifiedVerdict` surface (10.1–10.4) is the
-**Phase-1b / v1.0.1 track**, NOT a v1.0.0 blocker — *unless* the project chooses to
-ship a trusted successor verdict in the first stable release. **This scope choice
-is an explicit decision the v1.0.0 sign-off (`#165`) must record, not assume.**
-The `adsmt-ffi` C ABI stays frozen at its 4 exit codes; any 5-level/3-valued
-exposure across the C boundary is a v2.0 break, so Full mode stays Rust-side / out
-of the ABI for now.
+**The unified verdict surface (10.1–10.4) IS a v1.0.0 deliverable** (user decision):
+the lu-kb successor carries a *trusted* `UnifiedVerdict` in the first stable
+release. So `#165` (RC2.H.2 sign-off) is now gated on: `UnifiedVerdict` +
+`LuKbOutputMode` + `solve_with_mode` built (10.4), and the §5/10.3
+verdict-differential (`UnifiedVerdict.collapse() == SMT-LIB oracle`) PASSING on
+vstd + corpus + randomized z3-diff. The `adsmt-ffi` C ABI still stays frozen at
+its 4 exit codes (Full mode is Rust-side / out-of-ABI).
+
+**CLI trichotomy (user decision, 2026-06-30) — the home for the verdict surfaces.**
+The single `lu-smt` binary splits into three, sharing one library core:
+
+- **`lu-smt`** — the existing SMT-LIB v2 driver. Unchanged, paradigm-pure, frozen
+  surface (it delegates to OxiZ; gains optional `--output-mode full` to surface
+  the 5-level `SatLevel` it already receives — see 10.4 item 3).
+- **`adsmtc`** — the **compiler**: parses/elaborates/lowers the lu-kb-successor
+  surface (and the SMT-LIB / typed-ASP faces) to the kernel, runs the unified
+  solve, and emits the `UnifiedVerdict` (z3-compat or Full). This is the home of
+  the §10 unified verdict + the Verus-emit consumer.
+- **`adsmtr`** — the **runtime + REPL**: interactive solving, the ASP Full-mode
+  3-valued well-founded model (the experimental ASP driver folds in here, not into
+  `lu-smt`), and the 5-level SMT verdict, with incremental push/pop.
+
+This resolves the earlier "where does ASP Full-mode go" question: NOT bolted onto
+`lu-smt`, but native to `adsmtr` (interactive) and `adsmtc` (batch/compile).
 
 [`adsmt-ir`]: ../../adsmt-ir
 [`adsmt_emit_system`]: ../../../.claude/projects/-home-ybi-AD1/memory/adsmt_emit_system.md
