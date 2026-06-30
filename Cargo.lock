@@ -1956,6 +1956,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiz-nl2"
+version = "0.2.4"
+dependencies = [
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+ "oxiz-math",
+ "oxiz-nlsat",
+ "rustc-hash",
+]
+
+[[package]]
 name = "oxiz-nlsat"
 version = "0.2.4"
 dependencies = [
@@ -2035,6 +2047,7 @@ dependencies = [
  "num-traits",
  "oxiz-core",
  "oxiz-math",
+ "oxiz-nl2",
  "oxiz-nlsat",
  "oxiz-sat",
  "portable-atomic-util",
