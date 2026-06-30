@@ -74,6 +74,21 @@ Restrict quantifier triggers to Miller patterns
 default) or allow non\-Miller patterns
 .RB ( free ).
 .TP
+.B \-\-output\-mode \fIz3\fR | \fIfull\fR
+Select the verdict presentation.
+.B z3
+(the default) prints the collapsed verdict
+.RB ( sat ", " unsat ", " unknown );
+.B full
+un\-collapses it to the 5\-level precision lattice
+.RB ( definite\-sat ", " possibly\-sat ", " unknown ", " possibly\-unsat ", " definite\-unsat ).
+On
+.B lu\-smt
+the 5\-level tokens are surfaced only in \fBoxiz\fR\-feature builds: the OxiZ
+delegation produces the lattice, and the in\-script equivalent is
+\fB(set\-option :oxiz.output\-mode full)\fR.
+The exit status is unchanged because it tracks the collapsed verdict.
+.TP
 .B \-\-timeout \fIMS\fR
 Hard wall\-clock timeout in milliseconds.
 .TP
@@ -115,6 +130,8 @@ verdict (candidates may be queried with
 Parse error or invalid input.
 
 .SH SEE ALSO
+.BR adsmtc (1),
+.BR adsmtr (1),
 .BR adsmt\-lsp (1),
 .BR lu\-kb (5)
 .SH AUTHOR

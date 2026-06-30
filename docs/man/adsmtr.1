@@ -1,0 +1,90 @@
+.TH ADSMTR 1 "2026-06-30" "adsmt 1.0.0" "User Commands"
+.SH NAME
+adsmtr \- lu\-kb\-successor runtime and REPL
+.SH SYNOPSIS
+.B adsmtr
+[\fB\-\-asp\fR] [\fB\-\-output\-mode\fR \fIz3\fR|\fIfull\fR] [\fIFILE\fR]
+.SH DESCRIPTION
+.B adsmtr
+is the interactive
+.I runtime
+half of the lu\-kb\-successor CLI trichotomy
+.RB ( lu\-smt (1)
+is the SMT\-LIB driver;
+.BR adsmtc (1)
+is the batch compiler). With a
+.I FILE
+(or a piped stdin) it solves the whole program once; with neither it
+opens a read\-eval\-print loop.
+
+Two paradigms are available:
+.TP
+.B lu\-kb successor
+(default) \(em the unified solve, printing the
+.BR UnifiedVerdict .
+.TP
+.B typed\-ASP
+.RB ( \-\-asp ,
+or
+.B :asp
+in the REPL) \(em the closed\-world stable\-model face. In
+.B full
+output mode it surfaces the 3\-valued well\-founded model: the
+.IR true ", " false ", and " undefined
+atoms (the experimental observation surface the AFT adoption added).
+.SH OPTIONS
+.TP
+.B \-\-asp
+Start in the typed\-ASP paradigm.
+.TP
+.B \-\-output\-mode \fIz3\fR | \fIfull\fR
+Select the verdict presentation.
+.B z3
+(the default) collapses to
+.RB ( sat ", " unsat ", " unknown );
+.B full
+un\-collapses to the 5\-level SMT precision lattice or the 3\-valued ASP
+well\-founded model.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH REPL COMMANDS
+When no
+.I FILE
+is given, lines are accumulated into the program buffer except:
+.TP
+.B :check
+Solve the accumulated program.
+.TP
+.B :reset
+Clear the program buffer.
+.TP
+.BR :asp " / " :lukb
+Switch paradigm.
+.TP
+.BR :full " / " :z3
+Switch output mode.
+.TP
+.BR :quit " (or EOF)
+Exit.
+.SH EXIT STATUS
+Mirrors
+.BR adsmtc (1):
+.B 1
+=
+.B unsat
+(verified),
+.B 0
+=
+.B sat
+(counterexample),
+.B 2
+=
+.BR unknown ,
+.B 3
+= usage / I/O error.
+.SH SEE ALSO
+.BR lu\-smt (1),
+.BR adsmtc (1)
+.SH AUTHOR
+NEWSNIPER.

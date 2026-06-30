@@ -1,0 +1,75 @@
+.TH ADSMTC 1 "2026-06-30" "adsmt 1.0.0" "User Commands"
+.SH NAME
+adsmtc \- lu\-kb\-successor verification compiler
+.SH SYNOPSIS
+.B adsmtc
+[\fIOPTIONS\fR] [\fIFILE\fR]
+.SH DESCRIPTION
+.B adsmtc
+is the batch
+.I compiler
+half of the lu\-kb\-successor CLI trichotomy
+.RB ( lu\-smt (1)
+is the SMT\-LIB driver;
+.BR adsmtr (1)
+is the interactive runtime). It reads a lu\-kb\-successor program (a
+.B .lukb
+file, or standard input when
+.I FILE
+is omitted), elaborates it, lowers it to the adsmt\-core kernel, runs the
+unified solve over each obligation, and prints the
+.B UnifiedVerdict
+on standard output.
+
+A verification obligation
+.RB ( H " \(rh " G )
+is discharged exactly when
+.RB ( H " \(an \(no" G )
+is unsatisfiable (the Verus convention), so a
+.I verified
+obligation reads
+.BR unsat .
+The verdict is a separated product of an SMT side and an ASP side that
+collapses to a tri\-state by 3\-valued Kleene conjunction (an
+.B unsat
+on either side dominates the whole).
+.SH OPTIONS
+.TP
+.B \-\-output\-mode \fIz3\fR | \fIfull\fR
+Select the verdict presentation.
+.B z3
+(the default) prints the collapsed verdict
+.RB ( sat ", " unsat ", " unknown );
+.B full
+un\-collapses it to the 5\-level SMT precision lattice
+.RB ( definite\-sat ", " possibly\-sat ", " unknown ", " possibly\-unsat ", " definite\-unsat )
+and, for an ASP obligation, the 3\-valued well\-founded model.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.SH EXIT STATUS
+The exit status follows the obligation convention (it is the
+.I inverse
+of an ordinary SMT solver: a discharged proof obligation is
+.BR unsat ):
+.TP
+.B 1
+.B unsat
+\(em the obligations were discharged
+.RB ( VERIFIED ).
+.TP
+.B 0
+.B sat
+\(em a counterexample / model exists (the goal is NOT valid).
+.TP
+.B 2
+.B unknown
+\(em the engine could not decide.
+.TP
+.B 3
+Usage or I/O error.
+.SH SEE ALSO
+.BR lu\-smt (1),
+.BR adsmtr (1)
+.SH AUTHOR
+NEWSNIPER.

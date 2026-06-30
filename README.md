@@ -104,6 +104,12 @@ adsmt is an SMT solver with five differentiating attributes
 ├── adsmt-heuristic-checker-macros/ Inert proc-macros + breaking_changes_semver
 ├── adsmt-lints/                   Runtime audit library (JSON for editor consumption)
 ├── adsmt-cli/                     `lu-smt` binary, including --audit-json + --strict-commands
+├── adsmtc/                        `adsmtc` binary — lu-kb-successor COMPILER (.lukb file/stdin:
+│                                  elaborate -> lower -> unified solve, prints the UnifiedVerdict)
+├── adsmtr/                        `adsmtr` binary — lu-kb-successor RUNTIME + REPL
+│                                  (`--asp` selects the typed-ASP face)
+├── adsmt-lukb-driver/             shared unified-solve driver (`solve_with_mode`)
+│                                  used by both adsmtc and adsmtr
 ├── adsmt-ffi/                     C ABI (frozen surface; see include/adsmt.h)
 ├── adsmt-lsp/                     tower-lsp server (6 capabilities)
 ├── adsmt-meta/                    Umbrella crate for distro packaging (Arch/Debian/…)
@@ -145,6 +151,12 @@ cargo run -p adsmt-cli --release -- examples/qf_uf.smt2
 
 # Stream stdin (drop-in for Verus / Lean4 SmtProcess consumers)
 cargo run -p adsmt-cli --release < transcript.smt2
+
+# Compile a lu-kb-successor module (exit 1 = unsat = obligations VERIFIED)
+cargo run -p adsmtc --release -- module.lukb
+
+# Interactive unified-solve REPL (:check / :asp / :full / :quit)
+cargo run -p adsmtr --release
 
 # Start the LSP server (for editor integration)
 cargo run -p adsmt-lsp --release
