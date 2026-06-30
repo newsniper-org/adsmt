@@ -77,6 +77,48 @@ impl CertFormat {
     }
 }
 
+/// `(check-sat)` output mode (P1, the lu-kb-successor 5-level surface).
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+enum OutputModeArg {
+    /// Collapse to `sat`/`unsat`/`unknown` (z3-compatible default; the exit-code
+    /// ABI verdict). Byte-identical to the historical lu-smt output.
+    #[default]
+    Z3,
+    /// Surface the OxiZ delegation's un-collapsed 5-level verdict
+    /// (`definite-sat`/`possibly-sat`/`unknown`/`possibly-unsat`/`definite-unsat`)
+    /// at `(check-sat)`. The exit code stays the collapsed value (frozen ABI).
+    Full,
+}
+
+/// Whether `--output-mode full` is active — set once from the CLI in `main`. The
+/// OxiZ delegation reads it to request `OutputMode::Full` and to print the
+/// 5-level token. (A process-wide flag avoids threading `full` through the four
+/// delegation entry points + their abduce callers.)
+static OXIZ_OUTPUT_FULL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn oxiz_output_full() -> bool {
+    OXIZ_OUTPUT_FULL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A fresh OxiZ delegation `Context`, in `OutputMode::Full` when
+/// `--output-mode full` is armed (so `(check-sat)` emits the 5-level token the
+/// delegation surfaces). z3-compat leaves it at the default.
+#[cfg(feature = "oxiz")]
+fn oxiz_ctx() -> oxiz_solver::Context {
+    let mut ctx = oxiz_solver::Context::new();
+    if oxiz_output_full() {
+        ctx.set_output_mode(oxiz_solver::OutputMode::Full);
+    }
+    ctx
+}
+
+std::thread_local! {
+    /// The raw un-collapsed verdict token of the most recent OxiZ delegation
+    /// (`oxiz_pick_last`), read+cleared by the `(check-sat)` print site when
+    /// `--output-mode full`. `None` after a native-only verdict.
+    static LAST_FULL_TOKEN: core::cell::RefCell<Option<String>> = const { core::cell::RefCell::new(None) };
+}
+
 #[derive(ClapParser)]
 #[command(name = "lu-smt", version)]
 struct Cli {
@@ -89,6 +131,12 @@ struct Cli {
     /// post-processor.
     #[arg(long)]
     audit_json: bool,
+    /// `(check-sat)` output mode: `z3` (default — collapsed sat/unsat/unknown,
+    /// the exit-code ABI) or `full` (the OxiZ delegation's un-collapsed 5-level
+    /// verdict: definite-sat / possibly-sat / unknown / possibly-unsat /
+    /// definite-unsat). The exit code stays the collapsed value in both modes.
+    #[arg(long, value_enum, default_value_t = OutputModeArg::Z3)]
+    output_mode: OutputModeArg,
     /// Write the proof certificate of each `unsat` `(check-sat)` to
     /// this path (last one wins), in the wire format the adsmt-emit
     /// emitters read. The certificate is the canonical
@@ -220,6 +268,11 @@ struct Cli {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // P1: arm the OxiZ-delegation 5-level surface (read by the delegation + the
+    // `(check-sat)` print site). z3-compat (default) leaves it off ⇒ byte-identical.
+    if matches!(cli.output_mode, OutputModeArg::Full) {
+        OXIZ_OUTPUT_FULL.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let finite_field = if cli.finite_field_periodic > 0
         || cli.finite_field_budget_exhaustion
     {
@@ -978,14 +1031,22 @@ fn oxiz_fallback(history: &str) -> Option<LastStatus> {
 /// the last is this query's).
 fn oxiz_pick_last<'a, I: Iterator<Item = &'a str>>(lines: I) -> Option<LastStatus> {
     let mut found = None;
+    let mut full_tok = None;
     for l in lines {
-        match l.trim() {
-            "unsat" => found = Some(LastStatus::Unsat),
-            "sat" => found = Some(LastStatus::Sat),
-            "unknown" => found = Some(LastStatus::Unknown),
-            _ => {}
-        }
+        let t = l.trim();
+        // The collapsed tokens AND the `--output-mode full` 5-level tokens both
+        // map to the tri-state `LastStatus` (the exit-code ABI). The raw token is
+        // stashed for the Full-mode print site.
+        let status = match t {
+            "unsat" | "definite-unsat" => LastStatus::Unsat,
+            "sat" | "definite-sat" => LastStatus::Sat,
+            "unknown" | "possibly-sat" | "possibly-unsat" => LastStatus::Unknown,
+            _ => continue,
+        };
+        found = Some(status);
+        full_tok = Some(t.to_string());
     }
+    LAST_FULL_TOKEN.with(|c| *c.borrow_mut() = full_tok);
     found
 }
 
@@ -1005,7 +1066,7 @@ fn oxiz_inproc(history: &str) -> Option<LastStatus> {
     // parse error fall back to the robust one-command-at-a-time feed (fresh
     // Context, no partial state). verus-fork 2026-06-21 eqvars.
     {
-        let mut ctx = oxiz_solver::Context::new();
+        let mut ctx = oxiz_ctx();
         if let Ok(out) = ctx.execute_script(history) {
             let last = oxiz_pick_last(out.iter().map(String::as_str));
             if debug {
@@ -1016,7 +1077,7 @@ fn oxiz_inproc(history: &str) -> Option<LastStatus> {
             eprintln!("[oxiz_inproc] batch parse failed, per-command fallback");
         }
     }
-    let mut ctx = oxiz_solver::Context::new();
+    let mut ctx = oxiz_ctx();
     let mut last = None;
     for cmd in split_top_level_sexprs(history) {
         match ctx.execute_script(cmd) {
@@ -1073,7 +1134,7 @@ fn oxiz_inproc_persistent(history: &str) -> Option<LastStatus> {
         let reuse = matches!(slot.as_ref(), Some(p)
             if history.len() >= p.fed_len && history.is_char_boundary(p.fed_len));
         if !reuse {
-            *slot = Some(OxizPersist { ctx: oxiz_solver::Context::new(), fed_len: 0 });
+            *slot = Some(OxizPersist { ctx: oxiz_ctx(), fed_len: 0 });
         }
         let p = slot.as_mut().expect("just set");
         let delta = &history[p.fed_len..];
@@ -1220,13 +1281,17 @@ fn dispatch_one(
     let outcome = match result {
         DispatchResult::Continue => None,
         DispatchResult::CheckSat(status) => {
+            // P1: did OxiZ delegation run this check? Only then is the thread-local
+            // 5-level token valid for the Full-mode print (a native-only verdict
+            // must not reuse a stale token from a previous delegation).
+            let delegated_ran = *degraded || matches!(status, LastStatus::Unknown);
             // rc.30 — OxiZ delegation.  Delegate when the native
             // engine couldn't decide (`Unknown`) OR the session is
             // `degraded` (a constraint was skipped natively because
             // it used an unsupported construct — trusting the native
             // verdict would then be UNSOUND, since OxiZ replays the
             // full, correct buffer).
-            let status = if *degraded || matches!(status, LastStatus::Unknown) {
+            let status = if delegated_ran {
                 let delegated = if streaming {
                     oxiz_fallback_streaming(history)
                 } else {
@@ -1262,7 +1327,16 @@ fn dispatch_one(
                 status
             };
             *last = status.clone();
-            println!("{}", status.label());
+            // P1: in `--output-mode full`, print the OxiZ delegation's un-collapsed
+            // 5-level token when this check was delegated; otherwise (z3-compat, or
+            // a native-only verdict) the collapsed label. The exit code (`last`)
+            // stays the collapsed value — the frozen ABI is unchanged.
+            let full_token =
+                if delegated_ran { LAST_FULL_TOKEN.with(|c| c.borrow_mut().take()) } else { None };
+            match full_token {
+                Some(tok) if oxiz_output_full() => println!("{tok}"),
+                _ => println!("{}", status.label()),
+            }
             // Abductive verdicts always emit a single-line JSON
             // description of the ranked candidates on the line
             // immediately after the `abductive` label.  Front-ends
