@@ -1,0 +1,13 @@
+[package]
+name = "adsmtc"
+version = "1.0.0-rc.40"
+edition = "2021"
+description = "adsmtc — the lu-kb-successor compiler: parse → elaborate → lower → unified solve → UnifiedVerdict (CLI trichotomy; the batch/compile front-end over adsmt-lukb-driver)."
+
+[[bin]]
+name = "adsmtc"
+path = "src/main.rs"
+
+[dependencies]
+adsmt-lukb-driver = { path = "../adsmt-lukb-driver" }
+adsmt-ir-lukb = { path = "../adsmt-ir-lukb" }
