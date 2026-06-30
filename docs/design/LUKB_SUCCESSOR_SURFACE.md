@@ -644,6 +644,105 @@ So the **immediate next work item is the adsmt-ir Int/Real theory** (+ the
 and the top-level `const x: T` decl form) — *then* the `adsmt-ir-lukb` parser +
 elaborator.
 
+## 10. The unified verdict surface (AFT impact, 2026-06-30) — design / RFC
+
+**Why this section exists.** The 2026-06-30 *Approximation-Fixpoint-Theory*
+adoption gave the two sibling faces a **richer, un-collapsed full-mode verdict**,
+and they are now SHAPED DIFFERENTLY:
+
+- **SMT face** (`adsmt-ir-smtlib` → OxiZ): a 5-level **precision lattice**
+  `SatLevel { DefiniteSat, PossiblySat, Unknown, PossiblyUnsat, DefiniteUnsat }`
+  with `meet`/`collapse` (`oxiz-solver/.../types.rs`), surfaced via
+  `OutputMode { Z3Compatible (collapse → sat/unsat/unknown), Full (the 5 tokens) }`.
+- **ASP face** (`adsmt-ir-asp`): a 3-valued **approximation pair** — the
+  well-founded model `ThreeValued { true_atoms = L*, false_atoms = B\U*,
+  undefined_atoms = U*\L* }` — surfaced via `AspOutputMode { Z3Compatible,
+  Full }`, where Full returns the sound 3-valued *partial* verdict on
+  over-budget programs instead of abstaining.
+
+The successor is the **unifying** third face. So its verdict surface — still
+unbuilt (today `adsmt-ir-lukb` stops at `Elaborated{env,hypotheses,goals}`; no
+output-mode, no verdict type, no `solve`) — must now carry BOTH. This is a
+*raised bar*, not a regression: the AFT supplies exactly the confidence/partiality
+metadata that makes the successor **strictly less lossy than SMT-LIB** (§0), but
+only once a unified verdict carries it back to the producer (Verus).
+
+### 10.1 The type — a SEPARATED PRODUCT, not a fused lattice
+
+```
+enum LuKbOutputMode { Z3Compatible /*default*/, Full }
+
+struct UnifiedVerdict {
+    smt: Option<SatLevel>,        // present iff SMT obligations were solved
+    asp: Option<AspVerdict>,      // present iff rule obligations were solved
+}                                 // (AspVerdict = the relevant slice of Solution:
+                                  //  consistent + stable + well_founded:ThreeValued)
+```
+
+**Reject a fused 9-level lattice.** The two lattices answer *different questions* —
+`SatLevel` is **precision** (is this verdict confirmed?), `ThreeValued` is
+**partiality** (which atoms are decided?). A fusion loses both. The separated
+product matches `UNIFIED_VERIFICATION_GATE.md`'s "each paradigm explains itself"
+principle: keep them side by side, project on demand.
+
+`UnifiedVerdict::collapse() -> SolverResult` (tri-state) is the z3-compatible
+projection: `smt.map(collapse)` ⊓ `asp.map(collapse)` under the same precision-meet
+(`PossiblySat`-vs-`PossiblyUnsat` etc. → `Unknown`); a present `Definite*`/exact
+side wins, two unconfirmed opposite sides → `Unknown`. Full mode renders both
+sub-verdicts verbatim (the 5 tokens + the true/false/undefined partition).
+
+### 10.2 Hybrid programs (the merge the doc previously left open)
+
+A genuinely mixed obligation (SMT theory atoms `x+y>0` AND Horn rules
+`q :- p, not r`) yields BOTH a `SatLevel` and a `ThreeValued`. The conjunction is
+satisfiable only if BOTH faces agree it can be; so `collapse()` is the **meet** of
+the two collapsed sides (an `Unsat`/contradiction on either side makes the whole
+`Unsat`; two `Unknown`/`Possibly` sides stay `Unknown`). Full mode keeps both so a
+consumer can see *which* paradigm was undecided. (This meet reuses the same
+`SatLevel::meet` discipline now wired into OxiZ's `check_level`.)
+
+### 10.3 The §5 verdict-differential, made precise
+
+§5's gate ("assert the successor verdict == the SMT-LIB oracle on the 54 vstd
+obligations + corpus + randomized z3-diff before any successor verdict is
+trusted") must state the **representation** in which equality holds: equality
+**after `collapse()` to tri-state**. Full mode preserves the extra
+precision/partiality *soundly but unchecked* during bring-up (SMT-LIB has no
+5-level/3-valued oracle to diff against). Until the differential passes, SMT-LIB
+stays the canonical wire and lukb coverage gaps fall back to SMT-LIB (never a
+silent drop) — unchanged from §5.
+
+### 10.4 Threading requirements (what must change to build this)
+
+1. `adsmt-ir-lukb`: add `LuKbOutputMode`, `UnifiedVerdict`, and
+   `solve_with_mode(elab, mode) -> UnifiedVerdict` routing kernel goals through
+   lowering→OxiZ (SMT obligations) and/or elaboration→`adsmt-ir-asp::solve_with_mode`
+   (rule obligations). Do this **in `adsmt-ir-lukb`**, not in
+   `adsmt-shims/adsmt-shim-lu-kb` (that crate is the *legacy* lu-kb→adsmt-core cert
+   bridge, a different purpose).
+2. `adsmt-ir-lower` is verdict/mode/face-**opaque** today (`Lowered{datatypes,
+   goals}` has no face label, no mode): thread the face origin + `mode` through
+   `Lowered` (or a solve-Context param) so the boundary can render Full mode.
+3. The SMT 5-level is currently **invisible to AD1's own CLI**: `adsmt-engine`'s
+   boundary is tri-state (`SatResult`), and `adsmt-cli`'s OxiZ delegation
+   text-parses only `sat`/`unsat`/`unknown` — it never sets `OutputMode::Full`
+   nor reads `Context::last_level()`. Surfacing the 5-level to adsmt is an
+   independent, high-value first step (does not need the successor).
+4. Quantifier triggers are dropped at lukb elaboration (kernel Π can't hold them);
+   they must be threaded out-of-band to the MBQI loop or the successor path loses
+   trigger-guided instantiation (completeness, not soundness).
+
+### 10.5 Bring-up & v1.0.0 scope
+
+Per §5/§6's own plan, the successor ships **AST + elaborate only** with SMT-LIB as
+the canonical oracle/fallback; the `UnifiedVerdict` surface (10.1–10.4) is the
+**Phase-1b / v1.0.1 track**, NOT a v1.0.0 blocker — *unless* the project chooses to
+ship a trusted successor verdict in the first stable release. **This scope choice
+is an explicit decision the v1.0.0 sign-off (`#165`) must record, not assume.**
+The `adsmt-ffi` C ABI stays frozen at its 4 exit codes; any 5-level/3-valued
+exposure across the C boundary is a v2.0 break, so Full mode stays Rust-side / out
+of the ABI for now.
+
 [`adsmt-ir`]: ../../adsmt-ir
 [`adsmt_emit_system`]: ../../../.claude/projects/-home-ybi-AD1/memory/adsmt_emit_system.md
 [`asp_linter_design`]: ../../../.claude/projects/-home-ybi-AD1/memory/asp_linter_design.md
