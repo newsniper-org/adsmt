@@ -96,4 +96,7 @@ pub use error::FaceError;
 pub use lint::{AspDiagnostic, Severity, SourceLoc, lint, lint_source};
 pub use parser::{parse, parse_with_spans};
 pub use program::{Atom, GroundNProgram, GroundNRule, GroundProgram, GroundRule};
-pub use solve::{AbduceAnswer, Entailment, QueryAnswer, Solution, StableModels, solve};
+pub use solve::{
+    AbduceAnswer, AspOutputMode, Entailment, QueryAnswer, Solution, StableModels, ThreeValued,
+    solve, solve_with_mode, well_founded_model,
+};

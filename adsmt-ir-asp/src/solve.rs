@@ -61,6 +61,26 @@ pub struct StableModels {
     pub models: Vec<Vec<Atom>>,
 }
 
+/// The **3-valued well-founded model** of a non-stratified program — the AFT
+/// approximation pair `(L*, U*)` rendered to surface form (van Gelder's
+/// alternating fixpoint, [`well_founded_model`]). It is sound and polynomial:
+///
+/// * `true_atoms` (`= L*`) hold in **every** stable model,
+/// * `false_atoms` (`= B \ U*`, the greatest unfounded set) hold in **none**,
+/// * `undefined_atoms` (`= U* \ L*`) are the residual a full guess-and-check
+///   would still have to decide.
+///
+/// Exposed so a caller gets a sound PARTIAL verdict (cautious-true `true_atoms`,
+/// cautious-false `false_atoms`) even on the large programs whose stable-model
+/// enumeration is over budget — where the z3-compatible path abstains, the `Full`
+/// output mode returns this instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreeValued {
+    pub true_atoms: Vec<Atom>,
+    pub false_atoms: Vec<Atom>,
+    pub undefined_atoms: Vec<Atom>,
+}
+
 /// The answer to one abductive query `?- abduce G`: the ⊆-minimal sets of
 /// abducible atoms that, assumed, make `G` hold. An empty set among the
 /// explanations means `G` is already entailed deductively (the
@@ -104,8 +124,17 @@ pub struct Solution {
     pub consistent: bool,
     /// The stable models (L3). `None` on every stratified program; on a
     /// non-stratified program `Some` — possibly with an empty `models` (no answer
-    /// set). See [`StableModels`].
+    /// set). In the `Full` output mode this may be `None` even for a
+    /// non-stratified program whose enumeration was over budget — the sound
+    /// partial answer then lives in [`well_founded`](Solution::well_founded).
+    /// See [`StableModels`].
     pub stable: Option<StableModels>,
+    /// The 3-valued well-founded model (L3 only). Always `Some` on a
+    /// non-stratified program (it is cheap to compute and brackets every stable
+    /// model); `None` on a stratified program. The sound partial verdict the
+    /// `Full` output mode surfaces when stable-model enumeration is over budget.
+    /// See [`ThreeValued`].
+    pub well_founded: Option<ThreeValued>,
 }
 
 /// Materialising the full hypothesis space costs memory; beyond this many ground
@@ -167,9 +196,31 @@ const MAX_STABLE_MODELS: usize = 1 << 14;
 /// `Stratified` ⇒ the L0–L2 perfect-model path (unchanged); `NonStratified` ⇒
 /// the L3 stable-model gate.
 pub fn solve(elab: &Elaborated) -> Result<Solution, FaceError> {
+    solve_with_mode(elab, AspOutputMode::Z3Compatible)
+}
+
+/// How the ASP face renders an L3 (non-stratified) verdict at the output
+/// boundary — the analogue of the SMT face's `OutputMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AspOutputMode {
+    /// **z3-compatible** (default): enumerate the stable models, or — when that
+    /// is over budget — abstain LOUDLY with an `Err` (the historical behaviour).
+    /// The internal 3-valued well-founded model is still attached to the
+    /// `Solution`, but a budget overrun is an error, not a partial answer.
+    #[default]
+    Z3Compatible,
+    /// **Full**: never collapse a budget overrun to a total abstain — return the
+    /// sound 3-valued well-founded model as a PARTIAL verdict instead (the
+    /// successful enumeration path is unchanged).
+    Full,
+}
+
+/// Solve `elab`, rendering an L3 verdict per `mode` (the in-process control for
+/// the output mode; [`solve`] is the z3-compatible default).
+pub fn solve_with_mode(elab: &Elaborated, mode: AspOutputMode) -> Result<Solution, FaceError> {
     match &elab.stratify {
         Stratification::Stratified(_) => solve_stratified(elab),
-        Stratification::NonStratified(_) => solve_stable(elab),
+        Stratification::NonStratified(_) => solve_stable(elab, mode),
     }
 }
 
@@ -255,7 +306,7 @@ fn solve_stratified(elab: &Elaborated) -> Result<Solution, FaceError> {
         out
     };
 
-    Ok(Solution { answers, abductions, consistent, stable: None })
+    Ok(Solution { answers, abductions, consistent, stable: None, well_founded: None })
 }
 
 /// Whether any rule / constraint body carries a `not` literal.
@@ -325,7 +376,7 @@ fn violates_constraints(
 /// enumerate the bracketed candidate space and certify each through the trusted
 /// GL reduct + lfp ([`stable_models`]), discard constraint-violating answer sets,
 /// and answer queries **cautiously** (`∩` over the surviving stable models).
-fn solve_stable(elab: &Elaborated) -> Result<Solution, FaceError> {
+fn solve_stable(elab: &Elaborated, mode: AspOutputMode) -> Result<Solution, FaceError> {
     // abduction over a non-stratified program is a later (non-monotone) slice —
     // abstain LOUDLY rather than silently dropping the goal (the L2 `has_neg`
     // guard lives on the stratified arm and is never reached here).
@@ -338,9 +389,39 @@ fn solve_stable(elab: &Elaborated) -> Result<Solution, FaceError> {
     let mut intern = Interner::default();
     let p = ground_n_program(elab, &mut intern)?;
 
-    // enumerate + gate, then keep only the constraint-consistent answer sets.
+    // The 3-valued well-founded model — cheap (polynomial), brackets every stable
+    // model, and is attached to the Solution below (the AFT approximation pair).
+    let (l_star, u_star) = well_founded_model(&p);
+
+    // enumerate + gate, then keep only the constraint-consistent answer sets. On a
+    // budget overrun the z3-compatible mode propagates the abstain (`Err`); the
+    // `Full` mode instead returns the sound 3-valued well-founded model as a
+    // PARTIAL verdict — the new capability (cautious-true `L*`, cautious-false
+    // `B \ U*`), decided on programs the guess-and-check cannot reach.
+    let stable_sets = match stable_models(&p) {
+        Ok(sets) => sets,
+        Err(e) => {
+            if mode == AspOutputMode::Full {
+                let wfm = three_valued(&l_star, &u_star, &intern);
+                // `L*` violating an integrity constraint ⇒ it is violated in EVERY
+                // stable model (`L* ⊆ M`) ⇒ definitely no answer set (sound). The
+                // `true` direction is only "not DEFINITELY inconsistent" (a stable
+                // model might still be killed via an undefined atom).
+                let consistent = !violates_constraints(elab, &l_star, &intern)?;
+                let answers = cautious_queries(elab, &intern, |id| l_star.contains(&id))?;
+                return Ok(Solution {
+                    answers,
+                    abductions: Vec::new(),
+                    consistent,
+                    stable: None,
+                    well_founded: Some(wfm),
+                });
+            }
+            return Err(e);
+        }
+    };
     let mut models: Vec<BTreeSet<AtomId>> = Vec::new();
-    for m in stable_models(&p)? {
+    for m in stable_sets {
         if !violates_constraints(elab, &m, &intern)? {
             models.push(m);
         }
@@ -367,23 +448,43 @@ fn solve_stable(elab: &Elaborated) -> Result<Solution, FaceError> {
     // cautious queries: a binding holds iff its ground atom is in EVERY stable
     // model (`∩`). With no answer set, no binding is entailed (empty tuples; the
     // `consistent`/`stable.models.is_empty()` pair already signals "no model").
+    let answers = cautious_queries(elab, &intern, |id| {
+        !models.is_empty() && models.iter().all(|m| m.contains(&id))
+    })?;
+
+    Ok(Solution {
+        answers,
+        abductions: Vec::new(),
+        consistent,
+        stable: Some(StableModels { models: surface }),
+        well_founded: Some(three_valued(&l_star, &u_star, &intern)),
+    })
+}
+
+/// Cautious query answers: a binding holds iff `in_every` accepts its ground atom
+/// id (membership in EVERY stable model). Shared by the enumerated path
+/// (`id ∈ ⋂ models`) and the well-founded partial path (`id ∈ L*`, a subset of
+/// every stable model — sound, possibly incomplete).
+fn cautious_queries(
+    elab: &Elaborated,
+    intern: &Interner,
+    in_every: impl Fn(AtomId) -> bool,
+) -> Result<Vec<QueryAnswer>, FaceError> {
     let mut answers = Vec::with_capacity(elab.queries.len());
     for q in &elab.queries {
         let mut vars = Vec::new();
         collect_vars(q, &elab.pred_sorts, &elab.ctor_sig, &mut vars);
         let mut tuples = Vec::new();
-        if !models.is_empty() {
-            for assign in assignments(&vars, &elab.domains)? {
-                if !atom_in_universe(q, &vars, &assign, &elab.pred_sorts, &elab.domains) {
-                    continue;
-                }
-                let key = instantiate(q, &vars, &assign);
-                // an un-interned atom is in no model ⇒ not cautious-entailed.
-                if let Some(id) = intern.get(&q.pred, &key)
-                    && models.iter().all(|m| m.contains(&id))
-                {
-                    tuples.push(assign);
-                }
+        for assign in assignments(&vars, &elab.domains)? {
+            if !atom_in_universe(q, &vars, &assign, &elab.pred_sorts, &elab.domains) {
+                continue;
+            }
+            let key = instantiate(q, &vars, &assign);
+            // an un-interned atom is in no model ⇒ not cautious-entailed.
+            if let Some(id) = intern.get(&q.pred, &key)
+                && in_every(id)
+            {
+                tuples.push(assign);
             }
         }
         answers.push(QueryAnswer {
@@ -393,13 +494,27 @@ fn solve_stable(elab: &Elaborated) -> Result<Solution, FaceError> {
             mode: Entailment::Cautious,
         });
     }
+    Ok(answers)
+}
 
-    Ok(Solution {
-        answers,
-        abductions: Vec::new(),
-        consistent,
-        stable: Some(StableModels { models: surface }),
-    })
+/// Render the well-founded `(L*, U*)` AtomId pair to the surface [`ThreeValued`]
+/// model: true = `L*`, undefined = `U* \ L*`, false = `B \ U*` (`B` = every
+/// interned atom). Each set is sorted deterministically by surface form.
+fn three_valued(
+    l_star: &BTreeSet<AtomId>,
+    u_star: &BTreeSet<AtomId>,
+    intern: &Interner,
+) -> ThreeValued {
+    let rev = intern.reverse();
+    let render = |ids: &mut dyn Iterator<Item = AtomId>| -> Vec<Atom> {
+        let mut v: Vec<Atom> = ids.filter_map(|id| rev.get(&id).cloned()).collect();
+        v.sort_by_cached_key(render_atom);
+        v
+    };
+    let true_atoms = render(&mut l_star.iter().copied());
+    let undefined_atoms = render(&mut u_star.difference(l_star).copied());
+    let false_atoms = render(&mut rev.keys().copied().filter(|id| !u_star.contains(id)));
+    ThreeValued { true_atoms, false_atoms, undefined_atoms }
 }
 
 /// Ground a non-stratified program **retaining its negative bodies** — one pass
@@ -472,7 +587,11 @@ fn ground_n_program(elab: &Elaborated, intern: &mut Interner) -> Result<GroundNP
 /// Gelder–Ross–Schlipf theorem the well-founded model brackets every stable model
 /// (`L* ⊆ M ⊆ U*` for every GL-stable `M`), so this only ever *shrinks* the free
 /// set the guess-and-check enumerates — never skips a stable model.
-fn well_founded_bracket(p: &GroundNProgram) -> (BTreeSet<AtomId>, BTreeSet<AtomId>) {
+///
+/// Public so a caller can read the sound 3-valued well-founded model directly
+/// (true = `L*`, undefined = `U* \ L*`, false = `B \ U*`); the surface-rendered
+/// form is [`ThreeValued`], attached to every L3 [`Solution`].
+pub fn well_founded_model(p: &GroundNProgram) -> (BTreeSet<AtomId>, BTreeSet<AtomId>) {
     let phi = |s: &BTreeSet<AtomId>| p.reduct(s).least_model();
     let mut k = BTreeSet::new();
     loop {
@@ -486,7 +605,7 @@ fn well_founded_bracket(p: &GroundNProgram) -> (BTreeSet<AtomId>, BTreeSet<AtomI
 }
 
 /// Enumerate the stable models of a ground normal program by **bounded
-/// guess-and-check** over the [`well_founded_bracket`] `L* ⊆ M ⊆ U*`. The
+/// guess-and-check** over the [`well_founded_model`] `L* ⊆ M ⊆ U*`. The
 /// well-founded model forces the maximal set of atoms in (`L*`) / out (`B \ U*`)
 /// in polynomial time, so only the *undefined* atoms `U* \ L*` remain to guess —
 /// strictly tighter than the old one-step reduct bracket
@@ -525,7 +644,7 @@ fn stable_models(p: &GroundNProgram) -> Result<Vec<BTreeSet<AtomId>>, FaceError>
     // SEARCH-bound loops (large global `|FREE|`, FEW answer sets each) is now
     // decided; a COUNT-bound program (`k` independent binary choices ⇒ `2^k`
     // answer sets) is inherently un-enumerable and abstains past the cap.
-    let (lower, upper) = well_founded_bracket(p);
+    let (lower, upper) = well_founded_model(p);
     let gfree = upper.difference(&lower).count();
     if gfree <= MAX_STABLE_FREE
         && (1u128 << gfree).saturating_mul(p.rules.len().max(1) as u128) <= MAX_STABLE_WORK
@@ -560,10 +679,10 @@ fn stable_models(p: &GroundNProgram) -> Result<Vec<BTreeSet<AtomId>>, FaceError>
 }
 
 /// The monolithic stable-model sweep over one (connected) program: bounded
-/// guess-and-check over the [`well_founded_bracket`] `L* ⊆ M ⊆ U*`, each subset of
+/// guess-and-check over the [`well_founded_model`] `L* ⊆ M ⊆ U*`, each subset of
 /// the free atoms `U* \ L*` gated by the trusted [`GroundNProgram::is_stable`].
 fn stable_models_component(p: &GroundNProgram) -> Result<Vec<BTreeSet<AtomId>>, FaceError> {
-    let (lower, upper) = well_founded_bracket(p);
+    let (lower, upper) = well_founded_model(p);
     let free: Vec<AtomId> = upper.difference(&lower).copied().collect();
 
     // the exponential guards: a sharp structural cap on |FREE| (shift safety +
@@ -679,6 +798,27 @@ fn render_atom(a: &Atom) -> String {
 #[cfg(test)]
 mod l3_tests {
     use super::*;
+
+    #[test]
+    fn well_founded_model_three_way_split() {
+        // c.          → c is well-founded TRUE
+        // a :- not c. → a is well-founded FALSE (c is true)
+        // p :- not q. ┐ even loop → p, q are UNDEFINED
+        // q :- not p. ┘
+        let (c, a, p, q) = (1u32, 2u32, 3u32, 4u32);
+        let mut prog = GroundNProgram::new();
+        prog.push(GroundNRule::fact(c));
+        prog.push(GroundNRule::rule(a, vec![], vec![c]));
+        prog.push(GroundNRule::rule(p, vec![], vec![q]));
+        prog.push(GroundNRule::rule(q, vec![], vec![p]));
+
+        let (lo, hi) = well_founded_model(&prog); // (L*, U*)
+        assert!(lo.contains(&c), "c is well-founded TRUE (in L*)");
+        assert!(!hi.contains(&a), "a is well-founded FALSE (not in U*)");
+        for x in [p, q] {
+            assert!(!lo.contains(&x) && hi.contains(&x), "{x} is UNDEFINED (U* \\ L*)");
+        }
+    }
     use crate::program::{GroundNProgram, GroundNRule};
 
     /// A tiny deterministic PRNG (so the differential is reproducible — no `rand`
@@ -745,7 +885,7 @@ mod l3_tests {
     /// for `N ≥ 13`, i.e. the old path would have abstained. Here `N = 20`
     /// (one-step free = 40) yet the WFM path returns the unique answer set.
     #[test]
-    fn well_founded_bracket_decides_what_one_step_abstains_on() {
+    fn well_founded_model_decides_what_one_step_abstains_on() {
         const N: u32 = 20;
         let c = 0u32;
         let a = |i: u32| 1 + i; // a_0..a_{N-1}
@@ -765,7 +905,7 @@ mod l3_tests {
         assert!(one_step_free > MAX_STABLE_FREE, "old path would abstain");
 
         // the WFM bracket decides every atom (free set empty) → the unique model.
-        let (wfm_lo, wfm_hi) = well_founded_bracket(&p);
+        let (wfm_lo, wfm_hi) = well_founded_model(&p);
         assert_eq!(wfm_lo, wfm_hi, "well-founded model is total here (no undefined atoms)");
 
         let models = stable_models(&p).expect("WFM bracket decides within budget");
@@ -819,7 +959,7 @@ mod l3_tests {
             p.push(GroundNRule::rule(b, vec![], vec![a])); // b_i :- not a_i
         }
         // monolithic would abstain (global free = 26 > 24)…
-        assert!(well_founded_bracket(&p).1.len() >= MAX_STABLE_FREE + 1);
+        assert!(well_founded_model(&p).1.len() >= MAX_STABLE_FREE + 1);
         // …but the decomposition decides all 2^N answer sets, each picking one of
         // {a_i, b_i} per loop.
         let models = stable_models(&p).expect("decomposition decides the independent loops");
