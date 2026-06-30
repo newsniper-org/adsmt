@@ -80,6 +80,7 @@ members = [
     "adsmt-ir-lukb",
     "adsmt-ir-asp",
     "adsmt-ir-lower",
+    "adsmt-lukb-driver",
 ]
 exclude = ["external/oxiz"]
 
