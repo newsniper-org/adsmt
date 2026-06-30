@@ -143,21 +143,35 @@ keeps `CasClass`/`Witness` expressive enough that a future backend (or adsmt's
 own bounded search / abduction) can return a *sound* `sat`/refutation where one
 exists, re-checked by the core.
 
-## 3. Capability table (Singular now, PARI co-designed)
+## 3. Capability table — SPLIT BY TRUST MODEL (adversarial-review §9 hardening)
 
-`witnessed_dir` = the verdict direction the witness proves; the other direction
-downgrades.
+The original single table conflated two trust models and shipped five unsound
+rows. It is split: **(A) witness-delegated** — a *short* certificate the core
+checks independently of the CAS's search; **(B) downgrade-only** — no short
+witness exists, so the "re-check" would be the decision procedure re-run (often
+with a dropped side condition). `witnessed_dir` = the direction the witness
+proves; the other direction is always Unknown. **Every re-check is against the
+original `Sequent` (§4/§6), in the obligation's own ring.**
 
-| Class | Backend | Witnessed dir | Witness | Trusted re-check (crate) | Other dir |
-|---|---|---|---|---|---|
-| Ideal membership `f∈⟨gᵢ⟩` | Singular `lift` | **unsat** (of `f∉I`) | cofactors `qᵢ` | `f −̇ Σqᵢgᵢ = 0`, degree-bounded poly mul/cmp (`adsmt-theory-finite-field`, `oxiz-math/polynomial`) | `f∉I` → Unknown |
-| Polynomial / integer factorization | Singular / PARI | **either** | factor list | multiply back, exact cmp | — |
-| Compositeness `n` composite | PARI | **sat** (witness exists) | a factor `d∣n` | one division (free) | primality → cert-gated |
-| Primality `n` prime | PARI | **unsat** (of composite) | Pratt / ECPP cert | modexp chain / EC arith — **checker must be built** | else Unknown |
-| Rational-fn identity `p/q−r/s=0` | any | **unsat** (of `≠`) | — | cross-multiply + poly cmp | — |
-| Existential Diophantine (ch. 1/2) | PARI / search | **sat** | int solution tuple | bignum evaluate | nonexistence → **Unknown** |
-| Universal refutation (ch. 3) | Singular + PARI | **sat** (∃ counterexample) | counterexample + sub-certs | replay the sub-certs | positive ∀ → Unknown |
-| Ideal non-membership; QE-equivalence; irreducibility(¬); transcendental zero-test; group/tensor | any | — | — | — | **Unknown / advisory** |
+### A. Witness-delegated (trusted ONLY after the core re-check passes)
+
+| Class | Backend | Witnessed dir | Witness | Trusted re-check (against the original) |
+|---|---|---|---|---|
+| Ideal membership `g₁=0,…⊢ f=0` | Singular `lift` | **unsat** (of `f∉I`) | cofactors `qᵢ` (paired to `gᵢ`, §9-G9) | `f −̇ Σqᵢgᵢ = 0` as an **exact identity in the obligation's coefficient ring**. **char-0 (Int/Real/ℚ/ℤ[x]) ⇒ `oxiz-math` `BigRational` ONLY; `adsmt-theory-finite-field` is GF(2)-only and FORBIDDEN for char ≠ 2 (B1)**; ring mismatch ⇒ Unknown |
+| Factorization — **REDUCIBLE only** | Singular / PARI | **sat** (reducible) | ≥2 non-unit factors | `∏ = target` exact in-ring **and** each factor non-unit. The **irreducible** direction has no short cert ⇒ Unknown (NOT `oxiz-math::is_irreducible` — a confirmed stub, B5) |
+| Compositeness `n` composite | PARI | **sat** | a divisor `d` | **`n>1 ∧ 1 < d < n ∧ n mod d = 0`** (proper-divisor bound — B6) |
+| Existential Diophantine (ch. 1/2) | search / PARI | **sat** | int solution tuple | **`(∀i. xᵢ ∈ domain) ∧ P(x̄)=0`**, exact `BigInt` — domain-membership of EVERY coordinate **and** the equation (B3); nonexistence ⇒ Unknown |
+| Universal refutation (ch. 3) | Singular + PARI | **sat** (∃ counterexample) | `h` + `Vec<Witness>` covering EVERY conjunct of `¬φ(h)` | substitute `h` into the **original negated body**, decompose `¬φ(h)` into conjuncts, require a discharged sub-witness for **each** (entailment-coverage — B7); any uncovered/mis-shaped conjunct ⇒ Unknown |
+| Primality `n` prime | PARI | **unsat** (of composite) | Pratt / ECPP cert | modexp / EC arith — **checker must be built first**, else Unknown |
+
+### B. Downgrade-only (Unknown / advisory — never a CAS verdict)
+
+| Class | Why no witness |
+|---|---|
+| Ideal **non**-membership `f∉I` | no short cert (would re-verify the basis is Gröbner) |
+| **Irreducibility** (positive) | non-existence of a factor has no short cert; needs a *complete* Mignotte-bounded fail-*closed* search, not the stub |
+| Rational-fn identity with a **vanishing denominator** | cross-multiply is sound only under `q≠0 ∧ s≠0`; under adsmt's **total** division (`x/0` fixed, #291) `x/x=1` is FALSE at 0 (B4). Admissible ONLY if the classifier confirms denominators are non-vanishing over the domain (fraction-field / indeterminate sorts); else Unknown |
+| QE-equivalence; transcendental zero-test; group/tensor word-problem | open / undecidable |
 
 ## 4. The interface (the locked surface)
 
@@ -187,14 +201,18 @@ pub struct CasCapability {
     pub kind: WitnessKind,   // which Witness variant this row returns
 }
 
+/// The coefficient ring of an obligation — `admit()` dispatches the re-checker
+/// on it (B1: a GF(2) re-checker on a char-0 obligation is unsound).
+pub enum Ring { Z, Q, R, ZmodP(BigInt), GF2, /* … */ }   // char recovered from the term
+
 /// The witness the backend returns; each variant has a trusted re-checker.
 pub enum Witness {
-    Cofactors(Vec<Poly>),            // f = Σ qᵢ·gᵢ
-    Factors(Vec<Poly>),              // ∏ = target
-    IntSolution(Vec<BigInt>),        // a Diophantine point
-    Counterexample(Term, Box<Witness>), // a ∀-refutation + its sub-cert
+    Cofactors(Vec<(usize, Poly)>),   // (gᵢ index, qᵢ) pairs — f = Σ qᵢ·gᵢ  (B7-G9)
+    Factors(Vec<Poly>),              // ≥2 NON-UNIT factors; ∏ = target (reducible only, B5)
+    IntSolution(Vec<BigInt>),        // a Diophantine point (re-check ALSO domain ∈, B3)
+    Counterexample(Term, Vec<Witness>), // h + one sub-witness PER conjunct of ¬φ(h) (B7)
     PrimalityCert(PrattOrEcpp),
-    Divisor(BigInt),
+    Divisor(BigInt),                 // re-check 1 < d < n (B6)
 }
 
 /// The one trait every backend (in-tree or contrib) implements.
@@ -203,13 +221,20 @@ pub trait CasBackend: Send {
     /// Static — lets the dispatcher pick WITHOUT spawning the CAS.
     fn capabilities(&self) -> &[CasCapability];
     /// Run the (already-classified, extracted) obligation. Subprocess for
-    /// core backends. Returns a witness or "can't decide".
+    /// core backends. Returns a witness or "can't decide". The extracted
+    /// `CasObligation` is a ROUTING input to the BACKEND only — never to `admit`.
     fn decide(&self, ob: &CasObligation) -> CasReply; // { Witnessed(dir, Witness) | Undecided | Error }
 }
 
 /// The trusted core re-checker — NOT part of the backend. Clean-room; the only
-/// thing allowed to MOVE a verdict. Returns the sound disposition.
-pub fn admit(ob: &CasObligation, reply: &CasReply) -> Disposition; // Verdict(SatLevel) | Unknown | Advisory
+/// thing allowed to MOVE a verdict, and the SAME function the offline cert
+/// checker calls (§7). It takes the ORIGINAL `Sequent` (hyps + concl), NOT the
+/// extracted `CasObligation` (B2): it re-derives ring/relation/quantifier-prefix
+/// /domain FROM the term (treating the extraction as untrusted hints), DERIVES
+/// the verdict from what the witness establishes (it IGNORES the backend's
+/// declared `dir` — G3), and rejects any witness that leaves a non-ground
+/// residual after substitution (kills quantifier-alternation / dropped-conjunct).
+pub fn admit(goal: &Sequent, witness: &Witness) -> Disposition; // Verdict(SatLevel) | Unknown | Advisory
 ```
 
 ### 4.1 Dispatch / routing (the fallthrough)
@@ -339,16 +364,24 @@ flattening drops the ring structure the CAS needs.
   (i) classify at the **lukb / pre-lowering** level where the ring sort is still
   typed (preferred — the lu-kb-successor is where Verus emits, [[verus_emits_lukb_surface]]);
   (ii) re-recognize `+`/`*`/`pow` over `Int`/`Real` from the residual shape as a
-  fallback. v1 takes (i) for the typed path and (ii) only for raw SMT-LIB input.
-- **THE SOUNDNESS BACKSTOP (why an extraction bug can't be unsound).** `admit()`
-  re-checks the witness against the **ORIGINAL obligation term**, never against
-  the extracted normal form. So a mis-extraction (e.g. recognizing a non-ring
-  term as a polynomial, or normalizing wrong) can only ever route a *wrong query
-  to the CAS* → the returned witness fails the re-check against the original →
-  `Unknown`. It can **never** admit a wrong verdict. Extraction is thus a
-  *routing heuristic*, not a trusted step — only `admit()`'s re-check is trusted.
-  This is the same firewall as the engine's "delegation only fires on Unknown,
-  result re-verified" discipline.
+  fallback. **Only path (i) may yield a TRUSTED verdict (§9-G5)** — `admit()`
+  needs the pre-#325 typed `Sequent` to faithfully recover ring/domain/quantifier;
+  the post-lowering EUF / raw-SMT-LIB residual is itself a re-extraction, so
+  path (ii) is **advisory / Unknown-only** (membership-cofactor identities
+  survive as advisories, but no `sat`/domain verdict).
+- **THE SOUNDNESS BACKSTOP (why an extraction bug can't be unsound) — corrected.**
+  `admit()` re-checks the witness against the **original `Sequent` (hyps +
+  concl), NOT the extracted `CasObligation`** (§9-B2): it re-derives
+  ring/relation/quantifier/domain from the term and rejects any witness leaving a
+  non-ground residual after substitution. So a mis-extraction (dropped conjunct,
+  flattened `∃∀`, mis-read domain, non-ring term) can only route a *wrong query
+  to the CAS* → the witness fails the re-check against the original `Sequent` →
+  `Unknown`, **never** a wrong verdict. Extraction is a *routing heuristic*
+  (untrusted); only `admit()`'s re-check against the `Sequent` is trusted. This
+  is the engine's "delegation fires on Unknown, result re-verified" firewall —
+  but the firewall is real ONLY because the re-check input is the `Sequent`, not
+  the extraction (the original design handed `admit()` the extraction, which is
+  the B2 break the review caught).
 
 ## 7. The CAS-admitted Certificate
 
@@ -358,29 +391,100 @@ proof obligation discharged via Singular be replayable by a checker that has no
 Singular.
 
 - **New witness variant** `adsmt-cert::Witness::Cas { backend, version, class,
-  obligation, witness, verdict }` — carries the FULL witness (cofactors / factors
-  / divisor / int-solution / counterexample-tree / primality-cert), the original
-  obligation term, and the manifest-pinned backend+version (§4.3) for provenance.
+  ring, sequent, witness }` — carries the FULL witness (cofactors / factors /
+  divisor / int-solution / counterexample-tree / primality-cert), the original
+  **`Sequent` (hyps + concl)** — NOT a bare `Term` (§9-G1: ideal membership is
+  `g₁=0,…⊢f=0`; the `gᵢ` are the in-scope hypotheses and must come from `hyps`,
+  never the untrusted witness), the coefficient `ring` (§9-B1 dispatch), and the
+  manifest-pinned backend+version (§4.3). It does **NOT** store a `verdict`
+  field: the offline checker **derives** the verdict from the witness via the
+  shared re-checker (§9-G3), so a forged `verdict` is impossible. A CAS-source
+  verdict may **never** use the `TheoryWitness::Opaque` hatch (§9-G2) — the
+  offline checker rejects any CAS-tagged `Opaque` cert (OxiZ-Opaque is sound by
+  parity; a CAS is not).
 - **Contrast with the OxiZ-delegated cert** ([[oxiz_relationship]] Gap A
   `build_delegated_unsat_cert`): OxiZ is trusted *by parity*, so its cert is
   *synthesized* (no witness needed). A CAS is untrusted, so its cert must carry
   the **actual witness** — the cert IS the re-check input.
-- **ONE re-checker, two callers.** The clean-room re-check is a single function;
-  online `admit()` and the offline `adsmt-cert` checker both call it. They cannot
-  diverge, so "the CAS verdict was admitted" and "the cert re-checks" are the
-  same proposition by construction ([[feedback_roundtrip_through_real_producer]]:
-  the producer and the checker share the real path). A failed offline re-check =
-  an invalid cert, identically to a failed online `admit()` = `Unknown`.
-- **Replayable + content-addressed.** The cert flattens to the hash-cons pool
-  like every other adsmt cert (so it survives the ciborium/wire path, Gap B), and
-  re-checking needs only `adsmt-cert` + `adsmt-theory-finite-field` + `oxiz-math`
-  — never the CAS. A CAS-admitted `unsat` is as portable as a native one.
+- **ONE re-checker, two callers — and they MUST share input type.** The
+  clean-room re-check is a single function `admit(goal: &Sequent, &Witness)`;
+  online `admit()` and the offline `adsmt-cert` checker both call it **on the
+  same `Sequent` from the cert** — NOT online-on-the-extracted-struct,
+  offline-on-a-term (the divergence the review caught, §9-B2). They cannot
+  diverge ([[feedback_roundtrip_through_real_producer]]). A failed offline
+  re-check = an invalid cert, identically to a failed online `admit()` = Unknown.
+- **Replayable + content-addressed; depth-bounded fail-closed.** The cert
+  flattens to the hash-cons pool (survives the ciborium/wire path, Gap B). The
+  counterexample-tree (§2.4-3) is depth-bounded on BOTH deserialization AND
+  checking — an attacker-controlled `Vec`/`Box` chain exceeding the bound is
+  rejected (Unknown/invalid), never accepted (§9-G6; same class as the ciborium
+  recursion limit). Re-checking needs only `adsmt-cert` + `oxiz-math` (char-0)
+  / `adsmt-theory-finite-field` (GF(2) only) — never the CAS.
 
 ## 8. Open items for the next discussion turn
-- The `adsmt-cert::Witness::Cas` wire encoding (CBOR/JSON) + whether the
-  counterexample-tree (§2.4) needs a recursion-depth bound on the checker.
+- The `adsmt-cert::Witness::Cas` wire encoding (CBOR/JSON) + the concrete
+  recursion-depth bound value for the counterexample-tree (§9-G6 settles that it
+  IS bounded + fail-closed; the value is open).
 - Whether the bounded-domain Diophantine variant (§2.4-1) routes to the *native*
   engine rather than a CAS (it is decidable).
 - The `adsmt-cas.toml` *file* discovery (project-local vs `$XDG_CONFIG`) and
   whether it shares the `adsmt-emit-pm` lockfile format verbatim. (The *backend
   try-order* is settled: the `cas.enabled` array order, §4.3.)
+
+## 9. Adversarial-review hardening (2026-06-30) — GOVERNS ON CONFLICT
+
+A 7-agent adversarial review (each lens trying to BREAK the soundness firewall)
+found **7 code-confirmed breaks**: the original design's central claim failed
+because (a) `admit()` was handed the *extracted* obligation, not the original
+term, and (b) several named re-checkers were unfaithful to the original
+semantics. The §3 "re-check" column had conflated **two trust models** —
+genuine witness-delegation (a short cert checked independently) vs
+decision-procedure-re-run-with-a-dropped-side-condition. §2–§7 above are
+corrected; this section is the authoritative changelog and **governs if any
+earlier prose still conflicts**.
+
+**P0-gating (block the locked-interface cut — these are TYPE/spec, fixed pre-code):**
+1. **B2/G1/G3 — `admit(goal: &Sequent, &Witness)`** takes the original sequent
+   (hyps+concl), re-derives ring/relation/quantifier/domain from the term,
+   **derives** the verdict from the witness (ignores the backend's declared
+   `dir`), rejects non-ground post-substitution residuals. Online + offline share
+   this exact function + input.
+2. **B1 — ring/characteristic dispatch.** `adsmt-theory-finite-field` is
+   **GF(2)-only** (verified: coeffs∈{0,1}, `squarefree` caps exponents at 1,
+   `add`=XOR) → **FORBIDDEN for char ≠ 2**. Char-0 cofactor/factor re-check routes
+   **only** to `oxiz-math` `BigRational` mul/sub/is_zero; ring mismatch ⇒ Unknown.
+3. **B6 — Divisor re-check requires `1 < d < n ∧ n mod d = 0`** (proper-divisor;
+   else every prime is "composite"). This is a P0 re-checker.
+4. **B5 — FactorList: `witnessed_dir = Sat` (reducible) only** (≥2 non-unit
+   factors, ∏=target in-ring); irreducible ⇒ Unknown. **Do NOT wire
+   `oxiz-math::is_irreducible`** — verified stub (calls deg-4 reducibles
+   irreducible).
+5. **B7 — `Counterexample(Term, Vec<Witness>)`** (not `Box`); `admit()`
+   substitutes `h` into the original negated body and requires entailment-coverage
+   — a discharged sub-witness for **every** conjunct of `¬φ(h)`; uncovered ⇒
+   Unknown. (Type locked at P0 though the row is post-1.0.)
+6. **G2 — no `Opaque` for CAS provenance.** `adsmt-cert::Witness::Cas` (does not
+   exist yet — to be added, carrying the existing `Sequent` type) forces the
+   re-checkable path; the offline checker rejects a CAS-tagged `Opaque`.
+
+**Doc-level (gate the rows they govern, folded into §2–§7):** B3 Diophantine
+re-check = `(∀i. xᵢ∈domain) ∧ P=0`; B4 rational-identity needs `q≠0∧s≠0`
+discharged (total-division #291 hazard) or the classifier refuses vanishing
+denominators → Unknown; G4 specify the `sat`/refutation (countermodel) cert +
+the polarity invariant (`witnessed_dir=Sat` never emits an `unsat` cert; compose
+with `:goal-negation`); G5 only the pre-lowering typed path yields a trusted
+verdict, option-(ii) residual = advisory/Unknown; G6 depth-bound the
+counterexample tree, fail-closed; G7 the `final_check` bus shim is a *latency*
+optimization — it may emit only a re-checked conflict or Unknown, **never `Sat`
+on the CAS's word**; G8 gating CI consumes the **offline cert** (no live CAS),
+`admit()` evaluates via `BigRational`/`BigInt` (never `Ratio<i128>` — silent wrap
+at deg ≥ 5), fail-closed → Unknown on a non-literal exponent; G9 the cert pins
+the `qᵢ↔gᵢ` pairing + var-index order (derived from `Sequent.hyps`).
+
+**HELD (firewall genuinely holds — not re-litigated):** cofactor membership as an
+exact in-ring identity (self-certifying); non-membership/open-Diophantine-unsat
+correctly → Unknown (no witness can smuggle a fabricated unsat); manifest attacks
+(allow-list ⊆ `capabilities()` intersect; try-order fallthrough can't starve or
+false-accept) — all conditional on the P0 fixes above. **Bottom line: the
+firewall concept is sound; it is real only after the 6 P0-gating fixes land — so
+they are prerequisites for the `adsmt-cas` crate.**
