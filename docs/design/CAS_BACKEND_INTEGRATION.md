@@ -613,3 +613,26 @@ correctly → Unknown (no witness can smuggle a fabricated unsat); manifest atta
 false-accept) — all conditional on the P0 fixes above. **Bottom line: the
 firewall concept is sound; it is real only after the 6 P0-gating fixes land — so
 they are prerequisites for the `adsmt-cas` crate.**
+
+### 9.1 P1.6 implementation-time adversarial review (2026-07-01)
+
+A second 4-lens adversarial workflow ran against the LANDED `classify_diophantine`
+(lenses: domain-widening, conjunct-drop, index-alignment, term_to_mpoly
+faithfulness), tasked to construct a concrete spurious-`Sat` goal. Result: three
+lenses confirmed the code robust (all-or-nothing `else return None` chain holds;
+`term_to_mpoly` returns no wrong polynomial — the two-level App match is an arity
+firewall; a mis-sorted Real `+` is sound because an integer witness that roots the
+system is also a real one, `ℤ⊂ℝ`). One lens found a **real break**:
+
+- **B8 — shadowed `∃`-binders defeat the free-variable check.** `∃x.∃x. (x≥0) ∧
+  (y=1)` with `y` FREE: `peel_exists` returns `["x","x"]` so `n=2`, but the
+  name-keyed `VarIndex` seeds only ONE slot (both `x`s → index 0), so `vars.len()`
+  starts at 1; the free `y` then lifts it to 2 and the guard `vars.len() > n` reads
+  `2 > 2` = false — the free variable escapes, yielding
+  `DiophantineExists{[y−1],[WNat,Int]}` that `admit([0,1])` accepts → spurious
+  `Sat` for a non-closed goal. **Fix:** `classify_diophantine` refuses a `∃`-prefix
+  with duplicate binder names (a name-indexed `MPoly` cannot faithfully separate
+  shadowed binders anyway). Zero completeness cost — the lowering assigns FRESH
+  `x!k` names, never duplicates. Regression-tested (`shadowed_binders_*`,
+  `an_unrecognized_lower_bound_bails_all_or_nothing`,
+  `a_partial_application_of_an_arith_op_is_not_a_polynomial`).

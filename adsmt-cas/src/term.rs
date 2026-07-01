@@ -219,9 +219,25 @@ pub fn classify_diophantine(goal: &Term) -> Option<Obligation> {
     let (var_names, body) = peel_exists(goal)?;
     let n = var_names.len();
 
+    // DISTINCT binder names are required. The name-indexed `MPoly` representation
+    // CONFLATES two `∃`-binders that share a name (shadowing, `∃x.∃x.…`): the
+    // seeding loop below would create fewer index slots than `n`, desyncing the
+    // `vars.len() > n` free-variable check (a free variable could then slip in
+    // undetected → spurious Sat — the adversarial index-alignment break), and the
+    // two semantically-distinct variables would merge onto one index anyway. The
+    // real lowering assigns FRESH names (`x!k` counter), so this never costs
+    // completeness; a shadowed input is soundly REFUSED.
+    {
+        let distinct: std::collections::BTreeSet<&String> = var_names.iter().collect();
+        if distinct.len() != n {
+            return None;
+        }
+    }
+
     // Seed the index map so MPoly variable `i` == `∃`-bound variable `i` (prefix
     // order). This makes `domains[i]` / the witness tuple's coordinate `i` refer
-    // to the same variable the system polynomials do.
+    // to the same variable the system polynomials do. (Names are now distinct, so
+    // seeding creates exactly `n` slots and `vars.len() == n` here.)
     let mut vars = VarIndex::default();
     for name in &var_names {
         vars.index(name);
@@ -457,5 +473,47 @@ mod tests {
         // No leading ∃ ⇒ classify_diophantine None (membership may still take it).
         let goal = eq(binop("-", v("x"), lit(1)), lit(0));
         assert!(classify_diophantine(&goal).is_none());
+    }
+
+    // ── adversarial regressions (workflow cas-p16-adversarial) ──────────────
+
+    #[test]
+    fn shadowed_binders_with_a_free_var_are_refused() {
+        // THE index-alignment break: ∃x.∃x. (x≥0) ∧ (y=1) with `y` FREE. Duplicate
+        // binder names made `vars.len()` (=1 distinct) miscount vs n (=2), so the
+        // free-var check `vars.len() > n` was `2 > 2` = false and `y` slipped in →
+        // DiophantineExists{[y-1],[WNat,Int]} → admit([0,1]) spurious Sat. The
+        // distinct-name guard now refuses it.
+        let goal = exists("x", exists("x", conj(cmp(">=", v("x"), lit(0)), eq(v("y"), lit(1)))));
+        assert!(classify_diophantine(&goal).is_none(), "shadowed free-var goal must be None");
+    }
+
+    #[test]
+    fn shadowed_binders_are_refused_even_without_a_free_var() {
+        // ∃x.∃x. (x≥0) ∧ (x=1): sound in principle, but the name-indexed MPoly
+        // can't tell the two `x`s apart ⇒ soundly refuse rather than conflate.
+        let goal = exists("x", exists("x", conj(cmp(">=", v("x"), lit(0)), eq(v("x"), lit(1)))));
+        assert!(classify_diophantine(&goal).is_none());
+    }
+
+    #[test]
+    fn an_unrecognized_lower_bound_bails_all_or_nothing() {
+        // ∃x. (>= x 2) ∧ (x−1 = 0). `(>= x 2)` is NOT a recognized domain guard
+        // (only ≥1/≥0) and not a poly equation ⇒ the whole thing is None. Were it
+        // dropped, x=1 would root [x−1] but violate x≥2 ⇒ spurious Sat.
+        let goal = exists("x", conj(cmp(">=", v("x"), lit(2)), eq(binop("-", v("x"), lit(1)), lit(0))));
+        assert!(classify_diophantine(&goal).is_none());
+        // Likewise a strict upper-adjacent bound `(> x 100)` (not `> x 0`).
+        let g2 = exists("x", conj(cmp(">", v("x"), lit(100)), eq(binop("-", v("x"), lit(2)), lit(0))));
+        assert!(classify_diophantine(&g2).is_none());
+    }
+
+    #[test]
+    fn a_partial_application_of_an_arith_op_is_not_a_polynomial() {
+        // App(Const("+"), x) — a UNARY application of the binary `+`. The two-level
+        // App/App match in term_to_mpoly is the arity firewall ⇒ None, never a
+        // wrong polynomial.
+        let partial = Term::app(Term::const_("+", binop_ty()), v("x")).unwrap();
+        assert!(term_to_mpoly(&partial, &mut VarIndex::default()).is_none());
     }
 }
