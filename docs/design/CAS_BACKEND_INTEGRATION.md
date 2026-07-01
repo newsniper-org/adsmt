@@ -362,7 +362,9 @@ Rules that make it load-bearing:
   classification `None`. This is the soundness crux: unlike membership, dropping
   an `∃`-conjunct WEAKENS the system and would admit a non-solution. Variable
   indices seed in `∃`-prefix order so `system` / `domains` / a witness tuple align.
-  `classify_sequent(hyps, goal)` is the unified entry (membership then ∃). The
+  `classify_sequent(hyps, goal)` is the unified classifier entry (membership then
+  ∃); `consult(manifest, backends, hyps, goal)` is the end-to-end one-call surface
+  (classify → `dispatch` → re-checked `Disposition`). The
   remaining classes (factorization / compositeness / universal refutation) are
   follow-on slices — see §6.1 for why compositeness needs a polarity mapping and
   factorization lacks a sound term representation; the `admit()`/backend halves

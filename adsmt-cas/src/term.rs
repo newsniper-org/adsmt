@@ -284,6 +284,31 @@ pub fn classify_sequent(hyps: &[Term], goal: &Term) -> Option<Obligation> {
     classify_membership(hyps, goal).or_else(|| classify_diophantine(goal))
 }
 
+/// **End-to-end CAS consult** — the one-call entry that ties the classifier to the
+/// dispatcher: classify the sequent `hyps ⊢ goal`, and if it is a recognized
+/// algebraic obligation, [`dispatch`](crate::dispatch) it to the manifest-enabled
+/// backends and return the re-checked [`Disposition`](crate::Disposition). A
+/// sequent that fits no class ⇒ `Unknown` (no backend runs). Soundness is
+/// unchanged from `dispatch`: the same `Obligation` is sent to the backend and to
+/// `admit`, and the classifier is a faithful all-or-nothing reflection (§6.2).
+///
+/// The returned `Disposition` is the **obligation-level** verdict `admit` derives
+/// (membership ⇒ `Unsat` = the goal is valid; ∃-Diophantine ⇒ `Sat` = a solution
+/// exists). Mapping that to a *goal* verdict for a specific query polarity is the
+/// caller's (live-consult) concern — this layer certifies the algebraic fact, it
+/// does not guess the query's intent.
+pub fn consult(
+    manifest: &crate::manifest::CasManifest,
+    backends: &[&dyn crate::CasBackend],
+    hyps: &[Term],
+    goal: &Term,
+) -> crate::Disposition {
+    match classify_sequent(hyps, goal) {
+        Some(ob) => crate::dispatch(manifest, backends, &ob),
+        None => crate::Disposition::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,5 +540,68 @@ mod tests {
         // wrong polynomial.
         let partial = Term::app(Term::const_("+", binop_ty()), v("x")).unwrap();
         assert!(term_to_mpoly(&partial, &mut VarIndex::default()).is_none());
+    }
+
+    // ── end-to-end consult (classify → dispatch → admit) ────────────────────
+
+    struct Mock {
+        caps: Vec<crate::CasCapability>,
+        reply: crate::CasReply,
+    }
+    impl crate::CasBackend for Mock {
+        fn name(&self) -> &'static str {
+            "mock"
+        }
+        fn capabilities(&self) -> &[crate::CasCapability] {
+            &self.caps
+        }
+        fn decide(&self, _: &Obligation) -> crate::CasReply {
+            self.reply.clone()
+        }
+    }
+
+    #[test]
+    fn consult_classifies_then_dispatches_a_membership_sequent() {
+        use crate::{CasBackend, CasCapability, CasClass, CasReply, Disposition, Verdict, Witness, WitnessedDir};
+        // hyp: x − 1 = 0 ; goal: x*x − 1 = 0 ⇒ membership, cofactor x+1 ⇒ Unsat.
+        let hyp = eq(binop("-", v("x"), lit(1)), lit(0));
+        let goal = eq(binop("-", binop("*", v("x"), v("x")), lit(1)), lit(0));
+        let x = MPoly::var(0);
+        let one = MPoly::constant(BigRational::from(BigInt::from(1)));
+        let mock = Mock {
+            caps: vec![CasCapability { class: CasClass::IdealMembership, witnessed: WitnessedDir::Unsat }],
+            reply: CasReply::Witnessed(Witness::Cofactors(vec![(0, x.add(&one))])),
+        };
+        let backends: Vec<&dyn CasBackend> = vec![&mock];
+        let m = crate::manifest::CasManifest::from_adsmt_toml("[cas]\nenabled=[\"mock\"]\n").unwrap();
+        assert_eq!(consult(&m, &backends, std::slice::from_ref(&hyp), &goal), Disposition::Verdict(Verdict::Unsat));
+    }
+
+    #[test]
+    fn consult_on_an_unclassifiable_goal_is_unknown_without_running_a_backend() {
+        use crate::{CasBackend, Disposition};
+        // A goal that fits no algebraic class ⇒ Unknown; the (would-panic) backend
+        // is never consulted because classify_sequent returns None first.
+        struct Boom;
+        impl CasBackend for Boom {
+            fn name(&self) -> &'static str { "boom" }
+            fn capabilities(&self) -> &[crate::CasCapability] { panic!("must not be consulted") }
+            fn decide(&self, _: &Obligation) -> crate::CasReply { panic!("must not be consulted") }
+        }
+        let f_ty = Type::fun(int_ty(), int_ty()).unwrap();
+        let goal = eq(Term::app(Term::const_("f", f_ty), v("x")).unwrap(), lit(0));
+        let backends: Vec<&dyn CasBackend> = vec![&Boom];
+        let m = crate::manifest::CasManifest::from_adsmt_toml("[cas]\nenabled=[\"boom\"]\n").unwrap();
+        assert_eq!(consult(&m, &backends, &[], &goal), Disposition::Unknown);
+    }
+
+    #[test]
+    fn consult_with_no_eligible_backend_is_unknown() {
+        use crate::{CasBackend, Disposition};
+        // Classifiable (∃-Diophantine) but the manifest enables nothing ⇒ Unknown.
+        let goal = exists("x", conj(cmp(">=", v("x"), lit(0)), eq(binop("-", binop("*", v("x"), v("x")), lit(4)), lit(0))));
+        let backends: Vec<&dyn CasBackend> = vec![];
+        let m = crate::manifest::CasManifest::default();
+        assert_eq!(consult(&m, &backends, &[], &goal), Disposition::Unknown);
     }
 }
