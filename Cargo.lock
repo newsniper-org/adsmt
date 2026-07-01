@@ -29,6 +29,8 @@ dependencies = [
  "num-integer",
  "num-rational",
  "num-traits",
+ "serde",
+ "toml",
 ]
 
 [[package]]
@@ -710,6 +712,16 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "winx",
+]
+
+[[package]]
+name = "cas-backend-singular"
+version = "1.0.0-rc.40"
+dependencies = [
+ "adsmt-cas",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
 ]
 
 [[package]]

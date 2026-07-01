@@ -22,8 +22,10 @@
 //! would admit `x ∈ ⟨x²⟩` — a false `unsat`. Char-0 obligations use ℚ; a real
 //! GF(2) obligation would carry its own char and is out of P0 scope.
 
+pub mod manifest;
 pub mod poly;
 
+use manifest::CasManifest;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
@@ -260,8 +262,8 @@ pub enum CasReply {
 }
 
 /// The one trait every backend implements — in-tree (behind the `cas` feature) or
-/// out-of-tree (`adsmt-contrib/cas-backend-*`). P0 defines the surface; no
-/// in-tree backend yet (Singular is P1).
+/// out-of-tree (`adsmt-contrib/cas-backend-*`). P0 defines the surface;
+/// `cas-backend-singular` (P1) is the first implementer.
 pub trait CasBackend: Send {
     /// Stable identifier (matches the `adsmt.toml` `[cas.backends.<name>]` key).
     fn name(&self) -> &'static str;
@@ -269,6 +271,59 @@ pub trait CasBackend: Send {
     fn capabilities(&self) -> &[CasCapability];
     /// Run the (already-classified) obligation. Subprocess for core backends.
     fn decide(&self, obligation: &Obligation) -> CasReply;
+}
+
+/// The class an obligation falls into (for backend selection).
+pub fn classify(obligation: &Obligation) -> CasClass {
+    match obligation {
+        Obligation::IdealMembership { .. } => CasClass::IdealMembership,
+        Obligation::Factorization { .. } => CasClass::Factorization,
+        Obligation::Compositeness { .. } => CasClass::Compositeness,
+        Obligation::DiophantineExists { .. } => CasClass::DiophantineExists,
+    }
+}
+
+/// The manifest's kebab-case class name → [`CasClass`].
+pub(crate) fn class_from_kebab(s: &str) -> Option<CasClass> {
+    Some(match s {
+        "ideal-membership" => CasClass::IdealMembership,
+        "factorization" => CasClass::Factorization,
+        "compositeness" => CasClass::Compositeness,
+        "primality" => CasClass::Primality,
+        "diophantine-exists" => CasClass::DiophantineExists,
+        "universal-refutation" => CasClass::UniversalRefutation,
+        _ => return None,
+    })
+}
+
+/// **The dispatcher** — try the manifest-enabled backends in `cas.enabled` order,
+/// the FIRST whose witness `admit()`-re-checks wins (§4.3). A backend that is not
+/// permitted the class, does not cover it, returns `Undecided`/`Error`, or whose
+/// witness fails the re-check falls through to the next. No eligible backend ⇒
+/// [`Disposition::Unknown`]. Soundness rests entirely on [`admit`]: no manifest,
+/// try-order, or lying backend can move a verdict without a re-checked witness.
+pub fn dispatch(
+    manifest: &CasManifest,
+    backends: &[&dyn CasBackend],
+    obligation: &Obligation,
+) -> Disposition {
+    let class = classify(obligation);
+    for name in manifest.try_order() {
+        if !manifest.permits(name, class) {
+            continue; // manifest allow-list narrows (never widens)
+        }
+        let Some(backend) = backends.iter().find(|b| b.name() == name) else { continue };
+        if !backend.capabilities().iter().any(|cap| cap.class == class) {
+            continue; // backend does not advertise this class
+        }
+        if let CasReply::Witnessed(w) = backend.decide(obligation)
+            && let Disposition::Verdict(v) = admit(obligation, &w)
+        {
+            return Disposition::Verdict(v);
+        }
+        // Undecided / Error / failed re-check → the next backend in order.
+    }
+    Disposition::Unknown
 }
 
 #[cfg(test)]
@@ -410,5 +465,88 @@ mod tests {
     fn mismatched_pairing_is_unknown() {
         let ob = Obligation::Compositeness { n: BigInt::from(15) };
         assert_eq!(admit(&ob, &Witness::Factors(vec![c(3), c(5)])), Disposition::Unknown);
+    }
+
+    // ── dispatch (manifest-driven, admit-gated) ──────────────────────────────
+    struct Mock {
+        nm: &'static str,
+        caps: Vec<CasCapability>,
+        reply: CasReply,
+    }
+    impl CasBackend for Mock {
+        fn name(&self) -> &'static str {
+            self.nm
+        }
+        fn capabilities(&self) -> &[CasCapability] {
+            &self.caps
+        }
+        fn decide(&self, _: &Obligation) -> CasReply {
+            self.reply.clone()
+        }
+    }
+    fn membership_ob() -> Obligation {
+        Obligation::IdealMembership {
+            ring: Ring::Z,
+            f: x().mul(&x()).sub(&c(1)),
+            generators: vec![x().sub(&c(1))],
+        }
+    }
+    fn cap_membership() -> Vec<CasCapability> {
+        vec![CasCapability { class: CasClass::IdealMembership, witnessed: WitnessedDir::Unsat }]
+    }
+
+    #[test]
+    fn dispatch_admits_a_valid_witness() {
+        let m = CasManifest::from_adsmt_toml("[cas]\nenabled=[\"good\"]\n").unwrap();
+        let good = Mock {
+            nm: "good",
+            caps: cap_membership(),
+            reply: CasReply::Witnessed(Witness::Cofactors(vec![(0, x().add(&c(1)))])),
+        };
+        let backends: Vec<&dyn CasBackend> = vec![&good];
+        assert_eq!(
+            dispatch(&m, &backends, &membership_ob()),
+            Disposition::Verdict(Verdict::Unsat)
+        );
+    }
+
+    #[test]
+    fn dispatch_falls_through_a_wrong_witness_in_enabled_order() {
+        // "bad" is tried first (it's first in cas.enabled) and returns a WRONG
+        // cofactor (q=1 → x²−1 − (x−1) ≠ 0) that admit REJECTS; dispatch falls
+        // through to "good". Proves the try-order + admit-gating: a lying backend
+        // can neither win nor starve a correct later one.
+        let m = CasManifest::from_adsmt_toml("[cas]\nenabled=[\"bad\",\"good\"]\n").unwrap();
+        let bad = Mock {
+            nm: "bad",
+            caps: cap_membership(),
+            reply: CasReply::Witnessed(Witness::Cofactors(vec![(0, c(1))])),
+        };
+        let good = Mock {
+            nm: "good",
+            caps: cap_membership(),
+            reply: CasReply::Witnessed(Witness::Cofactors(vec![(0, x().add(&c(1)))])),
+        };
+        let backends: Vec<&dyn CasBackend> = vec![&bad, &good];
+        assert_eq!(
+            dispatch(&m, &backends, &membership_ob()),
+            Disposition::Verdict(Verdict::Unsat)
+        );
+    }
+
+    #[test]
+    fn dispatch_disabled_or_unpermitted_backend_yields_unknown() {
+        // A backend not in the manifest's class allow-list is never tried.
+        let m = CasManifest::from_adsmt_toml(
+            "[cas]\nenabled=[\"good\"]\n[cas.backends.good]\nclasses=[\"factorization\"]\n",
+        )
+        .unwrap();
+        let good = Mock {
+            nm: "good",
+            caps: cap_membership(),
+            reply: CasReply::Witnessed(Witness::Cofactors(vec![(0, x().add(&c(1)))])),
+        };
+        let backends: Vec<&dyn CasBackend> = vec![&good];
+        assert_eq!(dispatch(&m, &backends, &membership_ob()), Disposition::Unknown);
     }
 }

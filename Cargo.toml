@@ -4,8 +4,10 @@ members = [
     "adsmt-core",
     "adsmt-cert",
     # CAS backend integration — the untrusted-oracle re-check core (docs/design/
-    # CAS_BACKEND_INTEGRATION.md). P0 = the trusted admit() re-checkers.
+    # CAS_BACKEND_INTEGRATION.md). P0 = the trusted admit() re-checkers; P1 =
+    # the Singular subprocess backend (untrusted, gated by admit()).
     "adsmt-cas",
+    "cas-backends/cas-backend-singular",
     "adsmt-theory",
     # §3.4 GF(2) Gröbner-basis theory sibling per the
     # verus-fork engine-refactor request (§3.4 of
@@ -124,6 +126,7 @@ rust-version = "1.96"
 [workspace.dependencies]
 adsmt-core = { path = "adsmt-core" }
 adsmt-cert = { path = "adsmt-cert" }
+adsmt-cas = { path = "adsmt-cas" }
 adsmt-theory = { path = "adsmt-theory" }
 adsmt-theory-finite-field = { path = "adsmt-theory-finite-field" }
 adsmt-aot = { path = "adsmt-aot" }

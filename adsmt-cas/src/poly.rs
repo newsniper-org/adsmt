@@ -147,6 +147,39 @@ impl MPoly {
     pub fn total_degree(&self) -> u32 {
         self.terms.keys().map(|m| m.iter().map(|&(_, e)| e).sum::<u32>()).max().unwrap_or(0)
     }
+
+    /// Iterate the `(monomial, coefficient)` terms (canonical, no zeros) — for a
+    /// backend that serializes an obligation to a CAS's input language.
+    pub fn iter(&self) -> impl Iterator<Item = (&Mono, &BigRational)> {
+        self.terms.iter()
+    }
+
+    /// The highest variable index this polynomial mentions (`None` if constant /
+    /// zero) — a backend uses it to size the CAS ring's variable list.
+    pub fn max_var(&self) -> Option<usize> {
+        self.terms.keys().flat_map(|m| m.iter().map(|&(v, _)| v)).max()
+    }
+
+    /// Build from `(monomial, coefficient)` pairs — for a backend PARSING a CAS's
+    /// (untrusted) output polynomial back into the trusted representation. The
+    /// monomials need not be canonical (this sorts + merges duplicate variables
+    /// and drops cancellations), so a sloppy parser cannot smuggle a mis-shaped
+    /// term past the exact zero-test.
+    pub fn from_monomials(items: impl IntoIterator<Item = (Mono, BigRational)>) -> Self {
+        let mut terms = BTreeMap::new();
+        for (raw, coeff) in items {
+            // Canonicalize the monomial: merge exponents per variable, drop exp 0.
+            let mut map: BTreeMap<usize, u32> = BTreeMap::new();
+            for (v, e) in raw {
+                if e > 0 {
+                    *map.entry(v).or_insert(0) += e;
+                }
+            }
+            let mono: Mono = map.into_iter().collect();
+            Self::accumulate(&mut terms, mono, coeff);
+        }
+        MPoly { terms }
+    }
 }
 
 #[cfg(test)]
