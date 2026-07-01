@@ -22,6 +22,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "adsmt-cas"
+version = "1.0.0-rc.40"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
 name = "adsmt-cert"
 version = "1.0.0-rc.40"
 dependencies = [

@@ -1,0 +1,15 @@
+[package]
+name = "adsmt-cas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CAS backend integration — the trusted, clean-room re-check core for untrusted Computer Algebra System oracles (docs/design/CAS_BACKEND_INTEGRATION.md). P0: the admit() re-checkers (cofactor / factor / divisor / int-solution) over exact BigRational/BigInt."
+
+[dependencies]
+# Exact arbitrary-precision arithmetic — the char-0 (ℚ) re-check ring (§9-B1:
+# NEVER the GF(2) adsmt-theory-finite-field crate) + BigInt for divisor /
+# Diophantine (§9-B3/G8: no i128 wrap).
+num-bigint.workspace = true
+num-rational.workspace = true
+num-traits.workspace = true
+num-integer.workspace = true
