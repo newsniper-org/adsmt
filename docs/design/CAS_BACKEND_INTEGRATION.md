@@ -348,9 +348,25 @@ Rules that make it load-bearing:
   (§6.2 backstop) — an arith HOL term → its exact `MPoly`, or `None`, never a
   wrong polynomial. `classify_membership(hyps, goal)` lifts a polynomial-equation
   sequent into an `IdealMembership` obligation (sub-ideal-sound generator
-  dropping). The other three §6.1 classes (factorization / compositeness /
-  ∃-Diophantine / universal refutation) are follow-on classifier slices; the
-  `admit()`/backend halves already exist.
+  dropping).
+- **P1.6 (pre-1.0) — the ∃-Diophantine classifier, LANDED:**
+  `classify_diophantine(goal)` recognizes a goal `∃x̄. ⋀ⱼ(…)` and lifts it into a
+  `DiophantineExists` obligation over ℤ. It runs on POST-`#325`-lowered terms
+  (§6.2 path ii) yet stays trusted because the Nat/WNat refinement is **recovered
+  from the explicit relativization guard** the lowering leaves in the body
+  (`∃x:Nat.P` → `∃x:Int. (>= x 1) ∧ P`, adsmt-ir-lower `positivity`) — no type
+  info is lost. **Strict all-or-nothing (§9-B3):** each `∃`-body conjunct must be a
+  polynomial equation (→ a system poly) or a recognized Nat/WNat guard (→ a
+  domain); ANY other conjunct — an upper bound (bounded ⇒ native, §8), a
+  disequality, a free-variable parameter, a nested quantifier — makes the whole
+  classification `None`. This is the soundness crux: unlike membership, dropping
+  an `∃`-conjunct WEAKENS the system and would admit a non-solution. Variable
+  indices seed in `∃`-prefix order so `system` / `domains` / a witness tuple align.
+  `classify_sequent(hyps, goal)` is the unified entry (membership then ∃). The
+  remaining classes (factorization / compositeness / universal refutation) are
+  follow-on slices — see §6.1 for why compositeness needs a polarity mapping and
+  factorization lacks a sound term representation; the `admit()`/backend halves
+  already exist.
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No
@@ -397,6 +413,24 @@ flattening drops the ring structure the CAS needs.
     exponents.
   - *Universal refutation* `∀h:Ring/Poly. φ(h)` — a single `∀` over a
     **ring/polynomial-sorted** bound variable (the HOL reach).
+
+**Classifier status (the `term` module).** Ideal membership (P1.5) and
+existential Diophantine (P1.6) are LANDED. The other two are deliberately
+deferred (their `admit()`/backend halves exist, only the term-recognizer is out):
+- *Compositeness* needs a **polarity mapping**, not just a shape. `prime` is a
+  built-in `Int → Prop` const (adsmt-ir `theory.rs`), but `composite` is NOT — so
+  a compositeness obligation arises from `prime(k)` appearing at a polarity where
+  a proper divisor REFUTES it. `admit`'s `Compositeness` arm returns the
+  obligation-level `Sat` ("a divisor exists"); mapping that to the *goal* verdict
+  (does `prime(k)` hold in this sequent?) depends on the live-consult query
+  convention, which is not wired yet. Deferred to the integration slice.
+- *Factorization* lacks a **sound term representation**. `reducible(p)` is not a
+  built-in; it would surface as `∃q r. p = q·r ∧ ¬unit(q) ∧ ¬unit(r)`, but
+  `¬unit` is not cleanly polynomial-expressible (a unit is `±1` over ℤ, a nonzero
+  constant over ℚ[x]) — recognizing it soundly needs ring-aware unit detection the
+  classifier does not yet have. Deferred.
+- *Universal refutation* (challenge 3, Bunyakovsky-adjacent) is open/undecidable
+  → the **downgrade** path by design (§3-B); no trusted classifier is planned.
 
 **OUT of scope — `Unknown`, no CAS runs:**
 
@@ -446,6 +480,20 @@ flattening drops the ring structure the CAS needs.
   but the firewall is real ONLY because the re-check input is the `Sequent`, not
   the extraction (the original design handed `admit()` the extraction, which is
   the B2 break the review caught).
+- **How the LANDED code realizes the firewall (P1.5/P1.6).** The shipped `admit`
+  takes the `Obligation`, not the `Sequent` — yet it is B2-sound, by TWO
+  properties the classifier guarantees: **(1) faithful classification** — the
+  `term`-module classifiers are all-or-nothing over the soundness-critical
+  structure (`term_to_mpoly` never returns a wrong polynomial; `classify_diophantine`
+  bails on ANY unrecognized `∃`-conjunct), so the `Obligation` is an EXACT
+  reflection of the original goal, never a lossy one; and **(2) single-obligation
+  identity** — `dispatch()` hands the SAME `Obligation` to the backend AND to
+  `admit`, so the CAS query and the re-check can never diverge (the B2 hazard was
+  a lossy CAS query re-checked against a different, fuller original). Under (1)+(2),
+  re-checking the witness against the `Obligation` IS re-checking against the
+  `Sequent`. The classifier's all-or-nothing discipline is therefore a *trusted*
+  property, discharged by the adversarial classifier tests (dropped conjunct →
+  partial witness rejected; unrecognized guard/bound/free-var → `None`).
 
 ## 7. The CAS-admitted Certificate
 
