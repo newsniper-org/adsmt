@@ -26,13 +26,18 @@ pre-1.0 deliverable**, with the *interface* locked first.
    boundary serves both concerns. (A BSD library backend — SymEngine, SymPy,
    FriCAS — *may* link in a contrib crate under its own feature; the core rule
    is subprocess.)
-7. **Explicit selection via a TOML manifest.** No CAS backend runs unless the
-   user names it in a project-local `adsmt-cas.toml`. The manifest is the
-   select-and-call control (the user's "취사선택하여 호출" requirement, §4.3):
-   it pins which backends, their binaries/paths, the per-backend class
-   allow-list, timeouts, and versions. No manifest ⇒ no CAS (default-off,
-   matching the `cas` feature). This makes a CAS-assisted run **reproducible**
-   (a verus CI is deterministic only if the oracle set is pinned).
+7. **Explicit selection via the `adsmt.toml` manifest; its directory IS the
+   project root.** No CAS backend runs unless the user names it in the `[cas]`
+   section of an **`adsmt.toml`** (the general adsmt project manifest — `[cas]` is
+   one section, extended from the earlier `adsmt-cas.toml`). The directory
+   containing `adsmt.toml` is the **root of an adsmt-using project**; discovery
+   walks up from the input / CWD to the nearest `adsmt.toml`, exactly like Cargo
+   finds `Cargo.toml`. The `[cas]` table is the select-and-call control (the
+   user's "취사선택하여 호출" requirement, §4.3): it pins which backends, their
+   binaries/paths, the per-backend class allow-list, timeouts, and versions. No
+   `adsmt.toml` (or no `[cas]`) ⇒ no CAS (default-off, matching the `cas`
+   feature). This makes a CAS-assisted run **reproducible** (a verus CI is
+   deterministic only if the oracle set is pinned).
 
 ## 1. The soundness contract (the load-bearing invariant)
 
@@ -110,10 +115,11 @@ the obligation classifier and the witness type.
    carries `{ system: Vec<Poly>, domain: NatOrInt, vars }`. Witnessed dir =
    **Sat**; witness = `IntSolution(Vec<BigInt>)`; re-check = substitute + bignum
    evaluate the *original* polynomials (degree/`pow` faithfully). Nonexistence is
-   open ⇒ Unknown. (Note: a bounded-domain variant `∃ x̄∈[lo,hi]. P=0` *is*
-   decidable and could even be a native job — the class records the bound so the
-   classifier can route a bounded instance to the native engine and only an
-   *unbounded* one to the search/CAS.)
+   open ⇒ Unknown. **A bounded-domain variant `∃ x̄∈[lo,hi]. P=0` is DECIDABLE and
+   is routed to the NATIVE engine, NOT a CAS** (decision, §8): the class records
+   the bound, and the classifier hands a bounded ∃ to native/`oxiz-nl2`'s integer
+   CP propagator (`fdlcg`) for a *definite* sat/unsat; only an **unbounded** ∃
+   reaches the CAS.
 
 2. **Higher-order universals over ring elements need a HO refutation class.**
    Challenge 3 quantifies over `h ∈ ℤ[x]` itself — `∀ h. φ(h)`, a HO universal
@@ -272,14 +278,17 @@ its wasmi runtime is sandboxed/deterministic/no-FS — a heavyweight native CAS
 PM's *discipline* (manifest / content-addressing / capability tags / lockfile)
 as the **CAS backend registry**, not its execution model.
 
-### 4.3 The TOML manifest (explicit backend selection — decision 7)
+### 4.3 The `adsmt.toml` manifest (explicit backend selection — decision 7)
 
-A project-local **`adsmt-cas.toml`** is the user's select-and-call control. The
-dispatcher (§4.1) only ever considers a backend that the manifest names AND
-enables, and only for the classes the manifest permits. No file ⇒ no CAS.
+The `[cas]` section of the project's **`adsmt.toml`** is the user's
+select-and-call control. The **directory containing `adsmt.toml` is the adsmt
+project root** — discovery walks up from the input file / CWD to the nearest
+`adsmt.toml` (like Cargo's `Cargo.toml`). The dispatcher (§4.1) only ever
+considers a backend the `[cas]` section names AND enables, and only for the
+classes it permits. No `adsmt.toml` / no `[cas]` ⇒ no CAS.
 
 ```toml
-# adsmt-cas.toml  — explicit opt-in; absence ⇒ no CAS backend runs at all.
+# adsmt.toml  (project root marker) — the [cas] section; absence ⇒ no CAS runs.
 [cas]
 enabled = ["singular"]          # only these backends are eligible
 
@@ -464,15 +473,28 @@ Singular.
   recursion limit). Re-checking needs only `adsmt-cert` + `oxiz-math` (char-0)
   / `adsmt-theory-finite-field` (GF(2) only) — never the CAS.
 
-## 8. Open items for the next discussion turn
-- The `adsmt-cert::Witness::Cas` wire encoding (CBOR/JSON) + the concrete
-  recursion-depth bound value for the counterexample-tree (§9-G6 settles that it
-  IS bounded + fail-closed; the value is open).
-- Whether the bounded-domain Diophantine variant (§2.4-1) routes to the *native*
-  engine rather than a CAS (it is decidable).
-- The `adsmt-cas.toml` *file* discovery (project-local vs `$XDG_CONFIG`) and
-  whether it shares the `adsmt-emit-pm` lockfile format verbatim. (The *backend
-  try-order* is settled: the `cas.enabled` array order, §4.3.)
+## 8. Settled decisions (was: open items) — user, 2026-07-01
+
+- **Counterexample-tree bound = `MAX_WITNESS_DEPTH = 8` AND
+  `MAX_WITNESS_NODES = 4096`, checked at DESERIALIZATION, fail-closed.** A
+  witness tree exceeding either bound is rejected (invalid cert / `Unknown`),
+  never accepted. Both are generous — challenge-3 is depth 2 / ~3 nodes — and
+  the depth bound is a DoS guard against an attacker-controlled `Vec` chain
+  (same class as the ciborium recursion limit). The checker itself is an
+  **iterative worklist** (no native recursion), so checking never stack-overflows
+  regardless; the bound is purely the deserialization/accept gate.
+- **Bounded-domain Diophantine routes to the NATIVE engine, not a CAS.** When
+  every existential variable has a finite domain (`∃x̄∈[lo,hi]` or a finite
+  sort), the obligation is DECIDABLE by finite search — the native engine +
+  `oxiz-nl2`'s integer CP/finite-domain propagator (`fdlcg`, on the bus) decide
+  it with a **definite** verdict (sat via a found witness, unsat via exhaustion).
+  The classifier therefore does NOT extract a CAS obligation for a bounded ∃; it
+  leaves it to the native/OxiZ path. Only an **unbounded** ∃ Diophantine reaches
+  the CAS (sat witness-backed, unsat ⇒ Unknown — §2.2/§3-A).
+- **`adsmt.toml` file discovery = walk up from the input file / CWD to the
+  nearest `adsmt.toml`; that directory is the project root** (decision 7, §4.3).
+  The `[cas]` section reuses the `adsmt-emit-pm` manifest-parser types where they
+  fit. (Backend try-order was already settled: the `cas.enabled` array order.)
 
 ## 9. Adversarial-review hardening (2026-06-30) — GOVERNS ON CONFLICT
 
