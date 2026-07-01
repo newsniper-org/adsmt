@@ -24,6 +24,8 @@
 
 pub mod manifest;
 pub mod poly;
+#[cfg(feature = "term")]
+pub mod term;
 
 use manifest::CasManifest;
 use num_bigint::BigInt;

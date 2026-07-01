@@ -16,3 +16,11 @@ num-integer.workspace = true
 # The `adsmt.toml` `[cas]` manifest (decision 7 / §4.3).
 serde = { workspace = true, features = ["derive"] }
 toml.workspace = true
+# The typed-term classifier (§6): recognize an adsmt-core HOL arith term as a
+# polynomial. Optional so the pure-math re-check core stays dependency-light.
+adsmt-core = { workspace = true, optional = true }
+
+[features]
+default = []
+# The `Term → Obligation` classifier (`term` module).
+term = ["dep:adsmt-core"]

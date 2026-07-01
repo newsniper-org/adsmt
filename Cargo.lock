@@ -25,6 +25,7 @@ dependencies = [
 name = "adsmt-cas"
 version = "1.0.0-rc.40"
 dependencies = [
+ "adsmt-core",
  "num-bigint",
  "num-integer",
  "num-rational",

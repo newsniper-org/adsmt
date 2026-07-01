@@ -328,17 +328,29 @@ Rules that make it load-bearing:
 
 ## 5. Phasing
 
-- **P0 (pre-1.0, lands the interface):** the `adsmt-cas` crate — types, the
-  `CasBackend` trait, the classifier (typed-term → `CasClass`), the `admit()`
-  re-checker for the **Cofactor** + **FactorList** + **Divisor** witnesses (the
-  primitives already exist in `adsmt-theory-finite-field` + `oxiz-math`). No
-  backend yet — but the surface is locked and unit-tested against hand-built
-  witnesses (good + adversarial: a *wrong* cofactor must be REJECTED → Unknown).
-- **P1 (pre-1.0): Singular backend.** `cas-backend-singular` behind the `cas`
-  feature; subprocess via `ADSMT_SINGULAR_PATH`; classes = ideal membership +
-  factorization (`→unsat`/either, re-admitted by the P0 re-checkers). Non-
-  membership downgrades. z3/Singular-differential gate per
+- **P0 (pre-1.0, lands the interface) — LANDED:** the `adsmt-cas` crate — types
+  (`Obligation`/`Witness`/`Verdict`/`Disposition`/`Ring`/`Domain`), the
+  `CasBackend` trait, the exact-`BigRational`/`BigInt` `admit()` re-checker for
+  the **Cofactor** + **FactorList** + **Divisor** + **IntSolution** witnesses
+  (its own clean-room `poly::MPoly` over ℚ — §9-B1: NOT the GF(2)
+  `adsmt-theory-finite-field` crate), and the `dispatch` fallthrough. The surface
+  is locked and unit-tested against hand-built witnesses (good + adversarial: a
+  *wrong* cofactor / unit factor / improper divisor / out-of-domain solution is
+  REJECTED → Unknown — the §9-B1/B3/B5/B6 scenarios).
+- **P1 (pre-1.0): Singular backend — LANDED.** `cas-backend-singular`
+  (`cas-backends/`); subprocess; classes = ideal membership + factorization
+  (`→unsat`/either, re-admitted by the P0 re-checkers). Non-membership downgrades.
+  Real Singular 4.4.1 e2e tests (skip-gated). z3/Singular-differential gate per
   `[[feedback_z3_differential_for_unsat_trust]]`.
+- **P1.5 (pre-1.0) — the typed-term classifier, LANDED (membership first):** the
+  `term` module (feature `term`, optional `adsmt-core` dep so the re-check core
+  stays dependency-light). `term_to_mpoly` is the **faithful partial recognizer**
+  (§6.2 backstop) — an arith HOL term → its exact `MPoly`, or `None`, never a
+  wrong polynomial. `classify_membership(hyps, goal)` lifts a polynomial-equation
+  sequent into an `IdealMembership` obligation (sub-ideal-sound generator
+  dropping). The other three §6.1 classes (factorization / compositeness /
+  ∃-Diophantine / universal refutation) are follow-on classifier slices; the
+  `admit()`/backend halves already exist.
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No
