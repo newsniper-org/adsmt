@@ -275,13 +275,55 @@ pub fn classify_diophantine(goal: &Term) -> Option<Obligation> {
     Some(Obligation::DiophantineExists { system, domains })
 }
 
+/// Classify a goal `¬ prime(k)` for a GROUND integer literal `k ≥ 2` as a
+/// [`Compositeness`](Obligation::Compositeness) obligation. `prime` is a built-in
+/// `Int → Prop` const (adsmt-ir `theory.rs`), lowered to `App(Const("prime"), k)`;
+/// `composite` is NOT a const, so proving `k` NOT prime is exactly exhibiting a
+/// proper divisor — `admit`'s `Divisor` re-check (`1 < d < k ∧ k mod d = 0`). A
+/// divisor witness ⇒ `Sat` (k is composite) ⇒ the goal `¬prime(k)` is established.
+///
+/// ONLY the `¬prime` direction is a compositeness obligation: proving `prime(k)`
+/// VALID needs a Pratt/ECPP **primality certificate** (the `Primality` class,
+/// post-1.0 — a divisor cannot witness primality). A non-ground `prime(x)`, or
+/// `k < 2` (composite undefined / `¬prime(1)` holds by unit-ness not a divisor),
+/// is not recognized ⇒ `None`. The ground literal is what the lowering leaves
+/// after constant-folding a numeral argument.
+///
+/// **PRECONDITION — `prime` must be the reserved built-in.** The re-check proves
+/// the arithmetic fact "k is composite"; mapping that to `¬prime(k)` is valid
+/// ONLY if `prime` denotes number-theoretic primality. The lu-kb / full-arith
+/// prelude (`install_arith`) reserves `prime` as an `open` postulate the kernel
+/// forbids redeclaring, so in the Verus / lu-kb path (where this classifier runs)
+/// `prime` IS the built-in. The bare SMT-LIB face (`install_int_real`) does NOT
+/// reserve `prime`, so a caller operating on raw SMT-LIB where a user declared
+/// their own `prime` MUST NOT route it here (the integration layer, which holds
+/// the `Env`, discharges this — cf. `term_to_mpoly` trusting `+`/`*`, which are
+/// universally reserved and so need no such gate).
+pub fn classify_compositeness(goal: &Term) -> Option<Obligation> {
+    let inner = goal.dest_not()?; // ¬ (…)
+    let TermInner::App(head, arg) = inner.kind() else { return None };
+    let TermInner::Const(p) = head.kind() else { return None };
+    if p.name != "prime" {
+        return None;
+    }
+    let TermInner::Const(k) = arg.kind() else { return None };
+    let n = int_const(&k.name)?;
+    if n < BigInt::from(2) {
+        return None; // composite is defined for n ≥ 2; ¬prime(1)/¬prime(0) is not a divisor fact
+    }
+    Some(Obligation::Compositeness { n })
+}
+
 /// The unified typed-term classifier: a sequent `hyps ⊢ goal` → a CAS
 /// [`Obligation`], or `None` if it fits no recognized algebraic class. Tries
-/// ideal membership (which consumes the equational hypotheses) then the
-/// existential-Diophantine goal shape. The two target disjoint goal shapes (an
-/// equation vs a leading `∃`), so the order is immaterial.
+/// ideal membership (which consumes the equational hypotheses), the
+/// existential-Diophantine goal shape, then a `¬prime(k)` compositeness goal.
+/// The three target DISJOINT goal shapes (an equation vs a leading `∃` vs a
+/// negated `prime` atom), so the order is immaterial.
 pub fn classify_sequent(hyps: &[Term], goal: &Term) -> Option<Obligation> {
-    classify_membership(hyps, goal).or_else(|| classify_diophantine(goal))
+    classify_membership(hyps, goal)
+        .or_else(|| classify_diophantine(goal))
+        .or_else(|| classify_compositeness(goal))
 }
 
 /// **End-to-end CAS consult** — the one-call entry that ties the classifier to the
@@ -351,6 +393,14 @@ mod tests {
     /// the Nat/WNat refinement rides as a `(>= name 1|0)` guard in `body`).
     fn exists(name: &str, body: Term) -> Term {
         Term::mk_exists(adsmt_core::Var { name: name.to_string(), ty: int_ty() }, body).unwrap()
+    }
+    fn not(t: Term) -> Term {
+        Term::mk_not(t).unwrap()
+    }
+    /// `(prime k)` — the lowered EUF application of the built-in `Int → Bool` const.
+    fn prime_of(k: Term) -> Term {
+        let prime_ty = Type::fun(int_ty(), Type::bool_()).unwrap();
+        Term::app(Term::const_("prime", prime_ty), k).unwrap()
     }
 
     #[test]
@@ -603,5 +653,37 @@ mod tests {
         let backends: Vec<&dyn CasBackend> = vec![];
         let m = crate::manifest::CasManifest::default();
         assert_eq!(consult(&m, &backends, &[], &goal), Disposition::Unknown);
+    }
+
+    // ── compositeness (¬prime(k)) classifier ────────────────────────────────
+
+    #[test]
+    fn classifies_and_admits_not_prime_of_a_composite() {
+        use crate::{admit, Disposition, Verdict, Witness};
+        // goal ¬prime(91), 91 = 7·13. Divisor 7 ⇒ composite ⇒ Sat.
+        let ob = classify_compositeness(&not(prime_of(lit(91)))).expect("classified");
+        assert!(matches!(&ob, Obligation::Compositeness { n } if *n == BigInt::from(91)));
+        assert_eq!(
+            admit(&ob, &Witness::Divisor(BigInt::from(7))),
+            Disposition::Verdict(Verdict::Sat)
+        );
+        // A non-divisor is rejected (7 ∤ 90 here would be), and a prime target
+        // admits no proper divisor at all:
+        let prime97 = classify_compositeness(&not(prime_of(lit(97)))).expect("classified");
+        assert_eq!(admit(&prime97, &Witness::Divisor(BigInt::from(7))), Disposition::Unknown);
+    }
+
+    #[test]
+    fn compositeness_only_recognizes_the_not_prime_direction_on_a_ground_n_ge_2() {
+        // bare prime(91) (not negated) ⇒ not a compositeness obligation (proving
+        // primality needs a cert, not a divisor).
+        assert!(classify_compositeness(&prime_of(lit(91))).is_none());
+        // ¬prime(x) with x a variable ⇒ not ground ⇒ None.
+        assert!(classify_compositeness(&not(prime_of(v("x")))).is_none());
+        // ¬prime(1) ⇒ true, but by unit-ness, not a proper divisor ⇒ None (n < 2).
+        assert!(classify_compositeness(&not(prime_of(lit(1)))).is_none());
+        // routed through the unified entry.
+        let ob = classify_sequent(&[], &not(prime_of(lit(15)))).expect("routed");
+        assert!(matches!(ob, Obligation::Compositeness { n } if n == BigInt::from(15)));
     }
 }

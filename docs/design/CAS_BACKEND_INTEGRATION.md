@@ -363,12 +363,14 @@ Rules that make it load-bearing:
   an `∃`-conjunct WEAKENS the system and would admit a non-solution. Variable
   indices seed in `∃`-prefix order so `system` / `domains` / a witness tuple align.
   `classify_sequent(hyps, goal)` is the unified classifier entry (membership then
-  ∃); `consult(manifest, backends, hyps, goal)` is the end-to-end one-call surface
-  (classify → `dispatch` → re-checked `Disposition`). The
-  remaining classes (factorization / compositeness / universal refutation) are
-  follow-on slices — see §6.1 for why compositeness needs a polarity mapping and
-  factorization lacks a sound term representation; the `admit()`/backend halves
-  already exist.
+  ∃, then ¬prime); `consult(manifest, backends, hyps, goal)` is the end-to-end
+  one-call surface (classify → `dispatch` → re-checked `Disposition`).
+- **P1.7 — `consult()` end-to-end entry, LANDED.**
+- **P1.8 — compositeness classifier, LANDED.** `classify_compositeness(goal)`
+  recognizes `¬prime(k)` (ground `k ≥ 2`) → `Compositeness{k}` (§6.1). The
+  remaining classes (factorization / universal refutation) stay deferred — see
+  §6.1 for why factorization lacks a sound term representation and universal
+  refutation is downgrade-only; the `admit()`/backend halves already exist.
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No
@@ -416,16 +418,25 @@ flattening drops the ring structure the CAS needs.
   - *Universal refutation* `∀h:Ring/Poly. φ(h)` — a single `∀` over a
     **ring/polynomial-sorted** bound variable (the HOL reach).
 
-**Classifier status (the `term` module).** Ideal membership (P1.5) and
-existential Diophantine (P1.6) are LANDED. The other two are deliberately
-deferred (their `admit()`/backend halves exist, only the term-recognizer is out):
-- *Compositeness* needs a **polarity mapping**, not just a shape. `prime` is a
-  built-in `Int → Prop` const (adsmt-ir `theory.rs`), but `composite` is NOT — so
-  a compositeness obligation arises from `prime(k)` appearing at a polarity where
-  a proper divisor REFUTES it. `admit`'s `Compositeness` arm returns the
-  obligation-level `Sat` ("a divisor exists"); mapping that to the *goal* verdict
-  (does `prime(k)` hold in this sequent?) depends on the live-consult query
-  convention, which is not wired yet. Deferred to the integration slice.
+**Classifier status (the `term` module).** Ideal membership (P1.5), existential
+Diophantine (P1.6), and compositeness (P1.8) are LANDED. The other two are
+deliberately deferred (their `admit()`/backend halves exist, only the
+term-recognizer is out):
+- *Compositeness* (LANDED, P1.8): `classify_compositeness` recognizes a goal
+  `¬prime(k)` for a ground `k ≥ 2` (`prime` is a built-in `Int → Prop` const
+  lowered to `App(Const("prime"), k)`; `composite` is not a const) → a
+  `Compositeness{k}` obligation whose `Divisor` witness (`1 < d < k`) `admit`s to
+  `Sat` = "k composite" = the `¬prime(k)` goal established. ONLY the `¬prime`
+  direction — proving `prime(k)` VALID needs a Pratt/ECPP **primality
+  certificate** (the `Primality` class, post-1.0; a divisor cannot witness
+  primality). Non-ground / `k < 2` ⇒ `None`. Like ∃-Diophantine, the
+  obligation-level verdict's mapping to a *goal* verdict for other query
+  polarities is the live-consult layer's concern. **Precondition:** the re-check
+  proves the *arithmetic* fact "k composite"; mapping it to `¬prime(k)` is valid
+  only where `prime` is the RESERVED built-in — the lu-kb/`install_arith` prelude
+  (kernel-forbidden to redeclare), i.e. the Verus/lu-kb path. The bare SMT-LIB
+  face does NOT reserve `prime`, so the integration (which holds the `Env`) must
+  not route a user-declared `prime` here (unlike `+`/`*`, universally reserved).
 - *Factorization* lacks a **sound term representation**. `reducible(p)` is not a
   built-in; it would surface as `∃q r. p = q·r ∧ ¬unit(q) ∧ ¬unit(r)`, but
   `¬unit` is not cleanly polynomial-expressible (a unit is `±1` over ℤ, a nonzero
