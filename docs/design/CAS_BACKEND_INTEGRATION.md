@@ -354,10 +354,53 @@ flattening drops the ring structure the CAS needs.
   over a recognized ring sort, recover the quantifier prefix (`∃`/`∀`/none) and
   each bound variable's sort (scalar `Int`/`Real` vs a ring/polynomial sort), and
   emit a `CasObligation { ring, vars, polys, relation, quantifier, domain }`.
+
+### 6.1 The precise scope (IN / OUT)
+
+**IN scope — extracted, a CAS may be tried** (the verdict is STILL gated on
+`admit()` re-checking against the original `Sequent`, §6.2):
+
+- **Ring purity.** The conclusion — and, for ideal membership, the *equational*
+  hypotheses — normalize to **pure polynomials over ONE recognized commutative
+  ring** (ℤ / ℚ / ℝ / a declared field / ℤ[x]), in indeterminates that are exactly
+  the free / Skolem / ring-typed variables, built **only** from `{+, −, *,
+  literal-exponent power, ring constants}`, related by `{=, ≠, <, ≤, ∣}`.
+- **Per-class shape:**
+  - *Ideal membership* `g₁=0,…,gₘ=0 ⊢ f=0` — `hyps` supply the `gᵢ` (**only the
+    polynomial-equation hyps**; a non-polynomial hyp is IGNORED — sound because
+    `f∈⟨subset⟩ ⟹ f∈⟨all⟩`), `concl` is `f=0`.
+  - *Factorization / compositeness / primality* — a single polynomial `p`, or a
+    **ground** integer `n`.
+  - *Existential Diophantine* `∃x̄∈D. ⋀ⱼ Pⱼ(x̄)=0` — one homogeneous `∃` block over
+    Int/Nat vars, `D` per-var (Nat `≥1` / WNat `≥0` / Int none), **literal**
+    exponents.
+  - *Universal refutation* `∀h:Ring/Poly. φ(h)` — a single `∀` over a
+    **ring/polynomial-sorted** bound variable (the HOL reach).
+
+**OUT of scope — `Unknown`, no CAS runs:**
+
+- Any **uninterpreted-function / non-ring subterm**, mixed sorts (BV / array /
+  string), transcendental ops, or a **non-literal exponent** `xⁿ` (`n` a variable
+  ⇒ exponential, not polynomial, undecidable).
+- **Genuine quantifier alternation** (`∀∃` / `∃∀`): the extractor MUST NOT flatten
+  it (that is break B2) — it maps only to the single-block classes above, else
+  `Unknown`. A quantifier over a non-ring sort is out.
+- The **post-#325 opaque-EUF residual / raw-SMT-LIB** path: heuristic only ⇒
+  **advisory / Unknown-only** (§9-G5). Only the **pre-lowering typed** (lukb /
+  adsmt-ir) level, where the ring sort survives, yields a *trusted* verdict.
+
+### 6.2 Why a liberal boundary is still sound
+
 - **Bounded by recognizability.** Extraction fires ONLY when the term normalizes
-  to a polynomial (in)equation / system over a ring the classifier knows
-  (`Int`, `Real`, a declared field, `ℤ[x]`). A transcendental, mixed-theory, or
-  unrecognized shape ⇒ NOT extracted ⇒ stays `Unknown`. No guessing.
+  to a polynomial (in)equation / system over a ring the classifier knows. A
+  transcendental, mixed-theory, or unrecognized shape ⇒ NOT extracted ⇒ stays
+  `Unknown`. No guessing.
+- Scope is a **routing + completeness** decision, NOT a trust one. Over-reach
+  (extract a shape it shouldn't, or normalize wrong) can only mis-route → the
+  witness fails `admit()`'s re-check against the original `Sequent` → `Unknown`.
+  The ONE soundness constraint scope imposes: a **trusted** verdict needs the
+  pre-lowering typed term, because `admit()` must recover the true sorts/domain
+  to re-check faithfully (§9-B2/G5).
 - **The #325 hazard.** The CIC→HOL lowering ([[cic_hol_lowering]]) drops type
   relations to opaque EUF, so ring/field structure may already be *gone* by the
   time a term reaches the native engine. Two options, decided here:
