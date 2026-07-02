@@ -486,13 +486,17 @@ Rules that make it load-bearing:
     membership and discharges to `Unsat` via real Singular `lift` + `admit`
     (`cas_glue_tests`, skip-gated on Singular) — confirming the SMT-LIB-face ↔
     classifier representation match.
-  * **Known reachability limit:** the trigger is a *residual `Unknown`*; a native
-    **confident (possibly-false) `sat`** on a nonlinear obligation bypasses ALL
-    delegation (the pre-existing #347/#348 issue), so CAS fires only where native
-    genuinely abstains. Broadening the trigger to *refute* a native `sat` with a
-    re-checked CAS proof (sound — the cofactor identity IS a validity proof, and
-    would catch native's false-sat) is a natural follow-up, deferred pending
-    sign-off since it overrides a confident verdict.
+  * **Reachability + native-`sat` refutation (F2, LANDED).** The primary trigger is
+    a *residual `Unknown`*; but a native **confident (possibly-false) `sat`** on a
+    nonlinear obligation bypasses the `Unknown` path (the pre-existing #347/#348
+    defeat OxiZ the same way). So a SECOND path runs `cas_delegate` when the verdict
+    would be `Sat`: a re-checked CAS `Verdict` proves the goal `G` valid ⇒ the query
+    `H ∧ ¬G` is **`Unsat`**, *refuting* the native `sat` (and thereby CATCHING a
+    native false-sat). Sound — the cofactor identity IS a validity proof, faithful
+    all-or-nothing extraction + exact `admit` re-check mean a wrong/absent witness
+    leaves the `sat` intact (regression `non_membership_never_over_refutes_a_genuine_sat`:
+    a genuine `x=1 ⊬ x=2` stays `Unknown`, no override). Verified: `member.smt2`
+    (`xy=1 ∧ yz=1 ⊢ x=z`, which native false-`sat`s) now prints `unsat`.
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No

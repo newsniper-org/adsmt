@@ -1298,49 +1298,26 @@ fn dispatch_one(
                     oxiz_fallback(history)
                 };
                 let v = delegated.unwrap_or(status);
-                // Keep the driver's `last_result` consistent with the
-                // delegated verdict, so a follow-up
-                // `(get-info :reason-unknown)` / `(get-model)` (which
-                // a front-end interleaves) doesn't contradict the
-                // printed line — otherwise Verus's error-discovery
-                // protocol reads a stale `(incomplete …)` after an
-                // `unsat` and panics (`discovered_error`).
+                // Keep the driver's `last_result` consistent with the delegated
+                // verdict, so an interleaved `(get-model)` / `(get-info
+                // :reason-unknown)` doesn't contradict the printed line (else Verus's
+                // error-discovery reads a stale `(incomplete …)` after `unsat` and
+                // panics). rc.33 (Gap A): synthesise a cert for the delegated `unsat`
+                // (the native check produced none).
                 if matches!(v, LastStatus::Unsat) {
-                    // rc.33 (Gap A) — synthesise a certificate for the
-                    // delegated `unsat` (the native check was
-                    // inconclusive, so it produced none). The dispatch
-                    // above already ran `record_result` on the native
-                    // `Unknown` (no cert), so emit the delegated cert
-                    // here directly — it shares this check's `seq`.
-                    let cert = driver.solver.build_delegated_unsat_cert("oxiz");
-                    if let Some(c) = &cert {
-                        driver.write_emit_cert(c);
-                    }
-                    driver.last_cert = cert.clone();
-                    driver.last_result = Some(SatResult::Unsat {
-                        certificate: cert,
-                        core: adsmt_engine::result::UnsatCore::new(),
-                    });
+                    driver.record_delegated_unsat("oxiz");
                 }
                 // CAS delegation on a residual `Unknown` (OxiZ also couldn't decide):
-                // classify the typed goal/hyps into an algebraic obligation and route
-                // it to the manifest-enabled CAS backends. `cas_delegate` only ever
-                // returns a verdict a re-checked witness established (else `None`), so
-                // a CAS bug / mis-config can only leave the `Unknown` intact. Shadows
-                // `v` and synthesises the delegated-unsat cert for a discharged goal.
+                // classify the typed goal/hyps into an algebraic obligation, route it
+                // to the manifest-enabled CAS backends, and (on a re-checked verdict)
+                // discharge to `unsat`. `cas_delegate` returns a verdict only when a
+                // witness re-checked (else `None`), so a CAS bug/mis-config leaves the
+                // `Unknown` intact.
                 #[cfg(feature = "cas")]
                 let v = if matches!(v, LastStatus::Unknown) {
                     match driver.cas_delegate() {
                         Some(cas_v @ LastStatus::Unsat) => {
-                            let cert = driver.solver.build_delegated_unsat_cert("cas");
-                            if let Some(c) = &cert {
-                                driver.write_emit_cert(c);
-                            }
-                            driver.last_cert = cert.clone();
-                            driver.last_result = Some(SatResult::Unsat {
-                                certificate: cert,
-                                core: adsmt_engine::result::UnsatCore::new(),
-                            });
+                            driver.record_delegated_unsat("cas");
                             cas_v
                         }
                         Some(cas_v) => cas_v,
@@ -1350,6 +1327,26 @@ fn dispatch_one(
                     v
                 };
                 v
+            } else {
+                status
+            };
+            // F2 — CAS refutation of a (possibly-false) `sat`. A re-checked CAS verdict
+            // proves the goal `G` VALID (the cofactor identity IS a validity proof), so
+            // the query `H ∧ ¬G` is UNSAT — refuting a native/OxiZ confident `sat`,
+            // which for a nonlinear obligation can be a FALSE-sat that bypasses the
+            // `Unknown`-triggered delegation above (#347/#348 defeat OxiZ the same way).
+            // Sound: faithful all-or-nothing extraction + exact `admit` re-check, so a
+            // wrong/absent witness leaves the `sat` intact; runs only under
+            // `cas_delegate`'s gates (manifest present, ledger in sync, one goal).
+            #[cfg(feature = "cas")]
+            let status = if matches!(status, LastStatus::Sat) {
+                match driver.cas_delegate() {
+                    Some(LastStatus::Unsat) => {
+                        driver.record_delegated_unsat("cas");
+                        LastStatus::Unsat
+                    }
+                    _ => status,
+                }
             } else {
                 status
             };
@@ -2865,6 +2862,23 @@ impl Driver {
         Ok(())
     }
 
+    /// Record a delegated `unsat` verdict (from OxiZ or CAS): synthesise the
+    /// delegated-unsat certificate, emit it under `--emit-cert*`, and sync
+    /// `last_cert`/`last_result` so an interleaved `(get-proof)` / `(get-model)`
+    /// stays consistent with the printed line. `source` is the provenance label
+    /// (`"oxiz"` / `"cas"`).
+    fn record_delegated_unsat(&mut self, source: &str) {
+        let cert = self.solver.build_delegated_unsat_cert(source);
+        if let Some(c) = &cert {
+            self.write_emit_cert(c);
+        }
+        self.last_cert = cert.clone();
+        self.last_result = Some(SatResult::Unsat {
+            certificate: cert,
+            core: adsmt_engine::result::UnsatCore::new(),
+        });
+    }
+
     /// **CAS delegation** — on a residual `Unknown` (native + OxiZ both undecided),
     /// classify the current sequent into an algebraic obligation and route it to the
     /// manifest-enabled CAS backends. Returns `Some(LastStatus::Unsat)` iff a backend
@@ -3921,6 +3935,39 @@ mod cas_glue_tests {
         assert_eq!(
             adsmt_cas::dispatch(&manifest, &backends, &ob),
             adsmt_cas::Disposition::Verdict(adsmt_cas::Verdict::Unsat),
+        );
+    }
+
+    #[test]
+    fn non_membership_never_over_refutes_a_genuine_sat() {
+        // `x=1 ⊬ x=2` (x−2 ∉ ⟨x−1⟩): Singular reports non-membership ⇒ dispatch
+        // returns `Unknown`, so the F2 CAS-refutation path returns `None` and can
+        // NEVER override a genuine `sat`. Skip-gated on Singular.
+        let path = std::env::var("ADSMT_SINGULAR_PATH")
+            .ok()
+            .filter(|p| std::path::Path::new(p).exists())
+            .or_else(|| {
+                let d = "/usr/bin/Singular";
+                std::path::Path::new(d).exists().then(|| d.to_string())
+            });
+        let Some(path) = path else {
+            eprintln!("skipping: Singular not found");
+            return;
+        };
+        let sym = xyz_symbols();
+        let h = convert("(= x 1)", &sym);
+        let goal = convert("(not (= x 2))", &sym).dest_not().unwrap();
+        let ob = adsmt_cas::term::classify_membership(&[h], &goal)
+            .expect("still classifies as a membership obligation");
+        let manifest =
+            adsmt_cas::manifest::CasManifest::from_adsmt_toml("[cas]\nenabled = [\"singular\"]\n")
+                .unwrap();
+        let singular = cas_backend_singular::SingularBackend::new(path);
+        let backends: Vec<&dyn adsmt_cas::CasBackend> = vec![&singular];
+        assert_eq!(
+            adsmt_cas::dispatch(&manifest, &backends, &ob),
+            adsmt_cas::Disposition::Unknown,
+            "a NON-member must NOT re-check to a verdict (no false refutation of sat)",
         );
     }
 }
