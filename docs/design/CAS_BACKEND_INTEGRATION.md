@@ -367,10 +367,17 @@ Rules that make it load-bearing:
   one-call surface (classify → `dispatch` → re-checked `Disposition`).
 - **P1.7 — `consult()` end-to-end entry, LANDED.**
 - **P1.8 — compositeness classifier, LANDED.** `classify_compositeness(goal)`
-  recognizes `¬prime(k)` (ground `k ≥ 2`) → `Compositeness{k}` (§6.1). The
-  remaining classes (factorization / universal refutation) stay deferred — see
-  §6.1 for why factorization lacks a sound term representation and universal
-  refutation is downgrade-only; the `admit()`/backend halves already exist.
+  recognizes `¬prime(k)` (ground `k ≥ 2`) → `Compositeness{k}` (§6.1).
+- **P1.9 — primality classifier + Pratt-certificate re-checker, LANDED.**
+  `classify_primality(goal)` recognizes a bare `prime(k)` (ground `k ≥ 2`) →
+  `Primality{k}`; new `Witness::PrattPrime(PrattCert)` + a `pratt_verifies`
+  re-check (recursive Lucas, iterative + node-budget-bounded, fail-closed;
+  Carmichael numbers rejected). The `prime(k)`-VALID direction — moved up from
+  post-1.0 once it was clear a primality certificate is exactly the
+  witness-delegation pattern (poly-size, poly-time re-checkable). The remaining
+  classes (factorization / universal refutation) stay deferred — see §6.1 for why
+  factorization lacks a sound term representation and universal refutation is
+  downgrade-only; the `admit()`/backend halves already exist.
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No
@@ -426,10 +433,10 @@ term-recognizer is out):
   `¬prime(k)` for a ground `k ≥ 2` (`prime` is a built-in `Int → Prop` const
   lowered to `App(Const("prime"), k)`; `composite` is not a const) → a
   `Compositeness{k}` obligation whose `Divisor` witness (`1 < d < k`) `admit`s to
-  `Sat` = "k composite" = the `¬prime(k)` goal established. ONLY the `¬prime`
-  direction — proving `prime(k)` VALID needs a Pratt/ECPP **primality
-  certificate** (the `Primality` class, post-1.0; a divisor cannot witness
-  primality). Non-ground / `k < 2` ⇒ `None`. Like ∃-Diophantine, the
+  `Sat` = "k composite" = the `¬prime(k)` goal established. The dual `prime(k)`
+  VALID direction is the `Primality` class (P1.9 — a divisor cannot witness
+  primality; it needs a **Pratt certificate**). Non-ground / `k < 2` ⇒ `None`.
+  Like ∃-Diophantine, the
   obligation-level verdict's mapping to a *goal* verdict for other query
   polarities is the live-consult layer's concern. **Precondition:** the re-check
   proves the *arithmetic* fact "k composite"; mapping it to `¬prime(k)` is valid
@@ -437,6 +444,18 @@ term-recognizer is out):
   (kernel-forbidden to redeclare), i.e. the Verus/lu-kb path. The bare SMT-LIB
   face does NOT reserve `prime`, so the integration (which holds the `Env`) must
   not route a user-declared `prime` here (unlike `+`/`*`, universally reserved).
+- *Primality* (LANDED, P1.9): `classify_primality` recognizes a bare `prime(k)`
+  (ground `k ≥ 2`) → `Primality{k}`, re-checked by a **Pratt certificate**
+  ([`Witness::PrattPrime`], recursive Lucas): `admit` verifies `∏ qᵢ^eᵢ = k−1`
+  exactly (the soundness hinge — forces the `qᵢ` to be ALL prime factors of
+  `k−1`), each `qᵢ` prime (recursively), `base^(k−1) ≡ 1 (mod k)`, and
+  `base^((k−1)/qᵢ) ≢ 1 (mod k)` for every `qᵢ`. Poly-size + poly-time checkable
+  (primality ∈ NP) so it is a genuine witness-delegation cert. The re-check is
+  ITERATIVE (no native recursion) and node-budget-bounded (`MAX_PRATT_NODES`),
+  fail-closed — a composite (incl. Carmichael numbers) or an over-large cert ⇒
+  `Unknown`, never a spurious `Sat`. Same `prime`-is-built-in precondition as
+  compositeness. (ECPP re-check for very large primes is a later slice; Pratt
+  covers the workload.)
 - *Factorization* lacks a **sound term representation**. `reducible(p)` is not a
   built-in; it would surface as `∃q r. p = q·r ∧ ¬unit(q) ∧ ¬unit(r)`, but
   `¬unit` is not cleanly polynomial-expressible (a unit is `±1` over ℤ, a nonzero

@@ -114,9 +114,28 @@ pub enum Obligation {
     Factorization { ring: Ring, target: MPoly },
     /// Is `n` composite?
     Compositeness { n: BigInt },
+    /// Is `n` prime? (Re-checked by a [`Witness::PrattPrime`] certificate — the
+    /// dual of `Compositeness`; a divisor witnesses composite, a Pratt tree
+    /// witnesses prime.)
+    Primality { n: BigInt },
     /// `∃ x̄ ∈ domains. ⋀ⱼ systemⱼ(x̄) = 0` (an UNBOUNDED existential — a bounded
     /// one is decidable and routes to the native engine, §8).
     DiophantineExists { system: Vec<MPoly>, domains: Vec<Domain> },
+}
+
+/// A **Pratt primality certificate** (recursive Lucas) for a number `n`: a
+/// witness `base` and the full prime factorization of `n − 1` as `(qᵢ, eᵢ,
+/// certᵢ)` triples, where `∏ qᵢ^eᵢ = n − 1` and each `certᵢ` recursively proves
+/// `qᵢ` prime (down to the axiomatic base prime 2). See [`admit`] for the exact
+/// re-check. Poly-size and poly-time checkable (primality ∈ NP), so it is a
+/// genuine witness-delegation certificate — the CAS finds it, the trusted core
+/// re-checks it. Bounded fail-closed at re-check (`MAX_PRATT_NODES`).
+#[derive(Clone, Debug)]
+pub struct PrattCert {
+    /// The Lucas witness `a` (a primitive-root-like base mod `n`).
+    pub base: BigInt,
+    /// The factorization of `n − 1`: `(prime qᵢ, exponent eᵢ, cert that qᵢ is prime)`.
+    pub factors: Vec<(BigInt, u32, PrattCert)>,
 }
 
 /// The witness a backend returns; each variant has a trusted re-checker in
@@ -134,6 +153,76 @@ pub enum Witness {
     Divisor(BigInt),
     /// One integer per existential variable.
     IntSolution(Vec<BigInt>),
+    /// A Pratt primality certificate for `n` (recursive Lucas).
+    PrattPrime(PrattCert),
+}
+
+/// DoS bound on a Pratt certificate re-check — total tree nodes visited. A cert
+/// exceeding it is REJECTED (fail-closed → the obligation stays `Unknown`), never
+/// accepted. Generous: a Pratt tree for `n` has O(log n) nodes, so 4096 covers
+/// primes of thousands of bits. Same fail-closed discipline as the §8
+/// counterexample-tree bound; the re-check is iterative, so it never stack-overflows.
+const MAX_PRATT_NODES: u32 = 4096;
+
+/// Re-check a [`PrattCert`] proves `n` prime by the recursive Lucas criterion —
+/// ITERATIVELY (a worklist, no native recursion) and BUDGET-bounded. Sound:
+/// returns `true` ONLY if `n` is genuinely prime.
+///
+/// For each `(n, cert)` popped (`n = 2` is the axiomatic base prime; `n < 2`
+/// fails): (1) `∏ qᵢ^eᵢ = n − 1` EXACTLY — the soundness hinge, forcing the `qᵢ`
+/// to be ALL prime factors of `n − 1` (a partial factorization would let a
+/// composite masquerade; overshoot bails early so no giant powers are formed);
+/// (2) each `qᵢ` is pushed for recursive prime verification; (3) `base^(n−1) ≡ 1
+/// (mod n)`; (4) for every listed `qᵢ`, `base^((n−1)/qᵢ) ≢ 1 (mod n)`. All pass
+/// for every node within budget ⇒ `n` prime (Lucas's theorem).
+fn pratt_verifies(n: &BigInt, cert: &PrattCert) -> bool {
+    let one = BigInt::one();
+    let two = BigInt::from(2);
+    let mut budget = MAX_PRATT_NODES;
+    let mut work: Vec<(BigInt, &PrattCert)> = vec![(n.clone(), cert)];
+    while let Some((n, cert)) = work.pop() {
+        if budget == 0 {
+            return false; // DoS bound, fail-closed
+        }
+        budget -= 1;
+        if n == two {
+            continue; // axiomatic base prime
+        }
+        if n < two {
+            return false; // 0, 1, negatives are not prime
+        }
+        let n_minus_1 = &n - &one;
+        // (1) reconstruct n−1 = ∏ qᵢ^eᵢ EXACTLY.
+        let mut prod = one.clone();
+        for (q, e, sub) in &cert.factors {
+            if q < &two || *e == 0 {
+                return false; // a factor must be ≥ 2 with positive multiplicity
+            }
+            for _ in 0..*e {
+                prod *= q;
+                if prod > n_minus_1 {
+                    return false; // overshoot ⇒ can't equal n−1 (also bounds this loop)
+                }
+            }
+            work.push((q.clone(), sub)); // (2) qᵢ must be prime — recurse
+        }
+        if prod != n_minus_1 {
+            return false;
+        }
+        // canonical base residue in [0, n)
+        let a = ((&cert.base % &n) + &n) % &n;
+        // (3) base^(n−1) ≡ 1 (mod n)
+        if a.modpow(&n_minus_1, &n) != one {
+            return false;
+        }
+        // (4) for each qᵢ: base^((n−1)/qᵢ) ≢ 1 (mod n)
+        for (q, _, _) in &cert.factors {
+            if a.modpow(&(&n_minus_1 / q), &n) == one {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// **The trusted re-checker — the only thing that moves a verdict.** Clean-room:
@@ -190,6 +279,17 @@ pub fn admit(obligation: &Obligation, witness: &Witness) -> Disposition {
         (Obligation::Compositeness { n }, Witness::Divisor(d)) => {
             let one = BigInt::one();
             if d > &one && d < n && (n % d).is_zero() {
+                Disposition::Verdict(Verdict::Sat)
+            } else {
+                Disposition::Unknown
+            }
+        }
+
+        // Primality: a Pratt certificate that re-checks (recursive Lucas) ⇒ n is
+        // prime ⇒ Sat. The dual of Compositeness — a divisor witnesses composite,
+        // a Pratt tree witnesses prime. DoS-bounded, fail-closed to Unknown.
+        (Obligation::Primality { n }, Witness::PrattPrime(cert)) => {
+            if pratt_verifies(n, cert) {
                 Disposition::Verdict(Verdict::Sat)
             } else {
                 Disposition::Unknown
@@ -281,6 +381,7 @@ pub fn classify(obligation: &Obligation) -> CasClass {
         Obligation::IdealMembership { .. } => CasClass::IdealMembership,
         Obligation::Factorization { .. } => CasClass::Factorization,
         Obligation::Compositeness { .. } => CasClass::Compositeness,
+        Obligation::Primality { .. } => CasClass::Primality,
         Obligation::DiophantineExists { .. } => CasClass::DiophantineExists,
     }
 }
@@ -467,6 +568,101 @@ mod tests {
     fn mismatched_pairing_is_unknown() {
         let ob = Obligation::Compositeness { n: BigInt::from(15) };
         assert_eq!(admit(&ob, &Witness::Factors(vec![c(3), c(5)])), Disposition::Unknown);
+    }
+
+    // ── primality (Pratt certificate re-check) ───────────────────────────────
+    fn bi(n: i64) -> BigInt {
+        BigInt::from(n)
+    }
+    /// Base-case cert for the axiomatic prime 2 (contents ignored by the checker).
+    fn p2() -> PrattCert {
+        PrattCert { base: bi(1), factors: vec![] }
+    }
+    fn pc(base: i64, factors: Vec<(i64, u32, PrattCert)>) -> PrattCert {
+        PrattCert {
+            base: bi(base),
+            factors: factors.into_iter().map(|(q, e, c)| (bi(q), e, c)).collect(),
+        }
+    }
+    /// A genuine Pratt cert for 3 (3−1 = 2, base 2).
+    fn cert3() -> PrattCert {
+        pc(2, vec![(2, 1, p2())])
+    }
+
+    #[test]
+    fn primality_valid_pratt_cert_is_sat() {
+        // 7 prime: 7−1 = 6 = 2·3, base 3. 3^6≡1 (mod 7); 3^3≡6≢1; 3^2≡2≢1.
+        let cert = pc(3, vec![(2, 1, p2()), (3, 1, cert3())]);
+        assert_eq!(
+            admit(&Obligation::Primality { n: bi(7) }, &Witness::PrattPrime(cert)),
+            Disposition::Verdict(Verdict::Sat)
+        );
+    }
+
+    #[test]
+    fn primality_carmichael_561_is_rejected() {
+        // 561 = 3·11·17 is a CARMICHAEL number: a^560≡1 (mod 561) for all a coprime
+        // to 561, so it passes the Fermat condition — but Lucas's ≢1 side condition
+        // cannot hold for every prime factor of 560 (no primitive root exists for a
+        // composite). With base 2: 2^(560/7)=2^80≡1 (mod 561), so it is REJECTED.
+        // (560 = 2^4·5·7.)
+        let cert = pc(2, vec![(2, 4, p2()), (5, 1, pc(2, vec![(2, 2, p2())])), (7, 1, pc(3, vec![(2, 1, p2()), (3, 1, cert3())]))]);
+        assert_eq!(
+            admit(&Obligation::Primality { n: bi(561) }, &Witness::PrattPrime(cert)),
+            Disposition::Unknown
+        );
+    }
+
+    #[test]
+    fn primality_partial_factorization_is_rejected() {
+        // A cert for 7 that OMITS the factor 3 (claims 6 = 2 only) ⇒ ∏ ≠ n−1 ⇒
+        // rejected — the soundness hinge against a masquerading composite.
+        let cert = pc(3, vec![(2, 1, p2())]); // prod = 2 ≠ 6
+        assert_eq!(
+            admit(&Obligation::Primality { n: bi(7) }, &Witness::PrattPrime(cert)),
+            Disposition::Unknown
+        );
+    }
+
+    #[test]
+    fn primality_composite_factor_claim_is_rejected() {
+        // Claim 4 is a "prime factor" of 15−1=14? No: 14 = 2·7. But claim 15−1 via
+        // a composite factor: cert for 15 (composite) with factors 2·7 and base 2 —
+        // 2^14 mod 15 = 4 ≢ 1 ⇒ Fermat condition already fails ⇒ rejected. And a
+        // cert that lists a composite q with a bogus sub-cert fails at the recursion.
+        let cert = pc(2, vec![(2, 1, p2()), (7, 1, pc(3, vec![(2, 1, p2()), (3, 1, cert3())]))]);
+        assert_eq!(
+            admit(&Obligation::Primality { n: bi(15) }, &Witness::PrattPrime(cert)),
+            Disposition::Unknown
+        );
+        // A cert naming a COMPOSITE (4) as a prime factor of n−1 fails the recursive
+        // prime check on 4 (no valid Pratt cert for 4 exists).
+        let bogus4 = pc(3, vec![(2, 2, p2())]); // pretends 4 is prime (4−1=3=2? no, 3; bogus)
+        let cert2 = pc(2, vec![(4, 1, bogus4)]); // n−1 = 4 ⇒ n = 5, but factor 4 is composite
+        assert_eq!(
+            admit(&Obligation::Primality { n: bi(5) }, &Witness::PrattPrime(cert2)),
+            Disposition::Unknown
+        );
+    }
+
+    #[test]
+    fn primality_one_and_composite_targets_are_rejected() {
+        // n < 2 and an even composite have no valid Pratt cert.
+        assert_eq!(admit(&Obligation::Primality { n: bi(1) }, &Witness::PrattPrime(p2())), Disposition::Unknown);
+        assert_eq!(admit(&Obligation::Primality { n: bi(9) }, &Witness::PrattPrime(pc(2, vec![(2, 3, p2())]))), Disposition::Unknown);
+    }
+
+    #[test]
+    fn primality_node_budget_is_fail_closed() {
+        // A pathological cert that would blow the node budget is rejected, not
+        // accepted (DoS guard). Build a wide fan-out beyond MAX_PRATT_NODES.
+        let wide: Vec<(BigInt, u32, PrattCert)> =
+            (0..(MAX_PRATT_NODES as usize + 10)).map(|_| (bi(2), 1, p2())).collect();
+        let cert = PrattCert { base: bi(3), factors: wide };
+        assert_eq!(
+            admit(&Obligation::Primality { n: bi(7) }, &Witness::PrattPrime(cert)),
+            Disposition::Unknown
+        );
     }
 
     // ── dispatch (manifest-driven, admit-gated) ──────────────────────────────

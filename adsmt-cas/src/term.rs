@@ -314,16 +314,41 @@ pub fn classify_compositeness(goal: &Term) -> Option<Obligation> {
     Some(Obligation::Compositeness { n })
 }
 
+/// Classify a goal `prime(k)` (a bare, NON-negated `prime` atom) for a GROUND
+/// integer literal `k ≥ 2` as a [`Primality`](Obligation::Primality) obligation —
+/// the dual of [`classify_compositeness`]. A [`Witness::PrattPrime`](crate::Witness::PrattPrime)
+/// certificate re-checks it (recursive Lucas). `k < 2` (not prime, and not via a
+/// divisor-or-Pratt fact) or a non-ground `prime(x)` ⇒ `None`.
+///
+/// Same **precondition** as compositeness — `prime` must be the reserved built-in
+/// (lu-kb / `install_arith`, kernel-forbidden to redeclare); the integration
+/// layer (which holds the `Env`) must not route a user-declared `prime` here.
+pub fn classify_primality(goal: &Term) -> Option<Obligation> {
+    let TermInner::App(head, arg) = goal.kind() else { return None };
+    let TermInner::Const(p) = head.kind() else { return None };
+    if p.name != "prime" {
+        return None;
+    }
+    let TermInner::Const(k) = arg.kind() else { return None };
+    let n = int_const(&k.name)?;
+    if n < BigInt::from(2) {
+        return None;
+    }
+    Some(Obligation::Primality { n })
+}
+
 /// The unified typed-term classifier: a sequent `hyps ⊢ goal` → a CAS
 /// [`Obligation`], or `None` if it fits no recognized algebraic class. Tries
 /// ideal membership (which consumes the equational hypotheses), the
-/// existential-Diophantine goal shape, then a `¬prime(k)` compositeness goal.
-/// The three target DISJOINT goal shapes (an equation vs a leading `∃` vs a
-/// negated `prime` atom), so the order is immaterial.
+/// existential-Diophantine goal shape, a `¬prime(k)` compositeness goal, then a
+/// `prime(k)` primality goal. The four target DISJOINT goal shapes (an equation
+/// vs a leading `∃` vs a negated `prime` atom vs a bare `prime` atom), so the
+/// order is immaterial.
 pub fn classify_sequent(hyps: &[Term], goal: &Term) -> Option<Obligation> {
     classify_membership(hyps, goal)
         .or_else(|| classify_diophantine(goal))
         .or_else(|| classify_compositeness(goal))
+        .or_else(|| classify_primality(goal))
 }
 
 /// **End-to-end CAS consult** — the one-call entry that ties the classifier to the
@@ -685,5 +710,40 @@ mod tests {
         // routed through the unified entry.
         let ob = classify_sequent(&[], &not(prime_of(lit(15)))).expect("routed");
         assert!(matches!(ob, Obligation::Compositeness { n } if n == BigInt::from(15)));
+    }
+
+    // ── primality (prime(k)) classifier ─────────────────────────────────────
+
+    #[test]
+    fn classifies_and_admits_prime_via_a_pratt_cert() {
+        use crate::{admit, Disposition, PrattCert, Verdict, Witness};
+        // goal prime(7) ⇒ Primality{7}; a valid Pratt cert (7−1=6=2·3, base 3)
+        // re-checks ⇒ Sat.
+        let ob = classify_primality(&prime_of(lit(7))).expect("classified");
+        assert!(matches!(&ob, Obligation::Primality { n } if *n == BigInt::from(7)));
+        let bi = |n: i64| BigInt::from(n);
+        let p2 = PrattCert { base: bi(1), factors: vec![] };
+        let cert3 = PrattCert { base: bi(2), factors: vec![(bi(2), 1, p2.clone())] };
+        let cert7 = PrattCert { base: bi(3), factors: vec![(bi(2), 1, p2), (bi(3), 1, cert3)] };
+        assert_eq!(admit(&ob, &Witness::PrattPrime(cert7)), Disposition::Verdict(Verdict::Sat));
+    }
+
+    #[test]
+    fn primality_only_recognizes_a_bare_ground_prime_atom() {
+        // ¬prime(7) is compositeness territory, NOT primality.
+        assert!(classify_primality(&not(prime_of(lit(7)))).is_none());
+        // prime(x) with x a variable ⇒ not ground ⇒ None.
+        assert!(classify_primality(&prime_of(v("x"))).is_none());
+        // prime(1) ⇒ 1 is not prime and not Pratt-certifiable ⇒ None (k < 2).
+        assert!(classify_primality(&prime_of(lit(1))).is_none());
+    }
+
+    #[test]
+    fn classify_sequent_routes_both_prime_directions() {
+        // prime(k) → Primality ; ¬prime(k) → Compositeness (disjoint shapes).
+        let p = classify_sequent(&[], &prime_of(lit(13))).expect("routed prime");
+        assert!(matches!(p, Obligation::Primality { n } if n == BigInt::from(13)));
+        let c = classify_sequent(&[], &not(prime_of(lit(21)))).expect("routed ¬prime");
+        assert!(matches!(c, Obligation::Compositeness { n } if n == BigInt::from(21)));
     }
 }
