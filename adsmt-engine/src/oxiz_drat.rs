@@ -3,9 +3,9 @@
 //! The cert layer keeps a *structured* DRAT proof
 //! ([`adsmt_cert::drat::DratProof`]) suitable for our internal RUP
 //! verifier. This module re-emits that same proof as a **byte stream**
-//! using `oxiz-sat`'s `DratProof` writer (with our fork's
-//! `enable_writer` API for in-memory capture), so the resulting bytes
-//! are guaranteed identical to what `DratProof::enable(path)` would
+//! using `oxiz-sat`'s `DratWriter` (with our fork's `enable_writer` /
+//! `with_writer` API for in-memory capture), so the resulting bytes
+//! are guaranteed identical to what `DratWriter::enable(path)` would
 //! write to disk. External DRAT verifiers (e.g. `drat-trim`) can be
 //! fed these bytes directly.
 //!
@@ -18,13 +18,15 @@ use adsmt_cert::drat::{DratProof as CertDratProof, DratStep};
 /// Re-emit the structured proof as DRAT bytes via oxiz-sat's writer.
 ///
 /// Returns the captured byte stream. Order of bytes matches what
-/// `oxiz_sat::proof::DratProof::enable(path)` would have written.
+/// `oxiz_sat::DratWriter::enable(path)` would have written.
 #[cfg(feature = "oxiz")]
 pub fn emit_via_oxiz_writer(proof: &CertDratProof) -> Vec<u8> {
     use std::io::{BufWriter, Write};
     use std::sync::{Arc, Mutex};
 
-    use oxiz_sat::DratProof as OxDrat;
+    // Renamed `DratProof` → `DratWriter` in oxiz-sat 0.2.x (the writer API —
+    // `with_writer`/`add_clause`/`delete_clause` — is unchanged).
+    use oxiz_sat::DratWriter as OxDrat;
 
     let captured: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
 
