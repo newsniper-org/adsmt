@@ -31,6 +31,7 @@ dependencies = [
  "num-rational",
  "num-traits",
  "serde",
+ "serde_json",
  "toml",
 ]
 

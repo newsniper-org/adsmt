@@ -24,3 +24,13 @@ adsmt-core = { workspace = true, optional = true }
 default = []
 # The `Term → Obligation` classifier (`term` module).
 term = ["dep:adsmt-core"]
+
+[dev-dependencies]
+# For the `offline_recheck` example: deserialize a serialized `CasProof` (the
+# `proof_json` embedded in an adsmt-cert `TheoryWitness::Cas`) and re-run the
+# trusted `admit` re-checker WITHOUT the CAS or the solver (§7 offline replay).
+serde_json.workspace = true
+
+[[example]]
+name = "offline_recheck"
+path = "examples/offline_recheck.rs"

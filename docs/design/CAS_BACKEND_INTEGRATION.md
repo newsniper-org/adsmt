@@ -509,7 +509,12 @@ Rules that make it load-bearing:
     keys must be strings) + num-bigint/rational `serde`; `dispatch_with_proof` returns
     the winning proof; `Solver::build_delegated_unsat_cert_with` embeds it.
     `adsmt-cert` stays dependency-light (the payload is an opaque JSON string).
-    Round-trip verified (`cas_proof_round_trips_and_re_checks_offline`).
+    Round-trip verified (`cas_proof_round_trips_and_re_checks_offline`). A runnable
+    demonstration of the offline path ships as `adsmt-cas/examples/offline_recheck.rs`:
+    it deserializes a `proof_json` (extract it from an emitted JSON cert with
+    `jq -r '..|.Cas?|select(.)|.proof_json'`) and re-runs `admit`, exiting `0` on a
+    re-derived `Verdict` and `1` (with `Unknown`) on a tampered/stale witness — a
+    fail-closed CI gate that needs neither the CAS nor the solver.
   * **Reachability + native-`sat` refutation (F2, LANDED).** The primary trigger is
     a *residual `Unknown`*; but a native **confident (possibly-false) `sat`** on a
     nonlinear obligation bypasses the `Unknown` path (the pre-existing #347/#348
