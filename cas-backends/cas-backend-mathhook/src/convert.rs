@@ -189,16 +189,20 @@ mod tests {
     }
 
     #[test]
-    fn declines_difference_of_squares_soundly_a_contribute_back_target() {
-        // x² − 1 = (x−1)(x+1). MathHook's `factor()` currently does NOT split this:
-        // its `try_quadratic_factoring` is a stub (returns None) and its
-        // `factor_difference_of_squares` helper is not wired into `factor()`. So the
-        // backend returns `None` (a SOUND `Undecided` — the dispatcher falls through),
-        // never a wrong verdict. Upgrading MathHook's `factor()` to recognise the
-        // difference of squares / quadratic patterns is the tracked contribute-back
-        // target (see docs/design/CAS_BACKEND_INTEGRATION.md §10).
+    fn difference_of_squares_is_sound_against_either_mathhook() {
+        // x² − 1 = (x−1)(x+1). This case is version-agnostic on purpose (the AD1
+        // gitlink may pin either MathHook):
+        //   * CB-2-fixed MathHook (submodule branch feat/factor-witness-fixes) splits
+        //     it ⇒ admit re-checks ∏ = target ⇒ Sat — the full positive path.
+        //   * pre-fix MathHook declines (its `try_quadratic_factoring` was a stub)
+        //     ⇒ factor_target is None ⇒ sound Undecided.
+        // NEITHER can misverify — that is the whole point of the admit firewall.
+        // (docs/design/CAS_BACKEND_INTEGRATION.md §10 tracks the contribute-back.)
         let target = x().mul(&x()).sub(&c(1));
-        assert!(factor_target(&target).is_none());
+        if let Some(w) = factor_target(&target) {
+            let ob = Obligation::Factorization { ring: Ring::Q, target };
+            assert_eq!(admit(&ob, &w), Disposition::Verdict(Verdict::Sat));
+        }
     }
 
     #[test]
