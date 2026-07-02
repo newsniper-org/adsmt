@@ -217,6 +217,17 @@ impl Lowerer<'_> {
     /// `whnf` first (δ-unfold defs / β-redexes / ζ-lets), then match the head.
     fn lower_term(&self, term: &Term, frames: &mut Vec<Frame>) -> Result<CTerm, LowerError> {
         let t = whnf(self.env, term);
+        // Term-level `ite` lifting: `adsmt-core` has no term-level conditional, so
+        // a term-`ite` `(ite A c a b)` (A a non-Bool sort) nested in an atom's
+        // argument is removed by **atom duplication** — rewrite the atom
+        // `F[ite]` into `(¬c ∨ F[a]) ∧ (c ∨ F[b])` (classically the verified
+        // `(c→F[a]) ∧ (¬c→F[b])`) and lower THAT. Applied in place at the smallest
+        // enclosing atom, so `c` never crosses a binder — capture-free, no fresh
+        // var, no de-Bruijn shift. See docs/design/TERM_ITE_LIFTING.md and the
+        // 선검증 `~/term-ite-lifting-verification`.
+        if let Some(hoisted) = self.hoist_term_ite(&t) {
+            return self.lower_term(&hoisted, frames);
+        }
         match t.kind() {
             TermKind::Sort(_) => Err(unl("a sort cannot appear as a first-order term")),
             TermKind::Bound(i) => {
@@ -243,6 +254,38 @@ impl Lowerer<'_> {
                 Err(unl("datatype recursor / fixpoint lowering (recursion/induction) is a later slice"))
             }
         }
+    }
+
+    /// If `t` is a hoistable **atom** (a comparison / equality / predicate
+    /// application — NOT a connective or quantifier) whose argument terms contain
+    /// a term-`ite`, return the atom-duplication rewrite
+    /// `(¬c ∨ t[ite:=a]) ∧ (c ∨ t[ite:=b])` for an innermost such ite; else `None`.
+    ///
+    /// Only atoms are targets: a connective / quantifier recurses via the normal
+    /// dispatch, so the ite is lifted at its SMALLEST enclosing atom — keeping the
+    /// condition `c` inside any surrounding binder's scope (capture-free). The
+    /// rewrite uses only the non-binding `and`/`or`/`not` prelude consts, so no
+    /// de-Bruijn index shifts. Soundness (satisfiability-preserving, both
+    /// directions) is pre-verified — see [`lower_term`]'s note.
+    fn hoist_term_ite(&self, t: &Term) -> Option<Term> {
+        let (name, _) = as_const_app(t)?;
+        // Connectives / quantifiers recurse (the ite is lifted at the inner atom);
+        // a whole Bool-`ite` formula is handled by `try_prelude`'s `ite` arm.
+        if matches!(name.as_str(), "not" | "and" | "or" | "exists" | "forall" | "ite") {
+            return None;
+        }
+        let ite = find_hoistable_ite(t)?; // an innermost term-ite in a term position
+        let (_, ia) = as_const_app(&ite)?; // ia = [A, c, a, b]
+        if ia.len() != 4 {
+            return None;
+        }
+        let (c, a, b) = (&ia[1], &ia[2], &ia[3]);
+        let t_a = subst_kernel(t, &ite, a);
+        let t_b = subst_kernel(t, &ite, b);
+        let not_c = Term::app(Term::cnst("not"), c.clone());
+        let branch_a = Term::apps(Term::cnst("or"), [not_c, t_a]);
+        let branch_b = Term::apps(Term::cnst("or"), [c.clone(), t_b]);
+        Some(Term::apps(Term::cnst("and"), [branch_a, branch_b]))
     }
 
     /// A bare constant (post-whnf, so not a `def`): `true`/`false`, or a
@@ -408,9 +451,12 @@ impl Lowerer<'_> {
             }
             "ite" => {
                 // `ite : Π(A:Type0). Prop → A → A → A` — `(ite A c a b)`. The
-                // solver has no `ite` term, but a **Bool-branch** ite is
-                // classically `(c → a) ∧ (¬c → b)` (faithful); an ite over a
-                // non-Bool sort abstains (it would need a fresh-var flattening).
+                // solver has no `ite` term, but a **Bool-branch** ite (a formula)
+                // is classically `(c → a) ∧ (¬c → b)` (faithful). A **term**-`ite`
+                // over a non-Bool sort is removed UPSTREAM by atom duplication
+                // (`hoist_term_ite`, before this arm), so it never reaches here in
+                // a term position; the abstain below is now only a defensive guard
+                // for a (mis-checked) non-Bool ite standing as a whole formula.
                 self.arity(name, args, 4)?;
                 if self.lower_sort(&args[0])? != CType::bool_() {
                     return Err(unl("ite over a non-Bool sort (the solver has no ite term)"));
@@ -878,6 +924,60 @@ fn db_occurs(t: &Term, idx: usize) -> bool {
                 || minors.iter().any(|x| db_occurs(x, idx))
                 || db_occurs(major, idx)
         }
+    }
+}
+
+/// Find an **innermost** term-`ite` in a term position of `t` — one whose
+/// `then`/`else` branches carry no further term-ite, so the atom-duplication
+/// measure `Σ_atoms(2^#ite − 1)` strictly decreases per lift (termination).
+/// Descends only through application spines and ite BRANCHES — never an ite
+/// CONDITION or a binder (`Pi`/`Lam`/`Match`/…) — so the returned ite is reachable
+/// from `t` without crossing a binder, and lifting it to `t`'s level is
+/// capture-free. See [`Lowerer::hoist_term_ite`].
+fn find_hoistable_ite(t: &Term) -> Option<Term> {
+    if let Some((name, args)) = as_const_app(t)
+        && name == "ite"
+        && args.len() == 4
+    {
+        return find_hoistable_ite(&args[2])
+            .or_else(|| find_hoistable_ite(&args[3]))
+            .or_else(|| Some(t.clone()));
+    }
+    match t.kind() {
+        TermKind::App(f, a) => find_hoistable_ite(f).or_else(|| find_hoistable_ite(a)),
+        _ => None,
+    }
+}
+
+/// Replace every occurrence of the subterm `target` by `repl` within `t`'s
+/// binder-free term skeleton (application spines + ite branches). Mirrors
+/// [`find_hoistable_ite`]'s descent: never rewrites inside an ite CONDITION or a
+/// binder, so a structurally-identical term at a different scope is untouched.
+/// (Leaving an unreplaced copy inside a condition is sound — it collapses to the
+/// same branch value under the `c`-case-split, and the recursion hoists it later.)
+fn subst_kernel(t: &Term, target: &Term, repl: &Term) -> Term {
+    if t == target {
+        return repl.clone();
+    }
+    if let Some((name, args)) = as_const_app(t)
+        && name == "ite"
+        && args.len() == 4
+    {
+        return Term::apps(
+            Term::cnst("ite"),
+            [
+                args[0].clone(),
+                args[1].clone(),
+                subst_kernel(&args[2], target, repl),
+                subst_kernel(&args[3], target, repl),
+            ],
+        );
+    }
+    match t.kind() {
+        TermKind::App(f, a) => {
+            Term::app(subst_kernel(f, target, repl), subst_kernel(a, target, repl))
+        }
+        _ => t.clone(),
     }
 }
 

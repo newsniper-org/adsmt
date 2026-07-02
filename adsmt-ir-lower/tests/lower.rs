@@ -165,24 +165,60 @@ fn bool_ite_fidelity() {
     assert!(g.alpha_eq(&expect), "got {g}, want {expect}");
 }
 
-/// **Whole-query abstain — ite over a NON-Bool sort** (the solver has no `ite`
-/// term and a fresh-var flattening is a later slice).
+/// **Term-`ite` over a NON-Bool sort** is removed by atom duplication:
+/// `(= (ite p a b) a)` ⟿ `(¬p ∨ (a=a)) ∧ (p ∨ (b=a))` (the verified
+/// `(p→a=a) ∧ (¬p→b=a)`, in ∨/¬ form). See docs/design/TERM_ITE_LIFTING.md.
 #[test]
-fn non_bool_ite_abstains() {
+fn non_bool_ite_lifts() {
     let src = "(declare-sort S 0) (declare-const a S) (declare-const b S) \
                (declare-const p Bool) (assert (= (ite p a b) a))";
-    assert!(matches!(lower_abstains(src), LowerError::Unlowerable(_)));
+    let g = &lower_ok(src)[0];
+    let (p, a, b) = (
+        CTerm::var("p", CType::bool_()),
+        CTerm::var("a", sort("S")),
+        CTerm::var("b", sort("S")),
+    );
+    let br_a = CTerm::mk_or(
+        CTerm::mk_not(p.clone()).unwrap(),
+        CTerm::mk_eq(a.clone(), a.clone()).unwrap(),
+    )
+    .unwrap();
+    let br_b = CTerm::mk_or(p, CTerm::mk_eq(b, a).unwrap()).unwrap();
+    let expect = CTerm::mk_and(br_a, br_b).unwrap();
+    assert!(g.alpha_eq(&expect), "got {g}, want {expect}");
 }
 
-/// **All-or-nothing**: one lowerable goal + one unlowerable (`ite`) goal in the
-/// same query → the WHOLE query abstains (the lowerable goal is not asserted in
-/// isolation — dropping the other could flip the verdict).
+/// A **nested / arithmetic-context** term-ite lifts too: `(< (+ (ite p a b) 1) 5)`
+/// over `Int` reaches the smallest enclosing atom, so the obligation lowers to a
+/// pure-LIA formula instead of abstaining.
+#[test]
+fn nested_term_ite_in_arith_lifts() {
+    let src = "(declare-const a Int) (declare-const b Int) (declare-const p Bool) \
+               (assert (< (+ (ite p a b) 1) 5))";
+    let g = &lower_ok(src)[0];
+    assert_eq!(g.type_of(), CType::bool_(), "lifts to a Bool LIA formula: {g}");
+}
+
+/// **Under a binder (capture safety)**: `∀x. (ite (x>0) x (0−x)) ≥ 0` — the ite's
+/// condition references the bound `x`, so lifting must keep it inside the `∀`
+/// scope. The whole quantified obligation lowers to a `Bool` formula (no capture,
+/// no abstain).
+#[test]
+fn quantified_term_ite_lifts_under_binder() {
+    let src = "(assert (forall ((x Int)) (>= (ite (> x 0) x (- 0 x)) 0)))";
+    let g = &lower_ok(src)[0];
+    assert_eq!(g.type_of(), CType::bool_(), "lifts under the ∀ binder: {g}");
+}
+
+/// **All-or-nothing**: one lowerable goal + one genuinely-unlowerable goal (a
+/// `Bool` quantifier — abstained conservatively) in the same query → the WHOLE
+/// query abstains (the lowerable goal is not asserted in isolation — dropping the
+/// other could flip the verdict).
 #[test]
 fn one_unlowerable_goal_abstains_the_whole_query() {
-    let src = "(declare-sort S 0) (declare-const a S) (declare-const b S) \
-               (declare-const p Bool) \
+    let src = "(declare-sort S 0) (declare-const a S) \
                (assert (= a a)) \
-               (assert (= (ite p a b) a))";
+               (assert (forall ((h Bool)) (or h (not h))))";
     assert!(matches!(lower_abstains(src), LowerError::Unlowerable(_)));
 }
 

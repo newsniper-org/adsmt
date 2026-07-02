@@ -48,6 +48,33 @@ fn propositional_sat() {
     assert!(matches!(verdict(src), SatResult::Sat { .. }), "expected sat");
 }
 
+/// **Term-`ite` lowering (verdict)**: `(ite p 1 2) = 1 ∧ ¬p` is **unsat** — with
+/// `¬p` the ite is `2`, so `2 = 1` contradicts. Exercises the atom-duplication
+/// term-ite lift end-to-end (z3-confirmed unsat). See TERM_ITE_LIFTING.md.
+#[test]
+fn term_ite_unsat() {
+    let src = "(declare-const p Bool) \
+               (assert (= (ite p 1 2) 1)) (assert (not p))";
+    assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
+}
+
+/// **Soundness guard**: `(ite p 1 2) = 1` alone is **sat** (`p` true) — the lift
+/// must not over-constrain into a spurious unsat (z3-confirmed sat).
+#[test]
+fn term_ite_sat() {
+    let src = "(declare-const p Bool) (assert (= (ite p 1 2) 1))";
+    assert!(matches!(verdict(src), SatResult::Sat { .. }), "expected sat");
+}
+
+/// **Nested term-ites** lift innermost-first: `(ite p (ite q 1 2) 3) = 3 ∧ p` is
+/// **unsat** — `p` forces the value into `{1,2}`, never `3` (z3-confirmed unsat).
+#[test]
+fn nested_term_ite_unsat() {
+    let src = "(declare-const p Bool) (declare-const q Bool) \
+               (assert (= (ite p (ite q 1 2) 3) 3)) (assert p)";
+    assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
+}
+
 /// A satisfiable EUF query (`a = b` alone) is **sat** — a sanity check that the
 /// lowering does not over-constrain into a spurious unsat.
 #[test]
@@ -316,4 +343,138 @@ fn match_stays_sat_when_consistent() {
     );
     let goals = [eq_nat(Term::cnst("x"), succ(zero())), match_eq];
     assert!(matches!(kernel_verdict(&env, &goals), SatResult::Sat { .. }), "expected sat");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Randomized z3-differential for the term-`ite` lifting (soundness gate).
+//
+// Generates ground QF_LIA + Bool + `ite` obligations, runs each through the real
+// `elaborate → lower → engine` pipeline AND through z3, and asserts the native
+// verdict never CONTRADICTS z3 — in particular no spurious `unsat` (a lowering
+// over-constraint) and no spurious `sat`. Ground so the native engine is
+// decidable; `#[ignore]`d so the normal suite needs no z3 (run with
+// `cargo test -p adsmt-ir-lower --test solve -- --ignored`). See
+// [[feedback_z3_differential_for_unsat_trust]] + docs/design/TERM_ITE_LIFTING.md.
+
+struct Lcg(u64);
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 >> 16
+    }
+    fn upto(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+const INTS: [&str; 3] = ["a", "b", "c"];
+const BOOLS: [&str; 2] = ["p", "q"];
+
+fn gen_int(r: &mut Lcg, depth: u32) -> String {
+    match r.upto(if depth == 0 { 2 } else { 5 }) {
+        0 => INTS[r.upto(3) as usize].to_string(),
+        1 => format!("{}", r.upto(7) as i64 - 3),
+        2 => format!("(+ {} {})", gen_int(r, depth - 1), gen_int(r, depth - 1)),
+        3 => format!("(- {} {})", gen_int(r, depth - 1), gen_int(r, depth - 1)),
+        // the term-`ite` under test
+        _ => format!(
+            "(ite {} {} {})",
+            gen_bool(r, depth - 1),
+            gen_int(r, depth - 1),
+            gen_int(r, depth - 1)
+        ),
+    }
+}
+
+fn gen_bool(r: &mut Lcg, depth: u32) -> String {
+    match r.upto(if depth == 0 { 4 } else { 8 }) {
+        0 => BOOLS[r.upto(2) as usize].to_string(),
+        1 => format!("(< {} {})", gen_int(r, depth), gen_int(r, depth)),
+        2 => format!("(= {} {})", gen_int(r, depth), gen_int(r, depth)),
+        3 => format!("(> {} {})", gen_int(r, depth), gen_int(r, depth)),
+        4 => format!("(and {} {})", gen_bool(r, depth - 1), gen_bool(r, depth - 1)),
+        5 => format!("(or {} {})", gen_bool(r, depth - 1), gen_bool(r, depth - 1)),
+        6 => format!("(not {})", gen_bool(r, depth - 1)),
+        _ => format!(
+            "(ite {} {} {})",
+            gen_bool(r, depth - 1),
+            gen_bool(r, depth - 1),
+            gen_bool(r, depth - 1)
+        ),
+    }
+}
+
+fn z3_verdict(script: &str) -> Option<&'static str> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("z3")
+        .args(["-in"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.as_mut()?.write_all(script.as_bytes()).ok()?;
+    let out = child.wait_with_output().ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    for line in s.lines() {
+        match line.trim() {
+            "unsat" => return Some("unsat"),
+            "sat" => return Some("sat"),
+            "unknown" => return Some("unknown"),
+            _ => {}
+        }
+    }
+    None
+}
+
+#[test]
+#[ignore = "requires z3; run with --ignored"]
+fn term_ite_z3_differential() {
+    let decls = "(declare-const a Int)(declare-const b Int)(declare-const c Int)\
+                 (declare-const p Bool)(declare-const q Bool)\n";
+    let mut r = Lcg(0x1234_5678_9abc_def0);
+    let (mut agree, mut native_unknown, mut z3_unknown, mut false_unsat, mut false_sat) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
+    for _ in 0..600 {
+        let body = gen_bool(&mut r, 3);
+        let script = format!("{decls}(assert {body})\n(check-sat)\n");
+        // native pipeline (skip scripts the face rejects — not a soundness signal)
+        let Ok(e) = elaborate(&script) else { continue };
+        let Ok(lowered) = lower(&e.env, &e.goals) else {
+            native_unknown += 1; // an abstain is a sound Unknown
+            continue;
+        };
+        let mut s = Solver::new();
+        for g in lowered.goals {
+            s.assert(g);
+        }
+        let nat = match s.check_sat() {
+            SatResult::Sat { .. } => "sat",
+            SatResult::Unsat { .. } => "unsat",
+            _ => {
+                native_unknown += 1;
+                continue;
+            }
+        };
+        let Some(z) = z3_verdict(&script) else { continue };
+        match (nat, z) {
+            (_, "unknown") => z3_unknown += 1,
+            ("unsat", "sat") => {
+                false_unsat += 1;
+                eprintln!("FALSE UNSAT:\n{script}");
+            }
+            ("sat", "unsat") => {
+                false_sat += 1;
+                eprintln!("FALSE SAT:\n{script}");
+            }
+            _ => agree += 1,
+        }
+    }
+    eprintln!(
+        "[ite differential] agree={agree} native-unknown={native_unknown} \
+         z3-unknown={z3_unknown} FALSE_UNSAT={false_unsat} FALSE_SAT={false_sat}"
+    );
+    assert_eq!(false_unsat, 0, "term-ite lifting produced a spurious unsat");
+    assert_eq!(false_sat, 0, "term-ite lifting produced a spurious sat");
+    assert!(agree > 50, "differential exercised too few decided cases: {agree}");
 }
