@@ -142,6 +142,29 @@ fn expr_to_mpoly(e: &Expression) -> Option<MPoly> {
     }
 }
 
+/// ADVISORY human-readable, step-by-step provenance for factoring `target`, from
+/// MathHook's `educational` module. Text only — it never affects the re-check
+/// (`admit` is the sole authority); a `None` (no steps) is harmless. Surfaced in the
+/// CAS-admitted certificate's [`adsmt_cas::CasProof::provenance`].
+pub fn explain_factorization(target: &MPoly) -> Option<String> {
+    use mathhook_core::educational::StepByStep;
+    let steps = mpoly_to_expr(target).explain_factorization();
+    if steps.steps.is_empty() {
+        return None;
+    }
+    let mut out = String::from("MathHook factorization — step-by-step:");
+    for (i, step) in steps.steps.iter().enumerate() {
+        out.push_str(&format!(
+            "\n  {}. {} — {} [{}]",
+            i + 1,
+            step.title,
+            step.description,
+            step.rule_applied
+        ));
+    }
+    Some(out)
+}
+
 fn number_to_ratio(n: &Number) -> Option<BigRational> {
     match n {
         Number::Integer(i) => Some(BigRational::from(BigInt::from(*i))),
@@ -202,6 +225,18 @@ mod tests {
         if let Some(w) = factor_target(&target) {
             let ob = Obligation::Factorization { ring: Ring::Q, target };
             assert_eq!(admit(&ob, &w), Disposition::Verdict(Verdict::Sat));
+        }
+    }
+
+    #[test]
+    fn explain_factorization_is_advisory_text_or_none() {
+        // Advisory provenance (F4): a step-by-step explanation, or None — either way
+        // it NEVER affects a verdict (`admit` is the sole authority). When present it
+        // carries the MathHook header. Just must not panic.
+        for p in [x().mul(&x()).sub(&x()), x().mul(&x()).sub(&c(1)), c(6).mul(&x()).add(&c(9))] {
+            if let Some(text) = explain_factorization(&p) {
+                assert!(text.starts_with("MathHook factorization"), "got: {text}");
+            }
         }
     }
 

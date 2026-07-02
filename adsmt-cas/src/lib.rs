@@ -518,6 +518,15 @@ pub trait CasBackend: Send {
     fn capabilities(&self) -> &[CasCapability];
     /// Run the (already-classified) obligation. Subprocess for core backends.
     fn decide(&self, obligation: &Obligation) -> CasReply;
+    /// OPTIONAL human-readable, step-by-step PROVENANCE for the obligation (e.g. a
+    /// CAS's educational explanation) — surfaced in the [`CasProof::provenance`] of a
+    /// re-checked verdict. ADVISORY: text only; it NEVER moves a verdict (a lying or
+    /// absent explanation is harmless — [`admit`] is the sole re-checker). The
+    /// dispatcher calls it ONLY on the winning backend after `admit` accepts, so a
+    /// backend may recompute freely. Default: none.
+    fn explain(&self, _obligation: &Obligation) -> Option<String> {
+        None
+    }
 }
 
 /// The class an obligation falls into (for backend selection).
@@ -607,8 +616,11 @@ pub fn dispatch_with_proof(
         if let CasReply::Witnessed(w) = backend.decide(obligation)
             && let Disposition::Verdict(v) = admit(obligation, &w)
         {
-            let proof =
-                CasProof { obligation: obligation.clone(), witness: w, provenance: None };
+            // The witness re-checked ⇒ this backend won. Attach its advisory
+            // provenance (recomputed here, only on the winning path). Text only —
+            // it cannot affect the verdict `admit` already derived.
+            let provenance = backend.explain(obligation);
+            let proof = CasProof { obligation: obligation.clone(), witness: w, provenance };
             return (Disposition::Verdict(v), Some(proof));
         }
         // Undecided / Error / failed re-check → the next backend in order.

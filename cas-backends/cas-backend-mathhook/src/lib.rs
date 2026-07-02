@@ -69,4 +69,17 @@ impl CasBackend for MathhookBackend {
             _ => CasReply::Undecided,
         }
     }
+
+    /// ADVISORY step-by-step provenance for a char-0 factorization — MathHook's
+    /// educational explanation (§ the "Educational Features" the backend leverages).
+    /// Text only; it rides into the certificate's `CasProof::provenance` and never
+    /// affects the `admit` re-check.
+    fn explain(&self, obligation: &Obligation) -> Option<String> {
+        match obligation {
+            Obligation::Factorization { ring: Ring::Z | Ring::Q | Ring::R, target } => {
+                convert::explain_factorization(target)
+            }
+            _ => None,
+        }
+    }
 }

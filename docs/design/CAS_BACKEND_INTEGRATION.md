@@ -924,8 +924,12 @@ user's steps.
   backend cover `IdealMembership` and richer factorization too. Capabilities
   adsmt-cas has that MathHook lacks (GF(pⁿ) native arithmetic, Pratt primality,
   modular membership) are candidate contributions in the other direction.
-- **Educational features (provenance, advisory only).** MathHook's `educational`
-  module (`StepByStep`/`EducationalExt`) yields human-readable derivation steps.
-  These flow into the CAS-admitted certificate (§7 provenance) and the advisory-
-  abduct / `prover_emit` surfaces as text — ORTHOGONAL to the soundness firewall
-  (never move a verdict). Wired alongside the cert plumbing, not in this slice.
+- **Educational features (provenance, advisory only) — LANDED (F4).** MathHook's
+  `educational::StepByStep::explain_factorization` yields human-readable derivation
+  steps; the MathHook backend's `CasBackend::explain` formats them, the dispatcher
+  attaches them to the winning [`CasProof::provenance`], and they ride into the
+  CAS-admitted certificate (§7 / the `TheoryWitness::Cas` payload). ORTHOGONAL to the
+  soundness firewall — TEXT ONLY, computed only on the already-`admit`-accepted path,
+  and NEVER able to move a verdict (a lying/absent explanation is harmless). Surfacing
+  it further in advisory-abduct / `prover_emit` output is a downstream read of the
+  same cert field.
