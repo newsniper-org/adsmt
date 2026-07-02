@@ -609,7 +609,7 @@ verdict against BOTH the native `lu-smt` reference — to cancel shared engine
 bugs — and z3 the oracle; see invariant (2) above — the
 [[feedback_z3_differential_for_unsat_trust]] discipline). Lowering lives in a
 **new sibling crate** (e.g. `adsmt-ir-lower`,
-path-dep on both `adsmt-ir` and the frozen `adsmt-core`/engine) so the rc.40
+path-dep on both `adsmt-ir` and the frozen `adsmt-core`/engine) so the rc.41
 stabilization workspace stays untouched — a downstream *consumer*, not a
 workspace edit.
 

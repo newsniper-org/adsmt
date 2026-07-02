@@ -1,6 +1,6 @@
 [package]
 name = "adsmt-lukb-driver"
-version = "1.0.0-rc.40"
+version = "1.0.0-rc.41"
 edition = "2021"
 description = "The lu-kb-successor unified solve orchestration: elaborate → lower → solve → UnifiedVerdict (design §10.4). The home of the unified verdict, reached by adsmtc/adsmtr."
 
