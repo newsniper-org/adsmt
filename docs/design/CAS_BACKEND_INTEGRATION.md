@@ -405,6 +405,20 @@ Rules that make it load-bearing:
   SURFACE (so a `x : GF(7)` obligation ARISES from a real problem) is the
   follow-on. Factorization over ℚ/ℝ/`GF(p)` is now soundly re-checkable, but the
   factorization CLASSIFIER (a term shape for "reducible over R") is still separate.
+- **P1.11 — `GFPower(p, n)` = `GF(pⁿ)` re-check core (native ring arithmetic), LANDED.**
+  The `gfpn` module implements `GF(p)[t]/(modulus)` with its OWN four operations —
+  NOT integer arithmetic. **This is the key correction (user, 2026-07-02):** `GF`,
+  `GFPower`, `IntModulo` are distinct algebraic structures, so the Nat/WNat
+  "relativize to `Int` + guard" template is WRONG for them (`Int` arithmetic would
+  give `3+4=7`, but `GF(5)` gives `2`). A `GF(pⁿ)` element is a degree-`< n` VECTOR
+  over `GF(p)`; `+`/`−` are componentwise mod `p`, `×` is polynomial-product mod
+  `modulus`, and — the operation ℤ LACKS — `÷` is total over a field (`a⁻¹ = a^(pⁿ−2)`
+  by Fermat, verified). A new `Obligation::GFPowerMembership { p, modulus, f,
+  generators }` (+ `Witness::GfpnCofactors`) re-checks the cofactor identity with
+  this native arithmetic; sound in the quotient RING for any monic `modulus` (no
+  irreducibility needed for membership). `MPoly`-over-ℚ cannot hold `GF(pⁿ)`
+  coefficients, hence the parallel `gfpn::MPolyGfpn`. Factorization over `GF(pⁿ)`
+  (needs an irreducible `modulus`) is a follow-on.
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No

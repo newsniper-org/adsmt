@@ -22,6 +22,7 @@
 //! would admit `x ∈ ⟨x²⟩` — a false `unsat`. Char-0 obligations use ℚ; a real
 //! GF(2) obligation would carry its own char and is out of P0 scope.
 
+pub mod gfpn;
 pub mod manifest;
 pub mod poly;
 #[cfg(feature = "term")]
@@ -187,6 +188,13 @@ pub enum Obligation {
     /// `∃ x̄ ∈ domains. ⋀ⱼ systemⱼ(x̄) = 0` (an UNBOUNDED existential — a bounded
     /// one is decidable and routes to the native engine, §8).
     DiophantineExists { system: Vec<MPoly>, domains: Vec<Domain> },
+    /// Ideal membership over `GF(p)[t]/(modulus)` — i.e. `GF(pⁿ)` when `modulus`
+    /// (degree `n`, monic) is irreducible. A DISTINCT variant because a `GF(pⁿ)`
+    /// coefficient is a VECTOR (`gfpn::MPolyGfpn`), not a ℚ scalar — the ring's
+    /// four operations are not integer arithmetic (§ the `gfpn` module). Membership
+    /// is sound in the quotient RING (no irreducibility needed); the cofactor
+    /// identity is re-checked with the native `GF(pⁿ)` arithmetic.
+    GFPowerMembership { p: BigInt, modulus: Vec<BigInt>, f: gfpn::MPolyGfpn, generators: Vec<gfpn::MPolyGfpn> },
 }
 
 /// A **Pratt primality certificate** (recursive Lucas) for a number `n`: a
@@ -221,6 +229,9 @@ pub enum Witness {
     IntSolution(Vec<BigInt>),
     /// A Pratt primality certificate for `n` (recursive Lucas).
     PrattPrime(PrattCert),
+    /// `f = Σ qᵢ·g_{idxᵢ}` over `GF(pⁿ)` — the cofactors as `(idx, qᵢ)` pairs, each
+    /// `qᵢ` a polynomial with `GF(pⁿ)` coefficients.
+    GfpnCofactors(Vec<(usize, gfpn::MPolyGfpn)>),
 }
 
 /// DoS bound on a Pratt certificate re-check — total tree nodes visited. A cert
@@ -429,6 +440,28 @@ pub fn admit(obligation: &Obligation, witness: &Witness) -> Disposition {
             }
         }
 
+        // Ideal membership over GF(pⁿ): re-build `Σqᵢ·gᵢ` with the NATIVE GF(pⁿ)
+        // arithmetic (add/mul in the field, NOT integer ops) and check the cofactor
+        // identity `f − Σqᵢgᵢ = 0` there ⇒ `⋀gᵢ=0 ⊢ f=0` over the ring ⇒ Unsat.
+        // Sound in the quotient ring for ANY monic modulus (irreducibility unneeded).
+        (Obligation::GFPowerMembership { p, modulus, f, generators }, Witness::GfpnCofactors(cofactors)) => {
+            let Some(field) = gfpn::GfpnField::new(p.clone(), modulus.clone()) else {
+                return Disposition::Unknown; // ill-formed field params (p<2 / non-monic / degree 0)
+            };
+            let mut combo = field.poly_zero();
+            for (idx, q) in cofactors {
+                let Some(g) = generators.get(*idx) else {
+                    return Disposition::Unknown; // §9-G9: dangling generator index
+                };
+                combo = field.poly_add(&combo, &field.poly_mul(q, g));
+            }
+            if field.poly_is_zero(&field.poly_sub(f, &combo)) {
+                Disposition::Verdict(Verdict::Unsat)
+            } else {
+                Disposition::Unknown // wrong cofactor over GF(pⁿ)
+            }
+        }
+
         // Any other (obligation, witness) pairing is mis-shaped ⇒ the sound fallback.
         _ => Disposition::Unknown,
     }
@@ -495,6 +528,7 @@ pub fn classify(obligation: &Obligation) -> CasClass {
         Obligation::Compositeness { .. } => CasClass::Compositeness,
         Obligation::Primality { .. } => CasClass::Primality,
         Obligation::DiophantineExists { .. } => CasClass::DiophantineExists,
+        Obligation::GFPowerMembership { .. } => CasClass::IdealMembership,
     }
 }
 
@@ -963,6 +997,48 @@ mod tests {
         // Over ℚ, the same [1/2, 2x] is rejected because 1/2 IS a unit (a field).
         assert_eq!(
             admit(&Obligation::Factorization { ring: Ring::Q, target: x() }, &Witness::Factors(vec![MPoly::constant(BigRational::new(BigInt::from(1), BigInt::from(2))), c(2).mul(&x())])),
+            Disposition::Unknown
+        );
+    }
+
+    // ── GF(pⁿ) membership (the gfpn native-arithmetic re-check) ───────────────
+
+    #[test]
+    fn gfpower_membership_over_gf4() {
+        use crate::gfpn::GfpnField;
+        let modulus = vec![bi(1), bi(1), bi(1)]; // GF(4) = GF(2)[t]/(t²+t+1)
+        let field = GfpnField::new(bi(2), modulus.clone()).unwrap();
+        let el = |v: &[i64]| -> Vec<BigInt> { v.iter().map(|&z| bi(z)).collect() };
+        // g = x + t ; q = x + (1+t) ; (x+t)(x+(1+t)) = x² + x + 1 = f (native GF(4)).
+        let g = field.poly_add(&field.poly_var(0), &field.poly_const(&el(&[0, 1])));
+        let q = field.poly_add(&field.poly_var(0), &field.poly_const(&el(&[1, 1])));
+        let f = field.poly_mul(&g, &q);
+        let ob = Obligation::GFPowerMembership {
+            p: bi(2),
+            modulus: modulus.clone(),
+            f,
+            generators: vec![g],
+        };
+        assert_eq!(
+            admit(&ob, &Witness::GfpnCofactors(vec![(0, q)])),
+            Disposition::Verdict(Verdict::Unsat)
+        );
+        // A wrong cofactor (just `x`) does NOT give the identity ⇒ Unknown.
+        let g2 = field.poly_add(&field.poly_var(0), &field.poly_const(&el(&[0, 1])));
+        let f2 = field.poly_mul(&g2, &field.poly_add(&field.poly_var(0), &field.poly_const(&el(&[1, 1]))));
+        assert_eq!(
+            admit(
+                &Obligation::GFPowerMembership { p: bi(2), modulus: modulus.clone(), f: f2, generators: vec![g2] },
+                &Witness::GfpnCofactors(vec![(0, field.poly_var(0))])
+            ),
+            Disposition::Unknown
+        );
+        // Ill-formed field params (non-monic modulus) ⇒ Unknown, never a verdict.
+        assert_eq!(
+            admit(
+                &Obligation::GFPowerMembership { p: bi(2), modulus: vec![bi(1), bi(1), bi(0)], f: field.poly_zero(), generators: vec![] },
+                &Witness::GfpnCofactors(vec![])
+            ),
             Disposition::Unknown
         );
     }
