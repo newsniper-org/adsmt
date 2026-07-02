@@ -967,13 +967,21 @@ the SAME delegation:
 - **`oxiz::proves_goal(hyps, goal, has_datatypes) -> bool`** (feature `oxiz`) —
   renders the obligation to a self-contained SMT-LIB script
   (`render_smtlib`: `declare-sort`/`-const`/`-fun` for the free symbols +
-  `(set-logic ALL)` + the asserts + `(check-sat)`; quantifiers render in standard
+  `(set-logic …)` + the asserts + `(check-sat)`; quantifiers render in standard
   `(forall ((v S)) …)` form; datatypes / bare-lambdas bail sound to `None`) and runs
-  it on an in-process OxiZ `Context`. **Soundness posture: it trusts ONLY an OxiZ
-  `unsat`** — an OxiZ `sat` is treated as "no delegation", because an in-process
-  nonlinear-INTEGER case can spuriously `sat` (the `x*x = 3` gap verus-fork flagged as
-  open) and trusting it would flip a valid goal to a wrong `DefiniteSat`, breaking the
-  lu-kb `UnifiedVerdict` §5 differential.
+  it on an in-process OxiZ `Context`. The `(set-logic …)` is the **tightest sound**
+  one: a `TheoryFlags` walk emits `QF_NIA` (pure-integer nonlinear) / `QF_NRA` (any
+  real — a real-relaxation `unsat` is a sound `unsat` for the integer restriction) for
+  a quantifier-free nonlinear obligation, so OxiZ's sound nonlinear dispatch
+  (`dispatch_nl_solver`) actually PROVES it instead of dropping the nonlinear atom onto
+  the opaque CDCL(T) path; everything else (linear / quantified / EUF) stays `ALL`.
+  **Soundness posture: it trusts ONLY an OxiZ `unsat`** — an OxiZ `sat` is treated as
+  "no delegation", because trusting it would flip a valid goal to a wrong `DefiniteSat`,
+  breaking the lu-kb `UnifiedVerdict` §5 differential. (The vendored OxiZ fork closes
+  the `x*x = 3` / opaque-nonlinear spurious-`sat` gap directly: `nonlinear_opaque_sat`
+  now grades a nonlinear opaque `sat` down to `unknown` regardless of the logic string,
+  and the nlsat extractor decomposes the folded `¬(H ⇒ G)` obligation the lu-kb driver
+  emits — `¬(a⇒b) ≡ a∧¬b` — so the delegated nonlinear goal reaches a real `unsat`.)
 
 `adsmt-lukb-driver`'s `delegate_resolve` (features `oxiz`/`cas`, off by default) fires
 on a native **non-`Unsat`** verdict and can only ever UPGRADE it to `DefiniteUnsat`
