@@ -80,6 +80,7 @@ impl Elab {
                 postulate(&mut self.env, s, K::type_(0))?;
             }
             Item::Const(x, ty) => {
+                self.ensure_ring_sorts(ty)?; // pre-declare any GF(p)/IntModulo/GFPower sort
                 // a refinement-typed constant `const c: {v: T | φ}` postulates
                 // `c : T` PLUS the trusted fact `φ[v := c]` as a top-level
                 // hypothesis. Dropping it would be unsound: an arbitrary `T`
@@ -112,6 +113,7 @@ impl Elab {
                 for (cname, fields) in ctors {
                     let mut ftypes = Vec::with_capacity(fields.len());
                     for (_selname, fty) in fields {
+                        self.ensure_ring_sorts(fty)?; // pre-declare GF(p)/… field sorts
                         ftypes.push(self.elab_field_type(fty, name)?);
                     }
                     kctors.push((cname.clone(), ftypes));
@@ -157,6 +159,13 @@ impl Elab {
         ret: &Type,
         body: &Option<S>,
     ) -> Result<(), FaceError> {
+        // 0. pre-declare any GF(p)/IntModulo(m)/GFPower(p,n) sort in a parameter or
+        //    return type (validating the parameters) before the immutable elab_type.
+        for (_, ty) in params {
+            self.ensure_ring_sorts(ty)?;
+        }
+        self.ensure_ring_sorts(ret)?;
+
         // 1. collect the generic predicate parameters `'p` (in first-seen order)
         //    from every refinement predicate, each over its refinement's base.
         //    `collect_pred_params` recurses through `Type::Arrow`/`Type::App`, so
@@ -312,6 +321,35 @@ impl Elab {
         }
     }
 
+    /// Pre-declare (postulate as `Type(0)`) every value-parameterized RING sort
+    /// (`GF(p)` / `IntModulo(m)` / `GFPower(p, n)`) reachable in `ty`, validating
+    /// the parameters (a non-prime `GF`, an `m < 2` `IntModulo`, a degree-0
+    /// `GFPower` → error). Idempotent (memoized by the postulated canonical name).
+    /// Must run under `&mut self` BEFORE the immutable `elab_type` looks the sort up.
+    fn ensure_ring_sorts(&mut self, ty: &Type) -> Result<(), FaceError> {
+        match ty {
+            Type::App(n, args) => match ring_sort_name(n, args)? {
+                Some(canon) => {
+                    if self.env.lookup(&canon).is_none() {
+                        postulate(&mut self.env, &canon, K::type_(0))?;
+                    }
+                }
+                None => {
+                    for a in args {
+                        self.ensure_ring_sorts(a)?;
+                    }
+                }
+            },
+            Type::Arrow(d, c) => {
+                self.ensure_ring_sorts(d)?;
+                self.ensure_ring_sorts(c)?;
+            }
+            Type::Refine { base, .. } => self.ensure_ring_sorts(base)?,
+            Type::Name(_) => {}
+        }
+        Ok(())
+    }
+
     fn elab_type(&self, ty: &Type) -> Result<K, FaceError> {
         match ty {
             Type::Name(n) if n == "Bool" => Ok(K::prop()),
@@ -320,9 +358,22 @@ impl Elab {
                 Some(_) => Err(unsupported(format!("`{n}` is not a sort"))),
                 None => Err(unsupported(format!("unknown sort `{n}`"))),
             },
-            Type::App(n, _) => {
-                Err(unsupported(format!("parametric sort `{n}(…)` is a later slice")))
-            }
+            // A value-parameterized ("dependent") RING sort: `GF(p)` (finite
+            // field), `IntModulo(m)` (`ℤ/mℤ`), `GFPower(p, n)` (`GF(pⁿ)`). It
+            // elaborates to a canonical NAMED sort (`GF!7`, …) that `ensure_ring_sorts`
+            // has already postulated as `Type(0)` — so the KERNEL is unchanged (no
+            // dependent types; the parameter validation lives here, at the face). A
+            // non-ring parametric sort is still a later slice. NOTE (ring-native
+            // arithmetic): the four operations over such a sort are NOT integer
+            // arithmetic — reasoning over them routes to the `adsmt-cas` re-check
+            // core (the CAS-delegation follow-on), never an `Int` relativization.
+            Type::App(n, args) => match ring_sort_name(n, args)? {
+                Some(canon) => match self.env.lookup(&canon) {
+                    Some(d) if is_type0(&d.ty) => Ok(K::cnst(canon)),
+                    _ => Err(unsupported(format!("ring sort `{n}(…)` was not pre-declared"))),
+                },
+                None => Err(unsupported(format!("parametric sort `{n}(…)` is a later slice"))),
+            },
             // a refinement `{v: T | φ}`'s *sort* is just its base `T` (the proof
             // of `φ` is `Prop`-irrelevant + lowering-erased). The predicate `φ`
             // becomes a separate contract obligation at the use site (const
@@ -737,6 +788,75 @@ fn and_chain_k(ts: Vec<K>) -> K {
 
 fn is_type0(ty: &K) -> bool {
     matches!(ty.kind(), adsmt_ir::TermKind::Sort(adsmt_ir::Univ::Type(0)))
+}
+
+/// If `n(args)` names a value-parameterized RING sort, its CANONICAL sort name —
+/// `GF(7)` → `"GF!7"`, `IntModulo(6)` → `"IntModulo!6"`, `GFPower(2, 8)` →
+/// `"GFPower!2!8"` — with the parameters VALIDATED (`GF`/`GFPower` need a PRIME
+/// `p`; `IntModulo` needs `m ≥ 2`; `GFPower` needs degree `n ≥ 1`). `Ok(None)` if
+/// `n` is not a ring sort; `Err` if it IS one but the parameters are invalid or
+/// non-numeral. `!` cannot appear in a user identifier, so the canonical name
+/// never collides with a user symbol. Parameter validation lives HERE at the face
+/// (the kernel stays plain-CIC — the sort is just a postulated `Type(0)`); the
+/// `adsmt-cas` re-check re-validates primality independently before trusting any
+/// verdict, so this face check is a usability gate, not the soundness boundary.
+fn ring_sort_name(n: &str, args: &[Type]) -> Result<Option<String>, FaceError> {
+    if !matches!(n, "GF" | "IntModulo" | "GFPower") {
+        return Ok(None);
+    }
+    let nums: Option<Vec<u64>> = args
+        .iter()
+        .map(|a| match a {
+            Type::Name(s) => s.parse::<u64>().ok(),
+            _ => None,
+        })
+        .collect();
+    let Some(nums) = nums else {
+        return Err(unsupported(format!("`{n}(…)` expects integer parameter(s)")));
+    };
+    match (n, nums.as_slice()) {
+        ("GF", [p]) => {
+            if !is_prime_u64(*p) {
+                return Err(unsupported(format!("`GF({p})` requires a PRIME order; {p} is not prime")));
+            }
+            Ok(Some(format!("GF!{p}")))
+        }
+        ("IntModulo", [m]) => {
+            if *m < 2 {
+                return Err(unsupported(format!("`IntModulo({m})` requires a modulus m ≥ 2")));
+            }
+            Ok(Some(format!("IntModulo!{m}")))
+        }
+        ("GFPower", [p, k]) => {
+            if !is_prime_u64(*p) {
+                return Err(unsupported(format!("`GFPower({p}, {k})` requires a PRIME p; {p} is not prime")));
+            }
+            if *k < 1 {
+                return Err(unsupported(format!("`GFPower({p}, {k})` requires an extension degree n ≥ 1")));
+            }
+            Ok(Some(format!("GFPower!{p}!{k}")))
+        }
+        _ => Err(unsupported(format!("`{n}` has the wrong number of parameters"))),
+    }
+}
+
+/// Bounded trial-division primality (a usability gate for `GF`/`GFPower`; the
+/// `adsmt-cas` re-check independently re-verifies before any trusted verdict).
+fn is_prime_u64(n: u64) -> bool {
+    if n < 2 {
+        return false;
+    }
+    if n.is_multiple_of(2) {
+        return n == 2;
+    }
+    let mut d = 3u64;
+    while d.saturating_mul(d) <= n {
+        if n.is_multiple_of(d) {
+            return false;
+        }
+        d += 2;
+    }
+    true
 }
 
 /// The position of a numeric sort in the injection lattice

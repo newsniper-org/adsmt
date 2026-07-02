@@ -19,6 +19,31 @@ fn all_props(src: &str, n_hyp: usize, n_goal: usize) -> adsmt_ir_lukb::Elaborate
     r
 }
 
+/// Value-parameterized RING sorts `GF(p)` / `IntModulo(m)` / `GFPower(p, n)`
+/// elaborate to a canonical postulated sort; two same-ring consts share ONE sort
+/// (equality type-checks); bad parameters are rejected at the face.
+#[test]
+fn ring_sorts_elaborate_and_validate() {
+    // each ring sort declaration elaborates (the canonical sort is postulated).
+    assert!(elaborate("const x: GF(7)\n").is_ok());
+    assert!(elaborate("const m: IntModulo(6)\n").is_ok());
+    assert!(elaborate("const g: GFPower(2, 8)\n").is_ok());
+    // two GF(7) consts share ONE sort ⇒ `a = b` type-checks (eq needs equal sorts).
+    all_props("const a: GF(7)\nconst b: GF(7)\ngoal g: a = b\n", 0, 1);
+    // GF(7) and Int are DISTINCT sorts ⇒ a cross-sort equality is rejected.
+    assert!(elaborate("const a: GF(7)\nconst i: Int\ngoal g: a = i\n").is_err());
+    // invalid parameters are rejected at the face (usability gate): a composite
+    // GF order, a non-prime GFPower base, an IntModulo m < 2, a degree-0 GFPower.
+    for bad in [
+        "const x: GF(6)\n",
+        "const x: GFPower(4, 2)\n",
+        "const x: IntModulo(1)\n",
+        "const x: GFPower(3, 0)\n",
+    ] {
+        assert!(elaborate(bad).is_err(), "must reject: {bad}");
+    }
+}
+
 /// Propositional + EUF: sorts, consts, axioms, a goal, with quantifiers.
 #[test]
 fn euf_propositional_module() {

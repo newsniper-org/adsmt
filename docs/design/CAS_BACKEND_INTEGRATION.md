@@ -419,6 +419,23 @@ Rules that make it load-bearing:
   irreducibility needed for membership). `MPoly`-over-ℚ cannot hold `GF(pⁿ)`
   coefficients, hence the parallel `gfpn::MPolyGfpn`. Factorization over `GF(pⁿ)`
   (needs an irreducible `modulus`) is a follow-on.
+- **P1.12 — lukb TYPE-SURFACE declaration of the ring sorts, LANDED (user choice:
+  declaration + CAS-delegation).** The lukb face now accepts `x : GF(p)` /
+  `IntModulo(m)` / `GFPower(p, n)` — a value-parameterized ("dependent") sort.
+  Parser: `type_arg` accepts a NUMERAL parameter (`GF(7)` → `Type::App("GF",
+  [Name("7")])`). Elaborator: `ensure_ring_sorts` postulates a canonical NAMED
+  sort per parameter (`GF!7`, `IntModulo!6`, `GFPower!2!8`), memoized, validating
+  the parameters (`GF`/`GFPower` need a PRIME `p`; `IntModulo` needs `m ≥ 2`;
+  `GFPower` degree `n ≥ 1`) — so the **kernel CIC is UNCHANGED** (no dependent
+  types; the sort is just a `Type(0)` postulate; validation lives at the face; the
+  `adsmt-cas` re-check re-verifies primality independently, so this face check is a
+  usability gate, not the soundness boundary). Two same-ring consts share ONE
+  sort, so `a = b` over `GF(7)` type-checks while `GF(7) = Int` is rejected. Verus
+  emits only `Named` sorts, so this is a **lukb-native** feature (AIR unchanged).
+  **Deferred (the CAS-delegation half):** wiring the RING-NATIVE operators over
+  these sorts to route to the `adsmt-cas` re-check on engine-Unknown (the
+  live-consult integration) — NOT an `Int` relativization (the sort's four
+  operations are not integer arithmetic).
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No

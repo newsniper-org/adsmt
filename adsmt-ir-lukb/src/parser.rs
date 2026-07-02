@@ -270,15 +270,27 @@ impl<'a> Parser<'a> {
         }
         let name = self.ident()?;
         if self.eat(&Tok::LParen) {
-            let mut args = vec![self.type_()?];
+            let mut args = vec![self.type_arg()?];
             while self.eat(&Tok::Comma) {
-                args.push(self.type_()?);
+                args.push(self.type_arg()?);
             }
             self.expect(&Tok::RParen)?;
             Ok(Type::App(name, args))
         } else {
             Ok(Type::Name(name))
         }
+    }
+
+    /// A parametric-sort ARGUMENT — a NUMERAL (a value parameter of a dependent
+    /// ring sort, e.g. the `7` in `GF(7)`), carried as `Type::Name("7")` for the
+    /// elaborator to parse + validate, or else a nested type.
+    fn type_arg(&mut self) -> Result<Type, FaceError> {
+        if let Some(Tok::Int(s)) = self.peek() {
+            let s = s.clone();
+            self.advance();
+            return Ok(Type::Name(s));
+        }
+        self.type_()
     }
 
     // ── terms (precedence climbing) ───────────────────────────────────────
