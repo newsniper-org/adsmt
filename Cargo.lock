@@ -65,6 +65,7 @@ version = "1.0.0-rc.40"
 dependencies = [
  "adsmt-abduce",
  "adsmt-aot",
+ "adsmt-cas",
  "adsmt-cert",
  "adsmt-core",
  "adsmt-emit-contract",
@@ -75,6 +76,8 @@ dependencies = [
  "adsmt-stalmarck",
  "adsmt-theory",
  "adsmt-theory-finite-field",
+ "cas-backend-mathhook",
+ "cas-backend-singular",
  "clap",
  "oxiz-solver",
  "serde_json",

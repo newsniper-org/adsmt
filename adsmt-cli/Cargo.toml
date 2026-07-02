@@ -57,9 +57,23 @@ thiserror.workspace = true
 # Path dep into the vendored OxiZ tree (external/oxiz, excluded from
 # the adsmt workspace).  Default-off so the lean build pulls nothing.
 oxiz-solver = { path = "../external/oxiz/oxiz-solver", optional = true }
+# CAS delegation (docs/design/CAS_BACKEND_INTEGRATION.md) — when native + OxiZ
+# both leave a check-sat `Unknown`, classify the typed goal/hyps into an algebraic
+# obligation and route it to the manifest-enabled CAS backends, whose witness is
+# re-checked by `adsmt_cas::admit` before it can move the verdict. Default-OFF: the
+# `term` feature pulls adsmt-core (already a dep) and the backends pull their CAS
+# engines (mathhook vendors a submodule), so the lean build stays untouched.
+adsmt-cas = { workspace = true, optional = true, features = ["term"] }
+cas-backend-singular = { version = "=1.0.0-rc.40", path = "../cas-backends/cas-backend-singular", optional = true }
+cas-backend-mathhook = { version = "=1.0.0-rc.40", path = "../cas-backends/cas-backend-mathhook", optional = true }
 
 [features]
 # Build with `cargo build -p adsmt-cli --features oxiz` (or
 # `--release`) to get the in-process OxiZ delegation.  Without it,
 # delegation falls back to the `ADSMT_OXIZ_PATH` subprocess oracle.
 oxiz = ["dep:oxiz-solver"]
+# Build with `--features cas` to enable CAS delegation on residual `Unknown`
+# (after OxiZ). Registers the Singular (subprocess) + MathHook (in-process)
+# backends; `adsmt.toml`'s `[cas]` section selects which run. Every verdict is
+# admit-re-checked, so an absent/mis-configured backend only ever leaves `Unknown`.
+cas = ["dep:adsmt-cas", "dep:cas-backend-singular", "dep:cas-backend-mathhook"]

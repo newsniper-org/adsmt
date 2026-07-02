@@ -460,6 +460,39 @@ Rules that make it load-bearing:
   the common cases. The AD1 backend tests are version-agnostic (they pass whether
   the gitlink pins the fixed or the pre-fix commit): a wrong/absent factorization
   always downgrades, a good one re-checks to `Sat`.
+- **P1.14 — CAS delegation wired into `lu-smt`, LANDED (feature `cas`, default-OFF).**
+  `adsmt-cli`'s check-sat path now, on a **residual `Unknown`** (native + OxiZ both
+  undecided), classifies the current sequent and routes it to the CAS backends
+  (`Driver::cas_delegate`, inserted right after the OxiZ fallback in `dispatch_one`).
+  * **Registry:** the `cas` feature pulls `cas-backend-singular` (subprocess) +
+    `cas-backend-mathhook` (in-process); both are constructed and handed to
+    `adsmt_cas::dispatch`, which selects/orders by the discovered `adsmt.toml`
+    `[cas]` manifest (`CasManifest::discover` from the cwd at startup) and
+    admit-gates every witness. No `adsmt.toml` ⇒ no CAS.
+  * **Sequent split:** the negated goal `¬G` is the assertion carrying the
+    `:goal-negation` tag (tracked at the `Term` level via a new
+    `assertion_goal_neg` ledger parallel to `assertion_qids`); the positive goal
+    `G` is recovered by stripping its outer `¬`, and every other ledger assertion
+    is a hypothesis. **Polarity:** every recognized class only ever proves `G`
+    *valid*, so any re-checked `Disposition::Verdict(_)` ⇒ the query `H ∧ ¬G` is
+    **`Unsat`** (a delegated-unsat cert is synthesised, mirroring OxiZ).
+  * **Soundness gates:** disabled once a `(pop)` desyncs the flat ledger from the
+    solver's scope (`ledger_desynced` — a popped hypothesis must not discharge a
+    goal), and requires exactly one `:goal-negation` assertion. Routes only the
+    universally-reserved-operator classes — **ideal membership** and
+    **∃-Diophantine**; compositeness / primality need the `prime`-is-built-in `Env`
+    gate (classifier precondition) and are deferred.
+  * **Validated:** the CLI's own `convert_expr` output classifies as ideal
+    membership and discharges to `Unsat` via real Singular `lift` + `admit`
+    (`cas_glue_tests`, skip-gated on Singular) — confirming the SMT-LIB-face ↔
+    classifier representation match.
+  * **Known reachability limit:** the trigger is a *residual `Unknown`*; a native
+    **confident (possibly-false) `sat`** on a nonlinear obligation bypasses ALL
+    delegation (the pre-existing #347/#348 issue), so CAS fires only where native
+    genuinely abstains. Broadening the trigger to *refute* a native `sat` with a
+    re-checked CAS proof (sound — the cofactor identity IS a validity proof, and
+    would catch native's false-sat) is a natural follow-up, deferred pending
+    sign-off since it overrides a confident verdict.
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No

@@ -1322,6 +1322,33 @@ fn dispatch_one(
                         core: adsmt_engine::result::UnsatCore::new(),
                     });
                 }
+                // CAS delegation on a residual `Unknown` (OxiZ also couldn't decide):
+                // classify the typed goal/hyps into an algebraic obligation and route
+                // it to the manifest-enabled CAS backends. `cas_delegate` only ever
+                // returns a verdict a re-checked witness established (else `None`), so
+                // a CAS bug / mis-config can only leave the `Unknown` intact. Shadows
+                // `v` and synthesises the delegated-unsat cert for a discharged goal.
+                #[cfg(feature = "cas")]
+                let v = if matches!(v, LastStatus::Unknown) {
+                    match driver.cas_delegate() {
+                        Some(cas_v @ LastStatus::Unsat) => {
+                            let cert = driver.solver.build_delegated_unsat_cert("cas");
+                            if let Some(c) = &cert {
+                                driver.write_emit_cert(c);
+                            }
+                            driver.last_cert = cert.clone();
+                            driver.last_result = Some(SatResult::Unsat {
+                                certificate: cert,
+                                core: adsmt_engine::result::UnsatCore::new(),
+                            });
+                            cas_v
+                        }
+                        Some(cas_v) => cas_v,
+                        None => v,
+                    }
+                } else {
+                    v
+                };
                 v
             } else {
                 status
@@ -2158,6 +2185,22 @@ struct Driver {
     /// path doesn't need one; the theory search does. Reset on
     /// `(reset)` / `(reset-assertions)`.
     declared_abducibles: Vec<adsmt_abduce::Abducible>,
+    /// Which assertions carried the `(! … :goal-negation)` tag (the verus-fork
+    /// goal-isolation Phase 0), parallel-indexed with `assertions`. The CAS
+    /// delegation uses this to split the sequent into hypotheses `H` and the
+    /// negated goal `¬G` — recovering the positive goal `G` to classify.
+    assertion_goal_neg: Vec<bool>,
+    /// Set once a user `(pop)` has removed assertions from the solver's scope
+    /// WITHOUT truncating the flat `assertions` ledger (which push/pop does not
+    /// track). While `true`, the ledger may hold out-of-scope assertions, so CAS
+    /// delegation — which reads `H` from the ledger — is DISABLED (using a popped
+    /// hypothesis to discharge a goal would be unsound). Cleared by
+    /// `(reset)` / `(reset-assertions)`, which re-sync the ledger to the solver.
+    ledger_desynced: bool,
+    /// The discovered `[cas]` manifest (from the nearest `adsmt.toml`), if the
+    /// `cas` feature is on and one was found at startup. `None` ⇒ no CAS runs.
+    #[cfg(feature = "cas")]
+    cas_manifest: Option<adsmt_cas::manifest::CasManifest>,
 }
 
 /// rc.35 — incremental-abduct state for cvc5 `(get-abduct-next)`.
@@ -2192,10 +2235,12 @@ impl Driver {
         // load-side hot path.
         let mut assertions: Vec<Term> = Vec::new();
         let mut assertion_qids: Vec<Option<String>> = Vec::new();
+        let mut assertion_goal_neg: Vec<bool> = Vec::new();
         if let Some(prelude) = aot_prelude {
             for (term, qid) in &prelude.prelude.assertions {
                 assertions.push(term.clone());
                 assertion_qids.push(qid.clone());
+                assertion_goal_neg.push(false); // prelude axioms are hypotheses, never a goal
             }
             solver = solver.with_aot_cdcl(prelude);
         }
@@ -2212,6 +2257,15 @@ impl Driver {
             check_sat_seq: 0,
             abduct_cursor: None,
             declared_abducibles: Vec::new(),
+            assertion_goal_neg,
+            ledger_desynced: false,
+            // Discover the nearest `adsmt.toml` `[cas]` manifest once, walking up
+            // from the working directory (like Cargo). Absent ⇒ no CAS delegation.
+            #[cfg(feature = "cas")]
+            cas_manifest: std::env::current_dir()
+                .ok()
+                .and_then(|d| adsmt_cas::manifest::CasManifest::discover(&d))
+                .map(|(_root, m)| m),
         }
     }
 
@@ -2362,6 +2416,7 @@ impl Driver {
                             self.solver.assert(term.clone());
                             self.assertions.push(term);
                             self.assertion_qids.push(None);
+                            self.assertion_goal_neg.push(false); // assuming-literals are not the goal
                         }
                         Err(e) => {
                             convert_err = Some(e.to_string());
@@ -2373,12 +2428,14 @@ impl Driver {
                     self.solver.pop(1);
                     self.assertions.truncate(snapshot);
                     self.assertion_qids.truncate(snapshot);
+                    self.assertion_goal_neg.truncate(snapshot);
                     return DispatchResult::Error(11, msg);
                 }
                 if self.cfg.aot_bake {
                     self.solver.pop(1);
                     self.assertions.truncate(snapshot);
                     self.assertion_qids.truncate(snapshot);
+                    self.assertion_goal_neg.truncate(snapshot);
                     return DispatchResult::Continue;
                 }
                 let r = self.solver.check_sat();
@@ -2417,6 +2474,13 @@ impl Driver {
             }
             Command::Pop(n) => {
                 self.solver.pop(n);
+                // The flat `assertions` ledger is NOT scoped by push/pop, so after a
+                // pop it may hold assertions no longer in the solver's scope. Mark the
+                // ledger desynced → CAS delegation (which reads its hypotheses from
+                // the ledger) is disabled until a `(reset)` re-syncs it.
+                if n > 0 {
+                    self.ledger_desynced = true;
+                }
                 DispatchResult::Continue
             }
             Command::Reset => {
@@ -2428,6 +2492,8 @@ impl Driver {
                 self.last_result = None;
                 self.assertions.clear();
                 self.assertion_qids.clear();
+                self.assertion_goal_neg.clear();
+                self.ledger_desynced = false; // ledger emptied ⇒ back in sync with the solver
                 self.abduct_cursor = None;
                 self.declared_abducibles.clear();
                 DispatchResult::Continue
@@ -2438,6 +2504,8 @@ impl Driver {
                 self.last_result = None;
                 self.assertions.clear();
                 self.assertion_qids.clear();
+                self.assertion_goal_neg.clear();
+                self.ledger_desynced = false; // ledger emptied ⇒ back in sync with the solver
                 self.abduct_cursor = None;
                 self.declared_abducibles.clear();
                 DispatchResult::Continue
@@ -2776,6 +2844,7 @@ impl Driver {
 
     fn assert_expr(&mut self, e: &SExpr, pos: Position) -> Result<(), String> {
         let qid = extract_qid(e);
+        let goal_neg = has_goal_negation(e);
         let expanded = inline_defines(e, &self.registry);
         if !self.cfg.no_autodeclare {
             autodeclare_bools(&expanded, &mut self.symbols);
@@ -2792,7 +2861,89 @@ impl Driver {
         self.solver.assert_at(term.clone(), loc);
         self.assertions.push(term);
         self.assertion_qids.push(qid);
+        self.assertion_goal_neg.push(goal_neg);
         Ok(())
+    }
+
+    /// **CAS delegation** — on a residual `Unknown` (native + OxiZ both undecided),
+    /// classify the current sequent into an algebraic obligation and route it to the
+    /// manifest-enabled CAS backends. Returns `Some(LastStatus::Unsat)` iff a backend
+    /// witness RE-CHECKS (`adsmt_cas::admit`) — proving the goal `G` valid, hence the
+    /// SMT query `H ∧ ¬G` unsat — and `None` otherwise (the sound fallback: the caller
+    /// keeps the `Unknown`).
+    ///
+    /// SCOPE (soundness + this-slice bounds):
+    /// * disabled unless an `adsmt.toml` `[cas]` manifest was discovered at startup;
+    /// * disabled once a `(pop)` desyncs the flat ledger from the solver's scope
+    ///   ([`Driver::ledger_desynced`]) — a popped hypothesis must not discharge a goal;
+    /// * requires EXACTLY ONE `:goal-negation` assertion (the verus goal-isolation
+    ///   tag); the positive goal `G` is recovered by stripping its outer `¬`, and
+    ///   every other ledger assertion is a hypothesis;
+    /// * routes only the classes whose operators are UNIVERSALLY reserved — ideal
+    ///   membership and ∃-Diophantine (`+`/`*`/`=`/`∃`). Compositeness / primality
+    ///   need the `prime`-is-built-in `Env` gate (the classifier's precondition) and
+    ///   are deferred to a follow-up.
+    #[cfg(feature = "cas")]
+    fn cas_delegate(&self) -> Option<LastStatus> {
+        use adsmt_cas::{CasBackend, Disposition, term};
+
+        let manifest = self.cas_manifest.as_ref()?;
+        if self.ledger_desynced {
+            return None; // ledger may hold out-of-scope assertions ⇒ unsound to use
+        }
+        // Defensive: the goal-neg flags must be in lockstep with the assertions; any
+        // desync (a missed maintenance site) ⇒ bail rather than mis-index.
+        if self.assertion_goal_neg.len() != self.assertions.len() {
+            return None;
+        }
+        // Exactly one goal-negation assertion (the verus `¬G`); else the sequent
+        // cannot be split unambiguously.
+        let mut goal_idxs = self
+            .assertion_goal_neg
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &g)| g.then_some(i));
+        let gi = goal_idxs.next()?;
+        if goal_idxs.next().is_some() {
+            return None; // more than one goal ⇒ ambiguous
+        }
+        // Recover the POSITIVE goal `G` from the negated-goal assertion `¬G`.
+        let goal = self.assertions[gi].dest_not()?;
+        let hyps: Vec<Term> = self
+            .assertions
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != gi)
+            .map(|(_, t)| t.clone())
+            .collect();
+
+        // Only the universally-reserved-operator classes (see SCOPE).
+        let obligation =
+            term::classify_membership(&hyps, &goal).or_else(|| term::classify_diophantine(&goal))?;
+
+        // The backend registry — the manifest's `enabled` order selects which run;
+        // `dispatch` filters by allow-list ∩ `capabilities()` and admit-gates every
+        // witness. Constructing both is free (no CAS spawns until `decide`).
+        let singular = cas_backend_singular::SingularBackend::new(
+            manifest
+                .backends
+                .get("singular")
+                .and_then(|c| c.path.clone())
+                .or_else(|| std::env::var("ADSMT_SINGULAR_PATH").ok())
+                .unwrap_or_else(|| "Singular".to_string()),
+        );
+        let mathhook = cas_backend_mathhook::MathhookBackend::new();
+        let backends: Vec<&dyn CasBackend> = vec![&singular, &mathhook];
+
+        match adsmt_cas::dispatch(manifest, &backends, &obligation) {
+            // A re-checked verdict on the POSITIVE goal `G` means `G` is VALID (every
+            // recognized class only ever proves its goal valid — an ideal-membership
+            // equation holds, or a Diophantine solution exists), so the SMT query
+            // `H ∧ ¬G` is UNSAT. The obligation-level Sat/Unsat label is about the
+            // algebraic fact, not the query polarity (see `adsmt_cas::term::consult`).
+            Disposition::Verdict(_) => Some(LastStatus::Unsat),
+            Disposition::Unknown => None,
+        }
     }
 
     /// rc.35.1 follow-up — a **recoverable** per-command error from a
@@ -3551,6 +3702,20 @@ fn extract_qid(e: &SExpr) -> Option<String> {
     None
 }
 
+/// Does the assertion annotation `(! body … :goal-negation …)` carry the
+/// `:goal-negation` FLAG (the verus-fork goal-isolation Phase 0)? Unlike `:qid`,
+/// it is a bare keyword with no value, so we scan the annotation list for the
+/// `goal-negation` [`SExpr::Keyword`]. A plain `(assert body)` (no `!` wrapper) is
+/// never a goal. Used by [`Driver::assert_expr`] to tag the negated goal `¬G` so
+/// the CAS delegation can split the sequent into `H ⊢ G`.
+fn has_goal_negation(e: &SExpr) -> bool {
+    let Some(xs) = e.as_list() else { return false };
+    if xs.first().and_then(SExpr::as_symbol) != Some("!") {
+        return false;
+    }
+    xs.iter().any(|x| matches!(x, SExpr::Keyword(k) if k == "goal-negation"))
+}
+
 /// Expand `define-fun` call sites in `e` against the user's
 /// [`SymbolRegistry`] before the term hits `convert_expr`. Nullary
 /// defined symbols substitute by their body; arity-N calls replace
@@ -3667,6 +3832,97 @@ fn is_logic_supported(logic: &str) -> bool {
             // Universal escape hatch.
             | "ALL"
     )
+}
+
+/// CAS-delegation glue tests — exercise the CLI's REAL term producer (`convert_expr`
+/// on parsed SMT-LIB) feeding the classifier + dispatcher, so a representation
+/// mismatch between the SMT-LIB face and the `adsmt-cas` classifier can't hide.
+#[cfg(all(test, feature = "cas"))]
+mod cas_glue_tests {
+    use super::*;
+    use adsmt_core::{Kind, Type};
+    use adsmt_parser_smtlib2::sexpr::parse_sexpr;
+
+    fn int_ty() -> Type {
+        Type::const_("Int", Kind::Type)
+    }
+
+    /// Convert an SMT-LIB assertion body (with x,y,z : Int in scope) to a `Term` via
+    /// the CLI's own `convert_expr` — the exact path a real `(assert …)` takes.
+    fn convert(body: &str, symbols: &SymbolTable) -> Term {
+        let e = parse_sexpr(body).expect("parse");
+        convert_expr(&e, symbols).expect("convert")
+    }
+
+    fn xyz_symbols() -> SymbolTable {
+        let mut s = SymbolTable::new();
+        for v in ["x", "y", "z"] {
+            s.declare(v.to_string(), int_ty());
+        }
+        s
+    }
+
+    #[test]
+    fn has_goal_negation_flags_only_the_tagged_assertion() {
+        let goal = parse_sexpr("(! (not (= x z)) :goal-negation)").unwrap();
+        let hyp = parse_sexpr("(= (* x y) 1)").unwrap();
+        assert!(has_goal_negation(&goal));
+        assert!(!has_goal_negation(&hyp));
+    }
+
+    #[test]
+    fn convert_expr_terms_classify_as_ideal_membership() {
+        // The KEY representation check: the SMT-LIB face's `convert_expr` output must
+        // be readable by `adsmt_cas::term`. `xy=1 ∧ yz=1 ⊢ x=z` classifies as an
+        // ideal-membership obligation (goal `x−z`, generators `xy−1`, `yz−1`).
+        let sym = xyz_symbols();
+        let h1 = convert("(= (* x y) 1)", &sym);
+        let h2 = convert("(= (* y z) 1)", &sym);
+        // The goal assertion is `¬(x=z)`; strip the outer `¬` to recover the positive
+        // goal `x=z`, exactly as `Driver::cas_delegate` does.
+        let neg_goal = convert("(! (not (= x z)) :goal-negation)", &sym);
+        let goal = neg_goal.dest_not().expect("¬G is a `not`");
+        let ob = adsmt_cas::term::classify_membership(&[h1, h2], &goal);
+        assert!(
+            ob.is_some(),
+            "convert_expr output must classify as ideal membership (representation match)"
+        );
+    }
+
+    #[test]
+    fn membership_discharges_to_unsat_via_singular() {
+        // End-to-end through Singular (skip-gated): the re-checked cofactor witness
+        // for `xy=1 ∧ yz=1 ⊢ x=z` establishes the goal valid ⇒ Verdict::Unsat.
+        let singular_path = std::env::var("ADSMT_SINGULAR_PATH")
+            .ok()
+            .filter(|p| std::path::Path::new(p).exists())
+            .or_else(|| {
+                let d = "/usr/bin/Singular";
+                std::path::Path::new(d).exists().then(|| d.to_string())
+            });
+        let Some(path) = singular_path else {
+            eprintln!("skipping: Singular not found (set ADSMT_SINGULAR_PATH)");
+            return;
+        };
+
+        let sym = xyz_symbols();
+        let h1 = convert("(= (* x y) 1)", &sym);
+        let h2 = convert("(= (* y z) 1)", &sym);
+        let goal = convert("(not (= x z))", &sym).dest_not().unwrap();
+        let ob = adsmt_cas::term::classify_membership(&[h1, h2], &goal)
+            .expect("classifies as membership");
+
+        let manifest = adsmt_cas::manifest::CasManifest::from_adsmt_toml(
+            "[cas]\nenabled = [\"singular\"]\n",
+        )
+        .unwrap();
+        let singular = cas_backend_singular::SingularBackend::new(path);
+        let backends: Vec<&dyn adsmt_cas::CasBackend> = vec![&singular];
+        assert_eq!(
+            adsmt_cas::dispatch(&manifest, &backends, &ob),
+            adsmt_cas::Disposition::Verdict(adsmt_cas::Verdict::Unsat),
+        );
+    }
 }
 
 #[cfg(test)]
