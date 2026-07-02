@@ -17,11 +17,39 @@ use std::collections::BTreeMap;
 /// monomial `1`. `Vec`'s lexicographic `Ord` gives a stable map key.
 pub type Mono = Vec<(usize, u32)>;
 
+/// Serialize a `BTreeMap<Mono, V>` as a SEQUENCE of `(Mono, V)` pairs. JSON object
+/// keys must be strings, but a [`Mono`] key is a `Vec<(usize, u32)>`, so the derived
+/// map serialization fails on `serde_json` ("key must be a string"). Emitting a seq
+/// of pairs sidesteps that and round-trips through any serde format — needed so a
+/// [`MPoly`]/[`MPolyGfpn`] can live in an offline-re-checkable `TheoryWitness::Cas`.
+pub(crate) mod mono_map_serde {
+    use super::Mono;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<V, S>(m: &BTreeMap<Mono, V>, s: S) -> Result<S::Ok, S::Error>
+    where
+        V: Serialize,
+        S: Serializer,
+    {
+        m.iter().collect::<Vec<(&Mono, &V)>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, V, D>(d: D) -> Result<BTreeMap<Mono, V>, D::Error>
+    where
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        Ok(Vec::<(Mono, V)>::deserialize(d)?.into_iter().collect())
+    }
+}
+
 /// A multivariate polynomial over ℚ. Invariant: `terms` holds **no zero
 /// coefficient** and every key is a canonical [`Mono`], so `terms.is_empty()`
 /// iff the polynomial is exactly `0` — the whole point (an exact zero-test).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MPoly {
+    #[serde(with = "mono_map_serde")]
     terms: BTreeMap<Mono, BigRational>,
 }
 

@@ -60,7 +60,7 @@ pub enum Disposition {
 /// The coefficient ring of a polynomial obligation. `admit` dispatches the
 /// re-checker on it (§9-B1). P0 re-checks char-0 rings over ℚ; a GF(2) obligation
 /// is out of scope (→ `Unknown`) rather than mis-checked.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Ring {
     /// Integers — re-checked over ℚ (a ℚ-identity proves the integer implication).
     Z,
@@ -149,7 +149,7 @@ fn gf_is_field(p: &BigInt) -> bool {
 /// The integer domain of an existential-Diophantine variable — part of the
 /// obligation, not a detail (§9-B3): `xⁿ` over ℕ excludes the `0`/sign
 /// "solutions".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Domain {
     /// ℕ — `≥ 1`.
     Nat,
@@ -173,7 +173,7 @@ impl Domain {
 /// this is DERIVED by `admit` from the original `Sequent` (§9-B2: never from the
 /// untrusted extraction); in P0 it is built directly (a caller / test supplies
 /// the trusted polynomials). Carries only what the trusted re-check needs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Obligation {
     /// `g₁=0,…,gₘ=0 ⊢ f=0` — the `gᵢ` come from the hypotheses.
     IdealMembership { ring: Ring, f: MPoly, generators: Vec<MPoly> },
@@ -204,7 +204,7 @@ pub enum Obligation {
 /// re-check. Poly-size and poly-time checkable (primality ∈ NP), so it is a
 /// genuine witness-delegation certificate — the CAS finds it, the trusted core
 /// re-checks it. Bounded fail-closed at re-check (`MAX_PRATT_NODES`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrattCert {
     /// The Lucas witness `a` (a primitive-root-like base mod `n`).
     pub base: BigInt,
@@ -217,7 +217,7 @@ pub struct PrattCert {
 /// (§9-G9); factors are `≥2 non-unit` (§9-B5); a divisor is re-checked
 /// `1 < d < n` (§9-B6); an int solution is re-checked domain-∈ **and** equation
 /// (§9-B3).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Witness {
     /// `f = Σ qᵢ·g_{idxᵢ}` — the pairs `(idx, qᵢ)`.
     Cofactors(Vec<(usize, MPoly)>),
@@ -556,6 +556,45 @@ pub fn dispatch(
     backends: &[&dyn CasBackend],
     obligation: &Obligation,
 ) -> Disposition {
+    dispatch_with_proof(manifest, backends, obligation).0
+}
+
+/// A self-contained, OFFLINE-re-checkable CAS proof: the `obligation` plus the
+/// `witness` a backend produced for it. [`recheck`](CasProof::recheck) re-runs the
+/// SAME trusted [`admit`] re-checker, so a `CasProof` embedded in a certificate
+/// (adsmt-cert `TheoryWitness::Cas`) can be verified WITHOUT the CAS or the solver —
+/// the §7 offline-replay design (ONE re-checker shared by online dispatch + offline
+/// cert-check). Serializable (num-bigint / num-rational `serde`).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CasProof {
+    pub obligation: Obligation,
+    pub witness: Witness,
+    /// Advisory, human-readable provenance (a backend's step-by-step explanation).
+    /// TEXT ONLY — it NEVER affects [`recheck`](CasProof::recheck); a lying/absent
+    /// explanation cannot move a verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
+}
+
+impl CasProof {
+    /// Re-derive the verdict from the witness via the trusted [`admit`] re-checker —
+    /// the ONE re-checker shared by online [`dispatch`] and offline cert replay. A
+    /// tampered / stale proof re-checks to [`Disposition::Unknown`], never a wrong
+    /// verdict.
+    pub fn recheck(&self) -> Disposition {
+        admit(&self.obligation, &self.witness)
+    }
+}
+
+/// Like [`dispatch`], but on a re-checked success ALSO returns the winning
+/// [`CasProof`] (the obligation + the witness that admit-verified) so the caller can
+/// embed it in an offline-re-checkable certificate. Same soundness, try-order, and
+/// admit-gating as [`dispatch`]; the returned proof is exactly what `admit` accepted.
+pub fn dispatch_with_proof(
+    manifest: &CasManifest,
+    backends: &[&dyn CasBackend],
+    obligation: &Obligation,
+) -> (Disposition, Option<CasProof>) {
     let class = classify(obligation);
     for name in manifest.try_order() {
         if !manifest.permits(name, class) {
@@ -568,11 +607,13 @@ pub fn dispatch(
         if let CasReply::Witnessed(w) = backend.decide(obligation)
             && let Disposition::Verdict(v) = admit(obligation, &w)
         {
-            return Disposition::Verdict(v);
+            let proof =
+                CasProof { obligation: obligation.clone(), witness: w, provenance: None };
+            return (Disposition::Verdict(v), Some(proof));
         }
         // Undecided / Error / failed re-check → the next backend in order.
     }
-    Disposition::Unknown
+    (Disposition::Unknown, None)
 }
 
 #[cfg(test)]

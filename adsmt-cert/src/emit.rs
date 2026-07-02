@@ -254,6 +254,12 @@ fn emit_witness(w: &TheoryWitness, out: &mut String) {
         TheoryWitness::Drat { clauses, proof, dimacs_bytes, alethe_bytes, lfsc_bytes, coq_bytes } => {
             emit_drat(clauses, proof, dimacs_bytes, alethe_bytes, lfsc_bytes, coq_bytes, out)
         }
+        TheoryWitness::Cas { class, proof_json } => {
+            // `(cas <class> <serialized CasProof>)` — the JSON payload is quoted as a
+            // string so it round-trips through the S-expr text; offline re-check
+            // deserializes it to an `adsmt_cas::CasProof` and runs `admit`.
+            write!(out, "(cas {} {})", quote_ident(class), quote_string(proof_json)).unwrap();
+        }
         TheoryWitness::Opaque { kind, notes } => {
             write!(out, "(opaque {} {})", quote_ident(kind), quote_string(notes)).unwrap();
         }

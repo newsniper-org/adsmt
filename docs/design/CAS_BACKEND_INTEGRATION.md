@@ -499,6 +499,17 @@ Rules that make it load-bearing:
     membership and discharges to `Unsat` via real Singular `lift` + `admit`
     (`cas_glue_tests`, skip-gated on Singular) — confirming the SMT-LIB-face ↔
     classifier representation match.
+  * **Offline-re-checkable certificate (F3, LANDED).** A CAS-discharged `unsat` now
+    emits a certificate carrying `adsmt-cert::TheoryWitness::Cas { class, proof_json }`
+    — `proof_json` is a serialized `adsmt_cas::CasProof` (the obligation + the witness
+    that `admit` accepted). It re-verifies OFFLINE without the CAS or the solver:
+    `serde_json::from_str::<CasProof>(&proof_json)?.recheck()` runs the SAME trusted
+    `admit` (the ONE re-checker, §7). Enabled by serde on the `adsmt-cas` math types
+    (`MPoly`/`MPolyGfpn` serialize their monomial maps as pair-sequences since JSON
+    keys must be strings) + num-bigint/rational `serde`; `dispatch_with_proof` returns
+    the winning proof; `Solver::build_delegated_unsat_cert_with` embeds it.
+    `adsmt-cert` stays dependency-light (the payload is an opaque JSON string).
+    Round-trip verified (`cas_proof_round_trips_and_re_checks_offline`).
   * **Reachability + native-`sat` refutation (F2, LANDED).** The primary trigger is
     a *residual `Unknown`*; but a native **confident (possibly-false) `sat`** on a
     nonlinear obligation bypasses the `Unknown` path (the pre-existing #347/#348

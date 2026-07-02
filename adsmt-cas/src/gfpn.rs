@@ -267,8 +267,9 @@ impl GfpnField {
 /// A multivariate polynomial whose coefficients are `GF(pⁿ)` elements. Invariant
 /// (maintained by [`GfpnField`]'s builders): no zero coefficient, canonical
 /// monomials — so `terms.is_empty()` iff the polynomial is exactly `0`.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct MPolyGfpn {
+    #[serde(with = "crate::poly::mono_map_serde")]
     terms: BTreeMap<Mono, Gfpn>,
 }
 

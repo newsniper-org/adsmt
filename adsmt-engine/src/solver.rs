@@ -2510,6 +2510,21 @@ impl Solver {
         &self,
         delegate: &str,
     ) -> Option<adsmt_cert::Certificate> {
+        self.build_delegated_unsat_cert_with(TheoryWitness::Opaque {
+            kind: "oxiz-delegation".into(),
+            notes: format!("unsat decided by the delegated solver ({delegate})"),
+        })
+    }
+
+    /// Build an unsat certificate for a DELEGATED verdict carrying a caller-supplied
+    /// theory `witness` — e.g. a re-checkable [`TheoryWitness::Cas`] (the obligation +
+    /// CAS witness), so the cert re-verifies OFFLINE without re-running the CAS. Same
+    /// skeleton as [`build_delegated_unsat_cert`]: assume each current assertion, then
+    /// one `Theory` step concluding `false` from them.
+    pub fn build_delegated_unsat_cert_with(
+        &self,
+        witness: TheoryWitness,
+    ) -> Option<adsmt_cert::Certificate> {
         if matches!(self.proof_mode, ProofMode::None) {
             return None;
         }
@@ -2524,10 +2539,6 @@ impl Solver {
             assume_ids.push(id);
             hyps.push(phi);
         }
-        let witness = TheoryWitness::Opaque {
-            kind: "oxiz-delegation".into(),
-            notes: format!("unsat decided by the delegated solver ({delegate})"),
-        };
         let conclusion = builder.add(
             StepBody::Theory {
                 name: "delegation".into(),

@@ -1316,11 +1316,10 @@ fn dispatch_one(
                 #[cfg(feature = "cas")]
                 let v = if matches!(v, LastStatus::Unknown) {
                     match driver.cas_delegate() {
-                        Some(cas_v @ LastStatus::Unsat) => {
-                            driver.record_delegated_unsat("cas");
-                            cas_v
+                        Some(proof) => {
+                            driver.record_cas_unsat(&proof);
+                            LastStatus::Unsat
                         }
-                        Some(cas_v) => cas_v,
                         None => v,
                     }
                 } else {
@@ -1341,11 +1340,11 @@ fn dispatch_one(
             #[cfg(feature = "cas")]
             let status = if matches!(status, LastStatus::Sat) {
                 match driver.cas_delegate() {
-                    Some(LastStatus::Unsat) => {
-                        driver.record_delegated_unsat("cas");
+                    Some(proof) => {
+                        driver.record_cas_unsat(&proof);
                         LastStatus::Unsat
                     }
-                    _ => status,
+                    None => status,
                 }
             } else {
                 status
@@ -2862,13 +2861,31 @@ impl Driver {
         Ok(())
     }
 
-    /// Record a delegated `unsat` verdict (from OxiZ or CAS): synthesise the
-    /// delegated-unsat certificate, emit it under `--emit-cert*`, and sync
-    /// `last_cert`/`last_result` so an interleaved `(get-proof)` / `(get-model)`
-    /// stays consistent with the printed line. `source` is the provenance label
+    /// Record a delegated `unsat` verdict (OxiZ, or CAS without an offline proof):
+    /// synthesise an opaque delegated-unsat certificate labelled `source`
     /// (`"oxiz"` / `"cas"`).
     fn record_delegated_unsat(&mut self, source: &str) {
         let cert = self.solver.build_delegated_unsat_cert(source);
+        self.install_delegated_cert(cert);
+    }
+
+    /// Record a CAS-discharged `unsat` with an OFFLINE-re-checkable certificate: the
+    /// `TheoryWitness::Cas` carries the serialized [`adsmt_cas::CasProof`] (obligation
+    /// + witness), so `serde_json::from_str::<CasProof>(&proof_json)?.recheck()`
+    /// re-verifies it later WITHOUT the CAS or the solver (§7 offline replay).
+    #[cfg(feature = "cas")]
+    fn record_cas_unsat(&mut self, proof: &adsmt_cas::CasProof) {
+        let class = cas_class_kebab(adsmt_cas::classify(&proof.obligation));
+        let proof_json = serde_json::to_string(proof).unwrap_or_default();
+        let witness = adsmt_cert::TheoryWitness::Cas { class: class.to_string(), proof_json };
+        let cert = self.solver.build_delegated_unsat_cert_with(witness);
+        self.install_delegated_cert(cert);
+    }
+
+    /// Emit (under `--emit-cert*`) and cache a delegated-unsat certificate so an
+    /// interleaved `(get-proof)` / `(get-model)` stays consistent with the printed
+    /// `unsat` line.
+    fn install_delegated_cert(&mut self, cert: Option<adsmt_cert::Certificate>) {
         if let Some(c) = &cert {
             self.write_emit_cert(c);
         }
@@ -2881,10 +2898,12 @@ impl Driver {
 
     /// **CAS delegation** — on a residual `Unknown` (native + OxiZ both undecided),
     /// classify the current sequent into an algebraic obligation and route it to the
-    /// manifest-enabled CAS backends. Returns `Some(LastStatus::Unsat)` iff a backend
-    /// witness RE-CHECKS (`adsmt_cas::admit`) — proving the goal `G` valid, hence the
-    /// SMT query `H ∧ ¬G` unsat — and `None` otherwise (the sound fallback: the caller
-    /// keeps the `Unknown`).
+    /// manifest-enabled CAS backends. Returns `Some(proof)` iff a backend witness
+    /// RE-CHECKS (`adsmt_cas::admit`) — proving the goal `G` valid, hence the SMT
+    /// query `H ∧ ¬G` unsat (the verdict is therefore `Unsat`); the returned
+    /// [`adsmt_cas::CasProof`] is the offline-re-checkable obligation+witness the
+    /// caller embeds in the cert. `None` otherwise (the sound fallback: the caller
+    /// keeps the `Unknown` / `Sat`).
     ///
     /// SCOPE (soundness + this-slice bounds):
     /// * disabled unless an `adsmt.toml` `[cas]` manifest was discovered at startup;
@@ -2898,7 +2917,7 @@ impl Driver {
     ///   need the `prime`-is-built-in `Env` gate (the classifier's precondition) and
     ///   are deferred to a follow-up.
     #[cfg(feature = "cas")]
-    fn cas_delegate(&self) -> Option<LastStatus> {
+    fn cas_delegate(&self) -> Option<adsmt_cas::CasProof> {
         use adsmt_cas::{CasBackend, Disposition, term};
 
         let manifest = self.cas_manifest.as_ref()?;
@@ -2961,14 +2980,16 @@ impl Driver {
         let numtheory = cas_backend_numtheory::NumTheoryBackend::new();
         let backends: Vec<&dyn CasBackend> = vec![&singular, &mathhook, &numtheory];
 
-        match adsmt_cas::dispatch(manifest, &backends, &obligation) {
+        match adsmt_cas::dispatch_with_proof(manifest, &backends, &obligation) {
             // A re-checked verdict on the POSITIVE goal `G` means `G` is VALID (every
             // recognized class only ever proves its goal valid — an ideal-membership
             // equation holds, or a Diophantine solution exists), so the SMT query
             // `H ∧ ¬G` is UNSAT. The obligation-level Sat/Unsat label is about the
             // algebraic fact, not the query polarity (see `adsmt_cas::term::consult`).
-            Disposition::Verdict(_) => Some(LastStatus::Unsat),
-            Disposition::Unknown => None,
+            // Return the re-checked proof so the caller emits an offline-re-checkable
+            // `TheoryWitness::Cas` cert.
+            (Disposition::Verdict(_), proof) => proof,
+            (Disposition::Unknown, _) => None,
         }
     }
 
@@ -3764,6 +3785,21 @@ fn promote_prime(t: &Term) -> Term {
     }
 }
 
+/// The manifest kebab-case name of a CAS obligation class — stamped into the
+/// `TheoryWitness::Cas` certificate for provenance and to route offline re-check.
+#[cfg(feature = "cas")]
+fn cas_class_kebab(c: adsmt_cas::CasClass) -> &'static str {
+    use adsmt_cas::CasClass::*;
+    match c {
+        IdealMembership => "ideal-membership",
+        Factorization => "factorization",
+        Compositeness => "compositeness",
+        Primality => "primality",
+        DiophantineExists => "diophantine-exists",
+        UniversalRefutation => "universal-refutation",
+    }
+}
+
 /// Expand `define-fun` call sites in `e` against the user's
 /// [`SymbolRegistry`] before the term hits `convert_expr`. Nullary
 /// defined symbols substitute by their body; arity-N calls replace
@@ -3989,6 +4025,45 @@ mod cas_glue_tests {
         assert!(
             adsmt_cas::term::classify_primality(&promoted).is_some(),
             "the promoted built-in `Const(prime)` classifies as primality"
+        );
+    }
+
+    #[test]
+    fn cas_proof_round_trips_and_re_checks_offline() {
+        // F3: the winning CasProof serializes → deserializes → RE-CHECKS via the same
+        // `admit`, WITHOUT re-running the CAS — the offline `TheoryWitness::Cas` replay.
+        // Skip-gated on Singular (the membership witness producer).
+        let path = std::env::var("ADSMT_SINGULAR_PATH")
+            .ok()
+            .filter(|p| std::path::Path::new(p).exists())
+            .or_else(|| {
+                let d = "/usr/bin/Singular";
+                std::path::Path::new(d).exists().then(|| d.to_string())
+            });
+        let Some(path) = path else {
+            eprintln!("skipping: Singular not found");
+            return;
+        };
+        let sym = xyz_symbols();
+        let h1 = convert("(= (* x y) 1)", &sym);
+        let h2 = convert("(= (* y z) 1)", &sym);
+        let goal = convert("(not (= x z))", &sym).dest_not().unwrap();
+        let ob = adsmt_cas::term::classify_membership(&[h1, h2], &goal).unwrap();
+        let manifest =
+            adsmt_cas::manifest::CasManifest::from_adsmt_toml("[cas]\nenabled = [\"singular\"]\n")
+                .unwrap();
+        let singular = cas_backend_singular::SingularBackend::new(path);
+        let backends: Vec<&dyn adsmt_cas::CasBackend> = vec![&singular];
+        let (disp, proof) = adsmt_cas::dispatch_with_proof(&manifest, &backends, &ob);
+        assert_eq!(disp, adsmt_cas::Disposition::Verdict(adsmt_cas::Verdict::Unsat));
+        let proof = proof.expect("a re-checked proof");
+        // Serialize (as embedded in a `TheoryWitness::Cas`) → deserialize → re-check.
+        let json = serde_json::to_string(&proof).expect("serialize");
+        let back: adsmt_cas::CasProof = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.recheck(),
+            adsmt_cas::Disposition::Verdict(adsmt_cas::Verdict::Unsat),
+            "the offline-deserialized proof must re-check to the same verdict"
         );
     }
 

@@ -127,6 +127,7 @@ pub fn witness_summary(w: &TheoryWitness) -> String {
             clauses.len(),
             proof.steps.len(),
         ),
+        TheoryWitness::Cas { class, .. } => format!("Cas({class})"),
         TheoryWitness::Opaque { kind, .. } => format!("Opaque({kind})"),
     }
 }
@@ -227,6 +228,7 @@ fn required_for_witness(witness: &TheoryWitness) -> ClassicalSet {
         | TheoryWitness::Arrays(_)
         | TheoryWitness::Datatypes(_)
         | TheoryWitness::Polite(_)
+        | TheoryWitness::Cas { .. } // CAS re-check is constructive (exact ℚ/ℤ arith); no classical axioms
         | TheoryWitness::Opaque { .. } => ClassicalSet::empty(),
     }
 }

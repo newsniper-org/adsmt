@@ -51,6 +51,17 @@ pub enum TheoryWitness {
         lfsc_bytes: Vec<u8>,
         coq_bytes: Vec<u8>,
     },
+    /// **CAS delegation** — an algebraic obligation discharged by an untrusted CAS
+    /// backend and re-checked by `adsmt-cas::admit`. `class` is the obligation class
+    /// (`"ideal-membership"` / `"factorization"` / `"compositeness"` / `"primality"`
+    /// / `"diophantine-exists"`), and `proof_json` is a serialized `adsmt_cas::CasProof`
+    /// (obligation + witness). It is OFFLINE-re-checkable WITHOUT re-running the CAS
+    /// or the solver: `serde_json::from_str::<CasProof>(&proof_json)?.recheck()` runs
+    /// the SAME trusted `admit`. `adsmt-cert` stays dependency-light (the payload is
+    /// an opaque JSON string here); the re-checker lives in `adsmt-cas`. An optional
+    /// `provenance` (a backend's step-by-step explanation) rides ALONG for humans —
+    /// it is TEXT and never affects the re-check.
+    Cas { class: String, proof_json: String },
     /// Escape hatch for theories whose witness format is not yet
     /// frozen (e.g. BV/FP/Strings still under design). Carries the
     /// theory kind and a free-form note so a checker can at least
