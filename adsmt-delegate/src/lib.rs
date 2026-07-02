@@ -52,12 +52,22 @@ pub fn render_smtlib(hyps: &[Term], goal: &Term, has_datatypes: bool) -> Option<
     collect_decls(goal, &bound, &mut sorts, &mut consts)?;
 
     let mut out = String::new();
-    // Engage OxiZ's full theory dispatch (nlsat / MBQI). Without a logic OxiZ can
-    // fall onto a linear/opaque path that mis-handles a nonlinear atom; `ALL` routes
-    // it through the same dispatch the z3-parity corpus validates. (Soundness does
-    // not rely on this — we trust only OxiZ's `unsat` — but it is what makes the
-    // `unsat` reachable at all on nonlinear / quantified obligations.)
-    out.push_str("(set-logic ALL)\n");
+    // Choose the TIGHTEST sound logic. OxiZ's sound nonlinear dispatch
+    // (`dispatch_nl_solver`) only engages when the logic string contains `NIA` /
+    // `NRA`; under `ALL` a nonlinear atom falls onto the opaque CDCL(T) path (sound
+    // only for `unsat` — a `sat` there is downgraded to `unknown`). So for a
+    // quantifier-free nonlinear obligation we emit `QF_NIA` (pure integer) or
+    // `QF_NRA` (any real — a real-relaxation `unsat` is a sound `unsat` for the
+    // integer restriction too), which lets OxiZ actually PROVE the goal (e.g.
+    // `x*x = 3` → `unsat`) instead of abstaining. Everything else (linear,
+    // quantified, EUF) stays `ALL` — native already decides the linear/quantified
+    // fragment, and a quantifier under a `QF_*` logic would be mis-routed.
+    let mut th = TheoryFlags::default();
+    for h in hyps {
+        analyze(h, &mut th);
+    }
+    analyze(goal, &mut th);
+    out.push_str(&format!("(set-logic {})\n", th.logic()));
     // Uninterpreted sorts (Int / Real / Bool are built in and never collected).
     for s in &sorts {
         out.push_str(&format!("(declare-sort {s} 0)\n"));
@@ -191,6 +201,87 @@ fn render_expr(t: &Term, bound: &HashSet<String>) -> Option<String> {
         // A bare lambda (function value) has no SMT-LIB expression form.
         TermInner::Lam(_, _) => None,
     }
+}
+
+/// Which theories the obligation touches — drives the `(set-logic …)` choice.
+#[derive(Default)]
+struct TheoryFlags {
+    /// A product of two non-numeral terms (`(* a b)` with a var on both sides).
+    nonlinear: bool,
+    /// Any `Real`-sorted symbol.
+    real: bool,
+    /// Any `forall` / `exists`.
+    quant: bool,
+}
+
+impl TheoryFlags {
+    /// The tightest sound SMT-LIB logic. Only route to `QF_NIA` / `QF_NRA` for a
+    /// quantifier-free nonlinear obligation (so OxiZ's sound nonlinear dispatch
+    /// engages); everything else stays `ALL`.
+    fn logic(&self) -> &'static str {
+        if self.nonlinear && !self.quant {
+            if self.real { "QF_NRA" } else { "QF_NIA" }
+        } else {
+            "ALL"
+        }
+    }
+}
+
+/// Walk `t`, setting the [`TheoryFlags`] it touches.
+fn analyze(t: &Term, f: &mut TheoryFlags) {
+    if let Some((_kw, v, body)) = dest_quant(t) {
+        f.quant = true;
+        analyze_type(&v.ty, f);
+        analyze(&body, f);
+        return;
+    }
+    match t.kind() {
+        TermInner::Var(v) => analyze_type(&v.ty, f),
+        TermInner::Const(_) => {}
+        TermInner::App(_, _) => {
+            if let Some((a, b)) = dest_mul(t)
+                && !is_numeral(&a)
+                && !is_numeral(&b)
+            {
+                f.nonlinear = true;
+            }
+            let mut head = t;
+            while let TermInner::App(g, x) = head.kind() {
+                analyze(x, f);
+                head = g;
+            }
+            analyze(head, f);
+        }
+        TermInner::Lam(v, body) => {
+            analyze_type(&v.ty, f);
+            analyze(body, f);
+        }
+    }
+}
+
+fn analyze_type(ty: &Type, f: &mut TheoryFlags) {
+    if let Type::Const(c) = ty
+        && c.name == "Real"
+    {
+        f.real = true;
+    }
+}
+
+/// `(* a b)` = `App(App(Const("*"), a), b)` destructured to `(a, b)`.
+fn dest_mul(t: &Term) -> Option<(Term, Term)> {
+    if let TermInner::App(f, b) = t.kind()
+        && let TermInner::App(g, a) = f.kind()
+        && let TermInner::Const(c) = g.kind()
+        && c.name == "*"
+    {
+        return Some((a.clone(), b.clone()));
+    }
+    None
+}
+
+/// A numeric literal (`Const` whose name parses as an integer or decimal).
+fn is_numeral(t: &Term) -> bool {
+    matches!(t.kind(), TermInner::Const(c) if c.name.parse::<i128>().is_ok() || c.name.parse::<f64>().is_ok())
 }
 
 #[cfg(feature = "cas")]

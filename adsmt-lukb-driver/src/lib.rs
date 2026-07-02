@@ -185,12 +185,11 @@ mod tests {
     }
 
     // A VALID but NONLINEAR goal `x>0 ⟹ x*x>0`. The bare native engine abstains on
-    // the nonlinear `x*x` (returns `Unknown`), and OxiZ's in-process nonlinear-INTEGER
-    // path currently returns a (spurious) `sat` on it — the `x*x = 3` gap verus-fork
-    // flagged as still open. The SOUNDNESS point of the delegation wiring is that this
-    // spurious `sat` must NOT corrupt the lu-kb verdict: because `delegate_resolve`
-    // trusts only an OxiZ `unsat`, the goal stays a sound `Unknown` (never a wrong
-    // `DefiniteSat`), so the `UnifiedVerdict` §5 differential is preserved.
+    // the nonlinear `x*x` (returns `Unknown`). With the `oxiz` feature the driver
+    // renders the negated obligation `x>0 ∧ x*x<=0` under the tight `QF_NIA` logic
+    // (adsmt-delegate::render_smtlib's theory detection), so OxiZ's sound nonlinear
+    // dispatch engages and PROVES it `unsat` — the goal is verified `DefiniteUnsat`.
+    // This is the concrete OxiZ-delegation win over the bare native engine.
     const NONLINEAR_VALID: &str = "const x: Int\ngoal g: x > 0 |- x * x > 0\n";
 
     #[cfg(not(any(feature = "oxiz", feature = "cas")))]
@@ -202,12 +201,11 @@ mod tests {
 
     #[cfg(feature = "oxiz")]
     #[test]
-    fn oxiz_spurious_sat_does_not_corrupt_the_verdict() {
-        // OxiZ (in-process, no set-logic-tuned nlsat) can return a spurious `sat` on
-        // this nonlinear-integer case; the delegation MUST ignore it (trust only
-        // `unsat`) and leave the sound `Unknown`, never a wrong `DefiniteSat`.
+    fn oxiz_delegation_verifies_a_nonlinear_goal_native_cannot() {
+        // render → `(set-logic QF_NIA)` + `x>0 ∧ x*x<=0` → OxiZ `unsat` → verified.
+        // Also a soundness guard: delegation must NEVER introduce a `DefiniteSat`.
         let v = solve(NONLINEAR_VALID);
-        assert_eq!(v.collapse(), TriState::Unknown, "spurious sat must not flip the verdict: {v:?}");
-        assert_ne!(v.smt, Some(Confidence::DefiniteSat), "delegation must never introduce a Sat: {v:?}");
+        assert_eq!(v.smt, Some(Confidence::DefiniteUnsat), "OxiZ should verify it: {v:?}");
+        assert_eq!(v.collapse(), TriState::Unsat);
     }
 }
