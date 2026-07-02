@@ -86,7 +86,19 @@ impl MPoly {
     /// it is free of the §9-B1 GF(2)-crate unsoundness.
     pub fn is_zero_mod(&self, m: &BigInt) -> bool {
         use num_integer::Integer;
+        if m.is_zero() {
+            return self.is_zero(); // `≡ 0 (mod 0)` ⟺ `= 0`; also guards `% 0` panic
+        }
         self.terms.values().all(|c| c.denom().gcd(m).is_one() && (c.numer() % m).is_zero())
+    }
+
+    /// Is every coefficient an INTEGER (denominator 1) — i.e. is this in `ℤ[x̄]`?
+    /// The `ℤ` factorization re-check needs it: a factor with a rational coefficient
+    /// is NOT in `ℤ[x̄]`, so a witness like `[1/2, 2x]` for `x` (IRREDUCIBLE over ℤ)
+    /// must be rejected — over ℤ the only units are `±1`, and `1/2` is not even a
+    /// ring element, so the `±1`-unit check alone would wrongly admit it.
+    pub fn is_integer_poly(&self) -> bool {
+        self.terms.values().all(|c| c.denom().is_one())
     }
 
     /// Does this polynomial have a non-constant monomial whose coefficient is a
@@ -96,6 +108,9 @@ impl MPoly {
     /// that collapses to a constant/unit mod `p` (e.g. `p·x + 1 ≡ 1`).
     pub fn has_nonconstant_term_mod(&self, m: &BigInt) -> bool {
         use num_integer::Integer;
+        if m.is_zero() {
+            return self.as_constant().is_none(); // mod 0 = over ℤ; guards `% 0` panic
+        }
         self.terms
             .iter()
             .any(|(mono, c)| !mono.is_empty() && c.denom().gcd(m).is_one() && !(c.numer() % m).is_zero())

@@ -320,7 +320,16 @@ pub fn admit(obligation: &Obligation, witness: &Witness) -> Disposition {
             // equation / `x²=x` applied, so free of the §9-B1 GF(2) unsoundness).
             let holds = match ring {
                 Ring::Z | Ring::Q | Ring::R => diff.is_zero(),
-                Ring::IntModulo(m) | Ring::GF(m) => diff.is_zero_mod(m),
+                Ring::IntModulo(m) | Ring::GF(m) => {
+                    // A modulus `< 2` is a degenerate ring: `ℤ/1ℤ` (the zero ring)
+                    // makes `is_zero_mod` VACUOUSLY true — every cofactor, even a
+                    // wrong one, would be admitted (a false `unsat`) — and `m = 0`
+                    // would divide by zero. Reject both ⇒ Unknown (sound).
+                    if m < &BigInt::from(2) {
+                        return Disposition::Unknown;
+                    }
+                    diff.is_zero_mod(m)
+                }
                 Ring::Gf2 => return Disposition::Unknown, // §9-B1: forbidden legacy marker
             };
             if holds {
@@ -341,10 +350,18 @@ pub fn admit(obligation: &Obligation, witness: &Witness) -> Disposition {
             // ring proves nothing. Units differ by ring — `±1` over ℤ, any nonzero
             // constant over a field — so the check must be ring-relative.
             let ok = match ring {
-                // Domains/fields where units are constants. (Gauss's lemma: a
-                // ℚ-reducible primitive polynomial is ℤ-reducible, so the exact-ℚ
-                // product identity is sound for ℤ as well.)
-                Ring::Z | Ring::Q | Ring::R => {
+                // ℤ: factors must live in ℤ[x̄] (integer coefficients) AND be
+                // non-units (`±1`). Integrality is LOAD-BEARING: `1/2` is not in
+                // ℤ[x̄] and is not `±1`, so without it a witness `[1/2, 2x]` would
+                // wrongly "factor" the IRREDUCIBLE `x` (spurious Sat). Over a field
+                // that hole is closed by `is_unit_poly` (every nonzero constant is a
+                // unit), so ℚ/ℝ need no integrality (and requiring it would drop
+                // valid rational-coefficient factorizations).
+                Ring::Z => {
+                    factors.iter().all(|p| p.is_integer_poly() && !ring.is_unit_poly(p) && !p.is_zero())
+                        && MPoly::product(factors).sub(target).is_zero()
+                }
+                Ring::Q | Ring::R => {
                     factors.iter().all(|p| !ring.is_unit_poly(p) && !p.is_zero())
                         && MPoly::product(factors).sub(target).is_zero()
                 }
@@ -895,6 +912,57 @@ mod tests {
         let collapses = c(3).mul(&x()).add(&c(1)); // 3x+1 ≡ 1 (mod 3)
         assert_eq!(
             admit(&Obligation::Factorization { ring: Ring::GF(bi(3)), target }, &Witness::Factors(vec![collapses, x().add(&c(1))])),
+            Disposition::Unknown
+        );
+    }
+
+    // ── adversarial regressions (workflow cas-p110-ring-adversarial) ──────────
+
+    #[test]
+    fn modular_membership_over_degenerate_moduli_is_unknown_not_panic() {
+        // m=0 (would divide by zero) and m=1 (ℤ/1ℤ zero ring ⇒ is_zero_mod
+        // VACUOUSLY true ⇒ a WRONG cofactor wrongly Unsat). Both ⇒ Unknown.
+        // Use a WRONG cofactor: f=x, g=[1], q=5 ⇒ diff = x − 5 (≢ 0 over any real ring).
+        let f = x();
+        let gens = vec![c(1)];
+        let wrong = Witness::Cofactors(vec![(0, c(5))]);
+        for m in [0i64, 1] {
+            for ring in [Ring::IntModulo(bi(m)), Ring::GF(bi(m))] {
+                assert_eq!(
+                    admit(&Obligation::IdealMembership { ring, f: f.clone(), generators: gens.clone() }, &wrong),
+                    Disposition::Unknown,
+                    "degenerate modulus {m} must be Unknown (no panic / no false Unsat)",
+                );
+            }
+        }
+        // m=2 (valid) with the SAME wrong cofactor is still Unknown (diff = x−5,
+        // and x is not ≡ 0 mod 2), confirming the guard didn't over-reject.
+        assert_eq!(
+            admit(&Obligation::IdealMembership { ring: Ring::IntModulo(bi(2)), f, generators: gens }, &wrong),
+            Disposition::Unknown
+        );
+    }
+
+    #[test]
+    fn z_factorization_rejects_rational_factors() {
+        // THE cross-ring-edge break: `x` is IRREDUCIBLE over ℤ, but the witness
+        // [1/2, 2x] has ℚ-product x = target and `1/2` is not `±1`, so without the
+        // integrality check it would be admitted (spurious Sat). `1/2 ∉ ℤ[x]` ⇒
+        // the integrality guard rejects it ⇒ Unknown.
+        let half = MPoly::constant(BigRational::new(BigInt::from(1), BigInt::from(2)));
+        let two_x = c(2).mul(&x());
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::Z, target: x() }, &Witness::Factors(vec![half, two_x])),
+            Disposition::Unknown
+        );
+        // A genuine INTEGER factorization of 2x²−2 = 2·(x²−1) is still admitted.
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::Z, target: c(2).mul(&x().mul(&x()).sub(&c(1))) }, &Witness::Factors(vec![c(2), x().mul(&x()).sub(&c(1))])),
+            Disposition::Verdict(Verdict::Sat)
+        );
+        // Over ℚ, the same [1/2, 2x] is rejected because 1/2 IS a unit (a field).
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::Q, target: x() }, &Witness::Factors(vec![MPoly::constant(BigRational::new(BigInt::from(1), BigInt::from(2))), c(2).mul(&x())])),
             Disposition::Unknown
         );
     }

@@ -715,3 +715,30 @@ regression ([[feedback_empirical_adversarial_review]]):
 overshoot-malformed 25, and 21 are all rejected → `Unknown`. (By Lucas's theorem a
 valid cert exists IFF `n` is prime, so any real break would be an implementation
 hole, not the math; none was found.)
+
+### 9.3 P1.10 ring-generalization adversarial review (2026-07-02)
+
+A 4-lens adversarial workflow attacked the ring-aware re-check (modular
+membership, ring-unit/factorization, the `gf_is_field` gate, cross-ring edges).
+The ring-unit/factorization lens found the core ROBUST, but three defects surfaced
+and were fixed:
+
+- **B9 — degenerate modulus panic / false-`unsat`.** `IntModulo(0)`/`GF(0)`
+  membership hit `numer % 0` → a divide-by-zero PANIC (not the sound `Unknown`
+  fallback); `IntModulo(1)`/`GF(1)` made `is_zero_mod` VACUOUSLY true (`ℤ/1ℤ` is
+  the zero ring) → a WRONG cofactor admitted as `Unsat`. **Fix:** the modular
+  membership arm rejects `m < 2` → `Unknown`; `is_zero_mod`/`has_nonconstant_term_mod`
+  also guard `m = 0` defensively. (Factorization was already safe — `gf_is_field`
+  gates `GF`, `IntModulo` factorization is forbidden.)
+- **B10 — ℤ factorization admits rational (non-`ℤ[x]`) factors.** `is_unit_poly`
+  over ℤ only rejects `±1`, so a witness `[1/2, 2x]` (ℚ-product `x`) slipped
+  through — but `1/2 ∉ ℤ[x]`, so it "factored" the IRREDUCIBLE `x`: a spurious
+  `Sat`. **Fix:** ℤ factorization additionally requires every factor to be in
+  `ℤ[x̄]` (`MPoly::is_integer_poly`). Fields (ℚ/ℝ) are already sound — every nonzero
+  constant is a unit there, so `1/2` is rejected as a unit — and need no
+  integrality (which would drop valid rational-coefficient factorizations).
+- The `gf_is_field` trial-division gate itself was confirmed correct (the
+  `d*d <= p` bound catches perfect-square composites; huge `p` fail-closed).
+
+Regressions: `modular_membership_over_degenerate_moduli_is_unknown_not_panic`,
+`z_factorization_rejects_rational_factors`.
