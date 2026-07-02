@@ -8,6 +8,7 @@ members = [
     # the Singular subprocess backend (untrusted, gated by admit()).
     "adsmt-cas",
     "cas-backends/cas-backend-singular",
+    "cas-backends/cas-backend-mathhook",
     "adsmt-theory",
     # §3.4 GF(2) Gröbner-basis theory sibling per the
     # verus-fork engine-refactor request (§3.4 of
@@ -89,7 +90,11 @@ members = [
     "adsmtc",
     "adsmtr",
 ]
-exclude = ["external/oxiz"]
+# external/oxiz + external/mathhook are vendored FORKS (their own cargo
+# workspaces), consumed by path (oxiz via [patch], mathhook via cas-backend-mathhook's
+# path dep). Excluding them keeps cargo from mis-attaching their crates to THIS
+# workspace (else they'd try to inherit AD1's `workspace.package`).
+exclude = ["external/oxiz", "external/mathhook"]
 
 [workspace.package]
 # 1.0.0-rc.1 → 1.0.0-rc.2 — pre-stable audit cycle. RC1 landed

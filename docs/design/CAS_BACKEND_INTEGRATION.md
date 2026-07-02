@@ -436,6 +436,27 @@ Rules that make it load-bearing:
   these sorts to route to the `adsmt-cas` re-check on engine-Unknown (the
   live-consult integration) — NOT an `Int` relativization (the sort's four
   operations are not integer arithmetic).
+- **P1.13 — MathHook backend (in-process), LANDED (skeleton + soundness envelope).**
+  `cas-backend-mathhook` (`cas-backends/`) links **MathHook** — the user's fork
+  <https://github.com/Honey-Be/mathhook> (upstream
+  <https://github.com/AhmedMashour/mathhook>) — vendored as the
+  **`external/mathhook` submodule** (branch `master`) and consumed **by path**
+  (`mathhook-core = { path = "../../external/mathhook/crates/mathhook-core" }`),
+  mirroring how `external/oxiz` is vendored (both are `exclude`d from the AD1
+  workspace so cargo does not mis-attach their crates). MathHook is **MIT OR
+  Apache-2.0**, so — unlike GPL Singular (a subprocess) — it links **in-process**
+  (the first in-process CAS backend). It advertises `Factorization`
+  and converts the target `MPoly` → a MathHook `Expression`, factors it, and reads
+  the factors back to a `Witness::Factors` (`src/convert.rs`, a CONSERVATIVE
+  faithful-reflection round-trip — any shape it cannot round-trip ⇒ `None` ⇒
+  `Undecided`). Only offered for char-0 rings (ℤ/ℚ/ℝ; `admit` is ring-aware and
+  would gate a mod-`p` witness regardless). **Soundness is unchanged by MathHook's
+  quality:** every witness is re-checked by `admit`, so a MathHook bug can only ever
+  downgrade to `Unknown`. Empirically, current published MathHook `factor()` is
+  weak (see §10): it does NOT split the difference of squares (`try_quadratic_factoring`
+  is a stub) and its common-factor division mis-divides `x²/x` as `x²` — both are
+  caught by `admit` (the backend's tests assert the soundness envelope, not a
+  positive verdict). Making the backend genuinely USEFUL is the §10 contribute-back.
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No
@@ -791,3 +812,45 @@ quotient. As robustness (not a soundness fix), `GfpnField::new` now canonicalize
 the `modulus` mod `p`, which also makes the monic test honest (a leading `4` over
 `p = 3` IS monic) and `GfpnField` equality mean "same field"
 (`non_canonical_modulus_is_canonicalized_not_a_wrong_quotient`).
+
+## 10. MathHook contribute-back (fork: Honey-Be/mathhook)
+
+The MathHook backend (§5 P1.13) links MathHook in-process, but the currently
+published `factor()` is too weak to yield an `admit`-passing witness on the common
+cases. Both gaps below are **soundness-neutral** for adsmt (the `admit` firewall
+downgrades any wrong factorization to `Unknown`) — they are pure *usefulness*
+gaps, and both are well-scoped upstream fixes. Development happens on the user's
+fork <https://github.com/Honey-Be/mathhook>; the PR back to upstream
+(<https://github.com/AhmedMashour/mathhook>) is the eventual target.
+
+- **CB-1 — `divide_by_factor` mis-divides a power by its base.**
+  `crates/mathhook-core/src/algebra/factor/common.rs` `divide_by_factor(expr,
+  factor)` has arms for `(Number, Number)`, `(Symbol, Symbol)`, and `(Mul, _)`, but
+  NO arm for `(Pow(base, n), base)` — so `x² ÷ x` falls through to `_ => expr.clone()`
+  and returns `x²` unchanged. Result: `factor()` on `x² − x` returns
+  `x·(x² − 1) = x³ − x ≠ x² − x`. Fix: add `(Pow(base, Number::Integer(n)), f)`
+  where `base == f` ⇒ `Pow(base, n−1)` (collapsing `n−1 = 1` to `base`, `n−1 = 0`
+  to `1`), and handle `factor` itself being a `Pow` of the same base (subtract
+  exponents); the `(Mul, _)` arm should likewise divide a `Pow`-of-`factor` element.
+- **CB-2 — `try_quadratic_factoring` is a stub; the difference-of-squares helper is
+  orphaned.** `factor/quadratic.rs` `try_quadratic_factoring` returns `None`, and
+  `factor_difference_of_squares(a, b)` exists but is never called from `factor()`.
+  So `x² − 1` is returned unfactored. Fix: recognise `a·x² + c` with `a, c` sign-
+  opposite perfect squares (⇒ difference of squares via the existing helper) and,
+  more generally, the monic integer quadratic `x² + bx + c` with integer roots
+  (`x²+bx+c = (x−r)(x−s)`, `r+s=−b`, `rs=c`) — wiring both into
+  `factor_addition`'s `common_factor.is_one()` branch (where `try_quadratic_factoring`
+  is already the fallback).
+- **CB-3 (strategic, larger) — a cofactor-WITNESS Gröbner membership.** MathHook
+  ships a `groebner` module whose `GroebnerBasis::contains` returns `bool` (with a
+  FIXME on convergence). adsmt's ideal-membership obligation needs the COFACTOR
+  tuple (`f = Σ gᵢ·bᵢ`), not a yes/no — contributing a witness-returning reduction
+  (and the convergence fix) would let the MathHook backend cover `IdealMembership`
+  too. Capabilities adsmt-cas has that MathHook lacks (GF(pⁿ) native arithmetic,
+  Pratt primality, modular membership) are candidate contributions in the other
+  direction.
+- **Educational features (provenance, advisory only).** MathHook's `educational`
+  module (`StepByStep`/`EducationalExt`) yields human-readable derivation steps.
+  These flow into the CAS-admitted certificate (§7 provenance) and the advisory-
+  abduct / `prover_emit` surfaces as text — ORTHOGONAL to the soundness firewall
+  (never move a verdict). Wired alongside the cert plumbing, not in this slice.

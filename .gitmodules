@@ -18,3 +18,7 @@
 [submodule "external/ccfv-verification"]
 	path = external/ccfv-verification
 	url = https://codeberg.org/newsniper-org/ccfv-verification.git
+[submodule "external/mathhook"]
+	path = external/mathhook
+	url = https://github.com/Honey-Be/mathhook.git
+	branch = master
