@@ -665,6 +665,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn primality_adversarial_pseudoprimes_all_rejected() {
+        // Empirical confirmation of the cas-p19-pratt-adversarial workflow's
+        // predictions ([[feedback_empirical_adversarial_review]]): EXECUTE the
+        // proposed break-certs, assert every composite is rejected.
+        let unknown = |n: i64, cert: PrattCert| {
+            assert_eq!(
+                admit(&Obligation::Primality { n: bi(n) }, &Witness::PrattPrime(cert)),
+                Disposition::Unknown,
+                "composite {n} must NOT be certified prime",
+            );
+        };
+        // 341 = 11·31 — a FERMAT pseudoprime to base 2 (2^340≡1 mod 341), a
+        // distinct class from Carmichael. 340 = 2^2·5·17 (well-formed factor tree),
+        // yet some 2^(340/q)≡1 (mod 341) ⇒ the Lucas ≢1 side condition fails ⇒ reject.
+        unknown(341, pc(2, vec![
+            (2, 2, p2()),
+            (5, 1, pc(2, vec![(2, 2, p2())])),           // 5-1 = 4 = 2^2
+            (17, 1, pc(3, vec![(2, 4, p2())])),          // 17-1 = 16 = 2^4, base 3
+        ]));
+        // 561 Carmichael with a DIFFERENT base (4) — confirms NO base certifies it.
+        unknown(561, pc(4, vec![
+            (2, 4, p2()),
+            (5, 1, pc(2, vec![(2, 2, p2())])),
+            (7, 1, pc(3, vec![(2, 1, p2()), (3, 1, cert3())])),
+        ]));
+        // 9 = 3² with base 8 ≡ −1 (mod 9): 8^8≡1 (Fermat) but 8^4≡1 ⇒ Lucas q=2 fails.
+        unknown(9, pc(8, vec![(2, 3, p2())]));
+        // 25 = 5² with a malformed exponent (2·4^3 = 128 > 24) ⇒ overshoot early-reject.
+        unknown(25, pc(2, vec![(2, 1, p2()), (4, 3, p2())]));
+        // 21 = 3·7 — no base passes both Fermat and the primitive-root test.
+        unknown(21, pc(10, vec![(2, 1, p2()), (5, 1, pc(2, vec![(2, 2, p2())]))]));
+    }
+
     // ── dispatch (manifest-driven, admit-gated) ──────────────────────────────
     struct Mock {
         nm: &'static str,

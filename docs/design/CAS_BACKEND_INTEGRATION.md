@@ -668,3 +668,23 @@ system is also a real one, `ℤ⊂ℝ`). One lens found a **real break**:
   `x!k` names, never duplicates. Regression-tested (`shadowed_binders_*`,
   `an_unrecognized_lower_bound_bails_all_or_nothing`,
   `a_partial_application_of_an_arith_op_is_not_a_polynomial`).
+
+### 9.2 P1.9 Pratt-re-checker adversarial review (2026-07-02)
+
+A 4-lens adversarial workflow attacked `pratt_verifies` (lenses: Fermat/Carmichael
+evasion, product-factorization hinge, recursion/base-case/budget, modpow/arith),
+each tasked to construct a Pratt cert that certifies a COMPOSITE as prime (a
+spurious `Sat`). **All four assessed the re-checker ROBUST — no break found.** The
+soundness rests on: the exact `∏ qᵢ^eᵢ = n−1` product check (forces the full
+factorization — no partial-factor masquerade), the recursive prime-verification of
+each `qᵢ`, the Fermat + Lucas-`≢1`-for-every-`qᵢ` conditions, and the fail-closed
+node budget (the iterative worklist returns `true` ONLY when it drains within
+budget, so a composite sub-node can never be skipped into acceptance). The one
+caveat — a hypothetical `num-bigint` `modpow`/division bug — is an external-crate
+trust assumption, not this code. The proposed attacks were then EXECUTED as a
+regression ([[feedback_empirical_adversarial_review]]):
+`primality_adversarial_pseudoprimes_all_rejected` confirms the Fermat pseudoprime
+341, Carmichael 561 (a *second* base), the `−1` parity base on 9, an
+overshoot-malformed 25, and 21 are all rejected → `Unknown`. (By Lucas's theorem a
+valid cert exists IFF `n` is prime, so any real break would be an implementation
+hole, not the math; none was found.)
