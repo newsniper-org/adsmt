@@ -58,7 +58,7 @@ pub mod drat_payload;
 pub use adsmt_parser_lfsc_drat::lfsc_parse;
 
 pub use common::{
-    aggregate_allow, aggregate_required, aggregate_should,
+    aggregate_allow, aggregate_required, aggregate_should, cas_provenance,
     classify_type, collect_free_vars, direct_required_for_body,
     escape_for_comment, isabelle_axiom_keywords, isabelle_import_line,
     lean_axiom_keywords, lean_import_line, missing_imports,

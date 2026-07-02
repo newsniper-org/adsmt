@@ -2877,9 +2877,18 @@ impl Driver {
     fn record_cas_unsat(&mut self, proof: &adsmt_cas::CasProof) {
         let class = cas_class_kebab(adsmt_cas::classify(&proof.obligation));
         let proof_json = serde_json::to_string(proof).unwrap_or_default();
-        let witness = adsmt_cert::TheoryWitness::Cas { class: class.to_string(), proof_json };
+        let witness =
+            adsmt_cert::TheoryWitness::Cas { class: class.to_string(), proof_json };
         let cert = self.solver.build_delegated_unsat_cert_with(witness);
         self.install_delegated_cert(cert);
+        // ADVISORY provenance (a backend's step-by-step explanation, when present) →
+        // STDERR only, so stdout stays the pure verdict stream (the streaming
+        // `<<DONE>>` contract). Text only; it rides AFTER the verdict is fixed and can
+        // never move it — same discipline as `--lint` / `--audit-json`. This is the
+        // single funnel both CAS-discharge callsites pass through.
+        if let Some(prov) = &proof.provenance {
+            eprintln!("lu-smt: cas-provenance ({class}): {prov}");
+        }
     }
 
     /// Emit (under `--emit-cert*`) and cache a delegated-unsat certificate so an

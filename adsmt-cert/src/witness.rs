@@ -58,9 +58,15 @@ pub enum TheoryWitness {
     /// (obligation + witness). It is OFFLINE-re-checkable WITHOUT re-running the CAS
     /// or the solver: `serde_json::from_str::<CasProof>(&proof_json)?.recheck()` runs
     /// the SAME trusted `admit`. `adsmt-cert` stays dependency-light (the payload is
-    /// an opaque JSON string here); the re-checker lives in `adsmt-cas`. An optional
-    /// `provenance` (a backend's step-by-step explanation) rides ALONG for humans —
-    /// it is TEXT and never affects the re-check.
+    /// an opaque JSON string here); the re-checker lives in `adsmt-cas`.
+    ///
+    /// **Consumer rule (load-bearing):** a checker MUST re-verify via
+    /// `serde_json::from_str::<adsmt_cas::CasProof>(proof_json)?.recheck()` and MUST
+    /// treat the `class` token and any embedded advisory `provenance` as UNTRUSTED
+    /// hints — re-derive the class with `classify(&proof.obligation)`, never trust
+    /// the wire. A serialized `CasProof` may carry an optional `provenance` (a
+    /// backend's step-by-step explanation) INSIDE `proof_json` (not a field of this
+    /// variant); it is TEXT for humans and never affects `recheck`.
     Cas { class: String, proof_json: String },
     /// Escape hatch for theories whose witness format is not yet
     /// frozen (e.g. BV/FP/Strings still under design). Carries the

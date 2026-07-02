@@ -20,8 +20,10 @@ adsmt-heuristic-checker-macros = { version = "=1.0.0-rc.40", path = "../adsmt-he
 # reader), extracted into a dependency-free leaf crate; `drat`
 # and `prover_emit::lfsc_parse` re-export it.
 adsmt-parser-lfsc-drat = { path = "../adsmt-parsers/adsmt-parser-lfsc-drat", features = ["serde"] }
-
-[dev-dependencies]
+# Parse the ADVISORY `provenance` field out of a `TheoryWitness::Cas` payload (an
+# opaque serialized `adsmt_cas::CasProof` JSON string) for the human-facing emit
+# comment. A field-only shim reads just that field — adsmt-cert keeps NO adsmt-cas
+# dependency (the payload firewall). Also used by the JSON cert wire codec.
 serde_json = { workspace = true }
 
 [features]

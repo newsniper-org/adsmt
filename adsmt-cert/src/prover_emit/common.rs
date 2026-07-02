@@ -132,6 +132,21 @@ pub fn witness_summary(w: &TheoryWitness) -> String {
     }
 }
 
+/// Extract the ADVISORY `provenance` string from a `TheoryWitness::Cas` payload —
+/// the opaque serialized `adsmt_cas::CasProof` JSON. adsmt-cert has NO adsmt-cas
+/// dependency (the payload is a deliberate string firewall), so a field-only shim
+/// reads just that one field and ignores obligation/witness. Malformed or absent
+/// JSON ⇒ `None` (advisory — this must NEVER block emit or panic). The value is
+/// TEXT surfaced only in a human-facing prover COMMENT; it carries no proof force.
+pub fn cas_provenance(proof_json: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct ProvenanceOnly {
+        #[serde(default)]
+        provenance: Option<String>,
+    }
+    serde_json::from_str::<ProvenanceOnly>(proof_json).ok()?.provenance
+}
+
 /// Strip newlines and escape any comment-terminator patterns that
 /// would close the surrounding comment block. Lean uses `-/` to
 /// close block comments, Rocq uses `*)`; both must be neutralised.

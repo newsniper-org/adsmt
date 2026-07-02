@@ -930,6 +930,15 @@ user's steps.
   attaches them to the winning [`CasProof::provenance`], and they ride into the
   CAS-admitted certificate (§7 / the `TheoryWitness::Cas` payload). ORTHOGONAL to the
   soundness firewall — TEXT ONLY, computed only on the already-`admit`-accepted path,
-  and NEVER able to move a verdict (a lying/absent explanation is harmless). Surfacing
-  it further in advisory-abduct / `prover_emit` output is a downstream read of the
-  same cert field.
+  and NEVER able to move a verdict (a lying/absent explanation is harmless).
+  **Output surfacing (LANDED):** (a) `prover_emit` — the Lean reference
+  (`lean_emit.rs`) emits the provenance as an advisory `--` COMMENT beside the CAS
+  delegation `axiom` (never a tactic — the step stays a trusted-oracle axiom,
+  offline-re-checkable via `CasProof::recheck`); a shared `cas_provenance(proof_json)`
+  field-only parser keeps adsmt-cert free of an adsmt-cas dep. The Rocq/Isabelle
+  mirrors (`~/adsmt-contrib`) apply the same one-line comment on the next cert
+  re-sync (they pin a published adsmt-cert). (b) advisory-abduct — `lu-smt` prints
+  `lu-smt: cas-provenance (<class>): <text>` to **STDERR** (in the single
+  `record_cas_unsat` funnel), matching the `--lint` / `--audit-json` discipline so
+  stdout stays the pure verdict stream (the `<<DONE>>` contract). An adversarial
+  trust audit confirmed no consumer treats provenance/`class` as verdict-bearing.
