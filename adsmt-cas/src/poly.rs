@@ -65,6 +65,42 @@ impl MPoly {
         }
     }
 
+    /// The constant value if this polynomial is a constant (`0` included), else
+    /// `None` (it has a non-constant monomial). The ring-aware unit check needs
+    /// the actual constant to decide unit-ness per ring (`±1` over ℤ, `gcd=1` over
+    /// ℤ/mℤ, …).
+    pub fn as_constant(&self) -> Option<BigRational> {
+        match self.terms.len() {
+            0 => Some(BigRational::zero()),
+            1 => self.terms.iter().next().and_then(|(m, c)| m.is_empty().then(|| c.clone())),
+            _ => None,
+        }
+    }
+
+    /// Is every coefficient `≡ 0 (mod m)`? — the exact zero-test for a `ℤ/mℤ` /
+    /// `GF(p)` re-check. A coefficient `a/b` is `0 (mod m)` iff `m | a` **and**
+    /// `gcd(b, m) = 1` (so `b` is invertible mod `m`); a denominator sharing a
+    /// factor with `m` makes `a/b` no valid `ℤ/mℤ` element, so this returns `false`
+    /// (the caller then yields `Unknown` — sound). Note: this reduces only the
+    /// COEFFICIENTS mod `m`; it applies NO field/quotient equation (no `x²=x`), so
+    /// it is free of the §9-B1 GF(2)-crate unsoundness.
+    pub fn is_zero_mod(&self, m: &BigInt) -> bool {
+        use num_integer::Integer;
+        self.terms.values().all(|c| c.denom().gcd(m).is_one() && (c.numer() % m).is_zero())
+    }
+
+    /// Does this polynomial have a non-constant monomial whose coefficient is a
+    /// VALID, NON-zero element of `ℤ/mℤ` (denominator coprime to `m`, numerator
+    /// `≢ 0 mod m`)? — i.e., is it genuinely non-constant (degree ≥ 1) when reduced
+    /// mod `m`. The `GF(p)` factorization re-check uses this to reject a "factor"
+    /// that collapses to a constant/unit mod `p` (e.g. `p·x + 1 ≡ 1`).
+    pub fn has_nonconstant_term_mod(&self, m: &BigInt) -> bool {
+        use num_integer::Integer;
+        self.terms
+            .iter()
+            .any(|(mono, c)| !mono.is_empty() && c.denom().gcd(m).is_one() && !(c.numer() % m).is_zero())
+    }
+
     /// Insert-or-accumulate one term, dropping it if the coefficient cancels to 0.
     fn accumulate(terms: &mut BTreeMap<Mono, BigRational>, mono: Mono, coeff: BigRational) {
         if coeff.is_zero() {

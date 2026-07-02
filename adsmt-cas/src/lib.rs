@@ -59,7 +59,7 @@ pub enum Disposition {
 /// The coefficient ring of a polynomial obligation. `admit` dispatches the
 /// re-checker on it (§9-B1). P0 re-checks char-0 rings over ℚ; a GF(2) obligation
 /// is out of scope (→ `Unknown`) rather than mis-checked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ring {
     /// Integers — re-checked over ℚ (a ℚ-identity proves the integer implication).
     Z,
@@ -67,16 +67,82 @@ pub enum Ring {
     Q,
     /// Reals (polynomial identities are char-0, re-checked over ℚ).
     R,
-    /// Characteristic 2 — NOT re-checkable by this char-0 core (out of P0 scope).
+    /// Characteristic 2, the LEGACY marker — NOT re-checkable here (§9-B1: the
+    /// GF(2) `adsmt-theory-finite-field` crate's `x²=x` is unsound). Use
+    /// [`Ring::GF`]`(2)` for the SOUND finite-field path (coefficient-only mod-2
+    /// reduction, no `x²=x`).
     Gf2,
+    /// `ℤ/mℤ` (`m ≥ 2`) — a value-parameterized ("dependent") ring. **Membership**
+    /// is sound (a cofactor identity holds in ANY commutative ring, re-checked
+    /// mod `m`). **Factorization is NOT supported** → `Unknown`: `ℤ/mℤ` has zero
+    /// divisors / nilpotents (e.g. `(1+2x)² = 1` over `ℤ/4ℤ`), so a constant-only
+    /// unit check would be UNSOUND (a non-constant unit would be admitted as a
+    /// genuine factor).
+    IntModulo(BigInt),
+    /// `GF(p)`, `p` prime — a finite FIELD (a value-parameterized ring).
+    /// Membership + factorization; the field structure (units = nonzero constants,
+    /// no zero divisors) is sound only when `p` is prime, which the factorization
+    /// re-check VERIFIES (bounded). Membership does not need `p` prime.
+    GF(BigInt),
 }
 
 impl Ring {
-    /// Is this ring re-checkable by the char-0 (ℚ) core? (§9-B1 forbids the GF(2)
-    /// path here.)
-    fn is_char0(self) -> bool {
-        matches!(self, Ring::Z | Ring::Q | Ring::R)
+    /// Is `p` a UNIT of this ring's polynomial ring? **Ring-relative**, and sound
+    /// only for the domains/fields where units are constants — the rings this is
+    /// called on: ℤ (units `±1`), ℚ/ℝ and `GF(prime)` (units = nonzero constants).
+    /// `IntModulo(m)` is NEVER passed here (its factorization is unsupported,
+    /// because it has non-constant units). A non-constant polynomial is never a
+    /// unit in a domain/field ⇒ `false`.
+    fn is_unit_poly(&self, p: &MPoly) -> bool {
+        let Some(c) = p.as_constant() else { return false };
+        if c.is_zero() {
+            return false; // 0 is never a unit
+        }
+        match self {
+            // ℤ: the only units are ±1.
+            Ring::Z => c == BigRational::one() || c == -BigRational::one(),
+            // A field: every nonzero constant is a unit.
+            Ring::Q | Ring::R => true,
+            // GF(p): a nonzero constant mod p (denominator invertible, numerator ≢0).
+            Ring::GF(p) => {
+                use num_integer::Integer;
+                c.denom().gcd(p).is_one() && !(c.numer() % p).is_zero()
+            }
+            // Not used for factorization (see the enum doc); a conservative answer.
+            Ring::IntModulo(_) | Ring::Gf2 => true,
+        }
     }
+}
+
+/// Is `p` prime, confirmable by BOUNDED trial division? `true` iff prime; `p ≤ 1`
+/// or `p` beyond the bit-length cap returns `false` (fail-closed — a `GF(p)`
+/// factorization over an unverified-prime `p` is not admitted, only downgraded).
+/// This gates the FIELD structure `GF(p)` factorization relies on; membership over
+/// `GF(p)` does not call it. (A Pratt-cert-backed field-ness for very large `p` is
+/// a later slice — cf. [`PrattCert`].)
+fn gf_is_field(p: &BigInt) -> bool {
+    if p <= &BigInt::one() {
+        return false;
+    }
+    // Cap: only trial-divide primes that fit in 32 bits (√p < 2^16 iterations).
+    if p.bits() > 32 {
+        return false; // too large to confirm here → Unknown, never a false field
+    }
+    let two = BigInt::from(2);
+    if p == &two || p == &BigInt::from(3) {
+        return true;
+    }
+    if (p % &two).is_zero() {
+        return false;
+    }
+    let mut d = BigInt::from(3);
+    while &d * &d <= *p {
+        if (p % &d).is_zero() {
+            return false;
+        }
+        d += &two;
+    }
+    true
 }
 
 /// The integer domain of an existential-Diophantine variable — part of the
@@ -240,9 +306,6 @@ pub fn admit(obligation: &Obligation, witness: &Witness) -> Disposition {
         // Ideal membership: f = Σ qᵢ·g_{idxᵢ} exactly over ℚ ⇒ f=0 is entailed by
         // ⋀gᵢ=0 ⇒ the obligation `⋀gᵢ=0 ∧ f≠0` is UNSAT (goal valid).
         (Obligation::IdealMembership { ring, f, generators }, Witness::Cofactors(cofactors)) => {
-            if !ring.is_char0() {
-                return Disposition::Unknown; // §9-B1: not our re-check ring
-            }
             let mut combo = MPoly::zero();
             for (idx, q) in cofactors {
                 let Some(g) = generators.get(*idx) else {
@@ -250,7 +313,17 @@ pub fn admit(obligation: &Obligation, witness: &Witness) -> Disposition {
                 };
                 combo = combo.add(&q.mul(g));
             }
-            if f.sub(&combo).is_zero() {
+            let diff = f.sub(&combo);
+            // The cofactor identity `f = Σqᵢ·gᵢ` ⇒ `⋀gᵢ=0` entails `f=0` in the
+            // ring. Char-0 rings use the exact ℚ zero-test; `ℤ/mℤ` and `GF(p)`
+            // reduce COEFFICIENTS mod `m` (sound in ANY commutative ring — no field
+            // equation / `x²=x` applied, so free of the §9-B1 GF(2) unsoundness).
+            let holds = match ring {
+                Ring::Z | Ring::Q | Ring::R => diff.is_zero(),
+                Ring::IntModulo(m) | Ring::GF(m) => diff.is_zero_mod(m),
+                Ring::Gf2 => return Disposition::Unknown, // §9-B1: forbidden legacy marker
+            };
+            if holds {
                 Disposition::Verdict(Verdict::Unsat)
             } else {
                 Disposition::Unknown // wrong cofactor (the §9-B1 GF(2) trap dies here over ℚ)
@@ -261,13 +334,35 @@ pub fn admit(obligation: &Obligation, witness: &Witness) -> Disposition {
         // reducible ⇒ Sat of the "∃ non-trivial factorization" obligation. The
         // IRREDUCIBLE direction has no short witness (§9-B5) — never admitted here.
         (Obligation::Factorization { ring, target }, Witness::Factors(factors)) => {
-            if !ring.is_char0() {
-                return Disposition::Unknown;
+            if factors.len() < 2 {
+                return Disposition::Unknown; // a factorization needs ≥ 2 factors
             }
-            if factors.len() < 2 || factors.iter().any(|p| p.is_unit() || p.is_zero()) {
-                return Disposition::Unknown; // trivial / unit factor proves nothing
-            }
-            if MPoly::product(factors).sub(target).is_zero() {
+            // Ring-AWARE unit detection (§9-B5): a "factor" that is a unit of THIS
+            // ring proves nothing. Units differ by ring — `±1` over ℤ, any nonzero
+            // constant over a field — so the check must be ring-relative.
+            let ok = match ring {
+                // Domains/fields where units are constants. (Gauss's lemma: a
+                // ℚ-reducible primitive polynomial is ℤ-reducible, so the exact-ℚ
+                // product identity is sound for ℤ as well.)
+                Ring::Z | Ring::Q | Ring::R => {
+                    factors.iter().all(|p| !ring.is_unit_poly(p) && !p.is_zero())
+                        && MPoly::product(factors).sub(target).is_zero()
+                }
+                // GF(p), p prime (a field): each factor must be genuinely
+                // non-constant OVER GF(p) — a factor collapsing to a constant mod p
+                // (e.g. `p·x+1 ≡ 1`) is a unit — and the product ≡ target mod p. p's
+                // primality (⇒ no zero divisors ⇒ units are constants) is VERIFIED.
+                Ring::GF(p) => {
+                    gf_is_field(p)
+                        && factors.iter().all(|p_i| p_i.has_nonconstant_term_mod(p))
+                        && MPoly::product(factors).sub(target).is_zero_mod(p)
+                }
+                // ℤ/mℤ (zero divisors / non-constant units ⇒ constant-only unit
+                // detection is UNSOUND) and the legacy GF(2) marker: not
+                // re-checkable here ⇒ downgrade.
+                Ring::IntModulo(_) | Ring::Gf2 => return Disposition::Unknown,
+            };
+            if ok {
                 Disposition::Verdict(Verdict::Sat)
             } else {
                 Disposition::Unknown
@@ -697,6 +792,111 @@ mod tests {
         unknown(25, pc(2, vec![(2, 1, p2()), (4, 3, p2())]));
         // 21 = 3·7 — no base passes both Fermat and the primitive-root test.
         unknown(21, pc(10, vec![(2, 1, p2()), (5, 1, pc(2, vec![(2, 2, p2())]))]));
+    }
+
+    // ── ring-aware unit detection + IntModulo/GF rings ───────────────────────
+
+    #[test]
+    fn ring_aware_units_z_vs_q() {
+        // target = 2x² − 2 = 2·(x−1)·(x+1). Over ℤ the constant `2` is a NON-unit
+        // ⇒ [2, x²−1] is a genuine factorization ⇒ Sat. Over ℚ, `2` is a UNIT ⇒
+        // that same witness proves nothing ⇒ Unknown (need [x−1, x+1]).
+        let target = c(2).mul(&x().mul(&x()).sub(&c(1))); // 2x² − 2
+        let factors_with_content = vec![c(2), x().mul(&x()).sub(&c(1))]; // [2, x²−1]
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::Z, target: target.clone() }, &Witness::Factors(factors_with_content.clone())),
+            Disposition::Verdict(Verdict::Sat)
+        );
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::Q, target: target.clone() }, &Witness::Factors(factors_with_content)),
+            Disposition::Unknown, // 2 is a unit over ℚ
+        );
+        // Over ℚ the genuine non-constant factorization is accepted.
+        let x_minus_1 = x().sub(&c(1));
+        let x_plus_1 = x().add(&c(1));
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::Q, target: x().mul(&x()).sub(&c(1)) }, &Witness::Factors(vec![x_minus_1, x_plus_1])),
+            Disposition::Verdict(Verdict::Sat)
+        );
+    }
+
+    #[test]
+    fn membership_over_gf5_and_intmodulo6_uses_the_modular_recheck() {
+        // f = x² − 1 + 5x  ≡ x² − 1 (mod 5). Generator x−1, cofactor x+1:
+        // (x+1)(x−1) = x²−1, so diff = 5x ≡ 0 (mod 5) — zero mod 5 but NOT over ℚ,
+        // so this exercises the modular path specifically.
+        let f = x().mul(&x()).sub(&c(1)).add(&c(5).mul(&x()));
+        let gens = vec![x().sub(&c(1))];
+        let w = Witness::Cofactors(vec![(0, x().add(&c(1)))]);
+        assert_eq!(
+            admit(&Obligation::IdealMembership { ring: Ring::GF(bi(5)), f: f.clone(), generators: gens.clone() }, &w),
+            Disposition::Verdict(Verdict::Unsat)
+        );
+        // Same shape mod 6 (ℤ/6ℤ, a NON-field): membership still sound.
+        let f6 = x().mul(&x()).sub(&c(1)).add(&c(6).mul(&x())); // ≡ x²−1 (mod 6)
+        assert_eq!(
+            admit(&Obligation::IdealMembership { ring: Ring::IntModulo(bi(6)), f: f6, generators: gens }, &Witness::Cofactors(vec![(0, x().add(&c(1)))])),
+            Disposition::Verdict(Verdict::Unsat)
+        );
+        // A residue that is NOT 0 mod 5 (diff = 3x) is rejected.
+        let f_bad = x().mul(&x()).sub(&c(1)).add(&c(3).mul(&x()));
+        assert_eq!(
+            admit(&Obligation::IdealMembership { ring: Ring::GF(bi(5)), f: f_bad, generators: vec![x().sub(&c(1))] }, &Witness::Cofactors(vec![(0, x().add(&c(1)))])),
+            Disposition::Unknown
+        );
+    }
+
+    #[test]
+    fn factorization_over_gf_p_prime() {
+        // Over GF(2): x²+1 = (x+1)²  [(x+1)² = x²+2x+1 ≡ x²+1 (mod 2)].
+        let target = x().mul(&x()).add(&c(1));
+        let xp1 = x().add(&c(1));
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::GF(bi(2)), target }, &Witness::Factors(vec![xp1.clone(), xp1])),
+            Disposition::Verdict(Verdict::Sat)
+        );
+        // Over GF(3): x²−1 = (x−1)(x+1).
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::GF(bi(3)), target: x().mul(&x()).sub(&c(1)) }, &Witness::Factors(vec![x().sub(&c(1)), x().add(&c(1))])),
+            Disposition::Verdict(Verdict::Sat)
+        );
+    }
+
+    #[test]
+    fn factorization_over_intmodulo_is_forbidden_the_nilpotent_unit_trap() {
+        // THE ℤ/mℤ soundness trap: over ℤ/4ℤ, (1+2x)² = 1+4x+4x² ≡ 1, so `1`
+        // (a UNIT) would "factor" into two non-constant `1+2x`. Because ℤ/mℤ has
+        // non-constant units, factorization is UNSUPPORTED ⇒ Unknown, never Sat.
+        let one = c(1);
+        let one_plus_2x = c(1).add(&c(2).mul(&x()));
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::IntModulo(bi(4)), target: one }, &Witness::Factors(vec![one_plus_2x.clone(), one_plus_2x])),
+            Disposition::Unknown
+        );
+    }
+
+    #[test]
+    fn factorization_over_gf_composite_is_rejected() {
+        // GF(4) is NOT a field (4 = 2²); the primality gate refuses it ⇒ Unknown,
+        // never a false reducibility over a non-field.
+        let target = x().mul(&x()).add(&c(1));
+        let xp1 = x().add(&c(1));
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::GF(bi(4)), target }, &Witness::Factors(vec![xp1.clone(), xp1])),
+            Disposition::Unknown
+        );
+    }
+
+    #[test]
+    fn gf_p_factorization_rejects_a_factor_that_collapses_to_a_constant_mod_p() {
+        // Over GF(3): a "factor" 3x+1 ≡ 1 (mod 3) is a CONSTANT/unit mod 3, so it
+        // is not a genuine factor ⇒ Unknown (has_nonconstant_term_mod rejects it).
+        let target = x().add(&c(1)); // trivially, but the point is the collapse
+        let collapses = c(3).mul(&x()).add(&c(1)); // 3x+1 ≡ 1 (mod 3)
+        assert_eq!(
+            admit(&Obligation::Factorization { ring: Ring::GF(bi(3)), target }, &Witness::Factors(vec![collapses, x().add(&c(1))])),
+            Disposition::Unknown
+        );
     }
 
     // ── dispatch (manifest-driven, admit-gated) ──────────────────────────────

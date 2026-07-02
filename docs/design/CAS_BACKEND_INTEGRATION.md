@@ -378,6 +378,33 @@ Rules that make it load-bearing:
   classes (factorization / universal refutation) stay deferred — see §6.1 for why
   factorization lacks a sound term representation and universal refutation is
   downgrade-only; the `admit()`/backend halves already exist.
+- **P1.10 — ring-aware unit detection + `IntModulo(m)` / `GF(p)` rings, LANDED.**
+  The `Ring` enum gains value-parameterized ("dependent") variants
+  `IntModulo(BigInt)` (`ℤ/mℤ`) and `GF(BigInt)` (`GF(p)`, a finite field), and
+  `admit`'s membership + factorization re-checkers become **ring-relative**:
+  - *Ring-aware unit detection* (`Ring::is_unit_poly`, §9-B5): units differ by
+    ring — `±1` over ℤ, any nonzero constant over a field (ℚ/ℝ/`GF(prime)`) — so
+    `2·(x²−1)` is a genuine factorization over ℤ (`2` a non-unit) but trivial over
+    ℚ. Replaces the previous ring-agnostic "nonzero constant" check
+    (sound-but-over-strict for ℤ).
+  - *Modular membership* (`MPoly::is_zero_mod`): the cofactor identity re-checked
+    mod `m` — sound in ANY commutative ring, so membership works over both
+    `IntModulo(m)` and `GF(p)`. It reduces only COEFFICIENTS mod `m` (no `x²=x`
+    field equation), so it is free of the §9-B1 GF(2)-crate unsoundness — whence
+    `Ring::GF(2)` is the SOUND finite-field path; the legacy `Ring::Gf2` marker
+    stays forbidden → `Unknown`.
+  - *Field-gated factorization*: over `GF(p)` each factor must be genuinely
+    non-constant mod `p` (a factor collapsing to a constant, e.g. `p·x+1 ≡ 1`, is a
+    unit) and the product ≡ target mod `p`; `p`'s primality (⇒ no zero divisors) is
+    VERIFIED by bounded trial division (`gf_is_field`; huge `p` → `Unknown`).
+  - *`ℤ/mℤ` factorization is FORBIDDEN* (→ `Unknown`): a non-domain has
+    non-constant units (`(1+2x)² = 1` over `ℤ/4ℤ`), so constant-only unit detection
+    would be UNSOUND — the trap is blocked at ring dispatch.
+  This is the CAS re-check-core layer of the dependent ring types (the enum
+  carries the modulus value); wiring `IntModulo`/`GF` into the lukb/adsmt-ir TYPE
+  SURFACE (so a `x : GF(7)` obligation ARISES from a real problem) is the
+  follow-on. Factorization over ℚ/ℝ/`GF(p)` is now soundly re-checkable, but the
+  factorization CLASSIFIER (a term shape for "reducible over R") is still separate.
 - **P1.5 (pre-1.0, optional, zero shipped footprint):** Singular as an
   *independent-algorithm* (Gröbner vs CAD) differential oracle for `oxiz-nl2`
   (`oxiz-nl2/src/differential.rs`), strengthening the live `#356` frontier. No
