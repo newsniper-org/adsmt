@@ -2931,13 +2931,24 @@ impl Driver {
             .map(|(_, t)| t.clone())
             .collect();
 
-        // Only the universally-reserved-operator classes (see SCOPE).
-        let obligation =
-            term::classify_membership(&hyps, &goal).or_else(|| term::classify_diophantine(&goal))?;
+        // Classify. Membership + ∃-Diophantine use only universally-reserved
+        // operators (`+`/`*`/`=`/`∃`) — always safe. Compositeness / primality (over
+        // `prime`) are routed ONLY when the manifest attests `arith_builtins_reserved`
+        // (the CLI cannot otherwise tell the reserved `prime` from a user-declared
+        // one); the attestation also authorises promoting the SMT-LIB `Var("prime")`
+        // to the built-in `Const("prime")` the classifiers expect.
+        let obligation = if manifest.arith_builtins_reserved {
+            let goal = promote_prime(&goal);
+            term::classify_sequent(&hyps, &goal) // membership → ∃ → ¬prime → prime
+        } else {
+            term::classify_membership(&hyps, &goal).or_else(|| term::classify_diophantine(&goal))
+        }?;
 
         // The backend registry — the manifest's `enabled` order selects which run;
         // `dispatch` filters by allow-list ∩ `capabilities()` and admit-gates every
-        // witness. Constructing both is free (no CAS spawns until `decide`).
+        // witness. Constructing all three is free (no CAS spawns until `decide`):
+        // Singular (subprocess, membership/factorization), MathHook (in-process,
+        // factorization), and NumTheory (pure, compositeness/primality witnesses).
         let singular = cas_backend_singular::SingularBackend::new(
             manifest
                 .backends
@@ -2947,7 +2958,8 @@ impl Driver {
                 .unwrap_or_else(|| "Singular".to_string()),
         );
         let mathhook = cas_backend_mathhook::MathhookBackend::new();
-        let backends: Vec<&dyn CasBackend> = vec![&singular, &mathhook];
+        let numtheory = cas_backend_numtheory::NumTheoryBackend::new();
+        let backends: Vec<&dyn CasBackend> = vec![&singular, &mathhook, &numtheory];
 
         match adsmt_cas::dispatch(manifest, &backends, &obligation) {
             // A re-checked verdict on the POSITIVE goal `G` means `G` is VALID (every
@@ -3730,6 +3742,28 @@ fn has_goal_negation(e: &SExpr) -> bool {
     xs.iter().any(|x| matches!(x, SExpr::Keyword(k) if k == "goal-negation"))
 }
 
+/// Promote every `Var("prime")` to `Const("prime")` (same type) throughout `t`,
+/// recursing through applications. The SMT-LIB face turns a user-`declare-fun`'d
+/// `prime` into a `Var` (`convert_application`), but the `adsmt-cas`
+/// primality/compositeness classifiers match the RESERVED built-in `Const` (the
+/// `install_arith` postulate on the #325-lowered path). This CLI-side promotion —
+/// applied ONLY when the manifest attests `arith_builtins_reserved` — reconciles
+/// the two so a `prime(k)` / `¬prime(k)` goal classifies. Non-`prime` terms are
+/// unchanged; a rebuild that fails type-checking (never expected — same types)
+/// falls back to the original node, so this can only ever HELP a term classify,
+/// never corrupt it.
+#[cfg(feature = "cas")]
+fn promote_prime(t: &Term) -> Term {
+    use adsmt_core::TermInner;
+    match t.kind() {
+        TermInner::Var(v) if v.name == "prime" => Term::const_("prime", t.type_of()),
+        TermInner::App(f, x) => {
+            Term::app(promote_prime(f), promote_prime(x)).unwrap_or_else(|_| t.clone())
+        }
+        _ => t.clone(),
+    }
+}
+
 /// Expand `define-fun` call sites in `e` against the user's
 /// [`SymbolRegistry`] before the term hits `convert_expr`. Nullary
 /// defined symbols substitute by their body; arity-N calls replace
@@ -3935,6 +3969,26 @@ mod cas_glue_tests {
         assert_eq!(
             adsmt_cas::dispatch(&manifest, &backends, &ob),
             adsmt_cas::Disposition::Verdict(adsmt_cas::Verdict::Unsat),
+        );
+    }
+
+    #[test]
+    fn promoted_prime_goal_classifies_as_primality() {
+        // A user-`declare-fun`'d `prime` is a `Var`, which the (Const-matching)
+        // primality classifier rejects RAW; `promote_prime` (applied under the
+        // `arith_builtins_reserved` attestation) turns it into the built-in `Const`
+        // so the goal classifies. Exercises the SMT-LIB-face ↔ classifier bridge.
+        let mut sym = SymbolTable::new();
+        sym.declare("prime".to_string(), Type::fun(int_ty(), Type::bool_()).unwrap());
+        let goal = convert("(not (prime 7))", &sym).dest_not().unwrap();
+        assert!(
+            adsmt_cas::term::classify_primality(&goal).is_none(),
+            "a Var-headed `prime` must NOT classify without promotion"
+        );
+        let promoted = promote_prime(&goal);
+        assert!(
+            adsmt_cas::term::classify_primality(&promoted).is_some(),
+            "the promoted built-in `Const(prime)` classifies as primality"
         );
     }
 

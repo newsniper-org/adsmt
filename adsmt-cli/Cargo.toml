@@ -66,6 +66,7 @@ oxiz-solver = { path = "../external/oxiz/oxiz-solver", optional = true }
 adsmt-cas = { workspace = true, optional = true, features = ["term"] }
 cas-backend-singular = { version = "=1.0.0-rc.40", path = "../cas-backends/cas-backend-singular", optional = true }
 cas-backend-mathhook = { version = "=1.0.0-rc.40", path = "../cas-backends/cas-backend-mathhook", optional = true }
+cas-backend-numtheory = { version = "=1.0.0-rc.40", path = "../cas-backends/cas-backend-numtheory", optional = true }
 
 [features]
 # Build with `cargo build -p adsmt-cli --features oxiz` (or
@@ -76,4 +77,4 @@ oxiz = ["dep:oxiz-solver"]
 # (after OxiZ). Registers the Singular (subprocess) + MathHook (in-process)
 # backends; `adsmt.toml`'s `[cas]` section selects which run. Every verdict is
 # admit-re-checked, so an absent/mis-configured backend only ever leaves `Unknown`.
-cas = ["dep:adsmt-cas", "dep:cas-backend-singular", "dep:cas-backend-mathhook"]
+cas = ["dep:adsmt-cas", "dep:cas-backend-singular", "dep:cas-backend-mathhook", "dep:cas-backend-numtheory"]

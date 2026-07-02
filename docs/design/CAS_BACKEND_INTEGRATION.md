@@ -478,10 +478,23 @@ Rules that make it load-bearing:
     **`Unsat`** (a delegated-unsat cert is synthesised, mirroring OxiZ).
   * **Soundness gates:** disabled once a `(pop)` desyncs the flat ledger from the
     solver's scope (`ledger_desynced` — a popped hypothesis must not discharge a
-    goal), and requires exactly one `:goal-negation` assertion. Routes only the
-    universally-reserved-operator classes — **ideal membership** and
-    **∃-Diophantine**; compositeness / primality need the `prime`-is-built-in `Env`
-    gate (classifier precondition) and are deferred.
+    goal), and requires exactly one `:goal-negation` assertion. **Ideal membership**
+    and **∃-Diophantine** (universally-reserved operators `+`/`*`/`=`/`∃`) route
+    always; **compositeness / primality** route only under the F1 attestation below.
+  * **Compositeness / primality (F1, LANDED).** `lu-smt` has no adsmt-ir `Env`, so a
+    `prime` in an SMT-LIB term is ALWAYS a user-`declare-fun` (a `Var`), and the CLI
+    cannot tell it from the reserved number-theoretic built-in. Routing the prime
+    classes is therefore gated on the manifest **`arith_builtins_reserved = true`**
+    attestation (the project owner asserts `prime` denotes the built-in); off ⇒ not
+    routed (a user's own `prime` is never mis-read). When attested, the CLI promotes
+    `Var("prime") → Const("prime")` (`promote_prime`) so the classifiers match, and a
+    new pure-`num-bigint` **`cas-backend-numtheory`** PRODUCES the witnesses — a
+    proper divisor (Compositeness) / a Pratt certificate (Primality) — that P1.8/P1.9
+    `admit` re-check. Reachability rides on **F2**: native uninterpreted-`sat`s a
+    bare `prime(k)`, then the re-checked CAS witness refutes it. Verified end-to-end:
+    `prime(7)` ⇒ `unsat`, `¬prime(15)` ⇒ `unsat`, and — the soundness control —
+    `prime(15)` STAYS `sat` (numtheory refuses a Pratt cert for a composite ⇒ no
+    spurious refutation).
   * **Validated:** the CLI's own `convert_expr` output classifies as ideal
     membership and discharges to `Unsat` via real Singular `lift` + `admit`
     (`cas_glue_tests`, skip-gated on Singular) — confirming the SMT-LIB-face ↔

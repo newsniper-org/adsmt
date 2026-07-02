@@ -18,6 +18,18 @@ pub struct CasManifest {
     /// Per-backend configuration, keyed by backend name.
     #[serde(default)]
     pub backends: BTreeMap<String, BackendConfig>,
+    /// **Attestation** (default `false`): the project's SMT-LIB stream uses the
+    /// RESERVED number-theoretic arithmetic built-ins — most notably `prime` (the
+    /// `install_arith` postulate, `Int → Prop`) — rather than user-declared
+    /// uninterpreted symbols of the same name. The CLI cannot tell the two apart
+    /// (raw SMT-LIB has no reserved-`prime` notion), so it needs the project owner
+    /// to attest it before routing a `prime(k)` / `¬prime(k)` goal to the
+    /// primality / compositeness re-checkers. Off ⇒ those classes are NOT routed
+    /// (conservative: a user's own `prime` is never mis-interpreted). Does not
+    /// affect the membership / ∃-Diophantine classes (whose operators — `+`/`*`/`=`
+    /// — are universally reserved and need no attestation).
+    #[serde(default)]
+    pub arith_builtins_reserved: bool,
 }
 
 /// One `[cas.backends.<name>]` entry.

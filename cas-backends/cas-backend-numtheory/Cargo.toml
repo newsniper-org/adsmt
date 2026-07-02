@@ -1,0 +1,12 @@
+[package]
+name = "cas-backend-numtheory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure number-theory backend for adsmt-cas — Compositeness (a divisor) + Primality (a Pratt certificate), built with num-bigint (no external CAS). UNTRUSTED like every backend: adsmt-cas::admit re-checks the divisor (1<d<n) and the Pratt cert, so a producer bug only ever yields Unknown, never a wrong verdict."
+
+[dependencies]
+adsmt-cas.workspace = true
+num-bigint.workspace = true
+num-integer.workspace = true
+num-traits.workspace = true
