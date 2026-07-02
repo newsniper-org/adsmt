@@ -45,8 +45,14 @@ impl GfpnField {
         if p < BigInt::from(2) || modulus.len() < 2 {
             return None; // need a prime-power base ≥ 2 and a degree ≥ 1 modulus
         }
+        // Canonicalize the modulus coefficients into `[0, p)`. The arithmetic is
+        // already correct without this (every reduction step re-reduces mod `p`, so
+        // a coefficient differing by a multiple of `p` is absorbed), but a canonical
+        // internal form (a) makes the monic test HONEST — a leading `4` over `p = 3`
+        // IS monic — and (b) makes `GfpnField` equality mean "same field".
+        let modulus: Vec<BigInt> = modulus.iter().map(|c| c.mod_floor(&p)).collect();
         if modulus.last() != Some(&BigInt::one()) {
-            return None; // modulus must be MONIC (so reduction needs no leading-coeff inverse)
+            return None; // not monic after reduction ⇒ malformed (degree < n)
         }
         Some(GfpnField { p, modulus })
     }
@@ -349,6 +355,22 @@ mod tests {
         assert_eq!(r.mul(&el(&[0, 1]), &el(&[0, 1])), el(&[0, 0])); // t·t = 0
         assert_eq!(r.inv(&el(&[0, 1])), None); // t is a zero divisor ⇒ no inverse (Fermat + verify)
         assert_eq!(r.inv(&el(&[1, 0])), Some(el(&[1, 0]))); // 1 is still a unit
+    }
+
+    #[test]
+    fn non_canonical_modulus_is_canonicalized_not_a_wrong_quotient() {
+        // Adversarial-review (gfpn reduction lens): a modulus with a non-canonical
+        // coefficient must NOT define a different quotient ring. `new` reduces mod p.
+        let canonical = GfpnField::new(bi(3), vec![bi(1), bi(2), bi(1)]).unwrap();
+        let neg = GfpnField::new(bi(3), vec![bi(1), bi(-1), bi(1)]).unwrap(); // −1 ≡ 2
+        let big = GfpnField::new(bi(3), vec![bi(7), bi(5), bi(1)]).unwrap(); // 7≡1, 5≡2
+        assert_eq!(canonical, neg);
+        assert_eq!(canonical, big);
+        // reduction agrees regardless of how the modulus was written.
+        assert_eq!(canonical.reduce(&[bi(0), bi(0), bi(1)]), neg.reduce(&[bi(0), bi(0), bi(1)]));
+        // a leading coeff ≡ 1 (mod p) is monic (4 ≡ 1 mod 3); ≡ 0 is NOT (3 ≡ 0).
+        assert!(GfpnField::new(bi(3), vec![bi(1), bi(1), bi(4)]).is_some());
+        assert!(GfpnField::new(bi(3), vec![bi(1), bi(1), bi(3)]).is_none());
     }
 
     #[test]

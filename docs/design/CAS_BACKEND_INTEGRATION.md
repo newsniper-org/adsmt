@@ -756,3 +756,21 @@ and were fixed:
 
 Regressions: `modular_membership_over_degenerate_moduli_is_unknown_not_panic`,
 `z_factorization_rejects_rational_factors`.
+
+### 9.4 P1.11 GF(pⁿ)-arithmetic adversarial review (2026-07-02)
+
+A 4-lens adversarial workflow attacked the `gfpn` module (reduction, mul +
+membership soundness, inverse/division, field-params/edge). **No soundness break
+found** — the GF(pⁿ) arithmetic is robust: `reduce` maintains the canonical
+degree-`< n` form, `mul` reduces correctly, the `accum → poly_is_zero` invariant
+holds (a wrong cofactor yields `Unknown`, never a spurious `Unsat`), `inv`'s
+Fermat-plus-VERIFY (`a·a⁻¹ = 1` else `None`) never returns a bogus inverse (a
+non-prime `p` or reducible `modulus` is caught), and `new` rejects every
+ill-formed field (`p < 2`, `len < 2`, non-monic) with no panic. The reduction
+lens raised a `modulus` that is not pre-reduced mod `p`, but its own analysis
+showed the reduction is INVARIANT (each step re-reduces mod `p`, and
+`modulus[i] − (modulus[i] mod p)` is always a multiple of `p`) — no wrong
+quotient. As robustness (not a soundness fix), `GfpnField::new` now canonicalizes
+the `modulus` mod `p`, which also makes the monic test honest (a leading `4` over
+`p = 3` IS monic) and `GfpnField` equality mean "same field"
+(`non_canonical_modulus_is_canonicalized_not_a_wrong_quotient`).
