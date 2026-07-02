@@ -1,0 +1,26 @@
+[package]
+name = "adsmt-delegate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared delegation stack for a typed HOL sequent (H ⊢ G). `cas`: classify → dispatch to the untrusted CAS backends → return the admit-re-checked CasProof. `oxiz`: render the obligation to SMT-LIB and feed the in-process OxiZ (z3-parity) delegation. Lifted out of `lu-smt`'s Driver so `adsmt-lukb-driver` (adsmtc/adsmtr) reaches the SAME delegation both CLIs used to get only in lu-smt."
+
+[dependencies]
+# Always: the obligation Terms + the SMT-LIB renderer (needs only adsmt-core).
+adsmt-core = { version = "=1.0.0-rc.41", path = "../adsmt-core" }
+
+# `cas` feature — the classifier + trusted re-check core + the untrusted backends
+# (each admit-gated at the adsmt-cas layer; constructing them is free).
+adsmt-cas = { version = "=1.0.0-rc.41", path = "../adsmt-cas", features = ["term"], optional = true }
+cas-backend-singular = { version = "=1.0.0-rc.41", path = "../cas-backends/cas-backend-singular", optional = true }
+cas-backend-mathhook = { version = "=1.0.0-rc.41", path = "../cas-backends/cas-backend-mathhook", optional = true }
+cas-backend-numtheory = { version = "=1.0.0-rc.41", path = "../cas-backends/cas-backend-numtheory", optional = true }
+
+# `oxiz` feature — the vendored in-process OxiZ (z3-parity). Same path dep as
+# adsmt-cli's `oxiz` feature.
+oxiz-solver = { path = "../external/oxiz/oxiz-solver", optional = true }
+
+[features]
+default = []
+cas = ["dep:adsmt-cas", "dep:cas-backend-singular", "dep:cas-backend-mathhook", "dep:cas-backend-numtheory"]
+oxiz = ["dep:oxiz-solver"]

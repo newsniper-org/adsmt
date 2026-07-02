@@ -69,6 +69,7 @@ dependencies = [
  "adsmt-cas",
  "adsmt-cert",
  "adsmt-core",
+ "adsmt-delegate",
  "adsmt-emit-contract",
  "adsmt-engine",
  "adsmt-jit",
@@ -98,6 +99,18 @@ dependencies = [
  "serde_json",
  "smallvec",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "adsmt-delegate"
+version = "1.0.0-rc.41"
+dependencies = [
+ "adsmt-cas",
+ "adsmt-core",
+ "cas-backend-mathhook",
+ "cas-backend-numtheory",
+ "cas-backend-singular",
+ "oxiz-solver",
 ]
 
 [[package]]
@@ -305,7 +318,9 @@ dependencies = [
 name = "adsmt-lukb-driver"
 version = "1.0.0-rc.41"
 dependencies = [
+ "adsmt-cas",
  "adsmt-core",
+ "adsmt-delegate",
  "adsmt-engine",
  "adsmt-ir-lower",
  "adsmt-ir-lukb",

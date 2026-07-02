@@ -12,3 +12,12 @@ path = "src/main.rs"
 adsmt-lukb-driver = { path = "../adsmt-lukb-driver" }
 adsmt-ir-lukb = { path = "../adsmt-ir-lukb" }
 adsmt-ir-asp = { path = "../adsmt-ir-asp" }
+
+[features]
+default = []
+# Forward the shared delegation stack to `adsmt-lukb-driver`, so
+# `cargo build -p adsmtr --features "oxiz cas"` resolves obligations that native
+# alone leaves `Unknown` through OxiZ (z3-parity) and the admit-re-checked CAS
+# backends — the SAME delegation `lu-smt` has.
+oxiz = ["adsmt-lukb-driver/oxiz"]
+cas = ["adsmt-lukb-driver/cas"]

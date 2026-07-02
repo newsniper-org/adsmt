@@ -2875,7 +2875,7 @@ impl Driver {
     /// re-verifies it later WITHOUT the CAS or the solver (§7 offline replay).
     #[cfg(feature = "cas")]
     fn record_cas_unsat(&mut self, proof: &adsmt_cas::CasProof) {
-        let class = cas_class_kebab(adsmt_cas::classify(&proof.obligation));
+        let class = adsmt_delegate::cas::class_kebab(adsmt_cas::classify(&proof.obligation));
         let proof_json = serde_json::to_string(proof).unwrap_or_default();
         let witness =
             adsmt_cert::TheoryWitness::Cas { class: class.to_string(), proof_json };
@@ -2927,8 +2927,6 @@ impl Driver {
     ///   are deferred to a follow-up.
     #[cfg(feature = "cas")]
     fn cas_delegate(&self) -> Option<adsmt_cas::CasProof> {
-        use adsmt_cas::{CasBackend, Disposition, term};
-
         let manifest = self.cas_manifest.as_ref()?;
         if self.ledger_desynced {
             return None; // ledger may hold out-of-scope assertions ⇒ unsound to use
@@ -2959,47 +2957,14 @@ impl Driver {
             .map(|(_, t)| t.clone())
             .collect();
 
-        // Classify. Membership + ∃-Diophantine use only universally-reserved
-        // operators (`+`/`*`/`=`/`∃`) — always safe. Compositeness / primality (over
-        // `prime`) are routed ONLY when the manifest attests `arith_builtins_reserved`
-        // (the CLI cannot otherwise tell the reserved `prime` from a user-declared
-        // one); the attestation also authorises promoting the SMT-LIB `Var("prime")`
-        // to the built-in `Const("prime")` the classifiers expect.
-        let obligation = if manifest.arith_builtins_reserved {
-            let goal = promote_prime(&goal);
-            term::classify_sequent(&hyps, &goal) // membership → ∃ → ¬prime → prime
-        } else {
-            term::classify_membership(&hyps, &goal).or_else(|| term::classify_diophantine(&goal))
-        }?;
-
-        // The backend registry — the manifest's `enabled` order selects which run;
-        // `dispatch` filters by allow-list ∩ `capabilities()` and admit-gates every
-        // witness. Constructing all three is free (no CAS spawns until `decide`):
-        // Singular (subprocess, membership/factorization), MathHook (in-process,
-        // factorization), and NumTheory (pure, compositeness/primality witnesses).
-        let singular = cas_backend_singular::SingularBackend::new(
-            manifest
-                .backends
-                .get("singular")
-                .and_then(|c| c.path.clone())
-                .or_else(|| std::env::var("ADSMT_SINGULAR_PATH").ok())
-                .unwrap_or_else(|| "Singular".to_string()),
-        );
-        let mathhook = cas_backend_mathhook::MathhookBackend::new();
-        let numtheory = cas_backend_numtheory::NumTheoryBackend::new();
-        let backends: Vec<&dyn CasBackend> = vec![&singular, &mathhook, &numtheory];
-
-        match adsmt_cas::dispatch_with_proof(manifest, &backends, &obligation) {
-            // A re-checked verdict on the POSITIVE goal `G` means `G` is VALID (every
-            // recognized class only ever proves its goal valid — an ideal-membership
-            // equation holds, or a Diophantine solution exists), so the SMT query
-            // `H ∧ ¬G` is UNSAT. The obligation-level Sat/Unsat label is about the
-            // algebraic fact, not the query polarity (see `adsmt_cas::term::consult`).
-            // Return the re-checked proof so the caller emits an offline-re-checkable
-            // `TheoryWitness::Cas` cert.
-            (Disposition::Verdict(_), proof) => proof,
-            (Disposition::Unknown, _) => None,
-        }
+        // Hand the split typed sequent to the shared CAS delegation core
+        // (`adsmt-delegate`): classify (membership / ∃-Diophantine always;
+        // compositeness / primality under `arith_builtins_reserved`) → dispatch to
+        // the manifest-enabled backends → admit-re-check. `Some(proof)` ⇒ the
+        // POSITIVE goal `G` is VALID (so the SMT query `H ∧ ¬G` is UNSAT); the proof
+        // is the offline-re-checkable obligation+witness the caller embeds in the
+        // cert. This is the SAME core `adsmt-lukb-driver` (adsmtc/adsmtr) now calls.
+        adsmt_delegate::cas::try_discharge(&hyps, &goal, manifest)
     }
 
     /// rc.35.1 follow-up — a **recoverable** per-command error from a
@@ -3772,42 +3737,10 @@ fn has_goal_negation(e: &SExpr) -> bool {
     xs.iter().any(|x| matches!(x, SExpr::Keyword(k) if k == "goal-negation"))
 }
 
-/// Promote every `Var("prime")` to `Const("prime")` (same type) throughout `t`,
-/// recursing through applications. The SMT-LIB face turns a user-`declare-fun`'d
-/// `prime` into a `Var` (`convert_application`), but the `adsmt-cas`
-/// primality/compositeness classifiers match the RESERVED built-in `Const` (the
-/// `install_arith` postulate on the #325-lowered path). This CLI-side promotion —
-/// applied ONLY when the manifest attests `arith_builtins_reserved` — reconciles
-/// the two so a `prime(k)` / `¬prime(k)` goal classifies. Non-`prime` terms are
-/// unchanged; a rebuild that fails type-checking (never expected — same types)
-/// falls back to the original node, so this can only ever HELP a term classify,
-/// never corrupt it.
-#[cfg(feature = "cas")]
-fn promote_prime(t: &Term) -> Term {
-    use adsmt_core::TermInner;
-    match t.kind() {
-        TermInner::Var(v) if v.name == "prime" => Term::const_("prime", t.type_of()),
-        TermInner::App(f, x) => {
-            Term::app(promote_prime(f), promote_prime(x)).unwrap_or_else(|_| t.clone())
-        }
-        _ => t.clone(),
-    }
-}
-
-/// The manifest kebab-case name of a CAS obligation class — stamped into the
-/// `TheoryWitness::Cas` certificate for provenance and to route offline re-check.
-#[cfg(feature = "cas")]
-fn cas_class_kebab(c: adsmt_cas::CasClass) -> &'static str {
-    use adsmt_cas::CasClass::*;
-    match c {
-        IdealMembership => "ideal-membership",
-        Factorization => "factorization",
-        Compositeness => "compositeness",
-        Primality => "primality",
-        DiophantineExists => "diophantine-exists",
-        UniversalRefutation => "universal-refutation",
-    }
-}
+// `promote_prime` (SMT-LIB-face `Var("prime")` → built-in `Const("prime")`) and
+// `cas_class_kebab` (obligation class → certificate kebab name) moved to the shared
+// `adsmt-delegate` crate (`adsmt_delegate::cas::{promote_prime, class_kebab}`) so
+// `adsmt-lukb-driver` reuses the SAME CAS delegation logic. See `Driver::cas_delegate`.
 
 /// Expand `define-fun` call sites in `e` against the user's
 /// [`SymbolRegistry`] before the term hits `convert_expr`. Nullary
@@ -4030,7 +3963,7 @@ mod cas_glue_tests {
             adsmt_cas::term::classify_primality(&goal).is_none(),
             "a Var-headed `prime` must NOT classify without promotion"
         );
-        let promoted = promote_prime(&goal);
+        let promoted = adsmt_delegate::cas::promote_prime(&goal);
         assert!(
             adsmt_cas::term::classify_primality(&promoted).is_some(),
             "the promoted built-in `Const(prime)` classifies as primality"

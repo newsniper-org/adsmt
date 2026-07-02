@@ -48,6 +48,11 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
         solver.declare_datatype(d.clone());
     }
 
+    // Does any obligation reference a datatype? The OxiZ renderer bails on those
+    // (no `declare-datatypes` yet), so we only compute this when delegation is on.
+    #[cfg(any(feature = "oxiz", feature = "cas"))]
+    let has_datatypes = !hyps.datatypes.is_empty() || !goals.datatypes.is_empty();
+
     let mut overall = Confidence::DefiniteUnsat; // vacuously all-valid
     for g in &goals.goals {
         solver.push();
@@ -59,8 +64,25 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
                 solver.assert(neg);
                 match solver.check_sat() {
                     SatResult::Unsat { .. } => Confidence::DefiniteUnsat, // goal valid
-                    SatResult::Sat { .. } => Confidence::DefiniteSat,      // counterexample
-                    _ => Confidence::Unknown,
+                    native => {
+                        // Native abstained (`Unknown`) or found a — possibly false —
+                        // `Sat`. Fall back to the shared delegation stack, exactly as
+                        // `lu-smt` does; without either feature this is the historical
+                        // native verdict, so behaviour is unchanged by default.
+                        let native_conf = if matches!(native, SatResult::Sat { .. }) {
+                            Confidence::DefiniteSat
+                        } else {
+                            Confidence::Unknown
+                        };
+                        #[cfg(any(feature = "oxiz", feature = "cas"))]
+                        {
+                            delegate_resolve(&hyps.goals, g, has_datatypes, native_conf)
+                        }
+                        #[cfg(not(any(feature = "oxiz", feature = "cas")))]
+                        {
+                            native_conf
+                        }
+                    }
                 }
             }
             Err(_) => Confidence::Unknown,
@@ -91,6 +113,48 @@ fn combine_obligation(acc: Confidence, goal: Confidence) -> Confidence {
     }
 }
 
+/// Resolve a native-non-`Unsat` obligation `hyps ⊢ goal` through the shared
+/// delegation stack, or return `native` (the native `Sat` / `Unknown` verdict).
+///
+/// Both delegates can only ever VERIFY the goal (`DefiniteUnsat`): OxiZ surfaces
+/// only its `unsat` (its z3-parity + false-`unsat`-hardened direction — see
+/// [`adsmt_delegate::oxiz`]), and CAS returns only an admit-re-checked validity
+/// proof. So delegation is soundness-**monotone** — it upgrades a native `Unknown`
+/// (or refutes a possibly-false native `Sat`) to a confirmed `DefiniteUnsat`, and
+/// NEVER introduces a new `DefiniteSat`. That keeps the `UnifiedVerdict` §5
+/// differential (`collapse() == z3`) intact: lukb now agrees with z3 on strictly
+/// more cases, never contradicts it.
+#[cfg(any(feature = "oxiz", feature = "cas"))]
+#[cfg_attr(not(feature = "oxiz"), allow(unused_variables))]
+fn delegate_resolve(
+    hyps: &[Term],
+    goal: &Term,
+    has_datatypes: bool,
+    native: Confidence,
+) -> Confidence {
+    #[cfg(feature = "oxiz")]
+    if adsmt_delegate::oxiz::proves_goal(hyps, goal, has_datatypes) {
+        return Confidence::DefiniteUnsat;
+    }
+    #[cfg(feature = "cas")]
+    if cas_discharges(hyps, goal) {
+        return Confidence::DefiniteUnsat;
+    }
+    native
+}
+
+/// `true` iff the project-local `adsmt.toml` `[cas]` manifest is present AND a CAS
+/// backend witness admit-re-checks the goal valid. Discovers the manifest from the
+/// current directory (the same discovery `lu-smt`'s `Driver` does).
+#[cfg(feature = "cas")]
+fn cas_discharges(hyps: &[Term], goal: &Term) -> bool {
+    std::env::current_dir()
+        .ok()
+        // `discover` returns `(found_path, manifest)`; we only need the manifest.
+        .and_then(|d| adsmt_cas::manifest::CasManifest::discover(&d))
+        .is_some_and(|(_, m)| adsmt_delegate::cas::try_discharge(hyps, goal, &m).is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +182,32 @@ mod tests {
         // an un-elaboratable program ⇒ sound Unknown, never a fabricated verdict.
         let v = solve("goal g: nope > 0\n");
         assert_eq!(v.collapse(), TriState::Unknown);
+    }
+
+    // A VALID but NONLINEAR goal `x>0 ⟹ x*x>0`. The bare native engine abstains on
+    // the nonlinear `x*x` (returns `Unknown`), and OxiZ's in-process nonlinear-INTEGER
+    // path currently returns a (spurious) `sat` on it — the `x*x = 3` gap verus-fork
+    // flagged as still open. The SOUNDNESS point of the delegation wiring is that this
+    // spurious `sat` must NOT corrupt the lu-kb verdict: because `delegate_resolve`
+    // trusts only an OxiZ `unsat`, the goal stays a sound `Unknown` (never a wrong
+    // `DefiniteSat`), so the `UnifiedVerdict` §5 differential is preserved.
+    const NONLINEAR_VALID: &str = "const x: Int\ngoal g: x > 0 |- x * x > 0\n";
+
+    #[cfg(not(any(feature = "oxiz", feature = "cas")))]
+    #[test]
+    fn native_alone_abstains_on_a_nonlinear_goal() {
+        let v = solve(NONLINEAR_VALID);
+        assert_eq!(v.collapse(), TriState::Unknown, "native alone should abstain: {v:?}");
+    }
+
+    #[cfg(feature = "oxiz")]
+    #[test]
+    fn oxiz_spurious_sat_does_not_corrupt_the_verdict() {
+        // OxiZ (in-process, no set-logic-tuned nlsat) can return a spurious `sat` on
+        // this nonlinear-integer case; the delegation MUST ignore it (trust only
+        // `unsat`) and leave the sound `Unknown`, never a wrong `DefiniteSat`.
+        let v = solve(NONLINEAR_VALID);
+        assert_eq!(v.collapse(), TriState::Unknown, "spurious sat must not flip the verdict: {v:?}");
+        assert_ne!(v.smt, Some(Confidence::DefiniteSat), "delegation must never introduce a Sat: {v:?}");
     }
 }

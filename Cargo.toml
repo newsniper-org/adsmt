@@ -87,6 +87,11 @@ members = [
     "adsmt-ir-lukb",
     "adsmt-ir-asp",
     "adsmt-ir-lower",
+    # Shared delegation stack — classify+dispatch a typed HOL sequent to the CAS
+    # backends (`cas`) and/or render+feed it to in-process OxiZ (`oxiz`). Lifted
+    # out of `lu-smt`'s Driver so `adsmt-lukb-driver` (adsmtc/adsmtr) reaches the
+    # SAME delegation both CLIs used to get only in lu-smt.
+    "adsmt-delegate",
     "adsmt-lukb-driver",
     "adsmtc",
     "adsmtr",

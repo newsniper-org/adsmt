@@ -9,3 +9,15 @@ adsmt-ir-lukb = { path = "../adsmt-ir-lukb" }
 adsmt-ir-lower = { path = "../adsmt-ir-lower" }
 adsmt-engine = { path = "../adsmt-engine" }
 adsmt-core = { path = "../adsmt-core" }
+# Shared delegation stack (optional) — on a native `Unknown` (or a possibly-false
+# native `Sat`) the driver falls back to OxiZ (`oxiz`) and/or the admit-re-checked
+# CAS backends (`cas`), the SAME delegation `lu-smt` has. Off by default; adsmtc /
+# adsmtr forward these features.
+adsmt-delegate = { path = "../adsmt-delegate", optional = true }
+# For discovering the project-local `adsmt.toml` `[cas]` manifest.
+adsmt-cas = { path = "../adsmt-cas", optional = true }
+
+[features]
+default = []
+oxiz = ["dep:adsmt-delegate", "adsmt-delegate/oxiz"]
+cas = ["dep:adsmt-delegate", "adsmt-delegate/cas", "dep:adsmt-cas"]

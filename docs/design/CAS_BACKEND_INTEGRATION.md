@@ -947,3 +947,46 @@ user's steps.
   `record_cas_unsat` funnel), matching the `--lint` / `--audit-json` discipline so
   stdout stays the pure verdict stream (the `<<DONE>>` contract). An adversarial
   trust audit confirmed no consumer treats provenance/`class` as verdict-bearing.
+
+## 11. Shared delegation crate — `adsmtc` / `adsmtr` reach the same stack
+
+Originally the delegation lived only in `lu-smt`'s `Driver`, so the lu-kb-successor
+CLIs (`adsmtc` compiler, `adsmtr` runtime/REPL — both thin front-ends over
+`adsmt-lukb-driver`) solved obligations on the **bare native engine only** — no
+OxiZ, no CAS. The **`adsmt-delegate`** crate lifts the stack out so every CLI reaches
+the SAME delegation:
+
+- **`cas::try_discharge(hyps, goal, manifest) -> Option<CasProof>`** — the classify →
+  dispatch-to-backends → admit-re-check core that used to be inlined in
+  `Driver::cas_delegate`. `lu-smt`'s `cas_delegate` is now a thin wrapper (it still
+  does the SMT-LIB `:goal-negation` **ledger split**, then calls this); the lu-kb
+  driver, which already has typed `hyps`+`goal`, calls it directly. `try_discharge`
+  additionally **un-folds a `(=> H G)` goal** (flattening `and`) into the hyps-and-goal
+  shape the classifiers expect — a lu-kb obligation lowers the sequent `H |- G` into
+  one implication, whereas lu-smt's ledger is already split (a no-op there).
+- **`oxiz::proves_goal(hyps, goal, has_datatypes) -> bool`** (feature `oxiz`) —
+  renders the obligation to a self-contained SMT-LIB script
+  (`render_smtlib`: `declare-sort`/`-const`/`-fun` for the free symbols +
+  `(set-logic ALL)` + the asserts + `(check-sat)`; quantifiers render in standard
+  `(forall ((v S)) …)` form; datatypes / bare-lambdas bail sound to `None`) and runs
+  it on an in-process OxiZ `Context`. **Soundness posture: it trusts ONLY an OxiZ
+  `unsat`** — an OxiZ `sat` is treated as "no delegation", because an in-process
+  nonlinear-INTEGER case can spuriously `sat` (the `x*x = 3` gap verus-fork flagged as
+  open) and trusting it would flip a valid goal to a wrong `DefiniteSat`, breaking the
+  lu-kb `UnifiedVerdict` §5 differential.
+
+`adsmt-lukb-driver`'s `delegate_resolve` (features `oxiz`/`cas`, off by default) fires
+on a native **non-`Unsat`** verdict and can only ever UPGRADE it to `DefiniteUnsat`
+(both delegates only VERIFY: OxiZ via its hardened `unsat`, CAS via an admit-re-checked
+validity proof) — soundness-**monotone**, never introducing a new `Sat`. `adsmtc` /
+`adsmtr` forward the `oxiz` / `cas` features (`cargo build -p adsmtc --features "oxiz cas"`).
+
+**Demonstrated end-to-end**: `x=2, y=3 |- x*y=6` (an ideal-membership obligation the
+bare native engine spuriously `sat`s on the nonlinear `x*y`) — `adsmtc` alone → `sat`;
+`adsmtc` with an `[cas]` manifest → **`unsat`** (Singular `x*y−6 ∈ ⟨x−2,y−3⟩`,
+admit-re-checked, the F2 refutation of the native spurious-sat). OxiZ's positive
+contribution on the current lu-kb-lowerable fragment is latent — native is
+Presburger-complete on linear integer arith, the nonlinear-integer cases hit OxiZ's
+open spurious-`sat` gap, and OxiZ's quantifier strength awaits the #325 lowering
+reaching quantifiers — but the plumbing is sound and ready, so the win lands
+automatically as lowering expands and the OxiZ gap closes.
