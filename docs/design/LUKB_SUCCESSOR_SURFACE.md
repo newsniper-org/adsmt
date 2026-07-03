@@ -222,8 +222,11 @@ remaining theory vocabulary is **staged** (the memory's "theory cliff"):
 - **Tier 1 (later):** `Real` and `/` (real division), `div`/`mod` (Int
   Euclidean), nonlinear `*`.
 - **Tier 2 (later):** `BitVec(n)` + the bv operators (`&` `|` `^` `~` `<<`
-  `>>` `bvadd` …), `Array(K, V)` + `select`/`store`, full recursive datatypes
-  with `match`.
+  `>>` `bvadd` …), `Array(K, V)` + `select`/`store`, full **recursive**
+  datatypes. (The non-recursive `match` surface itself LANDED 2026-07-03 —
+  flat patterns + guards + literal patterns, elaborating to the kernel
+  `Match`, verdict-complete for Prop/Bool-valued non-parametric matches;
+  recursion/`Elim`/`Fix` stays later.)
 
 A surface that hits an unrepresentable construct **falls back to SMT-LIB**
 (never silently drops it) — the differential oracle stays SMT-LIB throughout
@@ -233,11 +236,13 @@ bring-up.
 
 ### 3a. Lexical additions
 
-New keywords: `forall exists axiom assume goal in then else if`. (`let` already
-exists; reused for term-`let … in`.) New operator tokens: `==>` (implies),
-`<==>` (iff), `|-` (turnstile), `.` (quantifier-body separator — already a
-char, promoted to a token after a binder list). `=>` (FatArrow) stays the
-lambda arrow; implication is the distinct `==>` to avoid the collision.
+New keywords: `forall exists axiom assume goal in then else if match`. (`let`
+already exists; reused for term-`let … in`.) New operator tokens: `==>`
+(implies), `<==>` (iff), `|-` (turnstile), `.` (quantifier-body separator —
+already a char, promoted to a token after a binder list). `=>` (FatArrow) is
+the **match-arm clause arrow** (`pat (if g)? => body`, landed 2026-07-03);
+implication is the distinct `==>` to avoid the collision. `if`/`then`/`else`/
+`match` are fully reserved — backtick-quote to use them as identifiers.
 
 **Equality spelling.** The **canonical** spelling is a single `=`
 (`x + y = y + x`), disequality `!=`. lu-kb's `==` is **kept as a legacy alias**
@@ -433,12 +438,17 @@ needed) and human-readable.
   producer is retargeted (Phase 2 proper).
 - **Phase 2 — native datatypes/defs** (the actual trigger win: drop the
   box/unbox/height `:pattern` axioms), gated on kernel #317 + CIC→HOL #325
-  (datatype-eliminator lowering: the `Match` lowering LANDED, but verdict-
-  completeness rides on the engine datatype-theory SAT-core refinement, #331) +
-  faces-in-workspace (DONE, `0f9b007`) + a full A/B z3-differential. The lukb
-  surface for it (`data`/`fn=body`) is slice 7 above; remaining = the **VIR
-  producer retarget** (emit native datatypes + selectors instead of the
-  box/unbox/height axioms) + the verdict gate.
+  (datatype-eliminator lowering: the `Match` lowering LANDED, **and the
+  #331/#334 verdict gate is CLOSED** — the engine DECIDES non-parametric/
+  non-indexed Prop/Bool-valued matches via selector congruence + the bounded
+  DPLL(T) refinement loop, z3-differential-validated to a ~0.1% conservative
+  false-sat residual) + faces-in-workspace (DONE, `0f9b007`) + a full A/B
+  z3-differential. The lukb surface for it (`data`/`fn=body`) is slice 7 above,
+  **and the surface `if`/`match` terms LANDED 2026-07-03** (the verus-fork
+  proposal: `if` → the `ite` prelude → the verified term-`ite` lowering; flat
+  first-match `match` with guards + literal patterns → the kernel `Match`,
+  strict exhaustiveness); remaining = the **VIR producer retarget** (emit
+  native datatypes + selectors instead of the box/unbox/height axioms).
 - **Phase 3+ — Tier 2 theory** (BitVec / Array), recursive defs, and the
   **theorem-package** layer (§7).
 
