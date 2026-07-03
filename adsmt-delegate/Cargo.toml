@@ -26,3 +26,7 @@ oxiz-solver = { path = "../external/oxiz/oxiz-solver", optional = true }
 default = []
 cas = ["dep:adsmt-cas", "dep:cas-backend-singular", "dep:cas-backend-mathhook", "dep:cas-backend-numtheory"]
 oxiz = ["dep:oxiz-solver"]
+
+[dev-dependencies]
+num-bigint.workspace = true
+num-rational.workspace = true

@@ -111,6 +111,8 @@ dependencies = [
  "cas-backend-mathhook",
  "cas-backend-numtheory",
  "cas-backend-singular",
+ "num-bigint",
+ "num-rational",
  "oxiz-solver",
 ]
 
