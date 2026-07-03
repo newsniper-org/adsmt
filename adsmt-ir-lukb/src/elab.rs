@@ -4,6 +4,8 @@
 //! a closed `Prop`), so a face bug can only ever yield a [`FaceError`], never a
 //! trusted ill-typed term — the same firewall as the SMT-LIB / ASP faces.
 
+use adsmt_class::resolve::{ClassGoal, ResolutionResult, Resolver};
+use adsmt_class::{Instance, InstanceDb, Premise};
 use adsmt_ir::theory;
 use adsmt_ir::{
     Ctx, Env, Term as K, Univ, as_const_app, declare_inductive, define, infer, is_def_eq,
@@ -45,6 +47,13 @@ struct Elab {
     /// A counter for fresh `match` field binders (`!match.N` — a `!` name can
     /// never lex as a user identifier, so it cannot shadow one).
     fresh_n: usize,
+    /// The type-relation registry (F2, docs/design/EQ_ORD_UPCAST_RELATIONS.md):
+    /// `=`/`!=` are Rust-style Eq-GATED (every declared sort is auto-granted a
+    /// builtin `Eq`, so the gate is explicit but observationally conservative),
+    /// cross-sort equality resolves `PartialEq(A, B)` (whose lattice edges
+    /// premise the `UpCast` that performs the injection), and comparisons
+    /// resolve `PartialOrd`.
+    classes: InstanceDb,
 }
 
 impl Elab {
@@ -85,13 +94,154 @@ impl Elab {
         // the FULL arithmetic prelude (Int/Real/Nat/WNat + ops + injections +
         // pow/odd/prime) — the lu-kb surface uses Nat/WNat/pow/… as built-ins.
         theory::install_arith(&mut env)?;
-        Ok(Elab { env, hyps: Vec::new(), goals: Vec::new(), solve_n: 0, fresh_n: 0 })
+        // the type-relation registry: the Eq/UpCast family + the numeric
+        // builtins, the diagonal + lattice-edge PartialOrd instances, and the
+        // `Bool` (= Prop) equality. User sorts / ring sorts / datatypes are
+        // granted their builtin `Eq` at their declaration sites.
+        let mut classes = InstanceDb::new();
+        adsmt_class::declare_eq_ord_relations(&mut classes);
+        classes.declare_relation(adsmt_class::partial_ord());
+        classes.declare_relation(adsmt_class::ord());
+        adsmt_class::install_eq_ord_numeric(&mut classes);
+        const NUMERICS: [&str; 4] = ["Nat", "WNat", "Int", "Real"];
+        const EDGES: [(&str, &str); 6] = [
+            ("Nat", "WNat"),
+            ("WNat", "Int"),
+            ("Int", "Real"),
+            ("Nat", "Int"),
+            ("Nat", "Real"),
+            ("WNat", "Real"),
+        ];
+        let cty = |n: &str| adsmt_core::Type::const_(n, adsmt_core::Kind::Type);
+        for n in NUMERICS {
+            let c = cty(n);
+            classes
+                .declare_instance(
+                    Instance::new(adsmt_class::numberlike::PARTIAL_ORD, vec![c.clone(), c.clone()])
+                        .with_premise(Premise::new(adsmt_class::PARTIAL_EQ, vec![c.clone(), c.clone()]))
+                        .with_premise(Premise::new(adsmt_class::UP_CAST, vec![c.clone(), c])),
+                )
+                .map_err(|e| unsupported(format!("class registry: {e}")))?;
+        }
+        for (f, t) in EDGES {
+            let (cf, ct) = (cty(f), cty(t));
+            classes
+                .declare_instance(
+                    Instance::new(
+                        adsmt_class::numberlike::PARTIAL_ORD,
+                        vec![cf.clone(), ct.clone()],
+                    )
+                    .with_premise(Premise::new(adsmt_class::PARTIAL_EQ, vec![cf.clone(), ct.clone()]))
+                    .with_premise(Premise::new(adsmt_class::UP_CAST, vec![cf, ct])),
+                )
+                .map_err(|e| unsupported(format!("class registry: {e}")))?;
+        }
+        let mut elab =
+            Elab { env, hyps: Vec::new(), goals: Vec::new(), solve_n: 0, fresh_n: 0, classes };
+        elab.grant_eq("Bool"); // surface Bool = kernel Prop: equality (iff), no order
+        Ok(elab)
+    }
+
+    /// Grant the BUILTIN `Eq` (+ diagonal `PartialEq`) instance a declared sort
+    /// receives (owner ruling 2: `=` is Eq-gated, so every declared sort —
+    /// uninterpreted, ring, `Bool`, numeric, datatype — carries one; numerics
+    /// are installed by `install_eq_ord_numeric`, everything else lands here).
+    /// Idempotent: a duplicate grant is ignored (the registry's coherence check
+    /// makes re-declaration an error, so a second grant is simply skipped).
+    fn grant_eq(&mut self, sort: &str) {
+        let _ = self.classes.declare_instance(adsmt_class::partial_eq_diag_instance(sort));
+        let _ = self.classes.declare_instance(adsmt_class::eq_instance(sort));
+    }
+
+    /// The class-registry carrier name of a kernel SORT term: `Prop` ↦ `Bool`,
+    /// a plain sort constant ↦ its name. `None` for anything else (a function
+    /// sort / applied sort has no registry carrier).
+    fn class_sort_name(&self, s: &K) -> Option<String> {
+        // whnf first: a `match`'s motive application leaves a β-redex sort
+        // (`(λ:N. Int) n`) that must reduce before classification.
+        let s = adsmt_ir::whnf(&self.env, s);
+        if is_def_eq(&self.env, &s, &K::prop()) {
+            return Some("Bool".into());
+        }
+        match adsmt_ir::as_const_app(&s) {
+            Some((n, args)) if args.is_empty() => Some(n),
+            _ => None,
+        }
+    }
+
+    /// The Rust-style `Eq` gate for a SAME-sort `=`/`!=` (owner ruling 2): the
+    /// sort must carry an `Eq` instance. Every declared sort is auto-granted
+    /// one, so today this is observationally conservative — the gate exists
+    /// for the future opt-out and for the F3 lawful datatype derivation.
+    fn require_eq(&self, s: &K) -> Result<(), FaceError> {
+        let n = self
+            .class_sort_name(s)
+            .ok_or_else(|| unsupported(format!("`=` needs a registry sort, got `{s}`")))?;
+        let c = adsmt_core::Type::const_(&n, adsmt_core::Kind::Type);
+        match Resolver::new(&self.classes).resolve(&ClassGoal::new(adsmt_class::EQ, vec![c])) {
+            ResolutionResult::Found(_) => Ok(()),
+            _ => Err(unsupported(format!("no `Eq({n})` instance licenses `=` at sort `{n}`"))),
+        }
+    }
+
+    /// The CROSS-sort equality gate: `PartialEq(A, B)` must resolve (the
+    /// synchronized mirror covers the flipped operand order); its lattice-edge
+    /// instances premise the `UpCast` that `unify_sorts` then performs.
+    fn require_partial_eq(&self, sa: &K, sb: &K) -> Result<(), FaceError> {
+        let (na, nb) = match (self.class_sort_name(sa), self.class_sort_name(sb)) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Err(unsupported(format!("operands of differing sorts `{sa}` and `{sb}`"))),
+        };
+        let (ca, cb) = (
+            adsmt_core::Type::const_(&na, adsmt_core::Kind::Type),
+            adsmt_core::Type::const_(&nb, adsmt_core::Kind::Type),
+        );
+        match Resolver::new(&self.classes)
+            .resolve(&ClassGoal::new(adsmt_class::PARTIAL_EQ, vec![ca, cb]))
+        {
+            ResolutionResult::Found(_) => Ok(()),
+            _ => Err(unsupported(format!(
+                "no `PartialEq({na}, {nb})` instance licenses `=` across sorts `{na}` and `{nb}`"
+            ))),
+        }
+    }
+
+    /// The comparison gate: `PartialOrd` must resolve in EITHER operand order
+    /// (`a < b` with only `PartialOrd(B, A)` is the flipped comparison — the
+    /// order is decided in the upcast target either way).
+    fn require_partial_ord(&self, sa: &K, sb: &K) -> Result<(), FaceError> {
+        let (na, nb) = match (self.class_sort_name(sa), self.class_sort_name(sb)) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                return Err(unsupported(format!(
+                    "comparison needs registry sorts, got `{sa}` and `{sb}`"
+                )));
+            }
+        };
+        let (ca, cb) = (
+            adsmt_core::Type::const_(&na, adsmt_core::Kind::Type),
+            adsmt_core::Type::const_(&nb, adsmt_core::Kind::Type),
+        );
+        let r = Resolver::new(&self.classes);
+        let po = adsmt_class::numberlike::PARTIAL_ORD;
+        if matches!(
+            r.resolve(&ClassGoal::new(po, vec![ca.clone(), cb.clone()])),
+            ResolutionResult::Found(_)
+        ) || matches!(r.resolve(&ClassGoal::new(po, vec![cb, ca])), ResolutionResult::Found(_))
+        {
+            Ok(())
+        } else {
+            Err(unsupported(format!(
+                "no `PartialOrd({na}, {nb})` instance licenses a comparison between `{na}` and `{nb}`"
+            )))
+        }
     }
 
     fn item(&mut self, item: &Item) -> Result<(), FaceError> {
         match item {
             Item::Sort(s) => {
                 postulate(&mut self.env, s, K::type_(0))?;
+                self.grant_eq(s); // owner ruling 2: every declared sort carries Eq
             }
             Item::Const(x, ty) => {
                 self.ensure_ring_sorts(ty)?; // pre-declare any GF(p)/IntModulo/GFPower sort
@@ -133,6 +283,10 @@ impl Elab {
                     kctors.push((cname.clone(), ftypes));
                 }
                 declare_inductive(&mut self.env, name, Vec::new(), Univ::Type(0), kctors)?;
+                // the structural Eq grant (F2); the LAWFUL derivation — laws
+                // discharged by the datatype theory — is F3, where the
+                // is-{ctor} testers ride it.
+                self.grant_eq(name);
             }
             Item::Axiom(_, t) | Item::Assume(_, t) => {
                 let kt = self.elab_prop(t)?;
@@ -346,6 +500,7 @@ impl Elab {
                 Some(canon) => {
                     if self.env.lookup(&canon).is_none() {
                         postulate(&mut self.env, &canon, K::type_(0))?;
+                        self.grant_eq(&canon); // ring sorts carry Eq too
                     }
                 }
                 None => {
@@ -752,6 +907,22 @@ impl Elab {
         let kb = self.elab_term(ctx, r)?;
         let sa = infer(&self.env, &kernel_ctx(ctx), &ka)?;
         let sb = infer(&self.env, &kernel_ctx(ctx), &kb)?;
+        // the type-relation gates (F2): `=`/`!=` are Eq-gated (same sort) /
+        // PartialEq-gated (cross sort); comparisons are PartialOrd-gated. The
+        // arithmetic ops stay lattice-governed by `unify_sorts` alone.
+        match op {
+            BinOp::Eq | BinOp::Ne => {
+                if is_def_eq(&self.env, &sa, &sb) {
+                    self.require_eq(&sa)?;
+                } else {
+                    self.require_partial_eq(&sa, &sb)?;
+                }
+            }
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                self.require_partial_ord(&sa, &sb)?;
+            }
+            _ => {}
+        }
         let (ka, kb, s) = self.unify_sorts(ka, kb, sa, sb)?;
         match op {
             BinOp::Eq => Ok(K::apps(K::cnst("="), [s, ka, kb])),

@@ -135,9 +135,22 @@ injection, which sort), not just a typecheck-time annotation — the same lever
    `numberlike`'s `PartialOrd(I)`/`Ord(I)` re-based onto the 2-param forms
    (`ord_instance` premise chain updated; `IntegerLike`'s `Ord(I)` premise
    unchanged in name). Unit tests incl. sync-mirror + forbidden-identity.
+   **LANDED `357db06`** (adsmt-class 51/0; engine class_laws re-based 5/0).
 2. **F2 — lukb elaborator reroute**: `=`/`!=`/comparisons through
-   `PartialEq`/`PartialOrd` resolution; `unify_sorts`' lattice retired in
-   favour of `UpCast` resolution; existing corpus verdict-identical.
+   `PartialEq`/`PartialOrd` resolution. **LANDED** — the shape that landed is
+   *license-then-execute*: `elab_bin` GATES before `unify_sorts` (same-sort
+   `=`/`!=` → `Eq(T)`; cross-sort → `PartialEq(A,B)` incl. the synchronized
+   mirror; `< <= > >=` → `PartialOrd` in either operand order; arith ops
+   ungated), every declaration site auto-grants the builtin `Eq`
+   (`Item::Sort`, ring-sort canon, `Item::Data`, `Bool`≡Prop, numerics via
+   `install_eq_ord_numeric`), and `class_sort_name` whnf-reduces first (a
+   `match` motive leaves a β-redex sort). `unify_sorts`' `numeric_rank`/
+   `inject` mechanics are KEPT as the cast EXECUTOR — the registry's edge set
+   mirrors that lattice exactly, so gate and surgery agree by construction;
+   retiring the rank table in favour of `UpCast` `cast`-method bodies is
+   deferred until a consumer needs the method, not just the license. Existing
+   corpus verdict-identical (lukb 89/0+5/0; driver 9/0 + z3-oracle
+   differential 1/0).
 3. **F3 — datatype `Eq(T)` auto-derivation + `is-{ctor}` tester elaboration**
    (closes #391; ob1-abs.lukb elaborates end-to-end).
 4. **F4 — docs/books + memory + verus-fork notice.**

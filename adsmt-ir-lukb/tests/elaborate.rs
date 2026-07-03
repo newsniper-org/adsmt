@@ -1144,3 +1144,37 @@ fn scalar_match_round_trips_through_the_printer() {
     let m2 = parse(&print_module(&m1)).expect("re-parses");
     assert_eq!(m1, m2, "literal-pattern round-trip\n{}", print_module(&m1));
 }
+
+// ── F2: the type-relation gates (docs/design/EQ_ORD_UPCAST_RELATIONS.md) ─────
+
+/// The Eq/PartialEq/PartialOrd gates: every declared sort carries the builtin
+/// `Eq` (uninterpreted, ring, Bool/Prop, datatype), the numeric lattice edges
+/// carry `PartialEq`+`UpCast`, and the gate ERRORS name the missing instance.
+#[test]
+fn type_relation_gates_license_and_reject() {
+    // same-sort `=` on an uninterpreted / ring / Prop / datatype sort — the
+    // auto-granted Eq licenses it (observationally as before).
+    all_props("sort S\nconst a: S\nconst b: S\ngoal g: a = b\n", 0, 1);
+    all_props("const a: GF(7)\nconst b: GF(7)\ngoal g: a = b\n", 0, 1);
+    all_props("const p: Bool\nconst q: Bool\ngoal g: p = q\n", 0, 1);
+    all_props("data C = red | blue\nconst c: C\ngoal g: c = red\n", 0, 1);
+    // cross-sort numeric `=`/comparison: the lattice-edge PartialEq/PartialOrd
+    // instances license it (Int injects into Real), either operand order.
+    all_props("const x: Int\nconst r: Real\ngoal g: x = r and r > x\n", 0, 1);
+    // cross-sort WITHOUT an instance: the gate rejects, naming the relation.
+    match elaborate("sort S\nconst s: S\nconst x: Int\ngoal g: s = x\n") {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("PartialEq"), "names the missing relation: {m}");
+        }
+        Err(other) => panic!("expected the PartialEq gate, got {other:?}"),
+        Ok(_) => panic!("cross-sort `=` without an instance must not elaborate"),
+    }
+    // comparison on a sort with Eq but NO PartialOrd (a datatype): rejected.
+    match elaborate("data C = red | blue\nconst c: C\ngoal g: c < red\n") {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("PartialOrd"), "names the missing relation: {m}");
+        }
+        Err(other) => panic!("expected the PartialOrd gate, got {other:?}"),
+        Ok(_) => panic!("datatype `<` without PartialOrd must not elaborate"),
+    }
+}

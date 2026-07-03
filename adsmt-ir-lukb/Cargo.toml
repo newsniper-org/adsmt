@@ -10,3 +10,7 @@ description = "The lu-kb-successor unified surface face for adsmt-ir — a non-S
 # Zero-dependency (a hand-written lexer + precedence-climbing parser).
 [dependencies]
 adsmt-ir = { path = "../adsmt-ir" }
+# the type-relation layer: Eq-gated `=` + PartialEq/UpCast-resolved cross-sort
+# unification (F2 of docs/design/EQ_ORD_UPCAST_RELATIONS.md).
+adsmt-class = { version = "=1.0.0-rc.41", path = "../adsmt-class" }
+adsmt-core = { version = "=1.0.0-rc.41", path = "../adsmt-core" }

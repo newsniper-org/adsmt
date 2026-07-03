@@ -18,9 +18,13 @@
 //!   inherits `Reduces(A, B)` (cast = encode) — the owner's follow-up ruling;
 //!   until then `UpCast` carries no `Reduces` premise.
 //!
-//! Method BODIES for the numeric `UpCast` instances (the injection constants)
-//! are wired in F2 together with the elaborator reroute — F1 declares the
-//! structure and the gates.
+//! The numeric `UpCast` instances carry NO method bodies: the lukb elaborator
+//! (F2) resolves this registry as the LICENSE for `=`/`!=`/comparisons, and
+//! its existing injection constants (`nat2wnat`/`nat2int`/`to_real`, …) still
+//! EXECUTE the cast — the instance set here mirrors that executor lattice
+//! exactly, so gate and surgery agree by construction. Storing the injection
+//! constants as `cast` method bodies (retiring the executor's own rank table)
+//! is deferred until a consumer needs the method, not just the license.
 
 use adsmt_core::{Kind, Type, TyVar};
 use std::sync::Arc;
@@ -93,8 +97,8 @@ pub fn eq_instance(sort: &str) -> Instance {
         .with_premise(Premise::new(PARTIAL_EQ, vec![c.clone(), c]))
 }
 
-/// A single-step numeric `UpCast(from, to)` instance. The cast method body
-/// (the injection constant) is wired in F2 with the elaborator reroute.
+/// A single-step numeric `UpCast(from, to)` instance. No `cast` method body:
+/// the elaborator's injection constants execute the cast (module doc above).
 pub fn up_cast_instance(from: &str, to: &str) -> Instance {
     Instance::new(UP_CAST, vec![carrier_ty(from), carrier_ty(to)])
 }
@@ -126,6 +130,14 @@ pub fn install_eq_ord_numeric(db: &mut InstanceDb) {
     ];
     for (from, to) in STEPS {
         db.declare_instance(up_cast_instance(from, to)).expect("UpCast step");
+        // the heterogeneous equality along each lattice edge (the mirror is
+        // synchronized by the registry), premising the UpCast that performs
+        // the injection at elaboration.
+        db.declare_instance(
+            Instance::new(PARTIAL_EQ, vec![carrier_ty(from), carrier_ty(to)])
+                .with_premise(Premise::new(UP_CAST, vec![carrier_ty(from), carrier_ty(to)])),
+        )
+        .expect("PartialEq edge");
     }
 }
 
