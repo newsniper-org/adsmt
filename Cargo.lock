@@ -107,6 +107,7 @@ version = "1.0.0-rc.41"
 dependencies = [
  "adsmt-cas",
  "adsmt-core",
+ "adsmt-theory",
  "cas-backend-mathhook",
  "cas-backend-numtheory",
  "cas-backend-singular",
@@ -324,6 +325,7 @@ dependencies = [
  "adsmt-engine",
  "adsmt-ir-lower",
  "adsmt-ir-lukb",
+ "adsmt-theory",
 ]
 
 [[package]]
