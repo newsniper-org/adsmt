@@ -954,3 +954,132 @@ fn if_keywords_are_reserved() {
     // backtick-quoted, it is an ordinary identifier.
     assert!(elaborate("const `if`: Int\ngoal g: `if` >= `if`\n").is_ok());
 }
+
+// ── surface `match` (the 2026-07-03 verus-fork proposal, slice ②) ────────────
+
+const COLOR: &str = "data Color = red | green | blue\nconst c: Color\n";
+const NAT: &str = "data N = zero | succ(pred: N)\nconst n: N\n";
+
+/// An exhaustive datatype match (bare nullary-ctor patterns resolve AS
+/// constructors, not binders) elaborates to a kernel-checked Prop.
+#[test]
+fn exhaustive_datatype_match_elaborates() {
+    all_props(
+        &format!("{COLOR}goal g: match c {{ red => true, green => false, blue => true }}\n"),
+        0,
+        1,
+    );
+}
+
+/// A wildcard `_` catch-all expands into every remaining constructor's minor.
+#[test]
+fn wildcard_expands_into_remaining_constructors() {
+    all_props(&format!("{COLOR}goal g: match c {{ red => true, _ => false }}\n"), 0, 1);
+}
+
+/// A binder catch-all `x => …` also NAMES the scrutinee in its body.
+#[test]
+fn binder_catch_all_binds_the_scrutinee() {
+    all_props(&format!("{COLOR}goal g: match c {{ red => true, x => x = green }}\n"), 0, 1);
+}
+
+/// Constructor patterns bind fields: `succ(m)`'s body sees `m` (a fresh binder
+/// of the field sort), wildcards skip a field.
+#[test]
+fn constructor_pattern_binds_fields() {
+    all_props(&format!("{NAT}goal g: match n {{ zero => true, succ(m) => m = zero }}\n"), 0, 1);
+    all_props(&format!("{NAT}goal g: match n {{ zero => true, succ(_) => false }}\n"), 0, 1);
+}
+
+/// STRICT exhaustiveness (owner-confirmed §6.5a): an uncovered constructor is
+/// a HARD elaboration error naming it — never a fabricated branch.
+#[test]
+fn non_exhaustive_match_is_a_hard_error() {
+    let e = elaborate(&format!("{COLOR}goal g: match c {{ red => true }}\n"));
+    match e {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("green"), "names the uncovered ctor: {m}");
+            assert!(m.contains("non-exhaustive"), "says non-exhaustive: {m}");
+        }
+        Err(other) => panic!("expected the non-exhaustive error, got {other:?}"),
+        Ok(_) => panic!("a non-exhaustive match must not elaborate"),
+    }
+}
+
+/// Malformed arm sets are rejected: an unknown constructor (parenthesised
+/// form), an arity mismatch, and a bare NON-nullary constructor name.
+#[test]
+fn malformed_arm_sets_are_rejected() {
+    assert!(matches!(
+        elaborate(&format!("{COLOR}goal g: match c {{ yellow(x) => true, _ => false }}\n")),
+        Err(FaceError::Unsupported(_))
+    ));
+    assert!(matches!(
+        elaborate(&format!("{NAT}goal g: match n {{ zero => true, succ(a, b) => false }}\n")),
+        Err(FaceError::Unsupported(_))
+    ));
+    assert!(matches!(
+        elaborate(&format!("{NAT}goal g: match n {{ zero => true, succ => false }}\n")),
+        Err(FaceError::Unsupported(_))
+    ));
+}
+
+/// Guards ride the `ite` fold: a guarded arm needs an unguarded backstop in
+/// the SAME constructor bucket (the syntactic rule — never semantic
+/// completeness); without one the match is non-exhaustive.
+#[test]
+fn guards_fold_with_a_syntactic_backstop() {
+    // guarded succ-arm + unguarded succ-backstop + zero ⇒ total.
+    all_props(
+        &format!(
+            "{NAT}goal g: match n {{ succ(m) if m = zero => true, succ(_) => false, zero => true }}\n"
+        ),
+        0,
+        1,
+    );
+    // a constructor reached ONLY by guarded arms is non-exhaustive.
+    assert!(matches!(
+        elaborate(&format!(
+            "{NAT}goal g: match n {{ succ(m) if m = zero => true, zero => true }}\n"
+        )),
+        Err(FaceError::Unsupported(_))
+    ));
+}
+
+/// `match c { true => a, false => b }` ≡ `if c then a else b` — the
+/// DEFINITIONAL identity: both elaborate to the same `ite` application (no
+/// `Bool` inductive is ever declared or touched).
+#[test]
+fn prop_literal_match_is_definitionally_if() {
+    let src = "const p: Bool\nconst q: Bool\nconst r: Bool\n\
+               goal g1: match p { true => q, false => r }\n\
+               goal g2: if p then q else r\n";
+    let m = all_props(src, 0, 2);
+    assert!(
+        is_def_eq(&m.env, &m.goals[0], &m.goals[1]),
+        "match-on-literals must BE the if: {} vs {}",
+        m.goals[0],
+        m.goals[1]
+    );
+}
+
+/// A VALUE-valued datatype match kernel-checks (motive lands in `Type(0)`);
+/// its verdict is the sound `Unknown` at the lowering (data-valued abstain).
+#[test]
+fn value_valued_match_elaborates() {
+    all_props(
+        &format!("{NAT}goal g: (match n {{ zero => 0, succ(_) => 1 }}) >= 0\n"),
+        0,
+        1,
+    );
+}
+
+/// `match` round-trips through the printer (patterns, wildcards, guards).
+#[test]
+fn match_round_trips_through_the_printer() {
+    let src = "data N = zero | succ(pred: N)\nconst n: N\nconst p: Bool\n\
+               goal g: match n { zero => true, succ(m) if p => m = zero, succ(_) => false, _ => true }\n";
+    let m1 = parse(src).expect("parses");
+    let m2 = parse(&print_module(&m1)).expect("re-parses");
+    assert_eq!(m1, m2, "match round-trip\n{}", print_module(&m1));
+}

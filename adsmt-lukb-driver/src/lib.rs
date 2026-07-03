@@ -206,6 +206,35 @@ mod tests {
         assert_eq!(v.collapse(), TriState::Sat);
     }
 
+    // ── surface `match` end-to-end (slice ② of the proposal): a Prop-valued
+    // datatype match elaborates to the kernel `Match`, lowers through the
+    // tester+selector encoding, and the engine DECIDES it (the closed #331/#334
+    // verdict gate — selector congruence).
+
+    #[test]
+    fn surface_match_reaches_a_native_verdict() {
+        // x = succ(zero) ⟹ (match x { zero => true, succ(n) => n = zero }) —
+        // VALID: the succ-branch fires with n = pred(x) = zero.
+        let v = solve(
+            "data N = zero | succ(pred: N)\nconst x: N\n\
+             goal g: x = succ(zero) |- match x { zero => true, succ(n) => n = zero }\n",
+        );
+        assert_eq!(v.smt, Some(Confidence::DefiniteUnsat), "got {v:?}");
+        assert_eq!(v.collapse(), TriState::Unsat);
+    }
+
+    #[test]
+    fn value_valued_match_is_sound_unknown() {
+        // a VALUE-valued match elaborates + kernel-checks, but the #325 lowering
+        // abstains on a data-valued case split ⇒ the sound Unknown (never a
+        // fabricated verdict).
+        let v = solve(
+            "data N = zero | succ(pred: N)\nconst x: N\n\
+             goal g: (match x { zero => zero, succ(n) => n }) = zero\n",
+        );
+        assert_eq!(v.collapse(), TriState::Unknown, "got {v:?}");
+    }
+
     // A VALID but NONLINEAR goal `x>0 ⟹ x*x>0`. The bare native engine abstains on
     // the nonlinear `x*x` (returns `Unknown`). With the `oxiz` feature the driver
     // renders the negated obligation `x>0 ∧ x*x<=0` under the tight `QF_NIA` logic

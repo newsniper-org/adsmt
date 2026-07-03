@@ -6,10 +6,11 @@
 
 use adsmt_ir::theory;
 use adsmt_ir::{
-    Ctx, Env, Term as K, Univ, declare_inductive, define, infer, is_def_eq, postulate, subst_top,
+    Ctx, Env, Term as K, Univ, as_const_app, declare_inductive, define, infer, is_def_eq,
+    peel_pis, postulate, shift, subst_top, whnf,
 };
 
-use crate::ast::{BinOp, Binder, Item, Module, Term as S, Type};
+use crate::ast::{Arm, BinOp, Binder, Item, Module, PatArg, Pattern, Term as S, Type};
 use crate::error::{FaceError, unsupported};
 use crate::parser::parse;
 
@@ -41,6 +42,9 @@ struct Elab {
     goals: Vec<K>,
     /// A counter for the fresh proof tokens of `solve … by …` (`!solve.N`).
     solve_n: usize,
+    /// A counter for fresh `match` field binders (`!match.N` — a `!` name can
+    /// never lex as a user identifier, so it cannot shadow one).
+    fresh_n: usize,
 }
 
 impl Elab {
@@ -81,7 +85,7 @@ impl Elab {
         // the FULL arithmetic prelude (Int/Real/Nat/WNat + ops + injections +
         // pow/odd/prime) — the lu-kb surface uses Nat/WNat/pow/… as built-ins.
         theory::install_arith(&mut env)?;
-        Ok(Elab { env, hyps: Vec::new(), goals: Vec::new(), solve_n: 0 })
+        Ok(Elab { env, hyps: Vec::new(), goals: Vec::new(), solve_n: 0, fresh_n: 0 })
     }
 
     fn item(&mut self, item: &Item) -> Result<(), FaceError> {
@@ -496,6 +500,7 @@ impl Elab {
                 let (ka, kb, s) = self.unify_sorts(ka, kb, sa, sb)?;
                 Ok(K::apps(K::cnst("ite"), [s, kc, ka, kb]))
             }
+            S::Match(scrut, arms) => self.elab_match(ctx, scrut, arms),
             S::SolveBy(g, l) => self.elab_solve_by(ctx, g, l),
         }
     }
@@ -792,6 +797,353 @@ impl Elab {
             _ => Err(unsupported(format!("operands of differing sorts `{sa}` and `{sb}`"))),
         }
     }
+
+    // ── `match` elaboration (the 2026-07-03 verus-fork proposal §4/§6) ──────
+
+    /// A fresh `match` field-binder name. `!` cannot lex as a user identifier,
+    /// so a fresh name can never shadow one (the `!solve.N` convention).
+    fn fresh_name(&mut self) -> String {
+        let n = self.fresh_n;
+        self.fresh_n += 1;
+        format!("!match.{n}")
+    }
+
+    /// Elaborate `match scrut { arms }`. Routing is by SCRUTINEE SORT, not
+    /// keyword: a `Prop` scrutinee is a `true`/`false`-literal match and
+    /// elaborates to the SAME `ite` prelude application as `if` (a definitional
+    /// identity — the prelude has no `Bool` inductive to match on); a datatype
+    /// scrutinee elaborates to the kernel `Match` eliminator.
+    ///
+    /// ## Exhaustiveness (proposal §6 — strict, owner-confirmed)
+    ///
+    /// The kernel demands exactly one TOTAL minor per constructor in
+    /// declaration order (`check.rs`'s `BadElim` gate, no wildcard/default), so
+    /// the surface buckets the arms per constructor (first-match, source
+    /// order), expands wildcard/binder catch-alls into every bucket,
+    /// right-folds guarded arms into the bucket's single minor as nested
+    /// `ite`s, and requires each bucket to END in an unguarded arm (the
+    /// syntactic backstop — semantic guard-completeness is undecidable and
+    /// never attempted). A constructor with no total bucket is a HARD
+    /// elaboration error: the surface NEVER fabricates a branch, so every
+    /// kernel `Match` it emits is exhaustive by construction.
+    fn elab_match(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        scrut: &S,
+        arms: &[Arm],
+    ) -> Result<K, FaceError> {
+        if arms.is_empty() {
+            return Err(unsupported("`match` needs at least one arm"));
+        }
+        let kscrut = self.elab_term(ctx, scrut)?;
+        let sty = whnf(&self.env, &infer(&self.env, &kernel_ctx(ctx), &kscrut)?);
+        if is_def_eq(&self.env, &sty, &K::prop()) {
+            return self.elab_prop_match(ctx, &kscrut, scrut, arms);
+        }
+        let Some((ind_name, spine)) = as_const_app(&sty) else {
+            return Err(unsupported(format!(
+                "`match` scrutinee must be a datatype or Bool/Prop value, got sort `{sty}`"
+            )));
+        };
+        // Constructor readback (names + per-ctor field sorts, owned so the env
+        // borrow ends before arm bodies elaborate) — the one new elaborator
+        // capability the proposal names (the `data` path only DECLARES).
+        let ctors: Vec<(String, Vec<K>)> = {
+            let Some(ind) = self.env.inductive(&ind_name) else {
+                return Err(unsupported(format!(
+                    "`match` scrutinee sort `{ind_name}` is not a datatype"
+                )));
+            };
+            if !ind.params.is_empty() || !ind.indices.is_empty() || !spine.is_empty() {
+                return Err(unsupported(format!(
+                    "`match` over parametric/indexed datatype `{ind_name}` (a later slice)"
+                )));
+            }
+            ind.ctors
+                .iter()
+                .map(|c| {
+                    let doms = peel_pis(&c.ty, c.args_count).map(|(d, _)| d).unwrap_or_default();
+                    (c.name.clone(), doms)
+                })
+                .collect()
+        };
+        let is_ctor = |n: &str| ctors.iter().any(|(cn, _)| cn == n);
+        // Arm validation: unknown constructor, arity mismatch, a bare
+        // non-nullary constructor name, a Prop-literal pattern on a datatype.
+        for arm in arms {
+            match &arm.pattern {
+                Pattern::Ctor(n, pargs) => {
+                    let Some((_, doms)) = ctors.iter().find(|(cn, _)| cn == n) else {
+                        return Err(unsupported(format!(
+                            "`{n}` is not a constructor of `{ind_name}`"
+                        )));
+                    };
+                    if pargs.len() != doms.len() {
+                        return Err(unsupported(format!(
+                            "constructor pattern `{n}` has {} argument(s), expected {}",
+                            pargs.len(),
+                            doms.len()
+                        )));
+                    }
+                }
+                Pattern::Bind(n) if is_ctor(n) => {
+                    let (_, doms) = ctors.iter().find(|(cn, _)| cn == n).expect("is_ctor");
+                    if !doms.is_empty() {
+                        return Err(unsupported(format!(
+                            "bare constructor pattern `{n}` needs its {} field pattern(s)",
+                            doms.len()
+                        )));
+                    }
+                }
+                Pattern::Bool(_) => {
+                    return Err(unsupported(format!(
+                        "`true`/`false` pattern on a `{ind_name}` scrutinee"
+                    )));
+                }
+                Pattern::Wild | Pattern::Bind(_) => {}
+            }
+        }
+        // Bucket per constructor (declaration order; first-match in source
+        // order; the bucket CLOSES at its first unguarded contributor — later
+        // arms are unreachable for this constructor and silently kept, the
+        // Rust warn-but-keep stance without a diagnostics channel yet).
+        let mut per_ctor: Vec<(Vec<K>, Vec<MatchEntry>)> = Vec::with_capacity(ctors.len());
+        for (cname, doms) in &ctors {
+            let mut entries: Vec<MatchEntry> = Vec::new();
+            let mut closed = false;
+            for arm in arms {
+                let applies = match &arm.pattern {
+                    Pattern::Ctor(n, _) => n == cname,
+                    Pattern::Bind(n) => {
+                        if is_ctor(n) { n == cname } else { true } // catch-all binder
+                    }
+                    Pattern::Wild => true,
+                    Pattern::Bool(_) => false, // rejected above
+                };
+                if !applies {
+                    continue;
+                }
+                let depth0 = ctx.len();
+                // one λ-binder per non-parameter constructor field
+                match &arm.pattern {
+                    Pattern::Ctor(_, pargs) => {
+                        for (pa, d) in pargs.iter().zip(doms) {
+                            let nm = match pa {
+                                PatArg::Bind(n) => n.clone(),
+                                PatArg::Wild => self.fresh_name(),
+                            };
+                            ctx.push((nm, d.clone()));
+                        }
+                    }
+                    _ => {
+                        for d in doms {
+                            let nm = self.fresh_name();
+                            ctx.push((nm, d.clone()));
+                        }
+                    }
+                }
+                // A catch-all BINDER names the whole scrutinee: substitute the
+                // SURFACE scrutinee for it (the fn-inline idiom) — re-elaborating
+                // it under the field binders shifts its de Bruijn indices
+                // correctly for free.
+                let (body_s, guard_s) = match &arm.pattern {
+                    Pattern::Bind(x) if !is_ctor(x) => (
+                        subst_surface(&arm.body, x, scrut),
+                        arm.guard.as_ref().map(|g| subst_surface(g, x, scrut)),
+                    ),
+                    _ => (arm.body.clone(), arm.guard.clone()),
+                };
+                let r = self.elab_arm_parts(ctx, &body_s, guard_s.as_ref());
+                ctx.truncate(depth0);
+                let entry = r?;
+                let unguarded = entry.guard.is_none();
+                entries.push(entry);
+                if unguarded {
+                    closed = true;
+                    break;
+                }
+            }
+            if !closed {
+                return Err(unsupported(format!(
+                    "non-exhaustive `match`: constructor `{cname}` of `{ind_name}` is uncovered \
+                     (or reached only by guarded arms with no unguarded backstop)"
+                )));
+            }
+            per_ctor.push((doms.clone(), entries));
+        }
+        // Common result sort across every entry (the numeric lattice, as in
+        // `unify_sorts`), then coerce + guard-fold + λ-wrap each minor.
+        let common = self.common_sort(per_ctor.iter().flat_map(|(_, es)| es.iter()))?;
+        let mut minors = Vec::with_capacity(per_ctor.len());
+        for (doms, entries) in per_ctor {
+            let mut acc = self.fold_entries(entries, &common)?;
+            for d in doms.iter().rev() {
+                acc = K::lam(d.clone(), acc);
+            }
+            minors.push(acc);
+        }
+        // Non-dependent motive `λ(x : I). T` (Prop-valued T keeps the kernel's
+        // Prop large-elimination bar trivially satisfied; a VALUE-valued T
+        // type-checks too — the #325 lowering then soundly abstains on the
+        // data-valued match).
+        let motive = K::lam(K::cnst(ind_name.clone()), shift(1, 0, &common));
+        Ok(K::mtch(ind_name, motive, minors, kscrut))
+    }
+
+    /// A `true`/`false` (Prop-literal) match — routed to the SAME `ite` builder
+    /// as `if` (`match c {{ true => a, false => b }}` ≡ `if c then a else b` is
+    /// definitional), never a `Bool` inductive.
+    fn elab_prop_match(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        kscrut: &K,
+        scrut: &S,
+        arms: &[Arm],
+    ) -> Result<K, FaceError> {
+        let then_entries = self.prop_bucket(ctx, scrut, arms, true)?;
+        let else_entries = self.prop_bucket(ctx, scrut, arms, false)?;
+        let common = self.common_sort(then_entries.iter().chain(else_entries.iter()))?;
+        let then_acc = self.fold_entries(then_entries, &common)?;
+        let else_acc = self.fold_entries(else_entries, &common)?;
+        Ok(K::apps(K::cnst("ite"), [common, kscrut.clone(), then_acc, else_acc]))
+    }
+
+    /// The contributor entries of one Prop-literal bucket (`true` or `false`):
+    /// first-match, closing at the first unguarded contributor; a bucket that
+    /// never closes is a non-exhaustive hard error.
+    fn prop_bucket(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        scrut: &S,
+        arms: &[Arm],
+        want: bool,
+    ) -> Result<Vec<MatchEntry>, FaceError> {
+        let mut entries: Vec<MatchEntry> = Vec::new();
+        for arm in arms {
+            let applies = match &arm.pattern {
+                Pattern::Bool(b) => *b == want,
+                // no constructors exist on Prop — a bare name is always a binder
+                Pattern::Wild | Pattern::Bind(_) => true,
+                Pattern::Ctor(n, _) => {
+                    return Err(unsupported(format!(
+                        "constructor pattern `{n}` on a Bool/Prop scrutinee"
+                    )));
+                }
+            };
+            if !applies {
+                continue;
+            }
+            let (body_s, guard_s) = match &arm.pattern {
+                Pattern::Bind(x) => (
+                    subst_surface(&arm.body, x, scrut),
+                    arm.guard.as_ref().map(|g| subst_surface(g, x, scrut)),
+                ),
+                _ => (arm.body.clone(), arm.guard.clone()),
+            };
+            let entry = self.elab_arm_parts(ctx, &body_s, guard_s.as_ref())?;
+            let unguarded = entry.guard.is_none();
+            entries.push(entry);
+            if unguarded {
+                return Ok(entries);
+            }
+        }
+        Err(unsupported(format!(
+            "non-exhaustive `match`: `{want}` is uncovered (or reached only by guarded arms \
+             with no unguarded backstop)"
+        )))
+    }
+
+    /// Elaborate one contributor's body (+ optional guard, which must be a
+    /// Prop) under the already-extended field-binder context. The caller
+    /// truncates the context (even on error).
+    fn elab_arm_parts(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        body: &S,
+        guard: Option<&S>,
+    ) -> Result<MatchEntry, FaceError> {
+        let kb = self.elab_term(ctx, body)?;
+        let sb = infer(&self.env, &kernel_ctx(ctx), &kb)?;
+        let kg = match guard {
+            Some(g) => {
+                let kg = self.elab_term(ctx, g)?;
+                let sg = infer(&self.env, &kernel_ctx(ctx), &kg)?;
+                if !is_def_eq(&self.env, &sg, &K::prop()) {
+                    return Err(unsupported(format!(
+                        "match guard must be a Bool/Prop, got sort `{sg}`"
+                    )));
+                }
+                Some(kg)
+            }
+            None => None,
+        };
+        Ok(MatchEntry { guard: kg, body: kb, sort: sb })
+    }
+
+    /// The common result sort of a non-empty entry iterator: def-eq sorts pass
+    /// through, numeric sorts widen along the `Nat ⊂ WNat ⊂ Int ⊂ Real`
+    /// lattice, anything else is rejected (the n-ary `unify_sorts`).
+    fn common_sort<'a>(
+        &self,
+        mut entries: impl Iterator<Item = &'a MatchEntry>,
+    ) -> Result<K, FaceError> {
+        let mut common = entries.next().expect("non-empty bucket").sort.clone();
+        for e in entries {
+            if is_def_eq(&self.env, &e.sort, &common) {
+                continue;
+            }
+            match (numeric_rank(&self.env, &common), numeric_rank(&self.env, &e.sort)) {
+                (Some(ra), Some(rb)) if ra < rb => common = e.sort.clone(),
+                (Some(ra), Some(rb)) if ra > rb => {}
+                _ => {
+                    return Err(unsupported(format!(
+                        "match arms of differing sorts `{common}` and `{}`",
+                        e.sort
+                    )));
+                }
+            }
+        }
+        Ok(common)
+    }
+
+    /// Right-fold one bucket's contributors into a single body: the terminal
+    /// (unguarded) entry seeds the accumulator, each earlier (guarded) entry
+    /// wraps it as `(ite T g body acc)`. Every body is coerced up to the common
+    /// sort first (numeric injections).
+    fn fold_entries(&self, entries: Vec<MatchEntry>, common: &K) -> Result<K, FaceError> {
+        let mut it = entries.into_iter().rev();
+        let last = it.next().expect("closed bucket has a terminal entry");
+        debug_assert!(last.guard.is_none(), "the terminal contributor is unguarded");
+        let mut acc = self.coerce_to(last.body, &last.sort, common)?;
+        for e in it {
+            let g = e.guard.expect("non-terminal contributors are guarded");
+            let b = self.coerce_to(e.body, &e.sort, common)?;
+            acc = K::apps(K::cnst("ite"), [common.clone(), g, b, acc]);
+        }
+        Ok(acc)
+    }
+
+    /// Coerce `t : s` up to the `common` sort (identity when def-eq, numeric
+    /// injection when narrower — `common_sort` guarantees one of the two).
+    fn coerce_to(&self, t: K, s: &K, common: &K) -> Result<K, FaceError> {
+        if is_def_eq(&self.env, s, common) {
+            return Ok(t);
+        }
+        match (numeric_rank(&self.env, s), numeric_rank(&self.env, common)) {
+            (Some(ra), Some(rb)) if ra < rb => Ok(inject(t, ra, rb)),
+            _ => Err(unsupported(format!(
+                "match arm of sort `{s}` cannot widen to `{common}`"
+            ))),
+        }
+    }
+}
+
+/// One elaborated `match` contributor: its (Prop-checked) guard, its body, and
+/// the body's inferred sort (pre-coercion).
+struct MatchEntry {
+    guard: Option<K>,
+    body: K,
+    sort: K,
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -980,6 +1332,35 @@ fn subst_surface(t: &S, from: &str, to: &S) -> S {
         S::Call(f, args) => S::Call(f.clone(), args.iter().map(&go).collect()),
         // `if` binds nothing — substitute in all three parts.
         S::If(c, a, b) => S::If(Box::new(go(c)), Box::new(go(a)), Box::new(go(b))),
+        // `match`: pattern-bound names SHADOW `from` in that arm's guard + body.
+        // A bare-name pattern MIGHT be a nullary constructor (resolved only in
+        // elab, against the env) — treating it as a binder here is the
+        // conservative choice; the pathological "constructor name collides with
+        // the substituted name" case is a known limitation, mirroring the
+        // image-binder note below.
+        S::Match(scrut, arms) => {
+            let arms2 = arms
+                .iter()
+                .map(|arm| {
+                    let shadow = match &arm.pattern {
+                        Pattern::Bind(n) => n == from,
+                        Pattern::Ctor(_, pargs) => pargs
+                            .iter()
+                            .any(|p| matches!(p, PatArg::Bind(n) if n == from)),
+                        Pattern::Wild | Pattern::Bool(_) => false,
+                    };
+                    Arm {
+                        pattern: arm.pattern.clone(),
+                        guard: arm
+                            .guard
+                            .as_ref()
+                            .map(|g| if shadow { g.clone() } else { go(g) }),
+                        body: if shadow { arm.body.clone() } else { go(&arm.body) },
+                    }
+                })
+                .collect();
+            S::Match(Box::new(go(scrut)), arms2)
+        }
         S::Let(x, e, body) => {
             let e2 = go(e);
             let body2 = if x == from { (**body).clone() } else { go(body) };
@@ -1130,6 +1511,15 @@ fn collect_ticks(t: &S, acc: &mut Vec<String>) {
             collect_ticks(c, acc);
             collect_ticks(a, acc);
             collect_ticks(b, acc);
+        }
+        S::Match(scrut, arms) => {
+            collect_ticks(scrut, acc);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_ticks(g, acc);
+                }
+                collect_ticks(&arm.body, acc);
+            }
         }
         S::Let(_, e, body) => {
             collect_ticks(e, acc);

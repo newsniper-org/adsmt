@@ -35,6 +35,8 @@ pub enum Tok {
     If,
     Then,
     Else,
+    // case analysis `match e { pat => body, … }`
+    Match,
     // identifiers + numerals
     Ident(String),
     Int(String),
@@ -54,6 +56,7 @@ pub enum Tok {
     Iff,       // <==>
     Turnstile, // |-
     Arrow,     // -> (function type)
+    FatArrow,  // => (match-arm clause arrow; distinct from `->`)
     DotDot,    // ..
     Colon,     // :
     Comma,     // ,
@@ -89,6 +92,7 @@ fn keyword(s: &str) -> Option<Tok> {
         "if" => Tok::If,
         "then" => Tok::Then,
         "else" => Tok::Else,
+        "match" => Tok::Match,
         _ => return None,
     })
 }
@@ -230,6 +234,13 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, FaceError> {
             }
             "->" => {
                 out.push((Tok::Arrow, start));
+                i += 2;
+                continue;
+            }
+            // the match-arm clause arrow (after the `==>`/`<==>` longest-first
+            // checks above, so `==>` never mis-lexes as `=` + `=>`).
+            "=>" => {
+                out.push((Tok::FatArrow, start));
                 i += 2;
                 continue;
             }

@@ -132,6 +132,58 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// One match arm: `pattern (if guard)? => body`. The guard reuses the `if`
+    /// keyword (Rust's `pat if g => body`); the clause arrow is `=>`
+    /// (`Tok::FatArrow`), lexically distinct from the function-type `->`.
+    fn arm(&mut self) -> Result<Arm, FaceError> {
+        let pattern = self.pattern()?;
+        let guard =
+            if self.eat(&Tok::If) { Some(self.term()?) } else { None };
+        self.expect(&Tok::FatArrow)?;
+        Ok(Arm { pattern, guard, body: self.term()? })
+    }
+
+    /// A v1 (flat) pattern: `_`, a bare name (binder or nullary ctor — resolved
+    /// in elab), `C(x, _, …)`, or a `true`/`false` Prop-literal. Reuses the
+    /// ident-then-`(`? two-token lookahead the `ctor()` parser uses.
+    fn pattern(&mut self) -> Result<Pattern, FaceError> {
+        match self.peek() {
+            Some(Tok::True) => {
+                self.advance();
+                Ok(Pattern::Bool(true))
+            }
+            Some(Tok::False) => {
+                self.advance();
+                Ok(Pattern::Bool(false))
+            }
+            Some(Tok::Ident(_)) => {
+                let name = self.ident()?;
+                if self.eat(&Tok::LParen) {
+                    let mut args = vec![self.pat_arg()?];
+                    while self.eat(&Tok::Comma) {
+                        args.push(self.pat_arg()?);
+                    }
+                    self.expect(&Tok::RParen)?;
+                    Ok(Pattern::Ctor(name, args))
+                } else if name == "_" {
+                    Ok(Pattern::Wild)
+                } else {
+                    Ok(Pattern::Bind(name))
+                }
+            }
+            other => Err(parse_err(
+                self.at(),
+                format!("expected a match pattern (`_`, a name, `C(…)`, or true/false), found `{other:?}`"),
+            )),
+        }
+    }
+
+    /// A flat constructor-pattern argument: `_` or a fresh binder name.
+    fn pat_arg(&mut self) -> Result<PatArg, FaceError> {
+        let name = self.ident()?;
+        Ok(if name == "_" { PatArg::Wild } else { PatArg::Bind(name) })
+    }
+
     /// A datatype constructor `name` or `name(field, …)`.
     fn ctor(&mut self) -> Result<Ctor, FaceError> {
         let name = self.ident()?;
@@ -229,6 +281,7 @@ impl<'a> Parser<'a> {
                     | Tok::Exists
                     | Tok::Let
                     | Tok::If
+                    | Tok::Match
             )
         )
     }
@@ -563,6 +616,24 @@ impl<'a> Parser<'a> {
                 let a = self.term()?;
                 self.expect(&Tok::Else)?;
                 Ok(Term::If(Box::new(c), Box::new(a), Box::new(self.term()?)))
+            }
+            // `match e { pat (if g)? => body, … }` — `,`-separated arms with an
+            // optional trailing comma (the `data` ctor-loop analogue). The
+            // scrutinee is a full `term()` (it stops at `{`, which no term
+            // consumes); each body extends until `,` / `}`.
+            Some(Tok::Match) => {
+                self.advance();
+                let scrut = self.term()?;
+                self.expect(&Tok::LBrace)?;
+                let mut arms = vec![self.arm()?];
+                while self.eat(&Tok::Comma) {
+                    if matches!(self.peek(), Some(Tok::RBrace)) {
+                        break; // trailing comma
+                    }
+                    arms.push(self.arm()?);
+                }
+                self.expect(&Tok::RBrace)?;
+                Ok(Term::Match(Box::new(scrut), arms))
             }
             // `solve <G-block> by [:] <L-block>` — each block is a full term (a
             // `let`-chain ends in its denoted proposition). `by` is a keyword, so

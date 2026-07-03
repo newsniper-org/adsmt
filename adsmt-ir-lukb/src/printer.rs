@@ -255,6 +255,46 @@ fn print_term(out: &mut String, t: &Term, ctx: u8) {
             o.push_str(" by ");
             print_term(o, l, 0);
         }),
+        Term::Match(scrut, arms) => paren_if(out, ctx > 0, |o| {
+            o.push_str("match ");
+            print_term(o, scrut, 0);
+            o.push_str(" { ");
+            for (i, arm) in arms.iter().enumerate() {
+                if i > 0 {
+                    o.push_str(", ");
+                }
+                print_pattern(o, &arm.pattern);
+                if let Some(g) = &arm.guard {
+                    o.push_str(" if ");
+                    print_term(o, g, 0);
+                }
+                o.push_str(" => ");
+                print_term(o, &arm.body, 0);
+            }
+            o.push_str(" }");
+        }),
+    }
+}
+
+fn print_pattern(out: &mut String, p: &Pattern) {
+    match p {
+        Pattern::Wild => out.push('_'),
+        Pattern::Bind(n) => id(out, n),
+        Pattern::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Pattern::Ctor(n, args) => {
+            id(out, n);
+            out.push('(');
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                match a {
+                    PatArg::Wild => out.push('_'),
+                    PatArg::Bind(x) => id(out, x),
+                }
+            }
+            out.push(')');
+        }
     }
 }
 

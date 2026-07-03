@@ -139,6 +139,15 @@ pub enum Term {
     If(Box<Term>, Box<Term>, Box<Term>),
     /// `let x = e in body`.
     Let(String, Box<Term>, Box<Term>),
+    /// `match e { pat => body, … }` — first-match case analysis. A `true`/`false`
+    /// (Prop-literal) match elaborates to the SAME `ite` prelude application as
+    /// [`If`](Self::If) (definitional identity, no `Bool` inductive); a datatype
+    /// match elaborates to the kernel `Match` eliminator with **exactly one total
+    /// minor per constructor in declaration order** (bucket → order → total;
+    /// wildcard/binder catch-alls are expanded, a genuinely-uncovered constructor
+    /// is a hard elaboration error — the surface NEVER fabricates a branch).
+    /// Guards ride the same `ite` fold. See the 2026-07-03 verus-fork proposal §6.
+    Match(Box<Term>, Vec<Arm>),
     /// `solve G by L` — an in-language **proof term** of the proposition `G`,
     /// justified by the lemma `L` (the structured-proof *cut*). `G` and `L` are
     /// each a block (a term, possibly a `let`-chain). Elaborates (semantics B) to
@@ -146,6 +155,41 @@ pub enum Term {
     /// the ambient context and emitted as goals, with the value a proof of `G`.
     /// See `docs/design/SOLVE_BY_PROOF_TERMS.md`.
     SolveBy(Box<Term>, Box<Term>),
+}
+
+/// One `match` arm: `pattern (if guard)? => body`. First-match semantics; the
+/// guard reuses the `if` keyword (Rust-style `pat if g => body`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Arm {
+    pub pattern: Pattern,
+    pub guard: Option<Term>,
+    pub body: Term,
+}
+
+/// A v1 (flat) match pattern. A bare name is a **binder OR a nullary
+/// constructor** — resolved in the elaborator against the scrutinee's datatype
+/// (the same is-it-the-declared-name resolution `elab_field_type` performs);
+/// nested / or- / `@`-patterns are deferred (write an explicit inner `match`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pattern {
+    /// `_` — catch-all, binding nothing.
+    Wild,
+    /// A bare name: a fresh binder for the whole scrutinee (catch-all), unless
+    /// it names a nullary constructor of the scrutinee's datatype.
+    Bind(String),
+    /// A flat constructor pattern `C(x, _, y)` — each argument a wildcard or a
+    /// fresh binder (one per non-parameter constructor field).
+    Ctor(String, Vec<PatArg>),
+    /// A `true` / `false` Prop-literal pattern (a Prop-scrutinee match routes
+    /// to the `ite` builder — never a `Bool` inductive).
+    Bool(bool),
+}
+
+/// A constructor-pattern argument: wildcard or fresh binder (flat, v1).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PatArg {
+    Wild,
+    Bind(String),
 }
 
 /// An infix binary operator (precedence is in the parser, not here).
