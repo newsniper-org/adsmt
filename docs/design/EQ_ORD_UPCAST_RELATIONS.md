@@ -198,10 +198,15 @@ injection, which sort), not just a typecheck-time annotation — the same lever
    *ob1 end-to-end effect*: elaborate ✓ → lower ✓ → render (280 commands,
    full 202-axiom prelude + datatypes) ✓ → the RENDERED SCRIPT IS
    Z3-VERIFIED `unsat` (28 ms) — the adsmt-side pipeline for the verus
-   fuel-unfolding obligation is complete and correct; the sole residual is
-   the vendored OxiZ's full-prelude MBQI completeness wall (`unknown` in
-   ~11.5 s, the known #264/#281 frontier; verus-SAFE direction).
+   fuel-unfolding obligation is complete and correct; the sole residual was
+   the vendored OxiZ's full-prelude MBQI completeness wall — **CLOSED by
+   #396** (OxiZ fork `019de26`: clean-MBQI auto-trigger inference, the z3
+   auto-pattern parity — four ddmin rounds isolated the three divergence
+   engines behind the trigger-less prelude; z3-parity corpus 168/168).
+   ob1-abs.lukb now reads **`unsat` (verified) in ~1.1 s** end-to-end
+   through release `adsmtc --features "cas oxiz"`.
 4. **F4 — docs/books + memory + verus-fork notice.** LANDED with #395: the
    family + gating + testers documented in the implement-from-scratch book
    (ch. 03 "The `Eq`/`Ord`/`UpCast` family" + app. B gating note, ×4
-   languages) and the verus-fork notice (see `.local-replies-to/`).
+   languages) and the verus-fork notice (see `.local-replies-to/`; the
+   MBQI-wall closure has its own follow-up notice).
