@@ -840,6 +840,9 @@ impl Elab {
         if is_def_eq(&self.env, &sty, &K::prop()) {
             return self.elab_prop_match(ctx, &kscrut, scrut, arms);
         }
+        if numeric_rank(&self.env, &sty).is_some() {
+            return self.elab_scalar_match(ctx, &kscrut, &sty, scrut, arms);
+        }
         let Some((ind_name, spine)) = as_const_app(&sty) else {
             return Err(unsupported(format!(
                 "`match` scrutinee must be a datatype or Bool/Prop value, got sort `{sty}`"
@@ -900,6 +903,11 @@ impl Elab {
                         "`true`/`false` pattern on a `{ind_name}` scrutinee"
                     )));
                 }
+                Pattern::IntLit(_) | Pattern::RealLit(_) => {
+                    return Err(unsupported(format!(
+                        "numeric-literal pattern on a `{ind_name}` scrutinee"
+                    )));
+                }
                 Pattern::Wild | Pattern::Bind(_) => {}
             }
         }
@@ -918,7 +926,8 @@ impl Elab {
                         if is_ctor(n) { n == cname } else { true } // catch-all binder
                     }
                     Pattern::Wild => true,
-                    Pattern::Bool(_) => false, // rejected above
+                    // rejected in the validation pass above
+                    Pattern::Bool(_) | Pattern::IntLit(_) | Pattern::RealLit(_) => false,
                 };
                 if !applies {
                     continue;
@@ -1008,6 +1017,87 @@ impl Elab {
         Ok(K::apps(K::cnst("ite"), [common, kscrut.clone(), then_acc, else_acc]))
     }
 
+    /// A match over a NUMERIC scalar scrutinee (Int/Real/Nat/WNat): there is
+    /// no inductive to eliminate — a literal pattern `n => body` desugars to
+    /// the equality guard `x if x = n => body` (the proposal §3 rule; Int/Real
+    /// are not finite-constructor inductives, so a literal can only ever be a
+    /// guard) and the whole match right-folds to a nested `ite` chain, which
+    /// the verified term-`ite` lowering then DECIDES. Scalars cannot be
+    /// exhausted by literals, so an UNGUARDED catch-all backstop (`_` or a
+    /// binder) is mandatory — without one the match is non-exhaustive (hard
+    /// error, §6 case 5a).
+    fn elab_scalar_match(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        kscrut: &K,
+        sty: &K,
+        scrut: &S,
+        arms: &[Arm],
+    ) -> Result<K, FaceError> {
+        let mut entries: Vec<MatchEntry> = Vec::new();
+        let mut closed = false;
+        for arm in arms {
+            let lit: Option<S> = match &arm.pattern {
+                Pattern::IntLit(s) => Some(S::IntLit(s.clone())),
+                Pattern::RealLit(s) => Some(S::RealLit(s.clone())),
+                Pattern::Wild | Pattern::Bind(_) => None,
+                Pattern::Ctor(n, _) => {
+                    return Err(unsupported(format!(
+                        "constructor pattern `{n}` on a numeric scrutinee of sort `{sty}`"
+                    )));
+                }
+                Pattern::Bool(_) => {
+                    return Err(unsupported(format!(
+                        "`true`/`false` pattern on a numeric scrutinee of sort `{sty}`"
+                    )));
+                }
+            };
+            // a binder catch-all names the scrutinee (surface substitution,
+            // as in the datatype/Prop cases)
+            let (body_s, guard_s) = match &arm.pattern {
+                Pattern::Bind(x) => (
+                    subst_surface(&arm.body, x, scrut),
+                    arm.guard.as_ref().map(|g| subst_surface(g, x, scrut)),
+                ),
+                _ => (arm.body.clone(), arm.guard.clone()),
+            };
+            // the literal's equality guard `scrut = n` (numeric-lattice
+            // reconciled, so `match x:Int { … }` rejects a Real literal it
+            // cannot widen to)
+            let lit_guard: Option<K> = match &lit {
+                Some(l) => {
+                    let kl = self.elab_term(ctx, l)?;
+                    let sl = infer(&self.env, &kernel_ctx(ctx), &kl)?;
+                    let (ks, kl, s) =
+                        self.unify_sorts(kscrut.clone(), kl, sty.clone(), sl)?;
+                    Some(K::apps(K::cnst("="), [s, ks, kl]))
+                }
+                None => None,
+            };
+            let entry = self.elab_arm_parts(ctx, &body_s, guard_s.as_ref())?;
+            // `n if g => body` matches iff BOTH the literal equality and `g`.
+            let combined = match (lit_guard, entry.guard) {
+                (Some(l), Some(g)) => Some(K::apps(K::cnst("and"), [l, g])),
+                (Some(l), None) => Some(l),
+                (None, g) => g,
+            };
+            let unguarded = combined.is_none();
+            entries.push(MatchEntry { guard: combined, body: entry.body, sort: entry.sort });
+            if unguarded {
+                closed = true;
+                break;
+            }
+        }
+        if !closed {
+            return Err(unsupported(format!(
+                "non-exhaustive `match` over the numeric sort `{sty}`: literals cannot \
+                 exhaust it — add an unguarded `_` or binder backstop arm"
+            )));
+        }
+        let common = self.common_sort(entries.iter())?;
+        self.fold_entries(entries, &common)
+    }
+
     /// The contributor entries of one Prop-literal bucket (`true` or `false`):
     /// first-match, closing at the first unguarded contributor; a bucket that
     /// never closes is a non-exhaustive hard error.
@@ -1028,6 +1118,11 @@ impl Elab {
                     return Err(unsupported(format!(
                         "constructor pattern `{n}` on a Bool/Prop scrutinee"
                     )));
+                }
+                Pattern::IntLit(_) | Pattern::RealLit(_) => {
+                    return Err(unsupported(
+                        "numeric-literal pattern on a Bool/Prop scrutinee",
+                    ));
                 }
             };
             if !applies {
@@ -1347,7 +1442,10 @@ fn subst_surface(t: &S, from: &str, to: &S) -> S {
                         Pattern::Ctor(_, pargs) => pargs
                             .iter()
                             .any(|p| matches!(p, PatArg::Bind(n) if n == from)),
-                        Pattern::Wild | Pattern::Bool(_) => false,
+                        Pattern::Wild
+                        | Pattern::Bool(_)
+                        | Pattern::IntLit(_)
+                        | Pattern::RealLit(_) => false,
                     };
                     Arm {
                         pattern: arm.pattern.clone(),

@@ -156,6 +156,16 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(Pattern::Bool(false))
             }
+            Some(Tok::Int(s)) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Pattern::IntLit(s))
+            }
+            Some(Tok::Real(s)) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Pattern::RealLit(s))
+            }
             Some(Tok::Ident(_)) => {
                 let name = self.ident()?;
                 if self.eat(&Tok::LParen) {

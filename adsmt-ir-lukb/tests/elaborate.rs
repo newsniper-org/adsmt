@@ -1083,3 +1083,64 @@ fn match_round_trips_through_the_printer() {
     let m2 = parse(&print_module(&m1)).expect("re-parses");
     assert_eq!(m1, m2, "match round-trip\n{}", print_module(&m1));
 }
+
+// ── scalar-scrutinee `match` + literal patterns (slice ③) ────────────────────
+
+/// A numeric-scrutinee match: literal patterns desugar to equality guards, the
+/// whole match is an `ite` chain, and the mandatory backstop closes it.
+#[test]
+fn scalar_match_with_literals_elaborates() {
+    all_props("const x: Int\ngoal g: match x { 0 => true, 1 => false, _ => x > 1 }\n", 0, 1);
+    // a Real scrutinee with a Real literal
+    all_props("const r: Real\ngoal g: match r { 1.5 => true, _ => false }\n", 0, 1);
+    // Int scrutinee + Int literal under a Real-typed body lattice
+    all_props("const x: Int\ngoal g: (match x { 0 => 1.0, _ => 0.5 }) >= 0.5\n", 0, 1);
+}
+
+/// A binder backstop names the scrutinee; a literal arm can ALSO carry a user
+/// guard (`n if g` matches iff both).
+#[test]
+fn scalar_match_binder_backstop_and_combined_guard() {
+    all_props("const x: Int\ngoal g: match x { 0 => true, y => y >= 0 or y < 0 }\n", 0, 1);
+    all_props(
+        "const x: Int\nconst p: Bool\ngoal g: match x { 0 if p => true, _ => false }\n",
+        0,
+        1,
+    );
+}
+
+/// STRICT: literals cannot exhaust a numeric sort — a match with no unguarded
+/// catch-all backstop is a hard error; sort-mismatched patterns are rejected.
+#[test]
+fn scalar_match_rejections() {
+    // no backstop
+    assert!(matches!(
+        elaborate("const x: Int\ngoal g: match x { 0 => true, 1 => false }\n"),
+        Err(FaceError::Unsupported(_))
+    ));
+    // constructor pattern on a numeric scrutinee
+    assert!(matches!(
+        elaborate("const x: Int\ngoal g: match x { succ(n) => true, _ => false }\n"),
+        Err(FaceError::Unsupported(_))
+    ));
+    // numeric literal on a datatype scrutinee
+    assert!(matches!(
+        elaborate("data C = red | blue\nconst c: C\ngoal g: match c { 0 => true, _ => false }\n"),
+        Err(FaceError::Unsupported(_))
+    ));
+    // true/false pattern on a numeric scrutinee
+    assert!(matches!(
+        elaborate("const x: Int\ngoal g: match x { true => true, _ => false }\n"),
+        Err(FaceError::Unsupported(_))
+    ));
+}
+
+/// Literal patterns round-trip through the printer.
+#[test]
+fn scalar_match_round_trips_through_the_printer() {
+    let src = "const x: Int\nconst p: Bool\n\
+               goal g: match x { 0 => true, 3 if p => false, _ => p }\n";
+    let m1 = parse(src).expect("parses");
+    let m2 = parse(&print_module(&m1)).expect("re-parses");
+    assert_eq!(m1, m2, "literal-pattern round-trip\n{}", print_module(&m1));
+}

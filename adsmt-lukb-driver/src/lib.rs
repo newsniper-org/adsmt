@@ -224,6 +224,19 @@ mod tests {
     }
 
     #[test]
+    fn scalar_value_match_reaches_a_native_verdict() {
+        // A VALUE-valued match over a NUMERIC scrutinee is a pure `ite` chain
+        // (literal patterns = equality guards), so — unlike the data-valued
+        // datatype match below — it rides the verified term-`ite` lowering to a
+        // native verdict: x = 3 ⟹ (match x { 3 => x, _ => 0 }) > 2 is VALID.
+        let v = solve(
+            "const x: Int\ngoal g: x = 3 |- (match x { 3 => x, _ => 0 }) > 2\n",
+        );
+        assert_eq!(v.smt, Some(Confidence::DefiniteUnsat), "got {v:?}");
+        assert_eq!(v.collapse(), TriState::Unsat);
+    }
+
+    #[test]
     fn value_valued_match_is_sound_unknown() {
         // a VALUE-valued match elaborates + kernel-checks, but the #325 lowering
         // abstains on a data-valued case split ⇒ the sound Unknown (never a

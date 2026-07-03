@@ -183,6 +183,13 @@ pub enum Pattern {
     /// A `true` / `false` Prop-literal pattern (a Prop-scrutinee match routes
     /// to the `ite` builder — never a `Bool` inductive).
     Bool(bool),
+    /// An integer-literal pattern `n` — sugar for the equality guard
+    /// `x if x = n` (Int/Real are not finite-constructor inductives, so a
+    /// literal can only ever be a guard; the whole numeric-scrutinee match is
+    /// an `ite` chain and REQUIRES an unguarded catch-all backstop).
+    IntLit(String),
+    /// A real-literal pattern (same guard desugar as [`IntLit`](Self::IntLit)).
+    RealLit(String),
 }
 
 /// A constructor-pattern argument: wildcard or fresh binder (flat, v1).

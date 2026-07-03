@@ -281,6 +281,7 @@ fn print_pattern(out: &mut String, p: &Pattern) {
         Pattern::Wild => out.push('_'),
         Pattern::Bind(n) => id(out, n),
         Pattern::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Pattern::IntLit(s) | Pattern::RealLit(s) => out.push_str(s),
         Pattern::Ctor(n, args) => {
             id(out, n);
             out.push('(');
