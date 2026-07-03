@@ -61,6 +61,16 @@ impl Elab {
         let ex_ty =
             K::pi(K::type_(0), K::arrow(K::arrow(K::bound(0), K::prop()), K::prop()));
         postulate(&mut env, "exists", ex_ty)?;
+        // `ite : Π(T: Type). Prop → T → T → T` — the polymorphic conditional the
+        // surface `if`/`match`-on-`true`/`false` elaborates to, spelled exactly
+        // `"ite"` so the #325 lowering recognizes it (`hoist_term_ite` removes a
+        // term-`ite` by the verified atom-duplication; the Bool-branch instance
+        // lowers classically). A prelude postulate, not a kernel change.
+        let ite_ty = K::pi(
+            K::type_(0),
+            K::arrow(K::prop(), K::arrow(K::bound(0), K::arrow(K::bound(0), K::bound(0)))),
+        );
+        postulate(&mut env, "ite", ite_ty)?;
         // `nop : Π(T: Type). T → Prop := λ T x. true` — the trivial (always-true)
         // predicate. An UNREFINED type `x: T` is treated as `{x: T | nop(x)}`, so
         // the refinement-aware logic always sees a predicate (the user's
@@ -462,6 +472,29 @@ impl Elab {
                 let kb = self.elab_term(ctx, body);
                 ctx.pop();
                 Ok(K::let_(ty, ke, kb?))
+            }
+            // `if c then a else b` → the polymorphic `ite` prelude application
+            // `(ite T c a b)` — NEVER a `Bool`-inductive match (the prelude has
+            // no Bool inductive; surface Bool = kernel Prop). The condition must
+            // be a Prop; the branch sorts reconcile through the same numeric
+            // lattice binary operators use, so `if p then 1 else 2.5` injects
+            // Int→Real. Lowering then routes by the instance sort: a first-order
+            // value rides `hoist_term_ite` (verified atom-duplication), a Prop
+            // instance the classical `(c → a) ∧ (¬c → b)`.
+            S::If(c, a, b) => {
+                let kc = self.elab_term(ctx, c)?;
+                let sc = infer(&self.env, &kernel_ctx(ctx), &kc)?;
+                if !is_def_eq(&self.env, &sc, &K::prop()) {
+                    return Err(unsupported(format!(
+                        "`if` condition must be a Bool/Prop, got sort `{sc}`"
+                    )));
+                }
+                let ka = self.elab_term(ctx, a)?;
+                let kb = self.elab_term(ctx, b)?;
+                let sa = infer(&self.env, &kernel_ctx(ctx), &ka)?;
+                let sb = infer(&self.env, &kernel_ctx(ctx), &kb)?;
+                let (ka, kb, s) = self.unify_sorts(ka, kb, sa, sb)?;
+                Ok(K::apps(K::cnst("ite"), [s, kc, ka, kb]))
             }
             S::SolveBy(g, l) => self.elab_solve_by(ctx, g, l),
         }
@@ -945,6 +978,8 @@ fn subst_surface(t: &S, from: &str, to: &S) -> S {
         S::Neg(a) => S::Neg(Box::new(go(a))),
         S::Bin(op, a, b) => S::Bin(*op, Box::new(go(a)), Box::new(go(b))),
         S::Call(f, args) => S::Call(f.clone(), args.iter().map(&go).collect()),
+        // `if` binds nothing — substitute in all three parts.
+        S::If(c, a, b) => S::If(Box::new(go(c)), Box::new(go(a)), Box::new(go(b))),
         S::Let(x, e, body) => {
             let e2 = go(e);
             let body2 = if x == from { (**body).clone() } else { go(body) };
@@ -1088,6 +1123,11 @@ fn collect_ticks(t: &S, acc: &mut Vec<String>) {
         }
         S::Not(a) | S::Neg(a) => collect_ticks(a, acc),
         S::Bin(_, a, b) => {
+            collect_ticks(a, acc);
+            collect_ticks(b, acc);
+        }
+        S::If(c, a, b) => {
+            collect_ticks(c, acc);
             collect_ticks(a, acc);
             collect_ticks(b, acc);
         }

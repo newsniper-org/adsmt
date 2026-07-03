@@ -186,6 +186,26 @@ mod tests {
         assert_eq!(v.collapse(), TriState::Unknown);
     }
 
+    // ── surface `if` end-to-end (slice ① of the 2026-07-03 verus-fork proposal):
+    // `if` elaborates to the `ite` prelude and rides the verified term-`ite`
+    // atom-duplication lowering to a NATIVE verdict — no delegation needed.
+
+    #[test]
+    fn surface_if_reaches_a_native_verdict() {
+        // x>0 ⟹ (if x>0 then x else 0-x) > 0 — VALID (the then-branch fires).
+        let v = solve("const x: Int\ngoal g: x > 0 |- (if x > 0 then x else 0 - x) > 0\n");
+        assert_eq!(v.smt, Some(Confidence::DefiniteUnsat), "got {v:?}");
+        assert_eq!(v.collapse(), TriState::Unsat);
+    }
+
+    #[test]
+    fn surface_if_counterexample_is_found() {
+        // (if p then 1 else 2) = 1 is NOT valid (p=false ⇒ 2≠1) ⇒ DefiniteSat.
+        let v = solve("const p: Bool\ngoal g: (if p then 1 else 2) = 1\n");
+        assert_eq!(v.smt, Some(Confidence::DefiniteSat), "got {v:?}");
+        assert_eq!(v.collapse(), TriState::Sat);
+    }
+
     // A VALID but NONLINEAR goal `x>0 ⟹ x*x>0`. The bare native engine abstains on
     // the nonlinear `x*x` (returns `Unknown`). With the `oxiz` feature the driver
     // renders the negated obligation `x>0 ∧ x*x<=0` under the tight `QF_NIA` logic

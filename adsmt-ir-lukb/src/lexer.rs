@@ -30,6 +30,11 @@ pub enum Tok {
     Or,
     True,
     False,
+    // conditional keywords (`if c then a else b`; `if` doubles as the match-arm
+    // guard keyword in the `match` slice)
+    If,
+    Then,
+    Else,
     // identifiers + numerals
     Ident(String),
     Int(String),
@@ -81,6 +86,9 @@ fn keyword(s: &str) -> Option<Tok> {
         "or" => Tok::Or,
         "true" => Tok::True,
         "false" => Tok::False,
+        "if" => Tok::If,
+        "then" => Tok::Then,
+        "else" => Tok::Else,
         _ => return None,
     })
 }

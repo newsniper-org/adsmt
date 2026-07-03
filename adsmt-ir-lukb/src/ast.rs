@@ -129,6 +129,14 @@ pub enum Term {
     Forall(Vec<Binder>, Box<Term>, Vec<Vec<Term>>),
     /// `exists <binders> . body <triggers>`.
     Exists(Vec<Binder>, Box<Term>, Vec<Vec<Term>>),
+    /// `if c then a else b` — an expression conditional (`else` mandatory: an
+    /// `if` must denote a value). Elaborates to the polymorphic `ite` prelude
+    /// constant `(ite T c a b)` — NEVER to a `Bool` inductive match — so a
+    /// first-order-valued conditional rides the verified term-`ite`
+    /// atom-duplication lowering, and a `Prop`-valued one the classical
+    /// `(c → a) ∧ (¬c → b)`. See docs/design/TERM_ITE_LIFTING.md and the
+    /// 2026-07-03 verus-fork surface proposal.
+    If(Box<Term>, Box<Term>, Box<Term>),
     /// `let x = e in body`.
     Let(String, Box<Term>, Box<Term>),
     /// `solve G by L` — an in-language **proof term** of the proposition `G`,

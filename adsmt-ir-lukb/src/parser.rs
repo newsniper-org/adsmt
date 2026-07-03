@@ -228,6 +228,7 @@ impl<'a> Parser<'a> {
                     | Tok::Forall
                     | Tok::Exists
                     | Tok::Let
+                    | Tok::If
             )
         )
     }
@@ -550,6 +551,18 @@ impl<'a> Parser<'a> {
                 let e = self.term()?;
                 self.expect(&Tok::In)?;
                 Ok(Term::Let(x, Box::new(e), Box::new(self.term()?)))
+            }
+            // `if c then a else b` — `else` is mandatory (an `if` is an
+            // expression and must denote a value); each part is a full `term()`
+            // (the `then`/`else` keywords bound the condition/then-branch, and
+            // the else-branch extends maximally right, like `let … in`).
+            Some(Tok::If) => {
+                self.advance();
+                let c = self.term()?;
+                self.expect(&Tok::Then)?;
+                let a = self.term()?;
+                self.expect(&Tok::Else)?;
+                Ok(Term::If(Box::new(c), Box::new(a), Box::new(self.term()?)))
             }
             // `solve <G-block> by [:] <L-block>` — each block is a full term (a
             // `let`-chain ends in its denoted proposition). `by` is a keyword, so

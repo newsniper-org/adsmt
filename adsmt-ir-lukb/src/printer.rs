@@ -231,6 +231,16 @@ fn print_term(out: &mut String, t: &Term, ctx: u8) {
         }
         Term::Forall(bs, body, trigs) => print_quant(out, "forall", bs, body, trigs, ctx),
         Term::Exists(bs, body, trigs) => print_quant(out, "exists", bs, body, trigs, ctx),
+        // like `let … in`, an `if` binds loosest (the else-branch extends
+        // maximally right), so parenthesise inside any operator context.
+        Term::If(c, a, b) => paren_if(out, ctx > 0, |o| {
+            o.push_str("if ");
+            print_term(o, c, 0);
+            o.push_str(" then ");
+            print_term(o, a, 0);
+            o.push_str(" else ");
+            print_term(o, b, 0);
+        }),
         Term::Let(x, e, body) => paren_if(out, ctx > 0, |o| {
             o.push_str("let ");
             id(o, x);

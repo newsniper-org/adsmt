@@ -892,3 +892,65 @@ fn data_and_fn_def_round_trip() {
     let m2 = parse(&print_module(&m1)).expect("re-parses");
     assert_eq!(m1, m2, "data + fn def round-trip\n{}", print_module(&m1));
 }
+
+// ── surface `if` (the 2026-07-03 verus-fork proposal, slice ①) ───────────────
+
+/// A value-branch `if` elaborates to the polymorphic `ite` prelude application
+/// `(ite T c a b)` — the kernel re-checks it and the whole goal is a Prop.
+#[test]
+fn if_elaborates_to_the_ite_prelude() {
+    let r = all_props("const x: Int\ngoal g: (if x > 0 then x else 0 - x) >= 0\n", 0, 1);
+    // the ite head survives elaboration verbatim (the #325 lowering keys on it).
+    assert!(format!("{}", r.goals[0]).contains("ite"), "got {}", r.goals[0]);
+}
+
+/// A Prop-branch `if` (both branches formulas) is a well-formed Prop — the
+/// `T := Prop` instance of the same `ite` constant (no `Bool` inductive).
+#[test]
+fn prop_branch_if_elaborates() {
+    all_props(
+        "const p: Bool\nconst q: Bool\nconst r: Bool\ngoal g: if p then q else r\n",
+        0,
+        1,
+    );
+}
+
+/// Branch sorts reconcile through the numeric lattice: `if p then 1 else 2.5`
+/// injects the Int arm up to Real (the same rule binary operators use).
+#[test]
+fn if_branches_unify_through_the_numeric_lattice() {
+    all_props("const p: Bool\ngoal g: (if p then 1.0 else 2) >= 0.5\n", 0, 1);
+}
+
+/// Rejections: a non-Prop condition, and irreconcilable branch sorts.
+#[test]
+fn if_rejects_bad_condition_and_mismatched_branches() {
+    // condition must be Bool/Prop, not Int
+    assert!(matches!(
+        elaborate("const x: Int\ngoal g: (if x then 1 else 2) >= 0\n"),
+        Err(FaceError::Unsupported(_))
+    ));
+    // Int vs Bool branches cannot unify
+    assert!(matches!(
+        elaborate("const p: Bool\nconst q: Bool\ngoal g: (if p then 1 else q) >= 0\n"),
+        Err(FaceError::Unsupported(_))
+    ));
+}
+
+/// `if` round-trips through the printer (in operand and top-level position).
+#[test]
+fn if_round_trips_through_the_printer() {
+    let src = "const p: Bool\nconst x: Int\n\
+               goal g: (if p then x else 0 - x) >= 0 and (if p then true else false)\n";
+    let m1 = parse(src).expect("parses");
+    let m2 = parse(&print_module(&m1)).expect("re-parses");
+    assert_eq!(m1, m2, "if round-trip\n{}", print_module(&m1));
+}
+
+/// The reserved keywords force backtick-quoting for identifier use.
+#[test]
+fn if_keywords_are_reserved() {
+    assert!(elaborate("const if: Int\n").is_err(), "bare `if` as an ident must not parse");
+    // backtick-quoted, it is an ordinary identifier.
+    assert!(elaborate("const `if`: Int\ngoal g: `if` >= `if`\n").is_ok());
+}
