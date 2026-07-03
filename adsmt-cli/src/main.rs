@@ -417,27 +417,48 @@ fn main() -> ExitCode {
                     return ExitCode::from(10);
                 }
             };
-            // File mode replays whole-file history per check-sat for
-            // the OxiZ fallback (correct for the common single-query
-            // file; the streaming path below is the Verus interop one).
-            let file_history = source.clone();
+            // #397 — the delegation history at command `i` must stop at the
+            // END of command `i`: `oxiz_fallback` replays `history` and takes
+            // the LAST verdict, so a constant whole-file history answers every
+            // earlier `(check-sat)` with the verdict of the file's LAST query
+            // (verdict misattribution on multi-query files — a truly-`sat`
+            // query 1 inherits a later query's `unsat`). The streaming path
+            // already feeds the honest growing prefix; mirror it here. Prefix
+            // boundaries come from the sexpr layer's byte offsets: command `i`
+            // ends where command `i+1` starts (interleaved comments/whitespace
+            // are inert in a replay).
+            let prefix_ends: Vec<usize> =
+                match adsmt_parser_smtlib2::sexpr::parse_sexprs_positioned(&source) {
+                    Ok(offsets) => {
+                        let mut ends: Vec<usize> =
+                            offsets.iter().skip(1).map(|(_, off)| *off).collect();
+                        ends.push(source.len());
+                        ends
+                    }
+                    // Unreachable in practice: the same input parsed just above.
+                    // Degrade to per-command whole-file history (the pre-#397
+                    // behaviour) rather than dying.
+                    Err(_) => vec![source.len(); commands.len()],
+                };
             let mut degraded = false;
-            if cli.aot_bake {
-                bake_input_source = Some(source);
-            }
-            for (cmd, pos) in commands {
+            for (i, (cmd, pos)) in commands.into_iter().enumerate() {
+                let history =
+                    &source[..prefix_ends.get(i).copied().unwrap_or(source.len())];
                 if let Some(code) = dispatch_one(
                     &mut driver,
                     &mut last,
                     &cli,
                     cmd,
                     pos,
-                    &file_history,
+                    history,
                     &mut degraded,
-                    false, // file mode: constant whole-file history → stateless delegation
+                    false, // file mode: per-command prefix history, stateless delegation
                 ) {
                     return code;
                 }
+            }
+            if cli.aot_bake {
+                bake_input_source = Some(source);
             }
         }
         None => {
@@ -1271,9 +1292,10 @@ fn dispatch_one(
     history: &str,
     degraded: &mut bool,
     // completeness-check (A): the streaming path passes a GROWING history, so
-    // its delegation reuses a persistent OxiZ context (prelude asserted once);
-    // the file path passes a CONSTANT whole-file history, so it must keep the
-    // stateless full-refeed.
+    // its delegation reuses a persistent OxiZ context (prelude asserted once).
+    // The file path passes a per-command PREFIX of the source (#397 — both
+    // paths agree that `history` ends at the CURRENT command, so the replay's
+    // last verdict is this query's), but keeps the stateless full-refeed.
     streaming: bool,
 ) -> Option<ExitCode> {
     use std::io::Write;
@@ -1749,9 +1771,11 @@ fn strip_abductive_commands(history: &str) -> String {
         // failed-query `(check-sat)` executes inside that still-open scope and
         // leaks EUF/arith state into the appended entailment/consistency solve →
         // spurious `unsat` → a non-entailing candidate (e.g. `(>= x! 0)`) wrongly
-        // "entails" `(= x! 0)`. Batch (`lu-smt FILE`) escaped it only because the
-        // whole-file history is push/pop-balanced, so the appended check ran at
-        // top level. Stripping these query/output commands makes the delegated
+        // "entails" `(= x! 0)`. Batch (`lu-smt FILE`) escaped it at the time only
+        // because its pre-#397 whole-file history was push/pop-balanced, so the
+        // appended check ran at top level (post-#397 the file path feeds the same
+        // per-command prefix as streaming, so the strip carries both). Stripping
+        // these query/output commands makes the delegated
         // query feed-independent (streaming ≡ batch) AND faster (no wasted
         // intermediate solves). They never modify `F`, so dropping them is sound.
         let drop_interactive = matches!(
