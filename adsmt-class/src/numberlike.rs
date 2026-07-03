@@ -188,18 +188,26 @@ fn injection_const(name: &str, from: Type) -> Term {
 /// `PartialOrd(I)`: a partial order with reflexivity / antisymmetry /
 /// transitivity laws.
 pub fn partial_ord() -> Relation {
-    let i = tyvar("I");
-    let it = Type::Var(i.clone());
+    // 2-param heterogeneous form (owner reshape, 2026-07-03 — see
+    // docs/design/EQ_ORD_UPCAST_RELATIONS.md): `PartialOrd(T, A)` inherits
+    // `PartialEq(T, A)` AND `UpCast(T, A)` (instance premises) — a cross-sort
+    // comparison is decided in the upcast target. The laws are stated on the
+    // diagonal (every current instance is diagonal).
+    let t = tyvar("T");
+    let a = tyvar("A");
+    let (tt, at) = (Type::Var(t.clone()), Type::Var(a.clone()));
     Relation::new(PARTIAL_ORD)
-        .with_param(i)
-        .with_method(M_LE, fun3(it.clone(), it, Type::bool_()))
+        .with_param(t)
+        .with_param(a)
+        .with_method(M_LE, fun3(tt, at, Type::bool_()))
         .with_law(Law::new("reflexivity", law_reflexivity))
         .with_law(Law::new("antisymmetry", law_antisymmetry))
         .with_law(Law::new("transitivity", law_transitivity))
 }
 
-/// `Ord(I) : PartialOrd(I)`: the total-order subtrait. Adds the totality law
-/// and no new method (`le` is inherited through the `PartialOrd` premise).
+/// `Ord(T) : PartialOrd(T, T), Eq(T)`: the total-order subtrait. Adds the
+/// totality law and no new method (`le` is inherited through the diagonal
+/// `PartialOrd` premise; equality through `Eq`).
 pub fn ord() -> Relation {
     Relation::new(ORD)
         .with_param(tyvar("I"))
@@ -377,12 +385,22 @@ fn injected_le(inj: &str, carrier: Type) -> Term {
 }
 
 fn partial_ord_instance(sort: &str) -> Instance {
-    Instance::new(PARTIAL_ORD, vec![carrier_ty(sort)]).with_method(M_LE, le_body(sort))
+    // Diagonal `PartialOrd(T, T)` with the inherited premises: `PartialEq(T, T)`
+    // (through the carrier's `Eq`) and `UpCast(T, T)` (the builtin identity —
+    // stored as a premise, satisfied at resolution; an explicit instance would
+    // be rejected).
+    let c = carrier_ty(sort);
+    Instance::new(PARTIAL_ORD, vec![c.clone(), c.clone()])
+        .with_premise(Premise::new(crate::eq_ord::PARTIAL_EQ, vec![c.clone(), c.clone()]))
+        .with_premise(Premise::new(crate::eq_ord::UP_CAST, vec![c.clone(), c]))
+        .with_method(M_LE, le_body(sort))
 }
 
 fn ord_instance(sort: &str) -> Instance {
     let carrier = carrier_ty(sort);
-    Instance::new(ORD, vec![carrier.clone()]).with_premise(Premise::new(PARTIAL_ORD, vec![carrier]))
+    Instance::new(ORD, vec![carrier.clone()])
+        .with_premise(Premise::new(PARTIAL_ORD, vec![carrier.clone(), carrier.clone()]))
+        .with_premise(Premise::new(crate::eq_ord::EQ, vec![carrier]))
 }
 
 /// `PartialIntegerLike(sort)` ground instance carrying the `domain` positivity
@@ -411,13 +429,13 @@ fn integer_instance(sort: &str) -> Instance {
 }
 
 /// `RealLike(Real)`: the field core `{add, mul, domain=⊤}`, with the order
-/// supplied through its `PartialOrd(Real)` premise. (`Real` is a ring-complete
+/// supplied through its diagonal `PartialOrd(Real, Real)` premise. (`Real` is a ring-complete
 /// field, so `add`/`mul` are wired directly — unlike `Nat`/`WNat`, whose
 /// carrier-valued ops await the `Reduces` spine.)
 fn real_like_instance() -> Instance {
     let carrier = carrier_ty(SORT_REAL);
     Instance::new(REAL_LIKE, vec![carrier.clone()])
-        .with_premise(Premise::new(PARTIAL_ORD, vec![carrier.clone()]))
+        .with_premise(Premise::new(PARTIAL_ORD, vec![carrier.clone(), carrier.clone()]))
         .with_method(M_ADD, binop_const(REAL_ADD, carrier.clone(), carrier.clone(), carrier.clone()))
         .with_method(M_MUL, binop_const(REAL_MUL, carrier.clone(), carrier.clone(), carrier.clone()))
         .with_method(M_DOMAIN, domain_body(SORT_REAL))
@@ -537,6 +555,9 @@ fn positivity_guard(inj: &str, carrier: Type, xt: Term, lo: i128) -> Term {
 const CARRIERS: [&str; 3] = [SORT_INT, SORT_NAT, SORT_WNAT];
 
 fn declare_relations(db: &mut InstanceDb) {
+    // the equality/cast half of the family (PartialEq / Eq / UpCast) — the
+    // reshaped PartialOrd/Ord premise-chain bottoms out on it.
+    crate::eq_ord::declare_eq_ord_relations(db);
     db.declare_relation(partial_ord());
     db.declare_relation(ord());
     db.declare_relation(partial_integer_like());
@@ -565,6 +586,9 @@ fn complex_instances() -> [(Instance, i128, i128); 3] {
 /// resolution; [`install_numberlike_checked`] adds proof-gated admission.
 pub fn install_numberlike(db: &mut InstanceDb) {
     declare_relations(db);
+    // diagonal PartialEq/Eq + the numeric UpCast lattice, BEFORE the ord
+    // instances whose premise chains reference them.
+    crate::eq_ord::install_eq_ord_numeric(db);
     for sort in CARRIERS {
         db.declare_instance(partial_ord_instance(sort)).expect("PartialOrd instance");
         db.declare_instance(ord_instance(sort)).expect("Ord instance");
@@ -647,23 +671,44 @@ mod tests {
     }
 
     #[test]
-    fn ord_premises_partial_ord() {
+    fn ord_premises_partial_ord_and_eq() {
+        // the reshaped hierarchy: Ord(T) : PartialOrd(T, T), Eq(T).
         let db = db();
         match found(&db, ORD, SORT_INT) {
             ResolutionResult::Found(m) => {
-                assert_eq!(m.sub_goals.len(), 1);
-                assert_eq!(m.sub_goals[0].relation, PARTIAL_ORD);
+                let rels: Vec<&str> = m.sub_goals.iter().map(|g| g.relation.as_str()).collect();
+                assert_eq!(m.sub_goals.len(), 2, "PartialOrd diag + Eq");
+                assert!(rels.contains(&PARTIAL_ORD));
+                assert!(rels.contains(&crate::eq_ord::EQ));
+                let po = m.sub_goals.iter().find(|g| g.relation == PARTIAL_ORD).unwrap();
+                assert_eq!(po.types.len(), 2, "diagonal 2-param PartialOrd");
+                assert_eq!(po.types[0], po.types[1]);
             }
             other => panic!("expected Found, got {other:?}"),
         }
     }
 
     #[test]
-    fn partial_ord_resolves_without_subgoals() {
+    fn partial_ord_diagonal_premises_partial_eq_and_upcast() {
+        // PartialOrd(T, A) : PartialEq(T, A), UpCast(T, A) — on the diagonal
+        // the UpCast premise is the builtin identity (resolves subgoal-free).
         let db = db();
+        let r = Resolver::new(&db);
         for sort in CARRIERS {
-            match found(&db, PARTIAL_ORD, sort) {
-                ResolutionResult::Found(m) => assert!(m.sub_goals.is_empty()),
+            let c = carrier_ty(sort);
+            let goal = ClassGoal::new(PARTIAL_ORD, vec![c.clone(), c.clone()]);
+            match r.resolve(&goal) {
+                ResolutionResult::Found(m) => {
+                    let rels: Vec<&str> =
+                        m.sub_goals.iter().map(|g| g.relation.as_str()).collect();
+                    assert!(rels.contains(&crate::eq_ord::PARTIAL_EQ), "{sort}");
+                    assert!(rels.contains(&crate::eq_ord::UP_CAST), "{sort}");
+                    let up = m.sub_goals.iter().find(|g| g.relation == crate::eq_ord::UP_CAST).unwrap();
+                    assert!(matches!(
+                        r.resolve(up),
+                        ResolutionResult::Found(ref im) if im.sub_goals.is_empty()
+                    ), "identity UpCast is the builtin: {sort}");
+                }
                 other => panic!("expected Found for {sort}, got {other:?}"),
             }
         }
@@ -1046,11 +1091,11 @@ mod tests {
         let foo = Type::const_("Foo", Kind::Type);
         let foo_le = binop_const("Foo.le", foo.clone(), foo.clone(), Type::bool_());
         db.declare_instance(
-            Instance::new(PARTIAL_ORD, vec![foo.clone()]).with_method(M_LE, foo_le),
+            Instance::new(PARTIAL_ORD, vec![foo.clone(), foo.clone()]).with_method(M_LE, foo_le),
         )
         .unwrap();
         let bogus = Instance::new(ORD, vec![foo.clone()])
-            .with_premise(Premise::new(PARTIAL_ORD, vec![foo]));
+            .with_premise(Premise::new(PARTIAL_ORD, vec![foo.clone(), foo]));
         match db.declare_instance_lawful(bogus, &TotalityRecognizer) {
             Err(ClassError::LawUnproven { relation, law }) => {
                 assert_eq!(relation, ORD);

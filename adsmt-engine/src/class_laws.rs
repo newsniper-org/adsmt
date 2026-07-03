@@ -212,12 +212,13 @@ mod tests {
         db.declare_relation(partial_ord());
         db.declare_relation(ord());
         db.declare_instance_lawful(
-            Instance::new("PartialOrd", vec![int.clone()]).with_method("le", le),
+            Instance::new("PartialOrd", vec![int.clone(), int.clone()]).with_method("le", le),
             &EngineLawProver,
         )
         .expect("engine proves PartialOrd(Int)'s reflexivity/antisymmetry/transitivity");
         db.declare_instance_lawful(
-            Instance::new("Ord", vec![int.clone()]).with_premise(Premise::new("PartialOrd", vec![int])),
+            Instance::new("Ord", vec![int.clone()])
+                .with_premise(Premise::new("PartialOrd", vec![int.clone(), int])),
             &EngineLawProver,
         )
         .expect("engine proves Ord(Int)'s totality via the PartialOrd premise");
@@ -267,19 +268,19 @@ mod tests {
         db.declare_relation(ord());
         db.declare_relation(numberlike::real_like());
         db.declare_instance_lawful(
-            Instance::new("PartialOrd", vec![real.clone()]).with_method("le", le),
+            Instance::new("PartialOrd", vec![real.clone(), real.clone()]).with_method("le", le),
             &EngineLawProver,
         )
         .expect("engine proves PartialOrd(Real)'s order laws");
         db.declare_instance_lawful(
             Instance::new("Ord", vec![real.clone()])
-                .with_premise(Premise::new("PartialOrd", vec![real.clone()])),
+                .with_premise(Premise::new("PartialOrd", vec![real.clone(), real.clone()])),
             &EngineLawProver,
         )
         .expect("engine proves Ord(Real)'s totality");
         db.declare_instance_lawful(
             Instance::new("RealLike", vec![real.clone()])
-                .with_premise(Premise::new("PartialOrd", vec![real])),
+                .with_premise(Premise::new("PartialOrd", vec![real.clone(), real])),
             &EngineLawProver,
         )
         .expect("RealLike(Real) admitted (no own laws)");

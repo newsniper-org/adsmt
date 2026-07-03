@@ -52,6 +52,11 @@ pub enum ClassError {
     PredArityMismatch { relation: String, expected: usize, found: usize },
     #[error("coherence violation: instance head overlaps an existing instance and `overlap` is not set")]
     CoherenceViolation,
+    #[error(
+        "explicit `UpCast(T, T)` instance is forbidden — the identity cast is BUILTIN for every \
+         sort (docs/design/EQ_ORD_UPCAST_RELATIONS.md §5)"
+    )]
+    BuiltinIdentityUpCast,
     #[error("law `{law}` of relation `{relation}` is ill-formed for this instance: {reason}")]
     LawIllFormed { relation: String, law: String, reason: String },
     #[error("law `{law}` of relation `{relation}` was not proven for this instance — declaration rejected")]
@@ -95,6 +100,14 @@ impl InstanceDb {
                 found: i.preds.len(),
             });
         }
+        // `UpCast(T, T)` is the BUILTIN identity (resolution-level, for every
+        // sort) — an explicit instance is an admission error, not an overlap.
+        if i.relation == crate::eq_ord::UP_CAST
+            && i.types.len() == 2
+            && i.types[0] == i.types[1]
+        {
+            return Err(ClassError::BuiltinIdentityUpCast);
+        }
         if !i.overlap {
             for existing in &self.instances {
                 if existing.relation != i.relation {
@@ -108,7 +121,29 @@ impl InstanceDb {
                 }
             }
         }
+        // PartialEq SYMMETRY SYNC: a heterogeneous `PartialEq(A, B)` implicitly
+        // materializes the mirror `PartialEq(B, A)` (deferring to the original
+        // via a premise — no method surgery). The `!eq-sync` sentinel marks the
+        // materialized mirror so it is not re-mirrored; a user-declared
+        // explicit mirror later collides with it (CoherenceViolation above),
+        // which is the specified duplicate-instance error.
+        let sync = i.relation == crate::eq_ord::PARTIAL_EQ
+            && i.types.len() == 2
+            && i.types[0] != i.types[1]
+            && i.enclosing.first().map(String::as_str) != Some("!eq-sync");
+        let mirror = sync.then(|| {
+            let mut m = Instance::new(
+                i.relation.clone(),
+                vec![i.types[1].clone(), i.types[0].clone()],
+            )
+            .with_premise(Premise::new(i.relation.clone(), i.types.clone()));
+            m.enclosing = vec!["!eq-sync".into()];
+            m
+        });
         self.instances.push(i);
+        if let Some(m) = mirror {
+            self.instances.push(m);
+        }
         Ok(())
     }
 
@@ -290,6 +325,20 @@ impl<'a> Resolver<'a> {
         };
         if rel.arity() != goal.types.len() {
             return ResolutionResult::NotFound;
+        }
+        // The BUILTIN `UpCast(τ, τ)` identity: satisfied for every sort with no
+        // stored instance and no premises (explicit instances are forbidden at
+        // declaration, so this can never be ambiguous with a stored one).
+        if goal.relation == crate::eq_ord::UP_CAST
+            && goal.types.len() == 2
+            && goal.types[0] == goal.types[1]
+        {
+            return ResolutionResult::Found(InstanceMatch {
+                instance_index: usize::MAX, // the builtin (no stored instance)
+                type_subst: Vec::new(),
+                sub_goals: Vec::new(),
+                pred_dict: Vec::new(),
+            });
         }
 
         let mut matches: Vec<InstanceMatch> = Vec::new();

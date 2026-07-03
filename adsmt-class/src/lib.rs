@@ -6,6 +6,7 @@
 //! dependency propagation; coherence is strict with an `overlap`
 //! opt-in.
 
+pub mod eq_ord;
 pub mod fundep;
 pub mod instance;
 pub mod law;
@@ -15,6 +16,10 @@ pub mod relation;
 pub mod resolve;
 pub mod tclass;
 
+pub use eq_ord::{
+    EQ, M_CAST, M_EQ, PARTIAL_EQ, UP_CAST, declare_eq_ord_relations, eq, eq_instance,
+    install_eq_ord_numeric, partial_eq, partial_eq_diag_instance, up_cast, up_cast_instance,
+};
 pub use fundep::Fundep;
 pub use instance::{Instance, MethodImpl, Premise};
 pub use law::{Dict, Law, LawBuilder, LawError, LawProver};
