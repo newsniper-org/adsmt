@@ -171,10 +171,37 @@ injection, which sort), not just a typecheck-time annotation — the same lever
      `Eq(T)`. Unknown ctor stays the unknown-symbol error; wrong arity /
      wrong argument sort are hard errors naming the tester.
    * *Gate*: ob1-abs.lukb ELABORATES end-to-end (the two `is-diff!Color./…`
-     testers were its only undeclared symbols). The obligation still reads
-     `unknown`: the NEXT chokepoint is the #325 lowering's conservative
-     abstain on `∀b: Bool` binders (`Pi(Sort(Prop),·)` — the Bool↦Prop
-     collapse, DESIGN.md §5.1 P1; 5 prelude axioms), a separate slice
-     (classically `∀b:Bool.φ ⟺ φ[⊤]∧φ[⊥]`, so a case-split lowering can
-     close it sound + complete).
-4. **F4 — docs/books + memory + verus-fork notice.**
+     testers were its only undeclared symbols). The NEXT chokepoint was the
+     #325 lowering's conservative abstain on `∀b: Bool` binders — closed by
+     the follow-up below.
+3b. **#395 — the `∀Bool` case-split lowering** (the F3 follow-up). **LANDED**
+   — `lower_pi` now lowers `Pi(Sort(Prop), ·)` (the Bool↦Prop collapse made
+   a surface `forall b: Bool` and second-order `∀(P:Prop)` the same kernel
+   term) as the classical finite case split `∀(b:Prop).φ ⟺ φ[⊤] ∧ φ[⊥]` — a
+   logical equivalence in the two-valued target (the `exists` arm had
+   already committed to the classical reading), polarity-safe, and it
+   ELIMINATES the quantifier (a single-Bool-binder axiom grounds outright).
+   `Sort(Type n)` binders keep the second-order abstain. The branch value is
+   supplied per branch through the lowering frame (the `lower_match` field
+   idiom) — no kernel-side substitution. **The load-bearing companion is the
+   whole-formula literal fold** (`fold_bool_lits`, applied once per lowered
+   goal): the bare engine's CNF reads a `true`/`false` `Const` leaf in a
+   connective position as an ordinary FREE atom (assigning the "true" atom
+   false satisfies `(=> true p)` vacuously), so the case split's injected
+   literals must be constant-folded out of EVERY position. The 3-way
+   randomized z3 differential (`adsmt-ir-lower/z3_differential.py`,
+   generator extended with semantics-bearing `∀Bool` shapes) drove this to
+   convergence over three rounds — 68 (`(= ⊤ r)` atoms) → 4 (`⇒`-internal
+   literals via the proof-binder path) → 1 (a split-external `¬(φ ∧ ⊤)`
+   context) → **0** on 16 000 trials (9 141 definite verdicts, 0
+   engine-attributable, 0 inconclusive) — per the unsat-trust rule.
+   *ob1 end-to-end effect*: elaborate ✓ → lower ✓ → render (280 commands,
+   full 202-axiom prelude + datatypes) ✓ → the RENDERED SCRIPT IS
+   Z3-VERIFIED `unsat` (28 ms) — the adsmt-side pipeline for the verus
+   fuel-unfolding obligation is complete and correct; the sole residual is
+   the vendored OxiZ's full-prelude MBQI completeness wall (`unknown` in
+   ~11.5 s, the known #264/#281 frontier; verus-SAFE direction).
+4. **F4 — docs/books + memory + verus-fork notice.** LANDED with #395: the
+   family + gating + testers documented in the implement-from-scratch book
+   (ch. 03 "The `Eq`/`Ord`/`UpCast` family" + app. B gating note, ×4
+   languages) and the verus-fork notice (see `.local-replies-to/`).
