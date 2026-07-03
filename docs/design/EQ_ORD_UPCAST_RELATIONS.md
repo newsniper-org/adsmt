@@ -64,12 +64,25 @@ Three points where the spec meets the existing implementation, each RULED:
    datatype (whose instance is the lawful auto-derivation of §"How this solves
    #391"). The gate is thus semantically explicit but observationally
    conservative today; a future opt-out (a sort WITHOUT Eq) becomes possible.
-3. **`UpCast` and `Reduces` COEXIST as separate layers.** `UpCast` is the
-   surface/elaboration-layer failure-free embedding (which sort a heterogeneous
-   `=`/comparison lands in, which injection to insert); `Reduces` remains the
-   solve-time theory-reduction spine of the *Like family. The numeric `UpCast`
-   instances' cast methods REUSE the existing injection constants
-   (`nat2wnat`/`nat2int`/`to_real`, …) — no new kernel symbols.
+3. **`UpCast` and `Reduces` COEXIST as separate layers, WITH an inheritance
+   edge: `UpCast(A, B)` inherits `Reduces(A, B)`** (owner follow-up ruling,
+   2026-07-03). `UpCast` is the surface/elaboration-layer failure-free
+   embedding (which sort a heterogeneous `=`/comparison lands in, which
+   injection to insert); `Reduces` remains the solve-time theory-reduction
+   spine of the *Like family. The inheritance direction is forced by the
+   semantics: a failure-free supertype embedding IS a reduction edge (the cast
+   method = `encode`, the image characterization = the refinement predicate —
+   ℕ↪ℤ's positivity guard is exactly this), while the REVERSE does not hold
+   (`GF(p)→Int` mod-p decode and `Complex→(Real,Real)` representation change
+   are `Reduces` but NOT failure-free supertype casts) — so `UpCast ⊂ Reduces`,
+   the stronger inheriting the weaker, the `Eq : PartialEq` shape. Coherence:
+   the builtin `UpCast(T,T)` identity synchronizes a builtin `Reduces(T,T)`
+   identity (the trivial reduction). `Reduces` is not yet a concrete
+   `Relation` (the numberlike methods are "Reduces-spine-deferred"), so this
+   edge TAKES EFFECT when `Reduces` materializes; until then `UpCast` carries
+   no Reduces premise. The numeric `UpCast` instances' cast methods REUSE the
+   existing injection constants (`nat2wnat`/`nat2int`/`to_real`, …) — no new
+   kernel symbols.
 
 ## How this solves #391 (`is-{ctor}` testers)
 
