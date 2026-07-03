@@ -1,6 +1,6 @@
 [package]
 name = "adsmtr"
-version = "1.0.0-rc.41"
+version = "1.0.0-rc.42"
 edition = "2021"
 description = "adsmtr — the lu-kb-successor runtime + REPL (CLI trichotomy): interactive unified solve, the ASP Full-mode 3-valued well-founded model, and the lu-kb unified verdict."
 

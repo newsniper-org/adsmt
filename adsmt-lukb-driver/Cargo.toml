@@ -1,12 +1,12 @@
 [package]
 name = "adsmt-lukb-driver"
-version = "1.0.0-rc.41"
+version = "1.0.0-rc.42"
 edition = "2021"
 description = "The lu-kb-successor unified solve orchestration: elaborate → lower → solve → UnifiedVerdict (design §10.4). The home of the unified verdict, reached by adsmtc/adsmtr."
 
 [dependencies]
 # DatatypeDecl for the delegation renderer's `(declare-datatypes …)` emission.
-adsmt-theory = { version = "=1.0.0-rc.41", path = "../adsmt-theory" }
+adsmt-theory = { version = "=1.0.0-rc.42", path = "../adsmt-theory" }
 adsmt-ir-lukb = { path = "../adsmt-ir-lukb" }
 adsmt-ir-lower = { path = "../adsmt-ir-lower" }
 adsmt-engine = { path = "../adsmt-engine" }
