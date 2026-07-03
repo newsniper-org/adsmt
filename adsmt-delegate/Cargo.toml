@@ -8,6 +8,8 @@ description = "Shared delegation stack for a typed HOL sequent (H ⊢ G). `cas`:
 [dependencies]
 # Always: the obligation Terms + the SMT-LIB renderer (needs only adsmt-core).
 adsmt-core = { version = "=1.0.0-rc.41", path = "../adsmt-core" }
+# The DatatypeDecl the renderer turns into `(declare-datatypes …)`.
+adsmt-theory = { version = "=1.0.0-rc.41", path = "../adsmt-theory" }
 
 # `cas` feature — the classifier + trusted re-check core + the untrusted backends
 # (each admit-gated at the adsmt-cas layer; constructing them is free).

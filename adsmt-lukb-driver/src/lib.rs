@@ -34,13 +34,27 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
     let elab = match elaborate(src) {
         Ok(e) => e,
         // a parse/elaborate face error ⇒ the sound `Unknown` (never a verdict)
-        Err(_) => return UnifiedVerdict::smt(Confidence::Unknown),
+        Err(e) => {
+            if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
+                eprintln!("[lukb-dbg] elaborate failed: {e}");
+            }
+            return UnifiedVerdict::smt(Confidence::Unknown);
+        }
     };
     // Lower hypotheses + goals to engine HOL (#325). All-or-nothing: an
     // unlowerable construct ⇒ sound `Unknown`.
     let (hyps, goals) = match (lower(&elab.env, &elab.hypotheses), lower(&elab.env, &elab.goals)) {
         (Ok(h), Ok(g)) => (h, g),
-        _ => return UnifiedVerdict::smt(Confidence::Unknown),
+        (a, b) => {
+            if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
+                eprintln!(
+                    "[lukb-dbg] lower failed: hyps={:?} goals={:?}",
+                    a.err().map(|e| e.to_string()),
+                    b.err().map(|e| e.to_string())
+                );
+            }
+            return UnifiedVerdict::smt(Confidence::Unknown);
+        }
     };
 
     let mut solver = Solver::new();
@@ -48,10 +62,19 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
         solver.declare_datatype(d.clone());
     }
 
-    // Does any obligation reference a datatype? The OxiZ renderer bails on those
-    // (no `declare-datatypes` yet), so we only compute this when delegation is on.
+    // The module's datatype decls (deduped) — the OxiZ renderer emits them as
+    // `(declare-datatypes …)`, so a datatype-bearing obligation now DELEGATES
+    // (the dominant Verus fuel-unfolding obligations carry datatypes).
     #[cfg(any(feature = "oxiz", feature = "cas"))]
-    let has_datatypes = !hyps.datatypes.is_empty() || !goals.datatypes.is_empty();
+    let datatypes: Vec<adsmt_theory::datatypes::DatatypeDecl> = {
+        let mut v: Vec<adsmt_theory::datatypes::DatatypeDecl> = Vec::new();
+        for d in hyps.datatypes.iter().chain(goals.datatypes.iter()) {
+            if !v.iter().any(|e| e.sort_name == d.sort_name) {
+                v.push(d.clone());
+            }
+        }
+        v
+    };
 
     let mut overall = Confidence::DefiniteUnsat; // vacuously all-valid
     for g in &goals.goals {
@@ -76,7 +99,7 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
                         };
                         #[cfg(any(feature = "oxiz", feature = "cas"))]
                         {
-                            delegate_resolve(&hyps.goals, g, has_datatypes, native_conf)
+                            delegate_resolve(&hyps.goals, g, &datatypes, native_conf)
                         }
                         #[cfg(not(any(feature = "oxiz", feature = "cas")))]
                         {
@@ -129,11 +152,11 @@ fn combine_obligation(acc: Confidence, goal: Confidence) -> Confidence {
 fn delegate_resolve(
     hyps: &[Term],
     goal: &Term,
-    has_datatypes: bool,
+    datatypes: &[adsmt_theory::datatypes::DatatypeDecl],
     native: Confidence,
 ) -> Confidence {
     #[cfg(feature = "oxiz")]
-    if adsmt_delegate::oxiz::proves_goal(hyps, goal, has_datatypes) {
+    if adsmt_delegate::oxiz::proves_goal(hyps, goal, datatypes) {
         return Confidence::DefiniteUnsat;
     }
     #[cfg(feature = "cas")]

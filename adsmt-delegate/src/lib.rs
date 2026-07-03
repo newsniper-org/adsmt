@@ -29,19 +29,31 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use adsmt_core::{Term, TermInner, Type};
+use adsmt_theory::datatypes::DatatypeDecl;
 
 /// Render the obligation `H ∧ ¬G` to a self-contained SMT-LIB script
-/// (`declare-sort` / `declare-const` / `declare-fun` for the free symbols, then
-/// the asserted hypotheses + the negated goal + `(check-sat)`), or `None` if any
-/// part cannot be faithfully rendered.
+/// (`declare-sort` / `declare-datatypes` / `declare-const` / `declare-fun` for
+/// the free symbols, then the asserted hypotheses + the negated goal +
+/// `(check-sat)`), or `None` if any part cannot be faithfully rendered.
 ///
-/// `has_datatypes` is `true` when the obligation references user datatypes; this
-/// v1 renderer does not emit `declare-datatypes`, so it soundly bails (no
-/// delegation) rather than feed OxiZ a script missing the datatype declarations.
+/// `datatypes` are the module's engine [`DatatypeDecl`]s, emitted as ONE
+/// `(declare-datatypes …)` group (the multi-datatype form, so cross-references
+/// work). Constructors/selectors appear in lowered terms as `Const` leaves, so
+/// they render by name and are declared exactly once (here); the datatype SORT
+/// names are excluded from the `declare-sort` set for the same reason. A
+/// PARAMETRIC decl bails sound (`None`) — the lowering never produces one today.
+///
+/// SOUNDNESS of the datatype emission: the caller trusts only OxiZ's `unsat`
+/// ([`oxiz::proves_goal`]). If OxiZ interprets the declared datatype only
+/// partially (e.g. constructors as plain uninterpreted functions), it solves an
+/// OVER-approximation — a superset of models — so its `unsat` still implies the
+/// real `unsat` (dropping datatype axioms can only ADD models). The `sat`
+/// direction over such an abstraction is exactly why `sat` is never trusted.
+/// z3-differential-gated per the unsat-trust rule.
 #[must_use]
-pub fn render_smtlib(hyps: &[Term], goal: &Term, has_datatypes: bool) -> Option<String> {
-    if has_datatypes {
-        return None; // datatype rendering is a follow-up; bail sound.
+pub fn render_smtlib(hyps: &[Term], goal: &Term, datatypes: &[DatatypeDecl]) -> Option<String> {
+    if datatypes.iter().any(|d| !d.params.is_empty()) {
+        return None; // parametric datatypes: no faithful monomorphic render.
     }
     let bound = HashSet::new();
     let mut sorts: BTreeSet<String> = BTreeSet::new();
@@ -50,6 +62,9 @@ pub fn render_smtlib(hyps: &[Term], goal: &Term, has_datatypes: bool) -> Option<
         collect_decls(h, &bound, &mut sorts, &mut consts)?;
     }
     collect_decls(goal, &bound, &mut sorts, &mut consts)?;
+    // Datatype sorts are declared by `declare-datatypes`, not `declare-sort`.
+    let dt_sorts: BTreeSet<&str> = datatypes.iter().map(|d| d.sort_name.as_str()).collect();
+    sorts.retain(|s| !dt_sorts.contains(s.as_str()));
 
     let mut out = String::new();
     // Choose the TIGHTEST sound logic. OxiZ's sound nonlinear dispatch
@@ -67,10 +82,37 @@ pub fn render_smtlib(hyps: &[Term], goal: &Term, has_datatypes: bool) -> Option<
         analyze(h, &mut th);
     }
     analyze(goal, &mut th);
+    // A datatype-bearing obligation stays on `ALL` (the QF_NIA/QF_NRA fast
+    // paths have no datatype dispatch; `ALL` routes through the full solver).
+    if !datatypes.is_empty() {
+        th.quant = true;
+    }
     out.push_str(&format!("(set-logic {})\n", th.logic()));
     // Uninterpreted sorts (Int / Real / Bool are built in and never collected).
     for s in &sorts {
         out.push_str(&format!("(declare-sort {s} 0)\n"));
+    }
+    // All datatypes in ONE `declare-datatypes` group (cross-refs + the OxiZ
+    // multi-datatype parse form). Selector names carry `!` — a legal SMT-LIB
+    // simple-symbol character, no quoting needed.
+    if !datatypes.is_empty() {
+        let mut heads = String::new();
+        let mut bodies = String::new();
+        for d in datatypes {
+            heads.push_str(&format!("({} 0) ", d.sort_name));
+            bodies.push('(');
+            for (j, cname) in d.constructors.iter().enumerate() {
+                bodies.push('(');
+                bodies.push_str(cname);
+                for (i, fsort) in d.field_sorts.get(j)?.iter().enumerate() {
+                    let sel = d.selectors.get(j)?.get(i)?;
+                    bodies.push_str(&format!(" ({sel} {fsort})"));
+                }
+                bodies.push_str(") ");
+            }
+            bodies.push_str(") ");
+        }
+        out.push_str(&format!("(declare-datatypes ({heads}) ({bodies}))\n"));
     }
     for (name, ty) in &consts {
         let (args, ret) = decompose_fun_type(ty)?;
@@ -317,7 +359,7 @@ mod tests {
         };
         let hyp = gt(int_var("x"), int_const_op("0"));
         let goal = gt(int_var("x"), int_const_op("5"));
-        let s = render_smtlib(&[hyp], &goal, false).expect("renders");
+        let s = render_smtlib(&[hyp], &goal, &[]).expect("renders");
         assert!(s.contains("(declare-const x Int)"), "got:\n{s}");
         assert!(s.contains("(assert (> x 0))"), "got:\n{s}");
         assert!(s.contains("(assert (not (> x 5)))"), "got:\n{s}");
@@ -325,9 +367,35 @@ mod tests {
     }
 
     #[test]
-    fn datatypes_bail_sound() {
-        let goal = int_var("x");
-        assert!(render_smtlib(&[], &goal, true).is_none());
+    fn datatypes_render_as_one_group() {
+        // a Nat-like decl renders as one `(declare-datatypes …)` group; its sort
+        // never gets a conflicting `declare-sort`; a PARAMETRIC decl bails sound.
+        let n = adsmt_theory::datatypes::DatatypeDecl {
+            sort_name: "N".into(),
+            constructors: vec!["zero".into(), "succ".into()],
+            is_finite: false,
+            arities: vec![0, 1],
+            selectors: vec![vec![], vec!["succ!sel0".into()]],
+            params: vec![],
+            field_sorts: vec![vec![], vec!["N".into()]],
+        };
+        let x = Term::var("x", Type::const_("N", adsmt_core::Kind::Type));
+        let eq_ty = Type::fun(
+            Type::const_("N", adsmt_core::Kind::Type),
+            Type::fun(Type::const_("N", adsmt_core::Kind::Type), Type::bool_()).unwrap(),
+        )
+        .unwrap();
+        let goal =
+            Term::app(Term::app(Term::const_("=", eq_ty), x.clone()).unwrap(), x).unwrap();
+        let s = render_smtlib(&[], &goal, std::slice::from_ref(&n)).expect("renders");
+        assert!(
+            s.contains("(declare-datatypes ((N 0) ) (((zero) (succ (succ!sel0 N)) ) ))"),
+            "got:\n{s}"
+        );
+        assert!(!s.contains("(declare-sort N"), "datatype sort must not be re-declared:\n{s}");
+        let mut p = n;
+        p.params = vec!["T".into()];
+        assert!(render_smtlib(&[], &Term::var("y", int_ty()), &[p]).is_none());
     }
 
     #[test]
@@ -336,7 +404,7 @@ mod tests {
             adsmt_core::Var { name: "y".into(), ty: Type::const_("Int", adsmt_core::Kind::Type) },
             int_var("y"),
         );
-        assert!(render_smtlib(&[], &lam, false).is_none());
+        assert!(render_smtlib(&[], &lam, &[]).is_none());
     }
 
     /// The OxiZ path end-to-end: a trivially-VALID goal `x = x` renders to
@@ -352,6 +420,6 @@ mod tests {
         let eq = Term::const_("=", eq_ty);
         let x = int_var("x");
         let goal = Term::app(Term::app(eq, x.clone()).unwrap(), x).unwrap(); // (= x x)
-        assert!(crate::oxiz::proves_goal(&[], &goal, false), "OxiZ should verify x = x");
+        assert!(crate::oxiz::proves_goal(&[], &goal, &[]), "OxiZ should verify x = x");
     }
 }

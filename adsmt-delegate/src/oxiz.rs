@@ -24,17 +24,31 @@ use adsmt_core::Term;
 /// or a parse error — all sound "no delegation" outcomes (see the module docs on
 /// why an OxiZ `sat` is intentionally not trusted here).
 ///
-/// `has_datatypes` bails the render (and thus this call) when the obligation uses
-/// datatypes (the v1 renderer does not emit `declare-datatypes`).
+/// `datatypes` are the module's engine decls, emitted as `(declare-datatypes …)`
+/// (see the render docs for why an `unsat` over a partially-interpreted datatype
+/// abstraction is still sound).
 #[must_use]
-pub fn proves_goal(hyps: &[Term], goal: &Term, has_datatypes: bool) -> bool {
-    let Some(script) = crate::render_smtlib(hyps, goal, has_datatypes) else {
+pub fn proves_goal(
+    hyps: &[Term],
+    goal: &Term,
+    datatypes: &[adsmt_theory::datatypes::DatatypeDecl],
+) -> bool {
+    let Some(script) = crate::render_smtlib(hyps, goal, datatypes) else {
+        if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
+            eprintln!("[dbg] render_smtlib bailed (None)");
+        }
         return false;
     };
+    if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
+        eprintln!("[dbg] script:\n{script}");
+    }
     let mut ctx = oxiz_solver::Context::new();
     let Ok(out) = ctx.execute_script(&script) else {
         return false;
     };
+    if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
+        eprintln!("[dbg] oxiz out: {out:?}");
+    }
     // The script has exactly one `(check-sat)`. Trust ONLY an `unsat` (goal valid);
     // `sat` / `unknown` ⇒ no delegation (the module-doc soundness posture).
     out.iter().any(|l| matches!(l.trim(), "unsat" | "definite-unsat"))
