@@ -89,7 +89,14 @@ pub fn lower(env: &Env, goals: &[Term]) -> Result<Lowered, LowerError> {
                 t.type_of()
             )));
         }
-        out.push(t);
+        // One whole-formula literal fold per goal (see [`fold_bool_lits`]):
+        // a `true`/`false` `Const` leaf must never reach the engine in a
+        // connective position — its CNF reads it as a FREE atom. The ∀Bool
+        // case split injects literals ARBITRARILY deep (and its folded-to-⊤
+        // result can itself sit under an outer `not`/`and` — the third
+        // differential round caught exactly that), so the guarantee has to
+        // be top-level, not per-construction-site.
+        out.push(fold_bool_lits(&t));
     }
     // Nat/WNat refinement-collapse: append the positivity of every free
     // Nat/WNat constant lowered above (a true fact — asserting it is sound and
@@ -421,6 +428,32 @@ impl Lowerer<'_> {
                 // handing it `(= 4 3)` is a false-`sat`. See [`as_int_lit`].
                 match (as_int_lit(&a), as_int_lit(&b)) {
                     (Some(x), Some(y)) => bool_lit(x == y),
+                    // Bool-literal fold — the SAME false-`sat` shape as the
+                    // integer fold above, over `true`/`false`: the bare
+                    // engine's UF has no built-in `true ≠ false`, so an
+                    // opaque Bool-sorted `(= true r)` atom (which the ∀Bool
+                    // case split mints: substituting ⊤/⊥ into an `=`-atom
+                    // leaves the other side symbolic) merges freely — the
+                    // 3-way z3 differential caught `∀h:Bool. h = r` going
+                    // `sat`. Fold it away: `(= ⊤ φ) ⟿ φ`, `(= ⊥ φ) ⟿ ¬φ`,
+                    // literal-vs-literal decided outright.
+                    _ if a.is_true_const() || a.is_false_const()
+                        || b.is_true_const() || b.is_false_const() =>
+                    {
+                        let (lit, other, other_lit) = if a.is_true_const() || a.is_false_const()
+                        {
+                            (a.is_true_const(), b.clone(), &b)
+                        } else {
+                            (b.is_true_const(), a.clone(), &a)
+                        };
+                        if other_lit.is_true_const() || other_lit.is_false_const() {
+                            bool_lit(lit == other_lit.is_true_const())
+                        } else if lit {
+                            other
+                        } else {
+                            CTerm::mk_not(other).map_err(meq)?
+                        }
+                    }
                     _ => CTerm::mk_eq(a, b).map_err(meq)?,
                 }
             }
@@ -749,19 +782,56 @@ impl Lowerer<'_> {
     }
 
     /// `Π(x:dom). cod` — a quantified **formula**. Four cases (DESIGN.md §5.1):
-    /// quantify-over-a-universe → abstain; a *proof* binder (`dom : Prop`) →
-    /// implication if unused else abstain (proof-as-data); a *data* binder with
-    /// `cod : Prop` → `mk_forall`; a function type / dependent codomain → abstain.
+    /// quantify-over-`Prop` → the classical finite case split (below);
+    /// quantify-over-a-type-universe → abstain; a *proof* binder (`dom : Prop`)
+    /// → implication if unused else abstain (proof-as-data); a *data* binder
+    /// with `cod : Prop` → `mk_forall`; a function type / dependent codomain →
+    /// abstain.
     fn lower_pi(&self, dom: &Term, cod: &Term, frames: &mut Vec<Frame>) -> Result<CTerm, LowerError> {
+        if matches!(dom.kind(), TermKind::Sort(Univ::Prop)) {
+            // The binder ranges over PROPOSITIONS. The face's `Bool`↦`Prop`
+            // collapse makes a surface `forall b: Bool. φ` (the verus Poly
+            // prelude quantifies over Bool) and genuine second-order
+            // `∀(P:Prop). φ` the SAME kernel term `Pi(Sort(Prop), ·)` — and
+            // the TARGET is classical two-valued HOL, where both read as the
+            // finite case split
+            //
+            //     ∀(b:Prop). φ  ⟺  φ[⊤] ∧ φ[⊥]
+            //
+            // — a logical EQUIVALENCE (classical two-valuedness /
+            // propositional extensionality), hence polarity-safe in
+            // hypothesis and goal position alike, and it ELIMINATES the
+            // quantifier (a single-Bool-binder axiom grounds outright). This
+            // closes the former §5.1 P1 deliberate abstain; the `exists` arm
+            // already committed to the classical reading (a `Prop` binder
+            // lowers to a `Bool`-sorted target variable). The binder value is
+            // supplied per branch through the frame (the `lower_match` field
+            // idiom) — no kernel-side substitution.
+            let mut halves = Vec::with_capacity(2);
+            for val in [CTerm::true_const(), CTerm::false_const()] {
+                frames.push(Frame { ir_sort: dom.clone(), value: val });
+                let half = self.lower_term(cod, frames);
+                frames.pop();
+                halves.push(half?);
+            }
+            let bot = halves.pop().expect("two halves");
+            let top = halves.pop().expect("two halves");
+            // Constant-fold the injected literals THROUGH the halves'
+            // connectives (the whole-formula fold in [`lower`] repeats this
+            // as the total guarantee — folding here keeps the intermediate
+            // term small and the split's own result canonical): the bare
+            // engine's CNF treats a `true`/`false` `Const` leaf in a
+            // connective position as an ordinary (free!) propositional atom
+            // — the 3-way z3 differential caught `∀h:Bool. h ⇒ p` going
+            // `sat` (assign the "true" ATOM false and `(=> true p)` is
+            // vacuously satisfied).
+            return Ok(fold_bool_lits(
+                &CTerm::mk_and(top, bot).map_err(meq)?,
+            ));
+        }
         if matches!(dom.kind(), TermKind::Sort(_)) {
-            // The binder ranges over a *universe*. `Sort(Type n)` is genuine
-            // second-order quantification over types (no first-order image).
-            // `Sort(Prop)` is ALSO abstained here, conservatively: the face's
-            // `Bool`↦`Prop` collapse makes `∀(h:Bool). φ` and second-order
-            // `∀(P:Prop). φ` the SAME kernel term `Pi(Sort(Prop), ·)`, so we
-            // cannot tell a (lowerable) Bool quantifier from (unsound) prop
-            // quantification — abstaining on both is sound (a deliberate
-            // completeness gap; DESIGN.md §5.1 P1).
+            // The binder ranges over a *type universe*: genuine second-order
+            // quantification over types (no first-order image) — abstain.
             return Err(unl("quantification over a sort / universe (second-order)"));
         }
         let ctx = Self::ctx(frames);
@@ -1016,6 +1086,89 @@ fn as_int_lit(t: &CTerm) -> Option<i128> {
         return None;
     }
     c.name.parse::<i128>().ok()
+}
+
+/// `Some(v)` iff `t` is the Bool literal `true`/`false`.
+fn as_bool_lit(t: &CTerm) -> Option<bool> {
+    if t.is_true_const() {
+        Some(true)
+    } else if t.is_false_const() {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Recursively constant-fold `true`/`false` literals through the lowered
+/// propositional structure. Used on the `∀Bool` case-split halves, whose
+/// substituted branch literal would otherwise survive INSIDE connectives —
+/// and the bare engine's CNF reads a `true`/`false` `Const` leaf in a
+/// connective position as an ordinary FREE atom (assigning "true" ↦ false
+/// satisfies `(=> true p)` vacuously → the differential-caught false-`sat`).
+/// Every rule is a propositional identity; a node with no literal operand is
+/// rebuilt unchanged (hash-consing keeps that cheap).
+fn fold_bool_lits(t: &CTerm) -> CTerm {
+    // fold children first (post-order), then the node itself.
+    let node = match t.kind() {
+        CTermInner::App(f, x) => {
+            let (ff, xx) = (fold_bool_lits(f), fold_bool_lits(x));
+            CTerm::app(ff, xx).unwrap_or_else(|_| t.clone())
+        }
+        CTermInner::Lam(v, b) => CTerm::lam((**v).clone(), fold_bool_lits(b)),
+        _ => t.clone(),
+    };
+    if let CTermInner::App(f, rhs) = node.kind() {
+        // unary `not`.
+        if let CTermInner::Const(c) = f.kind() {
+            if c.name == "not" {
+                if let Some(v) = as_bool_lit(rhs) {
+                    return bool_lit(!v);
+                }
+                return node;
+            }
+        }
+        // binary connectives `App(App(Const(op), lhs), rhs)`.
+        if let CTermInner::App(g, lhs) = f.kind() {
+            if let CTermInner::Const(c) = g.kind() {
+                let folded = match c.name.as_str() {
+                    "and" => match (as_bool_lit(lhs), as_bool_lit(rhs)) {
+                        (Some(true), _) => Some(rhs.clone()),
+                        (_, Some(true)) => Some(lhs.clone()),
+                        (Some(false), _) | (_, Some(false)) => Some(bool_lit(false)),
+                        _ => None,
+                    },
+                    "or" => match (as_bool_lit(lhs), as_bool_lit(rhs)) {
+                        (Some(false), _) => Some(rhs.clone()),
+                        (_, Some(false)) => Some(lhs.clone()),
+                        (Some(true), _) | (_, Some(true)) => Some(bool_lit(true)),
+                        _ => None,
+                    },
+                    "=>" => match (as_bool_lit(lhs), as_bool_lit(rhs)) {
+                        (Some(true), _) => Some(rhs.clone()),
+                        (Some(false), _) | (_, Some(true)) => Some(bool_lit(true)),
+                        (_, Some(false)) => CTerm::mk_not(lhs.clone()).ok(),
+                        _ => None,
+                    },
+                    // Bool-sorted `=` is iff: the same fold as the `"="`
+                    // construction arm, re-applied because an INNER fold can
+                    // newly expose a literal side ((= (or ⊤ p) q) ⟿ (= ⊤ q)).
+                    "=" => match (as_bool_lit(lhs), as_bool_lit(rhs)) {
+                        (Some(x), Some(y)) => Some(bool_lit(x == y)),
+                        (Some(true), _) => Some(rhs.clone()),
+                        (_, Some(true)) => Some(lhs.clone()),
+                        (Some(false), _) => CTerm::mk_not(rhs.clone()).ok(),
+                        (_, Some(false)) => CTerm::mk_not(lhs.clone()).ok(),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(ft) = folded {
+                    return ft;
+                }
+            }
+        }
+    }
+    node
 }
 
 /// Fold a binary integer-arithmetic operator over two literal operands: the

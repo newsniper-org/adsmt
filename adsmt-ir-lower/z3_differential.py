@@ -97,9 +97,27 @@ def formula(rng, d):
         return f"(=> {formula(rng, d-1)} {formula(rng, d-1)})"
     if k < 0.9:
         return f"(ite {formula(rng, d-1)} {formula(rng, d-1)} {formula(rng, d-1)})"
-    # a quantified atom over S (the anti-trigger-hell win path)
-    return f"(forall ((x S)) (= (f x) (f x)))" if rng.random() < 0.5 else \
-           f"(forall ((x S)) {rng.choice(BOOLV)})"
+    # a quantified atom: over S (the anti-trigger-hell win path), or over
+    # Bool (#395 — the lowering's classical case split `φ[⊤] ∧ φ[⊥]`; the
+    # bodies mix the binder with free Bool consts so the split is
+    # semantics-bearing: e.g. `∀h. h∨q ⟺ q`, `∀h. h=q ⟺ ⊥`).
+    k = rng.random()
+    if k < 0.3:
+        return f"(forall ((x S)) (= (f x) (f x)))"
+    if k < 0.5:
+        return f"(forall ((x S)) {rng.choice(BOOLV)})"
+    body = rng.choice([
+        "(or h (not h))",
+        f"(or h {rng.choice(BOOLV)})",
+        f"(=> h {rng.choice(BOOLV)})",
+        f"(= h {rng.choice(BOOLV)})",
+        f"(and (or h {rng.choice(BOOLV)}) (or (not h) {rng.choice(BOOLV)}))",
+        # leaves a SYMBOLIC-symbolic Bool-`=` after the split (the literal
+        # side sits under a connective, so the fold does not fire) — the
+        # verus prelude's `(= (= x y) (ext_eq …))` shape.
+        f"(= (or h {rng.choice(BOOLV)}) {rng.choice(BOOLV)})",
+    ])
+    return f"(forall ((h Bool)) {body})"
 
 
 def gen(rng):

@@ -263,8 +263,11 @@ fn match_lowers_to_tester_selector_encoding() {
     let lowered = lower(&env, &[bool_match()]).expect("lowers");
     assert_eq!(lowered.goals.len(), 1);
     let s = format!("{}", lowered.goals[0]);
-    assert!(s.starts_with("and"), "conjunction of per-constructor clauses: {s}");
-    assert!(s.contains("x = zero"), "zero tester (nullary ctor): {s}");
+    // The zero clause `(=> (= x zero) true)` is a tautology, so the
+    // whole-formula literal fold (#395) erases it — the lowered goal is
+    // exactly the surviving succ clause (semantically identical, and the
+    // engine no longer sees the literal `true` as a free atom).
+    assert!(!s.contains("true"), "the tautological zero clause folds away: {s}");
     assert!(s.contains("x = succ (succ!sel0 x)"), "succ tester via equality + selector: {s}");
     assert!(s.contains("succ!sel0 x = zero"), "succ branch reads the field via the selector: {s}");
 }

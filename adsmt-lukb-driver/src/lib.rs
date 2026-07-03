@@ -238,6 +238,20 @@ mod tests {
     // verdict gate — selector congruence).
 
     #[test]
+    fn bool_forall_case_splits_to_a_native_verdict() {
+        // #395: a `forall b: Bool` hypothesis lowers as the classical case
+        // split `φ[⊤] ∧ φ[⊥]` (the former conservative whole-query abstain),
+        // so the axiom GROUNDS and the obligation reaches a real verdict:
+        // (∀b:Bool. f(b) = 1) ⟹ f(true) = 1 — VALID.
+        let v = solve(
+            "fn f(x0: Bool): Int\naxiom: forall b: Bool. f(b) = 1\n\
+             goal g: f(true) = 1\n",
+        );
+        assert_eq!(v.smt, Some(Confidence::DefiniteUnsat), "got {v:?}");
+        assert_eq!(v.collapse(), TriState::Unsat);
+    }
+
+    #[test]
     fn surface_match_reaches_a_native_verdict() {
         // x = succ(zero) ⟹ (match x { zero => true, succ(n) => n = zero }) —
         // VALID: the succ-branch fires with n = pred(x) = zero.

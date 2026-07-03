@@ -211,25 +211,64 @@ fn quantified_term_ite_lifts_under_binder() {
 }
 
 /// **All-or-nothing**: one lowerable goal + one genuinely-unlowerable goal (a
-/// `Bool` quantifier — abstained conservatively) in the same query → the WHOLE
-/// query abstains (the lowerable goal is not asserted in isolation — dropping the
-/// other could flip the verdict).
+/// second-order `∀(T:Type₀)` — the faces cannot spell it since the `∀Bool`
+/// case split landed, so it is built directly on the kernel) in the same
+/// query → the WHOLE query abstains (the lowerable goal is not asserted in
+/// isolation — dropping the other could flip the verdict).
 #[test]
 fn one_unlowerable_goal_abstains_the_whole_query() {
-    let src = "(declare-sort S 0) (declare-const a S) \
-               (assert (= a a)) \
-               (assert (forall ((h Bool)) (or h (not h))))";
-    assert!(matches!(lower_abstains(src), LowerError::Unlowerable(_)));
+    use adsmt_ir::{Env, Term as K, postulate};
+    let mut env = Env::new();
+    postulate(&mut env, "true", K::prop()).expect("prelude true");
+    let fine = K::cnst("true");
+    let second_order = K::pi(K::type_(0), K::cnst("true")); // ∀(T:Type₀). ⊤
+    match lower(&env, &[fine, second_order]) {
+        Err(LowerError::Unlowerable(_)) => {}
+        other => panic!("expected the whole-query abstain, got {other:?}"),
+    }
 }
 
-/// **Conservative completeness gap (P1)**: a quantifier over `Bool` is
-/// abstained — the face's `Bool`↦`Prop` collapse makes it indistinguishable
-/// from second-order `∀(P:Prop)`, so we refuse rather than risk the unsound
-/// reading. Sound (whole-query `Unknown`), not a wrong verdict.
+/// The differential-caught false-`sat` (#395): `∀h:Bool. h = r` case-splits
+/// into `(= ⊤ r) ∧ (= ⊥ r)`, whose Bool-literal `=`-atoms the bare engine's
+/// UF treats opaquely (it has no built-in `true ≠ false` — the SAME shape as
+/// the integer-literal fold) — the lowering now FOLDS them (`(= ⊤ φ) ⟿ φ`,
+/// `(= ⊥ φ) ⟿ ¬φ`), so the query grounds to the propositional `r ∧ ¬r`.
 #[test]
-fn bool_quantifier_abstains_conservatively() {
+fn bool_case_split_folds_literal_equalities() {
+    let src = "(declare-const r Bool) (assert (forall ((h Bool)) (= h r)))";
+    let g = &lower_ok(src)[0];
+    let r = CTerm::var("r", CType::bool_());
+    let expect = CTerm::mk_and(r.clone(), CTerm::mk_not(r).unwrap()).unwrap();
+    assert!(g.alpha_eq(&expect), "got {g}, want {expect}");
+}
+
+/// **The former P1 gap, now CLOSED (#395)**: a quantifier over `Bool` (kernel
+/// `Pi(Sort(Prop), ·)` — the face's `Bool`↦`Prop` collapse) lowers as the
+/// classical finite case split `φ[⊤] ∧ φ[⊥]` — a logical equivalence in the
+/// two-valued target, polarity-safe in hypothesis and goal position alike —
+/// instead of the old conservative whole-query abstain. The split ELIMINATES
+/// the quantifier AND constant-folds the injected literals through the
+/// halves (the engine's CNF reads a literal in a connective position as a
+/// FREE atom), so the excluded-middle tautology grounds all the way to `⊤`.
+#[test]
+fn bool_quantifier_case_splits_classically() {
     let src = "(assert (forall ((h Bool)) (or h (not h))))";
-    assert!(matches!(lower_abstains(src), LowerError::Unlowerable(_)));
+    let g = &lower_ok(src)[0];
+    assert!(g.is_true_const(), "⊤∨¬⊤ ∧ ⊥∨¬⊥ folds to ⊤, got {g}");
+}
+
+/// The second differential-caught false-`sat` shape (#395): `∀h:Bool. h ⇒ p`
+/// — the face spells `=>` as a nested proof-binder `Π`, so the implication is
+/// built OUTSIDE the connective arms; only the recursive post-fold sees it.
+/// `(⊤⇒p) ∧ (⊥⇒p)` must ground to `p` (a literal surviving inside `=>` is
+/// read by the engine as a free atom — assigning it false satisfies the
+/// implication vacuously).
+#[test]
+fn bool_case_split_folds_implications() {
+    let src = "(declare-const p Bool) (assert (forall ((h Bool)) (=> h p)))";
+    let g = &lower_ok(src)[0];
+    let expect = CTerm::var("p", CType::bool_());
+    assert!(g.alpha_eq(&expect), "got {g}, want {expect}");
 }
 
 /// **Arithmetic fidelity (Int)**: `(< (+ x y) 10)` lowers to the engine's
