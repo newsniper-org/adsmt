@@ -26,10 +26,12 @@
 //! constants as `cast` method bodies (retiring the executor's own rank table)
 //! is deferred until a consumer needs the method, not just the license.
 
-use adsmt_core::{Kind, Type, TyVar};
+use adsmt_core::{Kind, Term, Type, TyVar};
 use std::sync::Arc;
 
 use crate::instance::{Instance, Premise};
+use crate::law::{Dict, Law, LawError};
+use crate::numberlike::{apply2, close_forall};
 use crate::relation::Relation;
 use crate::resolve::InstanceDb;
 
@@ -68,9 +70,19 @@ pub fn partial_eq() -> Relation {
 }
 
 /// `Eq(T) : PartialEq(T, T)` — a conjunction marker; instances carry the
-/// diagonal `PartialEq` premise and no own methods.
+/// diagonal `PartialEq` premise and no own methods. Its LAWS are the
+/// equivalence-relation + (classical) decidability obligations on the
+/// inherited `eq` (resolved through the diagonal `PartialEq` premise, the
+/// `Ord`/totality idiom) — a LAWFULLY admitted `Eq` instance (F3: the
+/// per-`data` datatype derivation) has them discharged by the engine at the
+/// concrete carrier; the builtin numeric/sort grants stay structural.
 pub fn eq() -> Relation {
-    Relation::new(EQ).with_param(tyvar("T"))
+    Relation::new(EQ)
+        .with_param(tyvar("T"))
+        .with_law(Law::new("reflexivity", law_eq_reflexivity))
+        .with_law(Law::new("symmetry", law_eq_symmetry))
+        .with_law(Law::new("transitivity", law_eq_transitivity))
+        .with_law(Law::new("decidability", law_eq_decidability))
 }
 
 /// `UpCast(A, B)` — the failure-free supertype cast, `cast : A -> B`.
@@ -84,10 +96,14 @@ pub fn up_cast() -> Relation {
         .with_method(M_CAST, fun2(at, bt))
 }
 
-/// The diagonal `PartialEq(T, T)` instance for a named sort.
+/// The diagonal `PartialEq(T, T)` instance for a named sort. Carries the
+/// `eq` method body — the kernel equality `=` at the carrier — so a LAWFUL
+/// `Eq(T)` admission (whose laws reach `eq` through this premise) has a
+/// concrete method to state its obligations over.
 pub fn partial_eq_diag_instance(sort: &str) -> Instance {
     let c = carrier_ty(sort);
-    Instance::new(PARTIAL_EQ, vec![c.clone(), c])
+    let eq_body = Term::const_("=", fun2(c.clone(), fun2(c.clone(), Type::bool_())));
+    Instance::new(PARTIAL_EQ, vec![c.clone(), c]).with_method(M_EQ, eq_body)
 }
 
 /// The `Eq(T)` instance for a named sort (premises the diagonal `PartialEq`).
@@ -101,6 +117,62 @@ pub fn eq_instance(sort: &str) -> Instance {
 /// the elaborator's injection constants execute the cast (module doc above).
 pub fn up_cast_instance(from: &str, to: &str) -> Instance {
     Instance::new(UP_CAST, vec![carrier_ty(from), carrier_ty(to)])
+}
+
+// ── Eq laws (goal-members) ──────────────────────────────────────────────
+//
+// Stated over the inherited `eq` (the premise-aware `Dict` resolves it
+// through the instance's diagonal `PartialEq` premise — the `Ord`/totality
+// idiom). For the F3 datatype derivation `eq` is the kernel equality `=` at
+// the carrier, so all four discharge in the engine as tiny EUF /
+// propositional refutations; a carrier whose `eq` is NOT an equivalence (or
+// not classically two-valued) is build-rejected.
+
+fn law_eq_reflexivity(d: &dyn Dict) -> Result<Term, LawError> {
+    let c = d.carrier0()?;
+    let eq = d.require(M_EQ)?;
+    let a = Term::var("a", c.clone());
+    let body = apply2(&eq, a.clone(), a)?; // eq a a
+    close_forall(&c, &["a"], body)
+}
+
+fn law_eq_symmetry(d: &dyn Dict) -> Result<Term, LawError> {
+    let c = d.carrier0()?;
+    let eq = d.require(M_EQ)?;
+    let a = Term::var("a", c.clone());
+    let b = Term::var("b", c.clone());
+    let ab = apply2(&eq, a.clone(), b.clone())?;
+    let ba = apply2(&eq, b, a)?;
+    // eq a b ⟹ eq b a
+    close_forall(&c, &["a", "b"], Term::mk_imp(ab, ba)?)
+}
+
+fn law_eq_transitivity(d: &dyn Dict) -> Result<Term, LawError> {
+    let c = d.carrier0()?;
+    let eq = d.require(M_EQ)?;
+    let a = Term::var("a", c.clone());
+    let b = Term::var("b", c.clone());
+    let cc = Term::var("c", c.clone());
+    let ab = apply2(&eq, a.clone(), b.clone())?;
+    let bc = apply2(&eq, b, cc.clone())?;
+    let ac = apply2(&eq, a, cc)?;
+    // (eq a b ∧ eq b c) ⟹ eq a c
+    let imp = Term::mk_imp(Term::mk_and(ab, bc)?, ac)?;
+    close_forall(&c, &["a", "b", "c"], imp)
+}
+
+fn law_eq_decidability(d: &dyn Dict) -> Result<Term, LawError> {
+    let c = d.carrier0()?;
+    let eq = d.require(M_EQ)?;
+    let a = Term::var("a", c.clone());
+    let b = Term::var("b", c.clone());
+    let ab = apply2(&eq, a, b)?;
+    // eq a b ∨ ¬eq a b — the classical two-valuedness the spec names
+    // ("distinctness + injectivity make eq decidable"): the datatype theory
+    // decides which disjunct holds on ctor-shaped terms; the law pins that
+    // `eq` admits no third value at the carrier.
+    let disj = Term::mk_or(ab.clone(), Term::mk_not(ab)?)?;
+    close_forall(&c, &["a", "b"], disj)
 }
 
 /// Declare the three relations.
@@ -194,6 +266,37 @@ mod tests {
         // …and an explicit mirror is a duplicate.
         let e = db.declare_instance(Instance::new(PARTIAL_EQ, vec![b, a]));
         assert_eq!(e, Err(ClassError::CoherenceViolation));
+    }
+
+    /// A lawful `Eq` admission builds all four obligations (through the
+    /// diagonal `PartialEq` premise's `eq` method) and gates on the prover:
+    /// an all-accepting prover admits, an all-rejecting prover build-rejects
+    /// with `LawUnproven` naming the first law.
+    #[test]
+    fn lawful_eq_gates_on_the_prover() {
+        use crate::law::LawProver;
+        struct Always;
+        impl LawProver for Always {
+            fn prove_valid(&self, _goal: &Term) -> bool {
+                true
+            }
+        }
+        struct Never;
+        impl LawProver for Never {
+            fn prove_valid(&self, _goal: &Term) -> bool {
+                false
+            }
+        }
+        let mut db = db();
+        db.declare_instance(partial_eq_diag_instance("Color")).expect("diag PartialEq");
+        let e = db.declare_instance_lawful(eq_instance("Color"), &Never);
+        assert!(
+            matches!(e, Err(ClassError::LawUnproven { ref law, .. }) if law == "reflexivity"),
+            "rejecting prover build-rejects: {e:?}"
+        );
+        db.declare_instance_lawful(eq_instance("Color"), &Always).expect("lawful Eq admits");
+        let r = Resolver::new(&db).resolve(&ClassGoal::new(EQ, vec![carrier_ty("Color")]));
+        assert!(matches!(r, ResolutionResult::Found(_)), "Eq(Color) resolves after admission");
     }
 
     /// The numeric install: `Eq(Int)` resolves with its diagonal premise, and a

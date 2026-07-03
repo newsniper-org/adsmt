@@ -69,7 +69,7 @@ pub mod parser;
 pub mod printer;
 pub mod verdict;
 
-pub use elab::{Elaborated, elaborate};
+pub use elab::{Elaborated, elaborate, elaborate_with_prover};
 pub use error::FaceError;
 pub use parser::parse;
 pub use printer::print_module;

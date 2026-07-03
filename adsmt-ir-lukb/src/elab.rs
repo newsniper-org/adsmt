@@ -5,11 +5,11 @@
 //! trusted ill-typed term — the same firewall as the SMT-LIB / ASP faces.
 
 use adsmt_class::resolve::{ClassGoal, ResolutionResult, Resolver};
-use adsmt_class::{Instance, InstanceDb, Premise};
+use adsmt_class::{Instance, InstanceDb, LawProver, Premise};
 use adsmt_ir::theory;
 use adsmt_ir::{
-    Ctx, Env, Term as K, Univ, as_const_app, declare_inductive, define, infer, is_def_eq,
-    peel_pis, postulate, shift, subst_top, whnf,
+    Ctx, Env, Modality, Term as K, Univ, as_const_app, declare_inductive, define, infer,
+    is_def_eq, peel_pis, postulate, shift, subst_top, whnf,
 };
 
 use crate::ast::{Arm, BinOp, Binder, Item, Module, PatArg, Pattern, Term as S, Type};
@@ -28,17 +28,35 @@ pub struct Elaborated {
     pub goals: Vec<K>,
 }
 
-/// Parse + elaborate lu-kb-successor source.
+/// Parse + elaborate lu-kb-successor source. The pure-face entry: no law
+/// prover is available, so each `data` declaration's `Eq` instance is the
+/// STRUCTURAL grant (see [`elaborate_with_prover`] for the lawful form).
 pub fn elaborate(src: &str) -> Result<Elaborated, FaceError> {
+    elaborate_impl(src, None)
+}
+
+/// [`elaborate`] with an injected [`LawProver`] (F3,
+/// docs/design/EQ_ORD_UPCAST_RELATIONS.md): each `data` declaration's
+/// `Eq(T)` instance is admitted LAWFULLY — the prover must discharge the
+/// `Eq` relation's equivalence + decidability laws at the carrier, and a
+/// failed discharge BUILD-REJECTS the declaration (a [`FaceError`], never a
+/// silent structural fallback). The live driver passes the engine-backed
+/// prover; the face itself stays engine-free (the prover is a parameter, the
+/// `adsmt-class` layering rule).
+pub fn elaborate_with_prover(src: &str, prover: &dyn LawProver) -> Result<Elaborated, FaceError> {
+    elaborate_impl(src, Some(prover))
+}
+
+fn elaborate_impl(src: &str, prover: Option<&dyn LawProver>) -> Result<Elaborated, FaceError> {
     let module: Module = parse(src)?;
-    let mut e = Elab::new()?;
+    let mut e = Elab::new(prover)?;
     for item in &module.items {
         e.item(item)?;
     }
     Ok(Elaborated { env: e.env, hypotheses: e.hyps, goals: e.goals })
 }
 
-struct Elab {
+struct Elab<'p> {
     env: Env,
     hyps: Vec<K>,
     goals: Vec<K>,
@@ -54,10 +72,14 @@ struct Elab {
     /// premise the `UpCast` that performs the injection), and comparisons
     /// resolve `PartialOrd`.
     classes: InstanceDb,
+    /// The injected law prover (F3): present → each `data` declaration's
+    /// `Eq(T)` instance is admitted LAWFULLY (laws discharged at the concrete
+    /// carrier, failure = build-reject); absent → the structural grant.
+    prover: Option<&'p dyn LawProver>,
 }
 
-impl Elab {
-    fn new() -> Result<Self, FaceError> {
+impl<'p> Elab<'p> {
+    fn new(prover: Option<&'p dyn LawProver>) -> Result<Self, FaceError> {
         let mut env = Env::new();
         // the logical prelude (Bool = Prop; connectives; polymorphic Eq /
         // Exists / ite), all `open` — mirrors the SMT-LIB face.
@@ -136,8 +158,15 @@ impl Elab {
                 )
                 .map_err(|e| unsupported(format!("class registry: {e}")))?;
         }
-        let mut elab =
-            Elab { env, hyps: Vec::new(), goals: Vec::new(), solve_n: 0, fresh_n: 0, classes };
+        let mut elab = Elab {
+            env,
+            hyps: Vec::new(),
+            goals: Vec::new(),
+            solve_n: 0,
+            fresh_n: 0,
+            classes,
+            prover,
+        };
         elab.grant_eq("Bool"); // surface Bool = kernel Prop: equality (iff), no order
         Ok(elab)
     }
@@ -151,6 +180,31 @@ impl Elab {
     fn grant_eq(&mut self, sort: &str) {
         let _ = self.classes.declare_instance(adsmt_class::partial_eq_diag_instance(sort));
         let _ = self.classes.declare_instance(adsmt_class::eq_instance(sort));
+    }
+
+    /// The `data`-declaration `Eq` grant (F3): with an injected prover the
+    /// `Eq(T)` instance is admitted LAWFULLY — the prover discharges the
+    /// equivalence + decidability laws of `=` at the carrier (the diagonal
+    /// `PartialEq` premise carries the `=` method body they are stated over),
+    /// and a failed discharge BUILD-REJECTS the datatype's equality (a
+    /// [`FaceError`], never a silent structural fallback). Without a prover
+    /// (the pure face) this is the structural [`Self::grant_eq`].
+    fn grant_eq_data(&mut self, sort: &str) -> Result<(), FaceError> {
+        match self.prover {
+            None => {
+                self.grant_eq(sort);
+                Ok(())
+            }
+            Some(p) => {
+                let _ =
+                    self.classes.declare_instance(adsmt_class::partial_eq_diag_instance(sort));
+                self.classes
+                    .declare_instance_lawful(adsmt_class::eq_instance(sort), p)
+                    .map_err(|e| {
+                        unsupported(format!("lawful `Eq({sort})` derivation rejected: {e}"))
+                    })
+            }
+        }
     }
 
     /// The class-registry carrier name of a kernel SORT term: `Prop` ↦ `Bool`,
@@ -283,10 +337,10 @@ impl Elab {
                     kctors.push((cname.clone(), ftypes));
                 }
                 declare_inductive(&mut self.env, name, Vec::new(), Univ::Type(0), kctors)?;
-                // the structural Eq grant (F2); the LAWFUL derivation — laws
-                // discharged by the datatype theory — is F3, where the
-                // is-{ctor} testers ride it.
-                self.grant_eq(name);
+                // the datatype's Eq grant (F3): LAWFUL when a prover is
+                // injected (see `grant_eq_data`), structural in the pure
+                // face — the `is-{ctor}` testers ride this instance.
+                self.grant_eq_data(name)?;
             }
             Item::Axiom(_, t) | Item::Assume(_, t) => {
                 let kt = self.elab_prop(t)?;
@@ -859,6 +913,16 @@ impl Elab {
             "to_real" => theory::INT2REAL,
             _ => {
                 if self.env.lookup(name).is_none() && !ctx.iter().any(|(n, _)| n == name) {
+                    // F3: the `is-{ctor}` recognizer (verus emits tester
+                    // calls for datatype constructors). Only a constructor of
+                    // a DECLARED datatype desugars — anything else keeps the
+                    // unknown-symbol error, and a DECLARED `is-…` symbol
+                    // never reaches here (the env lookup above wins).
+                    if let Some(ctor) = name.strip_prefix("is-") {
+                        if let Some(k) = self.elab_tester(ctx, ctor, &kargs)? {
+                            return Ok(k);
+                        }
+                    }
                     return Err(unsupported(format!("unknown function symbol `{name}`")));
                 }
                 // a declared function / bound functional — resolve as a Var head.
@@ -867,6 +931,99 @@ impl Elab {
             }
         };
         Ok(K::apps(K::cnst(head), kargs))
+    }
+
+    /// The `is-{ctor}` recognizer (F3, docs/design/EQ_ORD_UPCAST_RELATIONS.md
+    /// §"How this solves #391"). `Some(term)` when `ctor` names a constructor
+    /// of a declared non-parametric datatype `D`:
+    ///
+    /// * nullary `C` ⟶ the bare equality `x = C` (a single licensed atom);
+    /// * field-bearing `C` ⟶ the kernel `Match`
+    ///   `match x { C(..) => true, _ => false }` — the kernel has NO selector
+    ///   constants (the #325 lowering synthesizes positional `{C}!sel{i}`
+    ///   names), so the kernel-native tester is the definitional case split;
+    ///   its lowering image is exactly the selector-applied shape-equality
+    ///   form the engine's datatype theory decides (the SMT-LIB face's
+    ///   `9881b21` biconditional, encoded per-constructor).
+    ///
+    /// Both forms are LICENSED by the datatype's `Eq` instance (the F3 lawful
+    /// derivation) — the family's design point: the tester rides `Eq(T)`.
+    /// `None` when `ctor` is not a declared constructor (the caller keeps its
+    /// unknown-symbol error); a recognized constructor with the wrong arity
+    /// or a wrongly-sorted argument is a hard error naming the tester.
+    fn elab_tester(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        ctor: &str,
+        kargs: &[K],
+    ) -> Result<Option<K>, FaceError> {
+        // `ctor` must be a declared constructor; its result sort names the
+        // datatype (a non-parametric ctor type is `field₀ → … → D`).
+        let ctor_ty = match self.env.lookup(ctor) {
+            Some(d) if matches!(d.modality, Modality::Constructor) => d.ty.clone(),
+            _ => return Ok(None),
+        };
+        let mut rty = ctor_ty;
+        while let adsmt_ir::TermKind::Pi(_, b) = rty.kind() {
+            rty = b.clone();
+        }
+        let Some((dt, targs)) = as_const_app(&rty) else { return Ok(None) };
+        if !targs.is_empty() {
+            return Err(unsupported(format!(
+                "tester `is-{ctor}` over parametric/indexed datatype `{dt}` (a later slice)"
+            )));
+        }
+        // constructor readback (the `elab_match` idiom): names + field sorts,
+        // in declaration order.
+        let ctors: Vec<(String, Vec<K>)> = {
+            let Some(ind) = self.env.inductive(&dt) else { return Ok(None) };
+            if !ind.params.is_empty() || !ind.indices.is_empty() {
+                return Err(unsupported(format!(
+                    "tester `is-{ctor}` over parametric/indexed datatype `{dt}` (a later slice)"
+                )));
+            }
+            ind.ctors
+                .iter()
+                .map(|c| {
+                    let doms =
+                        peel_pis(&c.ty, c.args_count).map(|(d, _)| d).unwrap_or_default();
+                    (c.name.clone(), doms)
+                })
+                .collect()
+        };
+        if kargs.len() != 1 {
+            return Err(unsupported(format!(
+                "tester `is-{ctor}` is unary, got {} argument(s)",
+                kargs.len()
+            )));
+        }
+        let arg = kargs[0].clone();
+        let asort = infer(&self.env, &kernel_ctx(ctx), &arg)?;
+        if !is_def_eq(&self.env, &asort, &K::cnst(dt.clone())) {
+            return Err(unsupported(format!(
+                "tester `is-{ctor}` expects a `{dt}`, got sort `{asort}`"
+            )));
+        }
+        // the Eq(T) license — the tester elaborates THROUGH the datatype's Eq.
+        self.require_eq(&K::cnst(dt.clone()))?;
+        let field_bearing =
+            ctors.iter().any(|(cn, doms)| cn == ctor && !doms.is_empty());
+        if !field_bearing {
+            return Ok(Some(K::apps(K::cnst("="), [K::cnst(dt), arg, K::cnst(ctor)])));
+        }
+        let motive = K::lam(K::cnst(dt.clone()), K::prop());
+        let minors = ctors
+            .iter()
+            .map(|(cname, doms)| {
+                let mut acc =
+                    if cname == ctor { K::cnst("true") } else { K::cnst("false") };
+                for d in doms.iter().rev() {
+                    acc = K::lam(d.clone(), acc);
+                }
+                acc
+            })
+            .collect();
+        Ok(Some(K::mtch(dt, motive, minors, arg)))
     }
 
     fn elab_bin(

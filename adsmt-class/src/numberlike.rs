@@ -336,18 +336,18 @@ fn law_totality(d: &dyn Dict) -> Result<Term, LawError> {
 
 /// `f x`, β-reducing the redex when `f` is a λ (so an injection-defined `le`
 /// collapses), and leaving the application as-is when `f`'s head is a constant.
-fn app_beta(f: Term, x: Term) -> Result<Term, LawError> {
+pub(crate) fn app_beta(f: Term, x: Term) -> Result<Term, LawError> {
     let applied = Term::app(f, x)?;
     Ok(applied.beta_reduce().unwrap_or(applied))
 }
 
 /// `f x y`, β-reduced.
-fn apply2(f: &Term, x: Term, y: Term) -> Result<Term, LawError> {
+pub(crate) fn apply2(f: &Term, x: Term, y: Term) -> Result<Term, LawError> {
     app_beta(app_beta(f.clone(), x)?, y)
 }
 
 /// Universally close `body` over `names`, each a binder of carrier sort.
-fn close_forall(carrier: &Type, names: &[&str], body: Term) -> Result<Term, LawError> {
+pub(crate) fn close_forall(carrier: &Type, names: &[&str], body: Term) -> Result<Term, LawError> {
     let mut t = body;
     for name in names.iter().rev() {
         let v = Var { name: (*name).to_string(), ty: carrier.clone() };

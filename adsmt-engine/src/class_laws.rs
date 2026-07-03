@@ -287,6 +287,22 @@ mod tests {
     }
 
     #[test]
+    fn engine_lawfully_admits_a_datatype_eq_instance() {
+        // The F3 datatype derivation (docs/design/EQ_ORD_UPCAST_RELATIONS.md):
+        // a `data` declaration's `Eq(T)` instance is admitted LAWFULLY — the
+        // engine discharges reflexivity/symmetry/transitivity/decidability of
+        // the kernel `=` at the carrier (EUF + propositional refutations,
+        // carrier-generic, milliseconds). The `eq` method is resolved through
+        // the diagonal `PartialEq` premise, which carries the `=` body.
+        use adsmt_class::{declare_eq_ord_relations, eq_instance, partial_eq_diag_instance};
+        let mut db = InstanceDb::new();
+        declare_eq_ord_relations(&mut db);
+        db.declare_instance(partial_eq_diag_instance("Color")).expect("diag PartialEq(Color)");
+        db.declare_instance_lawful(eq_instance("Color"), &EngineLawProver)
+            .expect("engine proves Eq(Color)'s equivalence + decidability laws");
+    }
+
+    #[test]
     fn engine_rejects_a_false_order_law() {
         // A carrier whose `le` is a strict order is NOT reflexive, so the
         // obligation `∀a. lt a a` is invalid and must be rejected (build-reject).

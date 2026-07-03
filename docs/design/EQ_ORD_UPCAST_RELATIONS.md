@@ -152,5 +152,29 @@ injection, which sort), not just a typecheck-time annotation — the same lever
    corpus verdict-identical (lukb 89/0+5/0; driver 9/0 + z3-oracle
    differential 1/0).
 3. **F3 — datatype `Eq(T)` auto-derivation + `is-{ctor}` tester elaboration**
-   (closes #391; ob1-abs.lukb elaborates end-to-end).
+   (closes #391; ob1-abs.lukb elaborates end-to-end). **LANDED** —
+   * *Lawful derivation*: `eq()` gains the four laws (reflexivity/symmetry/
+     transitivity/decidability, stated over the inherited `eq` through the
+     diagonal `PartialEq` premise, which now carries the kernel-`=` method
+     body); `elaborate_with_prover(src, &dyn LawProver)` injects the prover
+     (the face stays engine-free); the DRIVER passes the engine-backed
+     `EngineLawProver`, so every live `data` declaration's `Eq` is admitted
+     lawfully (EUF/propositional refutations, ms) and a failed discharge
+     BUILD-REJECTS (no silent structural fallback). The pure-face
+     `elaborate` keeps the structural grant.
+   * *Testers*: `elab_call`'s unknown-symbol arm recognizes `is-{ctor}` for
+     constructors of declared non-parametric datatypes — nullary → the bare
+     licensed `x = C`; field-bearing → the kernel `Match`
+     `match x { C(..) => true, _ => false }` (the kernel has no selector
+     constants; the case split's #325 lowering image IS the selector-applied
+     shape-equality form). Both gate on `require_eq` — the tester rides
+     `Eq(T)`. Unknown ctor stays the unknown-symbol error; wrong arity /
+     wrong argument sort are hard errors naming the tester.
+   * *Gate*: ob1-abs.lukb ELABORATES end-to-end (the two `is-diff!Color./…`
+     testers were its only undeclared symbols). The obligation still reads
+     `unknown`: the NEXT chokepoint is the #325 lowering's conservative
+     abstain on `∀b: Bool` binders (`Pi(Sort(Prop),·)` — the Bool↦Prop
+     collapse, DESIGN.md §5.1 P1; 5 prelude axioms), a separate slice
+     (classically `∀b:Bool.φ ⟺ φ[⊤]∧φ[⊥]`, so a case-split lowering can
+     close it sound + complete).
 4. **F4 — docs/books + memory + verus-fork notice.**

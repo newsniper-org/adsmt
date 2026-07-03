@@ -21,8 +21,8 @@
 //! / face-error path yields the sound `Unknown`, never a fabricated verdict.
 
 use adsmt_core::Term;
-use adsmt_engine::{SatResult, Solver};
-use adsmt_ir_lukb::{Confidence, LuKbOutputMode, UnifiedVerdict, elaborate};
+use adsmt_engine::{EngineLawProver, SatResult, Solver};
+use adsmt_ir_lukb::{Confidence, LuKbOutputMode, UnifiedVerdict, elaborate_with_prover};
 use adsmt_ir_lower::lower;
 
 /// Solve a lu-kb-successor program `src`, returning its [`UnifiedVerdict`].
@@ -31,7 +31,10 @@ use adsmt_ir_lower::lower;
 /// not change the verdict, only how a caller prints it.
 #[must_use]
 pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
-    let elab = match elaborate(src) {
+    // The driver reaches the engine, so datatype `Eq` instances are admitted
+    // LAWFULLY (F3): `EngineLawProver` discharges the equivalence +
+    // decidability laws per `data` declaration (EUF, milliseconds).
+    let elab = match elaborate_with_prover(src, &EngineLawProver) {
         Ok(e) => e,
         // a parse/elaborate face error ⇒ the sound `Unknown` (never a verdict)
         Err(e) => {

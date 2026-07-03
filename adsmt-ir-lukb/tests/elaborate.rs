@@ -1178,3 +1178,99 @@ fn type_relation_gates_license_and_reject() {
         Ok(_) => panic!("datatype `<` without PartialOrd must not elaborate"),
     }
 }
+
+// ── F3: `is-{ctor}` testers + the lawful datatype Eq derivation ──────────────
+
+/// A nullary tester desugars to the bare licensed equality: the goal of
+/// `` `is-red`(c) `` is EXACTLY the goal of `c = red` (same kernel term —
+/// hash-consed `==`).
+#[test]
+fn tester_nullary_desugars_to_the_licensed_equality() {
+    let a = all_props("data C = red | blue\nconst c: C\ngoal g: `is-red`(c)\n", 0, 1);
+    let b = all_props("data C = red | blue\nconst c: C\ngoal g: c = red\n", 0, 1);
+    assert_eq!(a.goals[0], b.goals[0], "is-red(c) ≡ (c = red)");
+}
+
+/// A field-bearing tester desugars to the kernel `Match` case split — the
+/// goal of `` `is-succ`(n) `` is EXACTLY the goal of the surface
+/// `match n { zero => false, succ(k) => true }` (the kernel has no selector
+/// constants, so the definitional case split IS the kernel-native tester;
+/// the #325 lowering turns it into the selector-applied shape equalities).
+#[test]
+fn tester_field_bearing_desugars_to_the_match_case_split() {
+    let a = all_props(
+        "data Peano = zero | succ(pred: Peano)\nconst n: Peano\ngoal g: `is-succ`(n)\n",
+        0,
+        1,
+    );
+    let b = all_props(
+        "data Peano = zero | succ(pred: Peano)\nconst n: Peano\n\
+         goal g: match n { zero => false, succ(k) => true }\n",
+        0,
+        1,
+    );
+    assert_eq!(a.goals[0], b.goals[0], "is-succ(n) ≡ match n {{ succ _ => true, _ => false }}");
+}
+
+/// An `is-` name whose remainder is NOT a declared constructor stays the
+/// plain unknown-symbol error (the SMT-LIB-face guard, mirrored).
+#[test]
+fn tester_unknown_ctor_stays_unknown_symbol() {
+    match elaborate("data C = red | blue\nconst c: C\ngoal g: `is-green`(c)\n") {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("unknown function symbol"), "plain unknown-symbol error: {m}");
+        }
+        Err(other) => panic!("expected the unknown-symbol error, got {other:?}"),
+        Ok(_) => panic!("an unknown ctor tester must not elaborate"),
+    }
+}
+
+/// A recognized tester with the wrong arity or a wrongly-sorted argument is a
+/// hard error NAMING the tester (not a generic unknown-symbol).
+#[test]
+fn tester_arity_and_sort_are_checked() {
+    match elaborate("data C = red | blue\nconst c: C\ngoal g: `is-red`(c, c)\n") {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("is-red") && m.contains("unary"), "arity error names it: {m}");
+        }
+        Err(other) => panic!("expected the arity error, got {other:?}"),
+        Ok(_) => panic!("a binary tester call must not elaborate"),
+    }
+    match elaborate("data C = red | blue\nconst x: Int\ngoal g: `is-red`(x)\n") {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("is-red") && m.contains("expects"), "sort error names it: {m}");
+        }
+        Err(other) => panic!("expected the sort error, got {other:?}"),
+        Ok(_) => panic!("a wrongly-sorted tester call must not elaborate"),
+    }
+}
+
+/// The lawful datatype `Eq` derivation gates on the injected prover: an
+/// all-rejecting prover BUILD-REJECTS the `data` declaration (naming the
+/// lawful derivation), an all-accepting prover admits — and the pure-face
+/// `elaborate` (no prover) stays the structural grant.
+#[test]
+fn data_eq_lawful_admission_gates_on_the_prover() {
+    use adsmt_ir_lukb::elaborate_with_prover;
+    struct Always;
+    impl adsmt_class::LawProver for Always {
+        fn prove_valid(&self, _goal: &adsmt_core::Term) -> bool {
+            true
+        }
+    }
+    struct Never;
+    impl adsmt_class::LawProver for Never {
+        fn prove_valid(&self, _goal: &adsmt_core::Term) -> bool {
+            false
+        }
+    }
+    let src = "data C = red | blue\nconst c: C\ngoal g: c = red\n";
+    match elaborate_with_prover(src, &Never) {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("lawful `Eq(C)`"), "names the rejected derivation: {m}");
+        }
+        Err(other) => panic!("expected the lawful rejection, got {other:?}"),
+        Ok(_) => panic!("a rejecting prover must build-reject the data declaration"),
+    }
+    elaborate_with_prover(src, &Always).expect("an accepting prover admits");
+}
