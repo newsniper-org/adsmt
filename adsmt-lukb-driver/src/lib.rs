@@ -150,8 +150,10 @@ fn delegate_resolve(
 fn cas_discharges(hyps: &[Term], goal: &Term) -> bool {
     std::env::current_dir()
         .ok()
-        // `discover` returns `(found_path, manifest)`; we only need the manifest.
-        .and_then(|d| adsmt_cas::manifest::CasManifest::discover(&d))
+        // An explicit `ADSMT_CAS_MANIFEST` (verus `-V adsmt` → project `verus.toml`
+        // `[adsmt.cas]`) wins over the `adsmt.toml` walk-up; `(found_root, manifest)`
+        // → we only need the manifest.
+        .and_then(|d| adsmt_cas::manifest::CasManifest::discover_or_env(&d))
         .is_some_and(|(_, m)| adsmt_delegate::cas::try_discharge(hyps, goal, &m).is_some())
 }
 

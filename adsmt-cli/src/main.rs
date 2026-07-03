@@ -2255,12 +2255,14 @@ impl Driver {
             declared_abducibles: Vec::new(),
             assertion_goal_neg,
             ledger_desynced: false,
-            // Discover the nearest `adsmt.toml` `[cas]` manifest once, walking up
-            // from the working directory (like Cargo). Absent ⇒ no CAS delegation.
+            // Discover the CAS manifest once: an explicit `ADSMT_CAS_MANIFEST` env
+            // path wins (verus `-V adsmt` points it at a project `verus.toml`
+            // `[adsmt.cas]`), else walk up to the nearest `adsmt.toml` `[cas]` (like
+            // Cargo). Absent ⇒ no CAS delegation.
             #[cfg(feature = "cas")]
             cas_manifest: std::env::current_dir()
                 .ok()
-                .and_then(|d| adsmt_cas::manifest::CasManifest::discover(&d))
+                .and_then(|d| adsmt_cas::manifest::CasManifest::discover_or_env(&d))
                 .map(|(_root, m)| m),
         }
     }

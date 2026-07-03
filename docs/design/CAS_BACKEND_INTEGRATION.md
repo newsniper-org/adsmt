@@ -287,6 +287,19 @@ project root** — discovery walks up from the input file / CWD to the nearest
 considers a backend the `[cas]` section names AND enables, and only for the
 classes it permits. No `adsmt.toml` / no `[cas]` ⇒ no CAS.
 
+**Env override — `ADSMT_CAS_MANIFEST` (`CasManifest::discover_or_env`).** An
+explicit `ADSMT_CAS_MANIFEST` path takes precedence over the walk-up, and its
+reader (`from_manifest_file`) is **dual-section**: it accepts either the native
+top-level `[cas]` (an `adsmt.toml`) OR `[adsmt.cas]` (a project-level `verus.toml`,
+where verus namespaces its config under `[adsmt]`). This lets `verus -V adsmt`
+forward one project config so a user defines the CAS manifest ONCE, inline, instead
+of hand-placing an `adsmt.toml` per directory. verus forwards only the *path* (never
+parses), and only points at a `verus.toml` when NO `adsmt.toml` exists in the CWD
+ancestry — so the user-authored soundness attestation (`arith_builtins_reserved`)
+arrives verbatim and a native `adsmt.toml` is never shadowed. Fail-open: a missing /
+malformed file ⇒ no CAS (never a wrong verdict). `adsmtc` / `adsmtr` (via the lu-kb
+driver's `cas_discharges`) honour the same override. (2026-07-03 verus-fork request.)
+
 ```toml
 # adsmt.toml  (project root marker) — the [cas] section; absence ⇒ no CAS runs.
 [cas]

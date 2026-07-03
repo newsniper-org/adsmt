@@ -89,6 +89,56 @@ impl CasManifest {
         None
     }
 
+    /// Parse a CAS manifest from an explicit file, accepting EITHER shape: the
+    /// top-level `[cas]` section (native `adsmt.toml` form) is tried first, else
+    /// `[adsmt.cas]` (the `verus.toml` form, where verus namespaces its config under
+    /// `[adsmt]`). This lets one `ADSMT_CAS_MANIFEST` path target either file type.
+    /// A file with neither section yields the empty manifest (⇒ no CAS runs), same
+    /// as [`from_adsmt_toml`](Self::from_adsmt_toml). Fail-open: any read/parse error
+    /// ⇒ `None` (no CAS), never a wrong verdict.
+    ///
+    /// The whole `CasManifest` — including the user-authored `arith_builtins_reserved`
+    /// soundness attestation — deserializes verbatim from whichever section is present;
+    /// nothing on the way (verus forwards only the *path*) can fabricate or mutate it.
+    #[must_use]
+    pub fn from_manifest_file(path: &Path) -> Option<CasManifest> {
+        #[derive(Deserialize)]
+        struct Root {
+            #[serde(default)]
+            cas: Option<CasManifest>,
+            #[serde(default)]
+            adsmt: Option<AdsmtNs>,
+        }
+        #[derive(Deserialize)]
+        struct AdsmtNs {
+            #[serde(default)]
+            cas: Option<CasManifest>,
+        }
+        let text = std::fs::read_to_string(path).ok()?;
+        let root: Root = toml::from_str(&text).ok()?;
+        Some(root.cas.or_else(|| root.adsmt.and_then(|a| a.cas)).unwrap_or_default())
+    }
+
+    /// Like [`discover`](Self::discover), but an explicit `ADSMT_CAS_MANIFEST` env
+    /// path WINS over the CWD walk-up (this is how `verus -V adsmt` points lu-smt at a
+    /// project-level `verus.toml` `[adsmt.cas]` — see the 2026-07-03 verus-fork
+    /// request). When the env var is set, the walk-up is skipped entirely (the user's
+    /// explicit path is authoritative); `root` = the manifest file's parent dir (for
+    /// resolving any relative backend paths), or `.` if it has none. Absent env var ⇒
+    /// identical to `discover`. verus only ever sets the env to a `verus.toml` when NO
+    /// `adsmt.toml` exists in the CWD ancestry, so a hand-authored native manifest is
+    /// never shadowed.
+    #[must_use]
+    pub fn discover_or_env(start: &Path) -> Option<(PathBuf, CasManifest)> {
+        if let Some(p) = std::env::var_os("ADSMT_CAS_MANIFEST") {
+            let path = PathBuf::from(p);
+            let manifest = CasManifest::from_manifest_file(&path)?;
+            let root = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+            return Some((root, manifest));
+        }
+        CasManifest::discover(start)
+    }
+
     /// The enabled backend names in try-order (skipping per-backend `enabled = false`).
     pub fn try_order(&self) -> impl Iterator<Item = &str> {
         self.enabled.iter().filter_map(move |name| {
@@ -154,5 +204,64 @@ mod tests {
         let m = CasManifest::from_adsmt_toml("[package]\nname = \"x\"\n").expect("parse");
         assert!(m.enabled.is_empty());
         assert_eq!(m.try_order().count(), 0);
+    }
+
+    /// A unique temp file path (pid-namespaced so parallel test binaries don't collide).
+    fn tmp_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("adsmt_cas_manifest_test_{}_{tag}.toml", std::process::id()))
+    }
+
+    /// `from_manifest_file` reads BOTH the native top-level `[cas]` (an `adsmt.toml`)
+    /// and the `[adsmt.cas]` namespaced form (a `verus.toml`) to the same manifest —
+    /// the dual-section lookup the verus `ADSMT_CAS_MANIFEST` bridge needs.
+    #[test]
+    fn from_manifest_file_reads_both_sections() {
+        let native = tmp_path("native");
+        std::fs::write(
+            &native,
+            "[cas]\nenabled = [\"numtheory\"]\n[cas.backends.numtheory]\nclasses = [\"primality\"]\n",
+        )
+        .unwrap();
+        let verus = tmp_path("verus");
+        std::fs::write(
+            &verus,
+            "[adsmt.cas]\nenabled = [\"numtheory\"]\n[adsmt.cas.backends.numtheory]\nclasses = [\"primality\"]\n",
+        )
+        .unwrap();
+
+        let a = CasManifest::from_manifest_file(&native).expect("native reads");
+        let b = CasManifest::from_manifest_file(&verus).expect("verus.toml reads");
+        assert_eq!(a.enabled, vec!["numtheory"]);
+        assert_eq!(b.enabled, vec!["numtheory"], "[adsmt.cas] must parse like [cas]");
+        assert!(a.permits("numtheory", CasClass::Primality));
+        assert!(b.permits("numtheory", CasClass::Primality));
+
+        // A file with neither section ⇒ empty (no CAS), never an error.
+        let bare = tmp_path("bare");
+        std::fs::write(&bare, "[unrelated]\nx = 1\n").unwrap();
+        assert!(CasManifest::from_manifest_file(&bare).expect("bare reads").enabled.is_empty());
+        // A missing / malformed file ⇒ None (fail-open, no CAS).
+        assert!(CasManifest::from_manifest_file(&tmp_path("nonexistent")).is_none());
+
+        for p in [native, verus, bare] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// `discover_or_env`: an explicit `ADSMT_CAS_MANIFEST` env path wins over the
+    /// walk-up and its `root` is the file's parent dir. (This crate is the only reader
+    /// of the var, so the set/remove here does not race other tests.)
+    #[test]
+    fn discover_or_env_honours_the_env_path() {
+        let f = tmp_path("env");
+        std::fs::write(&f, "[adsmt.cas]\nenabled = [\"singular\"]\n").unwrap();
+        // SAFETY: single-threaded within this test; no other test reads the var.
+        unsafe { std::env::set_var("ADSMT_CAS_MANIFEST", &f) };
+        let (root, m) = CasManifest::discover_or_env(Path::new("/nonexistent/cwd"))
+            .expect("env path wins even with a bogus start dir");
+        assert_eq!(m.enabled, vec!["singular"]);
+        assert_eq!(root, f.parent().unwrap());
+        unsafe { std::env::remove_var("ADSMT_CAS_MANIFEST") };
+        let _ = std::fs::remove_file(f);
     }
 }
