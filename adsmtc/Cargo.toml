@@ -1,6 +1,6 @@
 [package]
 name = "adsmtc"
-version = "1.0.0-rc.42"
+version = "1.0.0-rc.42.1"
 edition = "2021"
 description = "adsmtc — the lu-kb-successor compiler: parse → elaborate → lower → unified solve → UnifiedVerdict (CLI trichotomy; the batch/compile front-end over adsmt-lukb-driver)."
 

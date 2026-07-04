@@ -7,16 +7,16 @@ description = "Shared delegation stack for a typed HOL sequent (H ⊢ G). `cas`:
 
 [dependencies]
 # Always: the obligation Terms + the SMT-LIB renderer (needs only adsmt-core).
-adsmt-core = { version = "=1.0.0-rc.42", path = "../adsmt-core" }
+adsmt-core = { version = "=1.0.0-rc.42.1", path = "../adsmt-core" }
 # The DatatypeDecl the renderer turns into `(declare-datatypes …)`.
-adsmt-theory = { version = "=1.0.0-rc.42", path = "../adsmt-theory" }
+adsmt-theory = { version = "=1.0.0-rc.42.1", path = "../adsmt-theory" }
 
 # `cas` feature — the classifier + trusted re-check core + the untrusted backends
 # (each admit-gated at the adsmt-cas layer; constructing them is free).
-adsmt-cas = { version = "=1.0.0-rc.42", path = "../adsmt-cas", features = ["term"], optional = true }
-cas-backend-singular = { version = "=1.0.0-rc.42", path = "../cas-backends/cas-backend-singular", optional = true }
-cas-backend-mathhook = { version = "=1.0.0-rc.42", path = "../cas-backends/cas-backend-mathhook", optional = true }
-cas-backend-numtheory = { version = "=1.0.0-rc.42", path = "../cas-backends/cas-backend-numtheory", optional = true }
+adsmt-cas = { version = "=1.0.0-rc.42.1", path = "../adsmt-cas", features = ["term"], optional = true }
+cas-backend-singular = { version = "=1.0.0-rc.42.1", path = "../cas-backends/cas-backend-singular", optional = true }
+cas-backend-mathhook = { version = "=1.0.0-rc.42.1", path = "../cas-backends/cas-backend-mathhook", optional = true }
+cas-backend-numtheory = { version = "=1.0.0-rc.42.1", path = "../cas-backends/cas-backend-numtheory", optional = true }
 
 # `oxiz` feature — the vendored in-process OxiZ (z3-parity). Same path dep as
 # adsmt-cli's `oxiz` feature.
