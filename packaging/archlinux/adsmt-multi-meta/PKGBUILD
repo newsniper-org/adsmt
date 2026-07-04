@@ -24,12 +24,16 @@ pkgrel=1
 arch=('x86_64' 'aarch64')
 url="https://github.com/newsniper-org/adsmt"
 license=('BSD-2-Clause OR Apache-2.0 OR LGPL-2.1-or-later')
-makedepends=('rust' 'cargo')
+makedepends=('rust' 'cargo' 'git')
 options=('!lto')
-source=("adsmt-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+# A git tag source (not the archive tarball): the vendored solver forks
+# live in submodules (external/oxiz, external/mathhook), which a GitHub
+# archive tarball does not include — prepare()'s `git submodule update`
+# needs the real clone.
+source=("git+${url}.git#tag=v${pkgver}")
 sha256sums=('SKIP')
 
-_srcdir="adsmt-${pkgver}"
+_srcdir="adsmt"
 
 prepare() {
     cd "${_srcdir}"
@@ -48,6 +52,9 @@ build() {
     # 2. slim lu-smt (option B: separate binary, not absorbed into multicall)
     # rc.30: in-process OxiZ delegation (see adsmt-meta) for the verus backend.
     cargo build --release --frozen --no-default-features --features oxiz -p adsmt-cli
+    # rc.42.1: the CLI trichotomy, slim (oxiz only — the `cas` feature and its
+    # backends stay out of the multi variant by design).
+    cargo build --release --frozen --no-default-features --features adsmtc/oxiz,adsmtr/oxiz -p adsmtc -p adsmtr
     # rc.32: WASM emitter toolchain (adsmt-emit PM CLI + adsmt-env build
     # trampoline) ships in the adsmt-cli package; no features needed.
     cargo build --release --frozen -p adsmt-emit-cli -p adsmt-env
@@ -58,6 +65,7 @@ check() {
     export RUSTUP_TOOLCHAIN=stable
     cargo test --release --frozen --no-default-features -p lu-multi
     cargo test --release --frozen --no-default-features --features oxiz -p adsmt-cli
+    cargo test --release --frozen --no-default-features --features adsmtc/oxiz,adsmtr/oxiz -p adsmtc -p adsmtr
 }
 
 # ------------------------------------------------------------ logicutils-multi
@@ -106,9 +114,9 @@ package_logicutils-multi() {
 # ------------------------------------------------------------ adsmt-cli-multi
 
 package_adsmt-cli-multi() {
-    pkgdesc='lu-smt — slim build of adsmt SMT solver CLI (multi variant: --no-default-features)'
+    pkgdesc='lu-smt / adsmtc / adsmtr — slim build of the adsmt SMT solver CLI trichotomy (multi variant: --no-default-features)'
     depends=('gcc-libs')
-    provides=('lu-smt' 'adsmt-emit' 'adsmt-env')
+    provides=('lu-smt' 'adsmtc' 'adsmtr' 'adsmt-emit' 'adsmt-env')
     conflicts=(
         'adsmt-cli' 'adsmt-cli-hpc'
         'adsmt-cli-testing' 'adsmt-cli-hpc-testing' 'adsmt-cli-multi-testing'
@@ -117,11 +125,17 @@ package_adsmt-cli-multi() {
 
     cd "${_srcdir}"
     install -Dm755 target/release/lu-smt "${pkgdir}/usr/bin/lu-smt"
+    # rc.37 (P4): the CLI trichotomy — adsmtc (lu-kb compiler) + adsmtr
+    # (runtime/REPL) ship alongside lu-smt.
+    install -Dm755 target/release/adsmtc "${pkgdir}/usr/bin/adsmtc"
+    install -Dm755 target/release/adsmtr "${pkgdir}/usr/bin/adsmtr"
     # rc.32: WASM emitter package manager (adsmt-emit) + build-env
     # trampoline (adsmt-env) — companions to `lu-smt --emit-cert`.
     install -Dm755 target/release/adsmt-emit "${pkgdir}/usr/bin/adsmt-emit"
     install -Dm755 target/release/adsmt-env  "${pkgdir}/usr/bin/adsmt-env"
     install -Dm644 docs/man/lu-smt.1 "${pkgdir}/usr/share/man/man1/lu-smt.1"
+    install -Dm644 docs/man/adsmtc.1 "${pkgdir}/usr/share/man/man1/adsmtc.1"
+    install -Dm644 docs/man/adsmtr.1 "${pkgdir}/usr/share/man/man1/adsmtr.1"
     install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
 
     install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"

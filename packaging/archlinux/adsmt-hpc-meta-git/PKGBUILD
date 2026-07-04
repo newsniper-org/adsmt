@@ -20,7 +20,8 @@ sha256sums=('SKIP')
 
 _repo='adsmt'
 # adsmt-cli/oxiz: in-process OxiZ delegation for the verus backend (rc.30).
-_features='lu-common/sha3,lu-queue/slurm,lu-queue/sge,lu-queue/pbs,adsmt-cli/oxiz'
+# rc.41/rc.42.1: + the CAS delegation feature and the adsmtc/adsmtr trichotomy.
+_features='lu-common/sha3,lu-queue/slurm,lu-queue/sge,lu-queue/pbs,adsmt-cli/oxiz,adsmt-cli/cas,adsmtc/oxiz,adsmtc/cas,adsmtr/oxiz,adsmtr/cas'
 
 pkgver() {
     cd "${srcdir}/${_repo}"
@@ -47,7 +48,7 @@ build() {
         -p lu-query -p lu-rule \
         -p lu-queue -p lu-par -p lu-deps \
         -p lu-multi \
-        -p adsmt-cli
+        -p adsmt-cli -p adsmtc -p adsmtr
     # rc.32: WASM emitter toolchain (adsmt-emit PM CLI + adsmt-env build
     # trampoline) ships in the adsmt-cli package; no features needed.
     cargo build --release --frozen -p adsmt-emit-cli -p adsmt-env
@@ -62,7 +63,7 @@ check() {
         -p lu-query -p lu-rule \
         -p lu-queue -p lu-par -p lu-deps \
         -p lu-multi \
-        -p adsmt-cli
+        -p adsmt-cli -p adsmtc -p adsmtr
 }
 
 # -------------------------------------------------------- logicutils-hpc-git
@@ -115,14 +116,17 @@ package_logicutils-hpc-git() {
 # --------------------------------------------------------- adsmt-cli-hpc-git
 
 package_adsmt-cli-hpc-git() {
-    pkgdesc='lu-smt — adsmt SMT solver CLI (unstable / main-branch git build, HPC variant: SLURM/SGE/PBS + SHA3)'
+    pkgdesc='lu-smt / adsmtc / adsmtr — adsmt SMT solver CLI trichotomy (unstable / main-branch git build, HPC variant: SLURM/SGE/PBS + SHA3; oxiz+cas delegation)'
     depends=('gcc-libs')
+    optdepends=(
+        'singular: exact CAS delegation backend for algebraic obligations (subprocess oracle; rc.41 `cas` feature)'
+    )
     optdepends=(
         'slurm-llnl: SLURM workload manager client'
         'gridengine: SGE workload manager client'
         'openpbs:    PBS workload manager client'
     )
-    provides=('lu-smt' 'adsmt-emit' 'adsmt-env')
+    provides=('lu-smt' 'adsmtc' 'adsmtr' 'adsmt-emit' 'adsmt-env')
     conflicts=(
         'adsmt-cli' 'adsmt-cli-hpc' 'adsmt-cli-multi'
         'adsmt-cli-testing' 'adsmt-cli-hpc-testing' 'adsmt-cli-multi-testing'
@@ -131,11 +135,17 @@ package_adsmt-cli-hpc-git() {
 
     cd "${srcdir}/${_repo}"
     install -Dm755 target/release/lu-smt "${pkgdir}/usr/bin/lu-smt"
+    # rc.37 (P4): the CLI trichotomy — adsmtc (lu-kb compiler) + adsmtr
+    # (runtime/REPL) ship alongside lu-smt.
+    install -Dm755 target/release/adsmtc "${pkgdir}/usr/bin/adsmtc"
+    install -Dm755 target/release/adsmtr "${pkgdir}/usr/bin/adsmtr"
     # rc.32: WASM emitter package manager (adsmt-emit) + build-env
     # trampoline (adsmt-env) — companions to `lu-smt --emit-cert`.
     install -Dm755 target/release/adsmt-emit "${pkgdir}/usr/bin/adsmt-emit"
     install -Dm755 target/release/adsmt-env  "${pkgdir}/usr/bin/adsmt-env"
     install -Dm644 docs/man/lu-smt.1 "${pkgdir}/usr/share/man/man1/lu-smt.1"
+    install -Dm644 docs/man/adsmtc.1 "${pkgdir}/usr/share/man/man1/adsmtc.1"
+    install -Dm644 docs/man/adsmtr.1 "${pkgdir}/usr/share/man/man1/adsmtr.1"
     install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
 
     install -Dm644 LICENSE-BSD.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-BSD.txt"

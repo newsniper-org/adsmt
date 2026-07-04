@@ -20,7 +20,7 @@ Each cell is a single `pkgbase` producing multiple split packages.
 
 ### Default pkgbase (per channel) — 6 split packages
 - `logicutils[-testing|-git]` — lu-* / freshcheck / stamp utilities
-- `adsmt-cli[-testing|-git]` — lu-smt SMT solver CLI + adsmt-emit (WASM emitter package manager) + adsmt-env (build trampoline)
+- `adsmt-cli[-testing|-git]` — the CLI trichotomy: lu-smt (SMT-LIB solver) + adsmtc (lu-kb compiler) + adsmtr (runtime/REPL), built with the oxiz+cas delegation stack (`singular` optional at runtime), plus adsmt-emit (WASM emitter package manager) + adsmt-env (build trampoline)
 - `adsmt-lsp[-testing|-git]` — tower-lsp server (no variant — owned only here)
 - `adsmt-ffi[-testing|-git]` — C ABI: libadsmt_ffi.{so,a} + adsmt.h (no variant)
 - `adsmt-src[-testing|-git]` — workspace source tree (no variant)
@@ -28,12 +28,12 @@ Each cell is a single `pkgbase` producing multiple split packages.
 
 ### HPC pkgbase (per channel) — 3 split packages
 - `logicutils-hpc[-testing|-git]` — utilities with SLURM/SGE/PBS + SHA3 features
-- `adsmt-cli-hpc[-testing|-git]` — lu-smt with HPC features
+- `adsmt-cli-hpc[-testing|-git]` — the CLI trichotomy (lu-smt/adsmtc/adsmtr, oxiz+cas) with HPC features
 - `adsmt-hpc-meta[-testing|-git]` — meta-package, depends on hpc CLI splits + non-variant splits from default pkgbase
 
 ### Multi pkgbase (per channel) — 3 split packages
 - `logicutils-multi[-testing|-git]` — lu-multi multicall + 9 symlinks (busybox-style)
-- `adsmt-cli-multi[-testing|-git]` — slim lu-smt (--no-default-features)
+- `adsmt-cli-multi[-testing|-git]` — the slim CLI trichotomy (lu-smt/adsmtc/adsmtr, --no-default-features; oxiz only, no cas)
 - `adsmt-multi-meta[-testing|-git]` — meta-package, depends on multi CLI splits + non-variant splits from default pkgbase
 
 **Total packages**: 11 (default) + 3 (hpc) + 3 (multi) = 17 per channel × 3 channels = **33 packages**.
