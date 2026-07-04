@@ -238,6 +238,12 @@ struct Cli {
     /// signature of the formula (§3.5.E,
     /// `Solver::jit_trace_signature`) that the replay consult
     /// matches against. Mutually exclusive with `--jit-trace-load`.
+    /// #402 (delegation-era alignment): when the session's `unsat`
+    /// came from a NON-native authority (OxiZ delegation / CAS) the
+    /// recorded stream carries no terminal conflict, so the emit
+    /// falls back to the slim exact-match shape; a DEGRADED session
+    /// (a natively-skipped command) emits nothing — its signature
+    /// under-represents the formula.
     #[arg(long)]
     jit_trace_emit: Option<String>,
     /// §3.5.J slim-trace (verdict-only) — emit a `.lutrace` at
@@ -252,6 +258,10 @@ struct Cli {
     /// exact-match route, at a few hundred bytes instead of megabytes.
     /// No recorder is installed (no per-event capture cost). Mutually
     /// exclusive with `--jit-trace-emit` and `--jit-trace-load`.
+    /// #402: a DELEGATED unsat is within the slim remit (it records the
+    /// verdict, not native events — trust parity with the live
+    /// delegation, whose cert Gap A already synthesizes); a DEGRADED
+    /// session emits nothing (under-representative signature).
     #[arg(long)]
     jit_trace_emit_slim: Option<String>,
     /// §3.5.G — load a previously-emitted `.lutrace` artefact from
@@ -397,6 +407,10 @@ fn main() -> ExitCode {
     // override.  In stdin mode we accumulate the bytes alongside
     // the streaming dispatcher (see `run_stdin_streaming`).
     let mut bake_input_source: Option<String> = None;
+    // #402 — session-`degraded` (a command skipped natively), hoisted to main
+    // scope so the `--jit-trace-emit[-slim]` sites below can refuse to record
+    // a verdict under an under-representative clause-fold signature.
+    let mut degraded = false;
 
     match cli.input.as_deref() {
         Some(path) => {
@@ -440,7 +454,6 @@ fn main() -> ExitCode {
                     // behaviour) rather than dying.
                     Err(_) => vec![source.len(); commands.len()],
                 };
-            let mut degraded = false;
             for (i, (cmd, pos)) in commands.into_iter().enumerate() {
                 let history =
                     &source[..prefix_ends.get(i).copied().unwrap_or(source.len())];
@@ -469,7 +482,7 @@ fn main() -> ExitCode {
             // so we ship every top-level S-expression to the dispatcher
             // the moment its parens balance and flush `stdout` after each
             // dispatch so the parent sees the verdict immediately.
-            match run_stdin_streaming(&mut driver, &mut last, &cli) {
+            match run_stdin_streaming(&mut driver, &mut last, &cli, &mut degraded) {
                 Ok(maybe_source) => {
                     if cli.aot_bake {
                         bake_input_source = maybe_source;
@@ -515,14 +528,47 @@ fn main() -> ExitCode {
         // The full trace keeps its recorded event stream (the slim mode
         // drops it) but, like slim, carries the digest + an empty
         // signature.
-        let trace = match driver.solver.take_jit_recording() {
-            Some(tracer) => tracer
-                .finalize(adsmt_jit::GF2Snapshot::empty(), Vec::new())
-                .with_signature_digest(driver.solver.jit_trace_digest()),
-            None => adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty()),
-        };
-        if let Err(code) = emit_jit_trace_with(path, &trace) {
-            return ExitCode::from(code);
+        // #402 — DEGRADED gate (both emit flavors): a session where a command
+        // was skipped natively has a clause-fold signature that
+        // UNDER-represents the true formula — recording a verdict under it
+        // could exact-match a future session that shares the visible clause
+        // set but differs in the skipped construct, replaying an `unsat` the
+        // other formula never earned (the rc.28 `had_opaque` lesson at the
+        // `.lutrace` boundary). Emit nothing; the run itself is unaffected.
+        if degraded {
+            eprintln!(
+                "lu-smt: --jit-trace-emit: session was degraded (a command was \
+                 skipped natively); the clause-fold signature would under-represent \
+                 the formula — nothing written",
+            );
+        } else if matches!(last, LastStatus::Unsat) && driver.nonnative_unsat_last {
+            // #402 — the session's `unsat` came from a NON-native authority
+            // (OxiZ delegation / CAS): the recorder captured no terminal
+            // conflict, so the full event stream is consult-INERT (the
+            // replay route derives its verdict from the events). Fall back
+            // to the slim shape — signature digest + synthetic terminal —
+            // which the consult's exact-match route certifies. Trust parity
+            // with the live delegation (the Gap-A machinery already
+            // synthesized the delegated-unsat cert this session).
+            eprintln!(
+                "lu-smt: --jit-trace-emit: the unsat was delegated (no native \
+                 terminal conflict recorded); writing the slim exact-match \
+                 shape instead of the inert event stream",
+            );
+            let trace = driver.solver.build_slim_jit_trace();
+            if let Err(code) = emit_jit_trace_with(path, &trace) {
+                return ExitCode::from(code);
+            }
+        } else {
+            let trace = match driver.solver.take_jit_recording() {
+                Some(tracer) => tracer
+                    .finalize(adsmt_jit::GF2Snapshot::empty(), Vec::new())
+                    .with_signature_digest(driver.solver.jit_trace_digest()),
+                None => adsmt_jit::CdclTrace::new(adsmt_jit::GF2Snapshot::empty()),
+            };
+            if let Err(code) = emit_jit_trace_with(path, &trace) {
+                return ExitCode::from(code);
+            }
         }
     }
     if let Some(path) = cli.jit_trace_emit_slim.as_deref() {
@@ -534,7 +580,17 @@ fn main() -> ExitCode {
         // synthetic root conflict encodes exactly that.  A non-Unsat
         // session emits nothing (a slim trace of a Sat/Unknown verdict
         // would carry a contradiction marker the verdict didn't earn).
-        if matches!(last, LastStatus::Unsat) {
+        // #402 — the Unsat may be a DELEGATED one (that has always been the
+        // slim mode's remit: the verdict, not the native event stream), but
+        // a DEGRADED session's under-representative signature must not be
+        // recorded — see the twin gate on the full-emit path above.
+        if degraded {
+            eprintln!(
+                "lu-smt: --jit-trace-emit-slim: session was degraded (a command \
+                 was skipped natively); the clause-fold signature would \
+                 under-represent the formula — nothing written",
+            );
+        } else if matches!(last, LastStatus::Unsat) {
             let trace = driver.solver.build_slim_jit_trace();
             if let Err(code) = emit_jit_trace_with(path, &trace) {
                 return ExitCode::from(code);
@@ -1303,6 +1359,10 @@ fn dispatch_one(
     let outcome = match result {
         DispatchResult::Continue => None,
         DispatchResult::CheckSat(status) => {
+            // #402 — reset the non-native-authority marker for THIS check;
+            // the `record_delegated_unsat` / `record_cas_unsat` overrides
+            // below re-arm it when the verdict comes from OxiZ / CAS.
+            driver.nonnative_unsat_last = false;
             // P1: did OxiZ delegation run this check? Only then is the thread-local
             // 5-level token valid for the Full-mode print (a native-only verdict
             // must not reuse a stale token from a previous delegation).
@@ -1476,16 +1536,21 @@ fn run_stdin_streaming(
     driver: &mut Driver,
     last: &mut LastStatus,
     cli: &Cli,
+    // #402 — the session-`degraded` flag is CALLER-owned now: the
+    // `--jit-trace-emit[-slim]` sites in `main` must know whether any
+    // command was skipped natively (a degraded session's clause-fold
+    // signature under-represents the formula, so recording a verdict
+    // under it could replay onto a DIFFERENT formula → false unsat).
+    degraded: &mut bool,
 ) -> Result<Option<String>, ExitCode> {
     use std::io::BufRead;
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let mut accumulator = String::new();
-    // rc.30 — full SMT-LIB transcript so far, for the OxiZ fallback,
-    // and a session-`degraded` flag (set when a command was skipped
-    // natively → check-sat must delegate to OxiZ for soundness).
+    // rc.30 — full SMT-LIB transcript so far, for the OxiZ fallback.
+    // (The `degraded` flag — set when a command was skipped natively →
+    // check-sat must delegate to OxiZ for soundness — is the parameter.)
     let mut history = String::new();
-    let mut degraded = false;
     let mut line = String::new();
     let mut depth: i32 = 0;
     let mut in_string = false;
@@ -1552,7 +1617,7 @@ fn run_stdin_streaming(
                     };
                     for (cmd, pos) in commands {
                         if let Some(code) = dispatch_one(
-                            driver, last, cli, cmd, pos, &history, &mut degraded,
+                            driver, last, cli, cmd, pos, &history, degraded,
                             true, // streaming: growing history → persistent delegation
                         ) {
                             return Err(code);
@@ -2430,6 +2495,16 @@ struct Driver {
     /// delegation sites downgrade a blind delegated `Sat` to `Unknown`
     /// (the [[feedback_soundness_opaque_fallback]] asymmetry).
     aot_delegation_blind: bool,
+    /// #402 — `true` when the LAST `(check-sat)`'s `unsat` came from a
+    /// NON-native authority (OxiZ delegation / CAS): the native CDCL never
+    /// concluded, so the §3.5.F recorder captured no terminal conflict and a
+    /// full `--jit-trace-emit` of this session would be consult-INERT (the
+    /// replay route derives its verdict from the event stream). The emit
+    /// site falls back to the slim shape (signature + synthetic terminal),
+    /// which the consult's exact-match route certifies — same trust as the
+    /// live delegation (the Gap-A cert machinery covers the delegated
+    /// unsat). Reset at each `(check-sat)`; set by the `record_*` overrides.
+    nonnative_unsat_last: bool,
 }
 
 /// rc.35 — incremental-abduct state for cvc5 `(get-abduct-next)`.
@@ -2509,6 +2584,7 @@ impl Driver {
                 .map(|(_root, m)| m),
             aot_prelude_smt,
             aot_delegation_blind,
+            nonnative_unsat_last: false,
         }
     }
 
@@ -3150,6 +3226,11 @@ impl Driver {
             certificate: cert,
             core: adsmt_engine::result::UnsatCore::new(),
         });
+        // #402 — this is the single funnel every NON-native unsat (OxiZ
+        // delegation, CAS) passes through: mark it so the `--jit-trace-emit`
+        // site knows the §3.5.F recorder holds no terminal conflict for this
+        // verdict and falls back to the slim (exact-match) trace shape.
+        self.nonnative_unsat_last = true;
     }
 
     /// **CAS delegation** — on a residual `Unknown` (native + OxiZ both undecided),
