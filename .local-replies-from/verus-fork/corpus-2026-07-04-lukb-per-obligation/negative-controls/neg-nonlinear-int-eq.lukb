@@ -1,0 +1,5 @@
+# x*x = 3 has NO Int solution: unsat is the ideal verdict; sat here would be a
+# false counterexample (the historical lu-smt native-preempt shape). Pin whatever
+# the current lukb path answers; it must never be a false proof of the NEGATION.
+const x: Int
+goal sq3: x * x != 3

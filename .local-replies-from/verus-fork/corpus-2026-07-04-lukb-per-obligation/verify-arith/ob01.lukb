@@ -1,0 +1,369 @@
+sort FuelId
+sort Fuel
+const zero: Fuel
+fn succ(x0: Fuel): Fuel
+fn fuel_bool(x0: FuelId): Bool
+fn fuel_bool_default(x0: FuelId): Bool
+const fuel_defaults: Bool
+axiom: fuel_defaults ==> (forall id: FuelId. fuel_bool(id) = fuel_bool_default(id) trigger fuel_bool(id))
+data fndef = fndef_singleton
+sort Poly
+sort Height
+fn I(x0: Int): Poly
+fn B(x0: Bool): Poly
+fn R(x0: Real): Poly
+fn F(x0: fndef): Poly
+fn `%I`(x0: Poly): Int
+fn `%B`(x0: Poly): Bool
+fn `%R`(x0: Poly): Real
+fn `%F`(x0: Poly): fndef
+sort Type
+const BOOL: Type
+const INT: Type
+const NAT: Type
+const REAL: Type
+const CHAR: Type
+const USIZE: Type
+const ISIZE: Type
+const `TYPE%tuple%0.`: Type
+fn UINT(x0: Int): Type
+fn SINT(x0: Int): Type
+fn FLOAT(x0: Int): Type
+fn CONST_INT(x0: Int): Type
+fn CONST_BOOL(x0: Bool): Type
+sort Dcr
+const `$`: Dcr
+const `$slice`: Dcr
+const `$dyn`: Dcr
+fn DST(x0: Dcr): Dcr
+fn REF(x0: Dcr): Dcr
+fn BOX(x0: Dcr, x1: Type, x2: Dcr): Dcr
+fn RC(x0: Dcr, x1: Type, x2: Dcr): Dcr
+fn ARC(x0: Dcr, x1: Type, x2: Dcr): Dcr
+fn GHOST(x0: Dcr): Dcr
+fn TRACKED(x0: Dcr): Dcr
+fn NEVER(x0: Dcr): Dcr
+fn CONST_PTR(x0: Dcr): Dcr
+fn ARRAY(x0: Dcr, x1: Type, x2: Dcr, x3: Type): Type
+fn MUTREF(x0: Dcr, x1: Type): Type
+fn SLICE(x0: Dcr, x1: Type): Type
+const STRSLICE: Type
+const ALLOCATOR_GLOBAL: Type
+fn PTR(x0: Dcr, x1: Type): Type
+fn has_type(x0: Poly, x1: Type): Bool
+fn sized(x0: Dcr): Bool
+fn as_type(x0: Poly, x1: Type): Poly
+# fallback (fn): mk_fun ret: Fun type
+fn const_int(x0: Type): Int
+fn const_bool(x0: Type): Bool
+fn `mut_ref_current%`(x0: Poly): Poly
+fn `mut_ref_future%`(x0: Poly): Poly
+fn `mut_ref_update_current%`(x0: Poly, x1: Poly): Poly
+axiom: forall m: Poly, arg: Poly. `mut_ref_current%`(`mut_ref_update_current%`(m, arg)) = arg trigger `mut_ref_update_current%`(m, arg)
+axiom: forall m: Poly, arg: Poly. `mut_ref_future%`(`mut_ref_update_current%`(m, arg)) = `mut_ref_future%`(m) trigger `mut_ref_update_current%`(m, arg)
+axiom: forall m: Poly, d: Dcr, t: Type. has_type(m, MUTREF(d, t)) ==> has_type(`mut_ref_current%`(m), t) trigger { has_type(m, MUTREF(d, t)), `mut_ref_current%`(m) }
+axiom: forall m: Poly, d: Dcr, t: Type. has_type(m, MUTREF(d, t)) ==> has_type(`mut_ref_future%`(m), t) trigger { has_type(m, MUTREF(d, t)), `mut_ref_future%`(m) }
+axiom: forall m: Poly, d: Dcr, t: Type, arg: Poly. has_type(m, MUTREF(d, t)) and has_type(arg, t) ==> has_type(`mut_ref_update_current%`(m, arg), MUTREF(d, t)) trigger { has_type(m, MUTREF(d, t)), `mut_ref_update_current%`(m, arg) }
+axiom: forall d: Dcr. sized(d) ==> sized(DST(d)) trigger sized(DST(d))
+axiom: forall d: Dcr. sized(REF(d)) trigger sized(REF(d))
+axiom: forall d: Dcr, t: Type, d2: Dcr. sized(BOX(d, t, d2)) trigger sized(BOX(d, t, d2))
+axiom: forall d: Dcr, t: Type, d2: Dcr. sized(RC(d, t, d2)) trigger sized(RC(d, t, d2))
+axiom: forall d: Dcr, t: Type, d2: Dcr. sized(ARC(d, t, d2)) trigger sized(ARC(d, t, d2))
+axiom: forall d: Dcr. sized(GHOST(d)) trigger sized(GHOST(d))
+axiom: forall d: Dcr. sized(TRACKED(d)) trigger sized(TRACKED(d))
+axiom: forall d: Dcr. sized(NEVER(d)) trigger sized(NEVER(d))
+axiom: forall d: Dcr. sized(CONST_PTR(d)) trigger sized(CONST_PTR(d))
+axiom: sized(`$`)
+axiom: forall i: Int. i = const_int(CONST_INT(i)) trigger CONST_INT(i)
+axiom: forall b: Bool. b = const_bool(CONST_BOOL(b)) trigger CONST_BOOL(b)
+axiom: forall b: Bool. has_type(B(b), BOOL) trigger has_type(B(b), BOOL)
+axiom: forall r: Real. has_type(R(r), REAL) trigger has_type(R(r), REAL)
+axiom: forall x: Poly, t: Type. has_type(as_type(x, t), t) and (has_type(x, t) ==> x = as_type(x, t)) trigger as_type(x, t)
+# fallback (axiom): Fun type
+axiom: forall x: Bool. x = `%B`(B(x)) trigger B(x)
+axiom: forall x: Int. x = `%I`(I(x)) trigger I(x)
+axiom: forall x: Real. x = `%R`(R(x)) trigger R(x)
+axiom: forall x: Poly. has_type(x, BOOL) ==> x = B(`%B`(x)) trigger has_type(x, BOOL)
+axiom: forall x: Poly. has_type(x, INT) ==> x = I(`%I`(x)) trigger has_type(x, INT)
+axiom: forall x: Poly. has_type(x, NAT) ==> x = I(`%I`(x)) trigger has_type(x, NAT)
+axiom: forall x: Poly. has_type(x, USIZE) ==> x = I(`%I`(x)) trigger has_type(x, USIZE)
+axiom: forall x: Poly. has_type(x, ISIZE) ==> x = I(`%I`(x)) trigger has_type(x, ISIZE)
+axiom: forall bits: Int, x: Poly. has_type(x, UINT(bits)) ==> x = I(`%I`(x)) trigger has_type(x, UINT(bits))
+axiom: forall bits: Int, x: Poly. has_type(x, SINT(bits)) ==> x = I(`%I`(x)) trigger has_type(x, SINT(bits))
+axiom: forall bits: Int, x: Poly. has_type(x, FLOAT(bits)) ==> x = I(`%I`(x)) trigger has_type(x, FLOAT(bits))
+axiom: forall x: Poly. has_type(x, CHAR) ==> x = I(`%I`(x)) trigger has_type(x, CHAR)
+axiom: forall x: Poly. has_type(x, REAL) ==> x = R(`%R`(x)) trigger has_type(x, REAL)
+fn ext_eq(x0: Bool, x1: Type, x2: Poly, x3: Poly): Bool
+axiom: forall deep: Bool, t: Type, x: Poly, y: Poly. (x = y) = ext_eq(deep, t, x, y) trigger ext_eq(deep, t, x, y)
+const SZ: Int
+axiom: SZ = 32 or SZ = 64
+fn uHi(x0: Int): Int
+fn iLo(x0: Int): Int
+fn iHi(x0: Int): Int
+axiom: uHi(8) = 256
+axiom: uHi(16) = 65536
+axiom: uHi(32) = 4294967296
+axiom: uHi(64) = 18446744073709551616
+axiom: uHi(128) = 1 + 340282366920938463463374607431768211455
+axiom: iLo(8) = -128
+axiom: iLo(16) = -32768
+axiom: iLo(32) = -2147483648
+axiom: iLo(64) = -9223372036854775808
+axiom: iLo(128) = -170141183460469231731687303715884105728
+axiom: iHi(8) = 128
+axiom: iHi(16) = 32768
+axiom: iHi(32) = 2147483648
+axiom: iHi(64) = 9223372036854775808
+axiom: iHi(128) = 170141183460469231731687303715884105728
+fn nClip(x0: Int): Int
+fn uClip(x0: Int, x1: Int): Int
+fn iClip(x0: Int, x1: Int): Int
+fn charClip(x0: Int): Int
+axiom: forall i: Int. 0 <= nClip(i) and (0 <= i ==> i = nClip(i)) trigger nClip(i)
+axiom: forall bits: Int, i: Int. 0 <= uClip(bits, i) and uClip(bits, i) < uHi(bits) and (0 <= i and i < uHi(bits) ==> i = uClip(bits, i)) trigger uClip(bits, i)
+axiom: forall bits: Int, i: Int. iLo(bits) <= iClip(bits, i) and iClip(bits, i) < iHi(bits) and (iLo(bits) <= i and i < iHi(bits) ==> i = iClip(bits, i)) trigger iClip(bits, i)
+axiom: forall i: Int. (0 <= charClip(i) and charClip(i) <= 55295 or 57344 <= charClip(i) and charClip(i) <= 1114111) and (0 <= i and i <= 55295 or 57344 <= i and i <= 1114111 ==> i = charClip(i)) trigger charClip(i)
+fn uInv(x0: Int, x1: Int): Bool
+fn iInv(x0: Int, x1: Int): Bool
+fn charInv(x0: Int): Bool
+axiom: forall bits: Int, i: Int. uInv(bits, i) = (0 <= i and i < uHi(bits)) trigger uInv(bits, i)
+axiom: forall bits: Int, i: Int. iInv(bits, i) = (iLo(bits) <= i and i < iHi(bits)) trigger iInv(bits, i)
+axiom: forall i: Int. charInv(i) = (0 <= i and i <= 55295 or 57344 <= i and i <= 1114111) trigger charInv(i)
+axiom: forall x: Int. has_type(I(x), INT) trigger has_type(I(x), INT)
+axiom: forall x: Int. 0 <= x ==> has_type(I(x), NAT) trigger has_type(I(x), NAT)
+axiom: forall x: Int. uInv(SZ, x) ==> has_type(I(x), USIZE) trigger has_type(I(x), USIZE)
+axiom: forall x: Int. iInv(SZ, x) ==> has_type(I(x), ISIZE) trigger has_type(I(x), ISIZE)
+axiom: forall bits: Int, x: Int. uInv(bits, x) ==> has_type(I(x), UINT(bits)) trigger has_type(I(x), UINT(bits))
+axiom: forall bits: Int, x: Int. iInv(bits, x) ==> has_type(I(x), SINT(bits)) trigger has_type(I(x), SINT(bits))
+axiom: forall bits: Int, x: Int. uInv(bits, x) ==> has_type(I(x), FLOAT(bits)) trigger has_type(I(x), FLOAT(bits))
+axiom: forall x: Int. charInv(x) ==> has_type(I(x), CHAR) trigger has_type(I(x), CHAR)
+axiom: forall x: Poly. has_type(x, NAT) ==> 0 <= `%I`(x) trigger has_type(x, NAT)
+axiom: forall x: Poly. has_type(x, USIZE) ==> uInv(SZ, `%I`(x)) trigger has_type(x, USIZE)
+axiom: forall x: Poly. has_type(x, ISIZE) ==> iInv(SZ, `%I`(x)) trigger has_type(x, ISIZE)
+axiom: forall bits: Int, x: Poly. has_type(x, UINT(bits)) ==> uInv(bits, `%I`(x)) trigger has_type(x, UINT(bits))
+axiom: forall bits: Int, x: Poly. has_type(x, SINT(bits)) ==> iInv(bits, `%I`(x)) trigger has_type(x, SINT(bits))
+axiom: forall bits: Int, x: Poly. has_type(x, FLOAT(bits)) ==> uInv(bits, `%I`(x)) trigger has_type(x, FLOAT(bits))
+fn Add(x0: Int, x1: Int): Int
+fn Sub(x0: Int, x1: Int): Int
+fn Mul(x0: Int, x1: Int): Int
+fn EucDiv(x0: Int, x1: Int): Int
+fn EucMod(x0: Int, x1: Int): Int
+fn RAdd(x0: Real, x1: Real): Real
+fn RSub(x0: Real, x1: Real): Real
+fn RMul(x0: Real, x1: Real): Real
+fn RDiv(x0: Real, x1: Real): Real
+axiom: forall x: Int, y: Int. Add(x, y) = x + y trigger Add(x, y)
+axiom: forall x: Int, y: Int. Sub(x, y) = x - y trigger Sub(x, y)
+axiom: forall x: Int, y: Int. Mul(x, y) = x * y trigger Mul(x, y)
+axiom: forall x: Int, y: Int. EucDiv(x, y) = div(x, y) trigger EucDiv(x, y)
+axiom: forall x: Int, y: Int. EucMod(x, y) = mod(x, y) trigger EucMod(x, y)
+axiom: forall x: Real, y: Real. RAdd(x, y) = x + y trigger RAdd(x, y)
+axiom: forall x: Real, y: Real. RSub(x, y) = x - y trigger RSub(x, y)
+axiom: forall x: Real, y: Real. RMul(x, y) = x * y trigger RMul(x, y)
+axiom: forall x: Real, y: Real. RDiv(x, y) = x / y trigger RDiv(x, y)
+axiom: forall x: Int, y: Int. 0 <= x and 0 <= y ==> 0 <= Mul(x, y) trigger Mul(x, y)
+axiom: forall x: Int, y: Int. 0 <= x and 0 < y ==> 0 <= EucDiv(x, y) and EucDiv(x, y) <= x trigger EucDiv(x, y)
+axiom: forall x: Int, y: Int. 0 <= x and 0 < y ==> 0 <= EucMod(x, y) and EucMod(x, y) < y trigger EucMod(x, y)
+fn bitxor(x0: Poly, x1: Poly): Int
+fn bitand(x0: Poly, x1: Poly): Int
+fn bitor(x0: Poly, x1: Poly): Int
+fn bitshr(x0: Poly, x1: Poly): Int
+fn bitshl(x0: Poly, x1: Poly): Int
+fn bitnot(x0: Poly): Int
+axiom: forall x: Poly, y: Poly, bits: Int. uInv(bits, `%I`(x)) and uInv(bits, `%I`(y)) ==> uInv(bits, bitxor(x, y)) trigger uClip(bits, bitxor(x, y))
+axiom: forall x: Poly, y: Poly, bits: Int. iInv(bits, `%I`(x)) and iInv(bits, `%I`(y)) ==> iInv(bits, bitxor(x, y)) trigger iClip(bits, bitxor(x, y))
+axiom: forall x: Poly, y: Poly, bits: Int. uInv(bits, `%I`(x)) and uInv(bits, `%I`(y)) ==> uInv(bits, bitor(x, y)) trigger uClip(bits, bitor(x, y))
+axiom: forall x: Poly, y: Poly, bits: Int. iInv(bits, `%I`(x)) and iInv(bits, `%I`(y)) ==> iInv(bits, bitor(x, y)) trigger iClip(bits, bitor(x, y))
+axiom: forall x: Poly, y: Poly, bits: Int. uInv(bits, `%I`(x)) and uInv(bits, `%I`(y)) ==> uInv(bits, bitand(x, y)) trigger uClip(bits, bitand(x, y))
+axiom: forall x: Poly, y: Poly, bits: Int. iInv(bits, `%I`(x)) and iInv(bits, `%I`(y)) ==> iInv(bits, bitand(x, y)) trigger iClip(bits, bitand(x, y))
+axiom: forall x: Poly, y: Poly, bits: Int. uInv(bits, `%I`(x)) and 0 <= `%I`(y) ==> uInv(bits, bitshr(x, y)) trigger uClip(bits, bitshr(x, y))
+axiom: forall x: Poly, y: Poly, bits: Int. iInv(bits, `%I`(x)) and 0 <= `%I`(y) ==> iInv(bits, bitshr(x, y)) trigger iClip(bits, bitshr(x, y))
+fn singular_mod(x0: Int, x1: Int): Int
+axiom: forall x: Int, y: Int. not (y = 0) ==> EucMod(x, y) = singular_mod(x, y) trigger singular_mod(x, y)
+fn has_resolved(x0: Dcr, x1: Type, x2: Poly): Bool
+fn closure_req(x0: Type, x1: Dcr, x2: Type, x3: Poly, x4: Poly): Bool
+fn closure_ens(x0: Type, x1: Dcr, x2: Type, x3: Poly, x4: Poly, x5: Poly): Bool
+fn default_ens(x0: Type, x1: Dcr, x2: Type, x3: Poly, x4: Poly, x5: Poly): Bool
+fn height(x0: Poly): Height
+fn height_lt(x0: Height, x1: Height): Bool
+fn fun_from_recursive_field(x0: Poly): Poly
+fn check_decrease_height(x0: Poly, x1: Poly, x2: Bool): Bool
+axiom: forall cur: Poly, prev: Poly, otherwise: Bool. check_decrease_height(cur, prev, otherwise) = (height_lt(height(cur), height(prev)) or height(cur) = height(prev) and otherwise) trigger check_decrease_height(cur, prev, otherwise)
+axiom: forall cur: Int, prev: Int. height_lt(height(I(cur)), height(I(prev))) = (0 <= cur and cur < prev) trigger height_lt(height(I(cur)), height(I(prev)))
+fn `partial-order`(x0: Height, x1: Height): Bool
+axiom: forall x: Height. `partial-order`(x, x)
+axiom: forall x: Height, y: Height. `partial-order`(x, y) and `partial-order`(y, x) ==> x = y
+axiom: forall x: Height, y: Height, z: Height. `partial-order`(x, y) and `partial-order`(y, z) ==> `partial-order`(x, z)
+axiom: forall x: Height, y: Height. height_lt(x, y) = (`partial-order`(x, y) and not (x = y))
+const `fuel%vstd!function.axiom_fn_mut_call_requires.`: FuelId
+const `fuel%vstd!function.axiom_fn_mut_call_ensures.`: FuelId
+const `fuel%vstd!array.group_array_axioms.`: FuelId
+const `fuel%vstd!function.group_function_axioms.`: FuelId
+const `fuel%vstd!imap.group_imap_lemmas.`: FuelId
+const `fuel%vstd!iset.group_iset_lemmas.`: FuelId
+const `fuel%vstd!laws_cmp.group_laws_cmp.`: FuelId
+const `fuel%vstd!laws_eq.bool_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.u8_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.i8_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.u16_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.i16_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.u32_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.i32_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.u64_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.i64_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.u128_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.i128_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.usize_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.isize_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_1_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_2_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_3_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_4_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_5_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_6_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_7_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_8_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_9_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_10_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_11_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.tuple_12_laws.group_laws_eq.`: FuelId
+const `fuel%vstd!laws_eq.group_laws_eq.`: FuelId
+const `fuel%vstd!layout.group_align_properties.`: FuelId
+const `fuel%vstd!layout.group_layout_axioms.`: FuelId
+const `fuel%vstd!map.group_map_lemmas.`: FuelId
+const `fuel%vstd!multiset.group_multiset_axioms.`: FuelId
+const `fuel%vstd!raw_ptr.group_raw_ptr_axioms.`: FuelId
+const `fuel%vstd!seq.group_seq_axioms.`: FuelId
+const `fuel%vstd!seq_lib.group_filter_ensures.`: FuelId
+const `fuel%vstd!seq_lib.group_seq_lib_default.`: FuelId
+const `fuel%vstd!set.group_set_lemmas.`: FuelId
+const `fuel%vstd!set_lib.group_set_lib_default.`: FuelId
+const `fuel%vstd!slice.group_slice_axioms.`: FuelId
+const `fuel%vstd!string.group_string_axioms.`: FuelId
+const `fuel%vstd!std_specs.bits.group_bits_axioms.`: FuelId
+const `fuel%vstd!std_specs.control_flow.group_control_flow_axioms.`: FuelId
+const `fuel%vstd!std_specs.iter.group_iter_axioms.`: FuelId
+const `fuel%vstd!std_specs.manually_drop.group_manually_drop_axioms.`: FuelId
+const `fuel%vstd!std_specs.btree.group_btree_axioms.`: FuelId
+const `fuel%vstd!std_specs.hash.group_hash_axioms.`: FuelId
+const `fuel%vstd!std_specs.range.group_range_axioms.`: FuelId
+const `fuel%vstd!std_specs.slice.group_slice_axioms.`: FuelId
+const `fuel%vstd!std_specs.vec.group_vec_axioms.`: FuelId
+const `fuel%vstd!std_specs.vecdeque.group_vec_dequeue_axioms.`: FuelId
+const `fuel%vstd!group_vstd_default.`: FuelId
+fn `%%fuel_distinct_ord%%`(x0: FuelId): Int
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!function.axiom_fn_mut_call_requires.`) = 0
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!function.axiom_fn_mut_call_ensures.`) = 1
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!array.group_array_axioms.`) = 2
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!function.group_function_axioms.`) = 3
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!imap.group_imap_lemmas.`) = 4
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!iset.group_iset_lemmas.`) = 5
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_cmp.group_laws_cmp.`) = 6
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.bool_laws.group_laws_eq.`) = 7
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.u8_laws.group_laws_eq.`) = 8
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.i8_laws.group_laws_eq.`) = 9
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.u16_laws.group_laws_eq.`) = 10
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.i16_laws.group_laws_eq.`) = 11
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.u32_laws.group_laws_eq.`) = 12
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.i32_laws.group_laws_eq.`) = 13
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.u64_laws.group_laws_eq.`) = 14
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.i64_laws.group_laws_eq.`) = 15
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.u128_laws.group_laws_eq.`) = 16
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.i128_laws.group_laws_eq.`) = 17
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.usize_laws.group_laws_eq.`) = 18
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.isize_laws.group_laws_eq.`) = 19
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_1_laws.group_laws_eq.`) = 20
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_2_laws.group_laws_eq.`) = 21
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_3_laws.group_laws_eq.`) = 22
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_4_laws.group_laws_eq.`) = 23
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_5_laws.group_laws_eq.`) = 24
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_6_laws.group_laws_eq.`) = 25
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_7_laws.group_laws_eq.`) = 26
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_8_laws.group_laws_eq.`) = 27
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_9_laws.group_laws_eq.`) = 28
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_10_laws.group_laws_eq.`) = 29
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_11_laws.group_laws_eq.`) = 30
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.tuple_12_laws.group_laws_eq.`) = 31
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!laws_eq.group_laws_eq.`) = 32
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!layout.group_align_properties.`) = 33
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!layout.group_layout_axioms.`) = 34
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!map.group_map_lemmas.`) = 35
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!multiset.group_multiset_axioms.`) = 36
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!raw_ptr.group_raw_ptr_axioms.`) = 37
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!seq.group_seq_axioms.`) = 38
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!seq_lib.group_filter_ensures.`) = 39
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!seq_lib.group_seq_lib_default.`) = 40
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!set.group_set_lemmas.`) = 41
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!set_lib.group_set_lib_default.`) = 42
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!slice.group_slice_axioms.`) = 43
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!string.group_string_axioms.`) = 44
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.bits.group_bits_axioms.`) = 45
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.control_flow.group_control_flow_axioms.`) = 46
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.iter.group_iter_axioms.`) = 47
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.manually_drop.group_manually_drop_axioms.`) = 48
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.btree.group_btree_axioms.`) = 49
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.hash.group_hash_axioms.`) = 50
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.range.group_range_axioms.`) = 51
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.slice.group_slice_axioms.`) = 52
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.vec.group_vec_axioms.`) = 53
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!std_specs.vecdeque.group_vec_dequeue_axioms.`) = 54
+axiom: `%%fuel_distinct_ord%%`(`fuel%vstd!group_vstd_default.`) = 55
+axiom: fuel_bool_default(`fuel%vstd!function.group_function_axioms.`) ==> fuel_bool_default(`fuel%vstd!function.axiom_fn_mut_call_requires.`) and fuel_bool_default(`fuel%vstd!function.axiom_fn_mut_call_ensures.`)
+axiom: fuel_bool_default(`fuel%vstd!laws_eq.group_laws_eq.`) ==> fuel_bool_default(`fuel%vstd!laws_eq.bool_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.u8_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.i8_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.u16_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.i16_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.u32_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.i32_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.u64_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.i64_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.u128_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.i128_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.usize_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.isize_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_1_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_2_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_3_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_4_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_5_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_6_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_7_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_8_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_9_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_10_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_11_laws.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_eq.tuple_12_laws.group_laws_eq.`)
+axiom: fuel_bool_default(`fuel%vstd!layout.group_layout_axioms.`) ==> fuel_bool_default(`fuel%vstd!layout.group_align_properties.`)
+axiom: fuel_bool_default(`fuel%vstd!seq_lib.group_seq_lib_default.`) ==> fuel_bool_default(`fuel%vstd!seq_lib.group_filter_ensures.`)
+axiom: fuel_bool_default(`fuel%vstd!group_vstd_default.`)
+axiom: fuel_bool_default(`fuel%vstd!group_vstd_default.`) ==> fuel_bool_default(`fuel%vstd!seq.group_seq_axioms.`) and fuel_bool_default(`fuel%vstd!seq_lib.group_seq_lib_default.`) and fuel_bool_default(`fuel%vstd!map.group_map_lemmas.`) and fuel_bool_default(`fuel%vstd!set.group_set_lemmas.`) and fuel_bool_default(`fuel%vstd!imap.group_imap_lemmas.`) and fuel_bool_default(`fuel%vstd!iset.group_iset_lemmas.`) and fuel_bool_default(`fuel%vstd!set_lib.group_set_lib_default.`) and fuel_bool_default(`fuel%vstd!multiset.group_multiset_axioms.`) and fuel_bool_default(`fuel%vstd!function.group_function_axioms.`) and fuel_bool_default(`fuel%vstd!laws_eq.group_laws_eq.`) and fuel_bool_default(`fuel%vstd!laws_cmp.group_laws_cmp.`) and fuel_bool_default(`fuel%vstd!slice.group_slice_axioms.`) and fuel_bool_default(`fuel%vstd!array.group_array_axioms.`) and fuel_bool_default(`fuel%vstd!string.group_string_axioms.`) and fuel_bool_default(`fuel%vstd!raw_ptr.group_raw_ptr_axioms.`) and fuel_bool_default(`fuel%vstd!layout.group_layout_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.range.group_range_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.bits.group_bits_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.control_flow.group_control_flow_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.slice.group_slice_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.manually_drop.group_manually_drop_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.iter.group_iter_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.vec.group_vec_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.vecdeque.group_vec_dequeue_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.hash.group_hash_axioms.`) and fuel_bool_default(`fuel%vstd!std_specs.btree.group_btree_axioms.`)
+fn `tr_bound%core!marker.Tuple.`(x0: Dcr, x1: Type): Bool
+fn `tr_bound%core!ops.function.FnOnce.`(x0: Dcr, x1: Type, x2: Dcr, x3: Type): Bool
+fn `tr_bound%core!ops.function.FnMut.`(x0: Dcr, x1: Type, x2: Dcr, x3: Type): Bool
+fn `tr_bound%core!ops.function.Fn.`(x0: Dcr, x1: Type, x2: Dcr, x3: Type): Bool
+fn `tr_bound%core!alloc.Allocator.`(x0: Dcr, x1: Type): Bool
+fn `proj%%core!ops.function.FnOnce./Output`(x0: Dcr, x1: Type, x2: Dcr, x3: Type): Dcr
+fn `proj%core!ops.function.FnOnce./Output`(x0: Dcr, x1: Type, x2: Dcr, x3: Type): Type
+data `tuple%0.` = `tuple%0./tuple%0`
+fn `Poly%tuple%0.`(x0: `tuple%0.`): Poly
+fn `%Poly%tuple%0.`(x0: Poly): `tuple%0.`
+axiom: forall x: `tuple%0.`. x = `%Poly%tuple%0.`(`Poly%tuple%0.`(x)) trigger `Poly%tuple%0.`(x)
+axiom: forall x: Poly. has_type(x, `TYPE%tuple%0.`) ==> x = `Poly%tuple%0.`(`%Poly%tuple%0.`(x)) trigger has_type(x, `TYPE%tuple%0.`)
+axiom: forall x: `tuple%0.`. has_type(`Poly%tuple%0.`(x), `TYPE%tuple%0.`) trigger has_type(`Poly%tuple%0.`(x), `TYPE%tuple%0.`)
+axiom: forall `Self%&.`: Dcr, `Self%&`: Type. true trigger `tr_bound%core!marker.Tuple.`(`Self%&.`, `Self%&`)
+axiom: forall `Self%&.`: Dcr, `Self%&`: Type, `Args&.`: Dcr, `Args&`: Type. `tr_bound%core!ops.function.FnOnce.`(`Self%&.`, `Self%&`, `Args&.`, `Args&`) ==> sized(`Args&.`) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`) and sized(`proj%%core!ops.function.FnOnce./Output`(`Self%&.`, `Self%&`, `Args&.`, `Args&`)) trigger `tr_bound%core!ops.function.FnOnce.`(`Self%&.`, `Self%&`, `Args&.`, `Args&`)
+axiom: forall `Self%&.`: Dcr, `Self%&`: Type, `Args&.`: Dcr, `Args&`: Type. `tr_bound%core!ops.function.FnMut.`(`Self%&.`, `Self%&`, `Args&.`, `Args&`) ==> `tr_bound%core!ops.function.FnOnce.`(`Self%&.`, `Self%&`, `Args&.`, `Args&`) and sized(`Args&.`) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`) trigger `tr_bound%core!ops.function.FnMut.`(`Self%&.`, `Self%&`, `Args&.`, `Args&`)
+axiom: forall `Self%&.`: Dcr, `Self%&`: Type, `Args&.`: Dcr, `Args&`: Type. `tr_bound%core!ops.function.Fn.`(`Self%&.`, `Self%&`, `Args&.`, `Args&`) ==> `tr_bound%core!ops.function.FnMut.`(`Self%&.`, `Self%&`, `Args&.`, `Args&`) and sized(`Args&.`) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`) trigger `tr_bound%core!ops.function.Fn.`(`Self%&.`, `Self%&`, `Args&.`, `Args&`)
+axiom: forall `Self%&.`: Dcr, `Self%&`: Type. true trigger `tr_bound%core!alloc.Allocator.`(`Self%&.`, `Self%&`)
+axiom: forall `A&.`: Dcr, `A&`: Type, `F&.`: Dcr, `F&`: Type. sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`A&.`, `A&`) and `tr_bound%core!ops.function.Fn.`(`F&.`, `F&`, `A&.`, `A&`) ==> `proj%%core!ops.function.FnOnce./Output`(REF(`F&.`), `F&`, `A&.`, `A&`) = `proj%%core!ops.function.FnOnce./Output`(`F&.`, `F&`, `A&.`, `A&`) trigger `proj%%core!ops.function.FnOnce./Output`(REF(`F&.`), `F&`, `A&.`, `A&`)
+axiom: forall `A&.`: Dcr, `A&`: Type, `F&.`: Dcr, `F&`: Type. sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`A&.`, `A&`) and `tr_bound%core!ops.function.Fn.`(`F&.`, `F&`, `A&.`, `A&`) ==> `proj%core!ops.function.FnOnce./Output`(REF(`F&.`), `F&`, `A&.`, `A&`) = `proj%core!ops.function.FnOnce./Output`(`F&.`, `F&`, `A&.`, `A&`) trigger `proj%core!ops.function.FnOnce./Output`(REF(`F&.`), `F&`, `A&.`, `A&`)
+axiom: forall `A&.`: Dcr, `A&`: Type, `F&.`: Dcr, `F&`: Type. sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`A&.`, `A&`) and `tr_bound%core!ops.function.FnMut.`(`F&.`, `F&`, `A&.`, `A&`) ==> `proj%%core!ops.function.FnOnce./Output`(`$`, MUTREF(`F&.`, `F&`), `A&.`, `A&`) = `proj%%core!ops.function.FnOnce./Output`(`F&.`, `F&`, `A&.`, `A&`) trigger `proj%%core!ops.function.FnOnce./Output`(`$`, MUTREF(`F&.`, `F&`), `A&.`, `A&`)
+axiom: forall `A&.`: Dcr, `A&`: Type, `F&.`: Dcr, `F&`: Type. sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`A&.`, `A&`) and `tr_bound%core!ops.function.FnMut.`(`F&.`, `F&`, `A&.`, `A&`) ==> `proj%core!ops.function.FnOnce./Output`(`$`, MUTREF(`F&.`, `F&`), `A&.`, `A&`) = `proj%core!ops.function.FnOnce./Output`(`F&.`, `F&`, `A&.`, `A&`) trigger `proj%core!ops.function.FnOnce./Output`(`$`, MUTREF(`F&.`, `F&`), `A&.`, `A&`)
+axiom: forall `Args&.`: Dcr, `Args&`: Type, `F&.`: Dcr, `F&`: Type, `A&.`: Dcr, `A&`: Type. sized(`Args&.`) and sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`) and `tr_bound%core!ops.function.FnOnce.`(`F&.`, `F&`, `Args&.`, `Args&`) and `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `proj%%core!ops.function.FnOnce./Output`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`) = `proj%%core!ops.function.FnOnce./Output`(`F&.`, `F&`, `Args&.`, `Args&`) trigger `proj%%core!ops.function.FnOnce./Output`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`)
+axiom: forall `Args&.`: Dcr, `Args&`: Type, `F&.`: Dcr, `F&`: Type, `A&.`: Dcr, `A&`: Type. sized(`Args&.`) and sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`) and `tr_bound%core!ops.function.FnOnce.`(`F&.`, `F&`, `Args&.`, `Args&`) and `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `proj%core!ops.function.FnOnce./Output`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`) = `proj%core!ops.function.FnOnce./Output`(`F&.`, `F&`, `Args&.`, `Args&`) trigger `proj%core!ops.function.FnOnce./Output`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`)
+axiom: forall `A&.`: Dcr, `A&`: Type, `F&.`: Dcr, `F&`: Type. sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`A&.`, `A&`) and `tr_bound%core!ops.function.FnMut.`(`F&.`, `F&`, `A&.`, `A&`) ==> `tr_bound%core!ops.function.FnOnce.`(`$`, MUTREF(`F&.`, `F&`), `A&.`, `A&`) trigger `tr_bound%core!ops.function.FnOnce.`(`$`, MUTREF(`F&.`, `F&`), `A&.`, `A&`)
+axiom: fuel_bool(`fuel%vstd!function.axiom_fn_mut_call_requires.`) ==> (forall `Args&.`: Dcr, `Args&`: Type, `F&.`: Dcr, `F&`: Type, `f!`: Poly, `args!`: Poly. has_type(`f!`, MUTREF(`F&.`, `F&`)) and has_type(`args!`, `Args&`) ==> (((sized(`Args&.`) and sized(`F&.`)) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`)) and `tr_bound%core!ops.function.FnMut.`(`F&.`, `F&`, `Args&.`, `Args&`)) and closure_req(`F&`, `Args&.`, `Args&`, `mut_ref_current%`(`f!`), `args!`) ==> closure_req(MUTREF(`F&.`, `F&`), `Args&.`, `Args&`, `f!`, `args!`) trigger closure_req(MUTREF(`F&.`, `F&`), `Args&.`, `Args&`, `f!`, `args!`))
+axiom: fuel_bool(`fuel%vstd!function.axiom_fn_mut_call_ensures.`) ==> (forall `Args&.`: Dcr, `Args&`: Type, `F&.`: Dcr, `F&`: Type, `f!`: Poly, `args!`: Poly, `output!`: Poly. has_type(`f!`, MUTREF(`F&.`, `F&`)) and has_type(`args!`, `Args&`) and has_type(`output!`, `proj%core!ops.function.FnOnce./Output`(`F&.`, `F&`, `Args&.`, `Args&`)) ==> (((sized(`Args&.`) and sized(`F&.`)) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`)) and `tr_bound%core!ops.function.FnMut.`(`F&.`, `F&`, `Args&.`, `Args&`)) and closure_ens(MUTREF(`F&.`, `F&`), `Args&.`, `Args&`, `f!`, `args!`, `output!`) ==> closure_ens(`F&`, `Args&.`, `Args&`, `mut_ref_current%`(`f!`), `args!`, `output!`) and `mut_ref_current%`(`f!`) = `mut_ref_future%`(`f!`) trigger closure_ens(MUTREF(`F&.`, `F&`), `Args&.`, `Args&`, `f!`, `args!`, `output!`))
+axiom: `tr_bound%core!marker.Tuple.`(`$`, `TYPE%tuple%0.`)
+axiom: forall `A&.`: Dcr, `A&`: Type, `F&.`: Dcr, `F&`: Type. sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`A&.`, `A&`) and `tr_bound%core!ops.function.Fn.`(`F&.`, `F&`, `A&.`, `A&`) ==> `tr_bound%core!ops.function.FnOnce.`(REF(`F&.`), `F&`, `A&.`, `A&`) trigger `tr_bound%core!ops.function.FnOnce.`(REF(`F&.`), `F&`, `A&.`, `A&`)
+axiom: forall `A&.`: Dcr, `A&`: Type, `F&.`: Dcr, `F&`: Type. sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`A&.`, `A&`) and `tr_bound%core!ops.function.Fn.`(`F&.`, `F&`, `A&.`, `A&`) ==> `tr_bound%core!ops.function.FnMut.`(REF(`F&.`), `F&`, `A&.`, `A&`) trigger `tr_bound%core!ops.function.FnMut.`(REF(`F&.`), `F&`, `A&.`, `A&`)
+axiom: forall `A&.`: Dcr, `A&`: Type, `F&.`: Dcr, `F&`: Type. sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`A&.`, `A&`) and `tr_bound%core!ops.function.Fn.`(`F&.`, `F&`, `A&.`, `A&`) ==> `tr_bound%core!ops.function.Fn.`(REF(`F&.`), `F&`, `A&.`, `A&`) trigger `tr_bound%core!ops.function.Fn.`(REF(`F&.`), `F&`, `A&.`, `A&`)
+axiom: forall `Args&.`: Dcr, `Args&`: Type, `F&.`: Dcr, `F&`: Type, `A&.`: Dcr, `A&`: Type. sized(`Args&.`) and sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`) and `tr_bound%core!ops.function.FnOnce.`(`F&.`, `F&`, `Args&.`, `Args&`) and `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `tr_bound%core!ops.function.FnOnce.`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`) trigger `tr_bound%core!ops.function.FnOnce.`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`)
+axiom: forall `Args&.`: Dcr, `Args&`: Type, `F&.`: Dcr, `F&`: Type, `A&.`: Dcr, `A&`: Type. sized(`Args&.`) and sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`) and `tr_bound%core!ops.function.FnMut.`(`F&.`, `F&`, `Args&.`, `Args&`) and `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `tr_bound%core!ops.function.FnMut.`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`) trigger `tr_bound%core!ops.function.FnMut.`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`)
+axiom: forall `Args&.`: Dcr, `Args&`: Type, `F&.`: Dcr, `F&`: Type, `A&.`: Dcr, `A&`: Type. sized(`Args&.`) and sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`Args&.`, `Args&`) and `tr_bound%core!ops.function.Fn.`(`F&.`, `F&`, `Args&.`, `Args&`) and `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `tr_bound%core!ops.function.Fn.`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`) trigger `tr_bound%core!ops.function.Fn.`(BOX(`A&.`, `A&`, `F&.`), `F&`, `Args&.`, `Args&`)
+axiom: forall `A&.`: Dcr, `A&`: Type, `F&.`: Dcr, `F&`: Type. sized(`A&.`) and `tr_bound%core!marker.Tuple.`(`A&.`, `A&`) and `tr_bound%core!ops.function.FnMut.`(`F&.`, `F&`, `A&.`, `A&`) ==> `tr_bound%core!ops.function.FnMut.`(`$`, MUTREF(`F&.`, `F&`), `A&.`, `A&`) trigger `tr_bound%core!ops.function.FnMut.`(`$`, MUTREF(`F&.`, `F&`), `A&.`, `A&`)
+axiom: forall `A&.`: Dcr, `A&`: Type. `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `tr_bound%core!alloc.Allocator.`(REF(`A&.`), `A&`) trigger `tr_bound%core!alloc.Allocator.`(REF(`A&.`), `A&`)
+axiom: forall `A&.`: Dcr, `A&`: Type. `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `tr_bound%core!alloc.Allocator.`(`$`, MUTREF(`A&.`, `A&`)) trigger `tr_bound%core!alloc.Allocator.`(`$`, MUTREF(`A&.`, `A&`))
+axiom: forall `T&.`: Dcr, `T&`: Type, `A&.`: Dcr, `A&`: Type. sized(`A&.`) and `tr_bound%core!alloc.Allocator.`(`T&.`, `T&`) and `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `tr_bound%core!alloc.Allocator.`(BOX(`A&.`, `A&`, `T&.`), `T&`) trigger `tr_bound%core!alloc.Allocator.`(BOX(`A&.`, `A&`, `T&.`), `T&`)
+axiom: forall `T&.`: Dcr, `T&`: Type, `A&.`: Dcr, `A&`: Type. sized(`A&.`) and `tr_bound%core!alloc.Allocator.`(`T&.`, `T&`) and `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `tr_bound%core!alloc.Allocator.`(RC(`A&.`, `A&`, `T&.`), `T&`) trigger `tr_bound%core!alloc.Allocator.`(RC(`A&.`, `A&`, `T&.`), `T&`)
+axiom: forall `T&.`: Dcr, `T&`: Type, `A&.`: Dcr, `A&`: Type. sized(`A&.`) and `tr_bound%core!alloc.Allocator.`(`T&.`, `T&`) and `tr_bound%core!alloc.Allocator.`(`A&.`, `A&`) ==> `tr_bound%core!alloc.Allocator.`(ARC(`A&.`, `A&`, `T&.`), `T&`) trigger `tr_bound%core!alloc.Allocator.`(ARC(`A&.`, `A&`, `T&.`), `T&`)
+fn `req%verify_arith!p.`(x0: Int, x1: Int): Bool
+axiom: forall `x!`: Int, `y!`: Int. `req%verify_arith!p.`(`x!`, `y!`) = (`x!` > 0 and `y!` > 0) trigger `req%verify_arith!p.`(`x!`, `y!`)
+fn `ens%verify_arith!p.`(x0: Int, x1: Int): Bool
+axiom: forall `x!`: Int, `y!`: Int. `ens%verify_arith!p.`(`x!`, `y!`) = (Add(`x!`, `y!`) > 0) trigger `ens%verify_arith!p.`(`x!`, `y!`)
+
+# ── obligation ──
+const `x!`: Int
+const `y!`: Int
+axiom: fuel_defaults
+axiom: `x!` > 0
+axiom: `y!` > 0
+goal: Add(`x!`, `y!`) > 0
+

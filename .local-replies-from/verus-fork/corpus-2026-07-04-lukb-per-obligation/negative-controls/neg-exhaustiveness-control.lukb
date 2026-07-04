@@ -1,0 +1,5 @@
+# Soundness control for #399: k excluded from only TWO of THREE ctors — a real
+# counterexample (k = c02) exists; expected sat, NEVER unsat.
+data E3 = c00 | c01 | c02
+const k: E3
+goal g: k = c00 or k = c01

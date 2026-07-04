@@ -1,0 +1,4 @@
+# INVALID goal (x*y can be negative): the sound verdict is sat-or-unknown, NEVER unsat.
+const x: Int
+const y: Int
+goal g: x * y >= 0

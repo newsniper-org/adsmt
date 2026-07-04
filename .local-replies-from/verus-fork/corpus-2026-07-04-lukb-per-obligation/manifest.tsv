@@ -1,0 +1,210 @@
+obligation	blocks	adsmtc	wall_ms	goal	z3_fixture	lusmt_fixture	class	bail_reason
+datatypes-match-1/ob01	11	unknown	1359	goal: `datatypes_match_1!turn_right.?`(`Poly%datatypes_match_1!Dir.`(`datatypes_match_1!tu	z3=7v/0e	lusmt=3v/4e	solver-unknown	-
+datatypes-match-1/ob02	11	unsat	8	goal: true	z3=7v/0e	lusmt=3v/4e	verified	-
+datatypes-match-1/ob03	11	unknown	1144	goal: `datatypes_match_1!dx.?`(`Poly%datatypes_match_1!Dir.`(`datatypes_match_1!turn_right	z3=7v/0e	lusmt=3v/4e	solver-unknown	-
+datatypes-match-1/ob04	11	unsat	8	goal: true	z3=7v/0e	lusmt=3v/4e	verified	-
+datatypes-match-1/ob05	11	unsat	2378	goal: Add(`datatypes_match_1!abs1.?`(I(`datatypes_match_1!dx.?`(`Poly%datatypes_match_1!Di	z3=7v/0e	lusmt=3v/4e	verified	-
+datatypes-match-1/ob06	11	unsat	8	goal: true	z3=7v/0e	lusmt=3v/4e	verified	-
+datatypes-match-1/ob07	11	unsat	875	goal: forall `d$`: Poly. has_type(`d$`, `TYPE%datatypes_match_1!Dir.`) ==> Sub(0, 1) <= `d	z3=7v/0e	lusmt=3v/4e	verified	-
+datatypes-match-1/ob08	11	unknown	4681	goal: `tmp%1` = (`datatypes_match_1!turn_right.?`(`Poly%datatypes_match_1!Dir.`(`datatypes	z3=7v/0e	lusmt=3v/4e	solver-unknown	-
+datatypes-match-1/ob09	11	unsat	8	goal: true	z3=7v/0e	lusmt=3v/4e	verified	-
+datatypes-match-1/ob10	11	unsat	924	goal: `r!` = (if `is-datatypes_match_1!Dir./North`(`d!`) then `datatypes_match_1!Dir./East	z3=7v/0e	lusmt=3v/4e	verified	-
+datatypes-match-1/ob11	11	unsat	8	goal: true	z3=7v/0e	lusmt=3v/4e	verified	-
+datatypes-match-2/ob01	9	unknown	3	goal: (`is-datatypes_match_2!Status./Running`(`s!`) ==> `p@` = `datatypes_match_2!Status./	z3=6v/0e	lusmt=3v/3e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_2!Status./Running/?0`
+datatypes-match-2/ob02	9	unknown	3	goal: `datatypes_match_2!wf.?`(`Poly%datatypes_match_2!Status.`(`s!`)) ==> (`is-datatypes_	z3=6v/0e	lusmt=3v/3e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_2!Status./Running/?0`
+datatypes-match-2/ob03	9	unknown	3	goal: `datatypes_match_2!wf.?`(`Poly%datatypes_match_2!Status.`(`datatypes_match_2!advance	z3=6v/0e	lusmt=3v/3e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_2!Status./Running/?0`
+datatypes-match-2/ob04	9	unknown	2	goal: true	z3=6v/0e	lusmt=3v/3e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_2!Status./Running/?0`
+datatypes-match-2/ob05	9	unknown	3	goal: `tmp%1` = `datatypes_match_2!Task./Task/status`(`%Poly%datatypes_match_2!Task.`(`Pol	z3=6v/0e	lusmt=3v/3e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_2!Status./Running/?0`
+datatypes-match-2/ob06	9	unknown	3	goal: true	z3=6v/0e	lusmt=3v/3e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_2!Status./Running/?0`
+datatypes-match-2/ob07	9	unknown	3	goal: (`is-datatypes_match_2!MaybeStatus./Nothing`(`m!`) ==> `%%switch_label%%0`) and (not	z3=6v/0e	lusmt=3v/3e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_2!Status./Running/?0`
+datatypes-match-2/ob08	9	unknown	3	goal: `r!` = (if `is-datatypes_match_2!Status./Idle`(`s!`) then 0 else if `is-datatypes_ma	z3=6v/0e	lusmt=3v/3e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_2!Status./Running/?0`
+datatypes-match-2/ob09	9	unknown	2	goal: true	z3=6v/0e	lusmt=3v/3e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_2!Status./Running/?0`
+datatypes-match-3/ob01	16	unknown	3	goal: `decrease%init0` = `%Poly%datatypes_match_3!Expr.`(`e!`) ==> (`is-datatypes_match_3!	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob02	16	unknown	2	goal: true	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob03	16	unknown	3	goal: `decrease%init0` = `%Poly%datatypes_match_3!Expr.`(`e!`) ==> (`is-datatypes_match_3!	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob04	16	unknown	3	goal: true	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob05	16	unknown	2	goal: `decrease%init0` = `%Poly%datatypes_match_3!Expr.`(`e!`) ==> (`is-datatypes_match_3!	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob06	16	unknown	4	goal: true	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob07	16	unknown	3	goal: fuel_bool(`fuel%datatypes_match_3!eval.`) ==> (exists `fuel%`: Fuel. `fuel_nat%datat	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob08	16	unknown	3	goal: true	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob09	16	unknown	3	goal: `tmp%1` = (`datatypes_match_3!eval.?`(`Poly%datatypes_match_3!Expr.`(`datatypes_matc	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob10	16	unknown	3	goal: true	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob11	16	unknown	3	goal: `datatypes_match_3!depth.?`(`Poly%datatypes_match_3!Expr.`(`datatypes_match_3!Expr./	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob12	16	unknown	3	goal: true	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob13	16	unknown	3	goal: `decrease%init0` = `e!` ==> (`is-datatypes_match_3!Expr./Lit`(`e!`) ==> `%%switch_la	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob14	16	unknown	3	goal: (`is-datatypes_match_3!Expr./Lit`(`e!`) ==> `%%switch_label%%0`) and (not `is-dataty	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob15	16	unknown	3	goal: `tmp%1` = `datatypes_match_3!Expr./Add`(`%Poly%datatypes_match_3!Expr.`(`Poly%dataty	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+datatypes-match-3/ob16	16	unknown	2	goal: true	z3=9v/0e	lusmt=2v/7e	stage-bail	elaborate failed: unsupported: unknown function symbol `datatypes_match_3!Expr./Lit/?0`
+divmod-real-1/ob01	10	unknown	3322	goal: let `tmp%%$` = 0 in let `tmp%%$1` = EucMod(`x!`, `n!`) in let `tmp%%$2` = `n!` in `t	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+divmod-real-1/ob02	10	unsat	8	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+divmod-real-1/ob03	10	unsat	441	goal: `req%vstd!arithmetic.div_mod.lemma_fundamental_div_mod.`(`x!`, `n!`) and (`ens%vstd!	z3=6v/0e	lusmt=2v/4e	verified	-
+divmod-real-1/ob04	10	unsat	556	goal: not (`n!` = 0) and (not (`n!` = 0) ==> `r!` = uClip(64, EucMod(`x!`, `n!`)) ==> `r!`	z3=6v/0e	lusmt=2v/4e	verified	-
+divmod-real-1/ob05	10	unsat	7	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+divmod-real-1/ob06	10	unknown	3335	goal: `tmp%1` = (EucMod(`x!`, 7) = `x!`) ==> `tmp%1` and (`tmp%1` ==> EucMod(`x!`, 7) = `x	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+divmod-real-1/ob07	10	unsat	7	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+divmod-real-1/ob08	10	unknown	3109	goal: `req%vstd!arithmetic.div_mod.lemma_fundamental_div_mod.`(`x!`, `n!`) and (`ens%vstd!	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+divmod-real-1/ob09	10	unsat	8	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+divmod-real-1/ob10	10	unsat	7	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+divmod-real-2/ob01	10	timeout	90847	goal: `divmod_real_2!is_even.?`(I(Add(`x!`, 2)))	z3=7v/0e	lusmt=4v/3e	solver-timeout	-
+divmod-real-2/ob02	10	unsat	9	goal: true	z3=7v/0e	lusmt=4v/3e	verified	-
+divmod-real-2/ob03	10	unknown	11978	goal: `req%vstd!arithmetic.div_mod.lemma_mod_multiples_basic.`(`k!`, 2) and (`ens%vstd!ari	z3=7v/0e	lusmt=4v/3e	solver-unknown	-
+divmod-real-2/ob04	10	unsat	8	goal: true	z3=7v/0e	lusmt=4v/3e	verified	-
+divmod-real-2/ob05	10	unknown	3342	goal: `req%vstd!arithmetic.div_mod.lemma_add_mod_noop.`(`a!`, `b!`, 2) and (`ens%vstd!arit	z3=7v/0e	lusmt=4v/3e	solver-unknown	-
+divmod-real-2/ob06	10	unsat	7	goal: true	z3=7v/0e	lusmt=4v/3e	verified	-
+divmod-real-2/ob07	10	unknown	5833	goal: (has_type(`k@`, INT) ==> `ens%divmod_real_2!lemma_double_is_even.`(`%I`(`k@`)) ==> `	z3=7v/0e	lusmt=4v/3e	solver-unknown	-
+divmod-real-2/ob08	10	unsat	932	goal: not (2 = 0) and (not (2 = 0) ==> `b!` = (uClip(64, EucMod(`x!`, 2)) = 0) ==> `b!` = 	z3=7v/0e	lusmt=4v/3e	verified	-
+divmod-real-2/ob09	10	unknown	4226	goal: `req%divmod_real_2!lemma_even_plus_two.`(`x!`) and (`ens%divmod_real_2!lemma_even_pl	z3=7v/0e	lusmt=4v/3e	solver-unknown	-
+divmod-real-2/ob10	10	unsat	8	goal: true	z3=7v/0e	lusmt=4v/3e	verified	-
+divmod-real-3/ob01	8	unknown	3	goal: uClip(64, `x!`) = `x!`	z3=7v/0e	lusmt=6v/1e	stage-bail	elaborate failed: unsupported: unknown function symbol `divmod_real_3!DivModResult./DivModResult/?quotient`
+divmod-real-3/ob02	8	unknown	3	goal: `n!` = `n!` and `n!` >= 0	z3=7v/0e	lusmt=6v/1e	stage-bail	elaborate failed: unsupported: unknown function symbol `divmod_real_3!DivModResult./DivModResult/?quotient`
+divmod-real-3/ob03	8	unknown	2	goal: `r!` = uClip(64, `x!`) ==> iClip(64, `r!`) = `x!` and `r!` = `x!`	z3=7v/0e	lusmt=6v/1e	stage-bail	elaborate failed: unsupported: unknown function symbol `divmod_real_3!DivModResult./DivModResult/?quotient`
+divmod-real-3/ob04	8	unknown	3	goal: not (2 = 0) and (not (2 = 0) ==> `r@` = uClip(64, EucDiv(`x!`, 2)) ==> (`req%vstd!ar	z3=7v/0e	lusmt=6v/1e	stage-bail	elaborate failed: unsupported: unknown function symbol `divmod_real_3!DivModResult./DivModResult/?quotient`
+divmod-real-3/ob05	8	unknown	2	goal: EucMod(`x!`, `n!`) = EucMod(`x!`, `n!`) and EucMod(`x!`, `n!`) >= 0	z3=7v/0e	lusmt=6v/1e	stage-bail	elaborate failed: unsupported: unknown function symbol `divmod_real_3!DivModResult./DivModResult/?quotient`
+divmod-real-3/ob06	8	unknown	2	goal: `req%vstd!arithmetic.div_mod.lemma_fundamental_div_mod.`(`x!`, `n!`) and (`ens%vstd!	z3=7v/0e	lusmt=6v/1e	stage-bail	elaborate failed: unsupported: unknown function symbol `divmod_real_3!DivModResult./DivModResult/?quotient`
+divmod-real-3/ob07	8	unknown	2	goal: true	z3=7v/0e	lusmt=6v/1e	stage-bail	elaborate failed: unsupported: unknown function symbol `divmod_real_3!DivModResult./DivModResult/?quotient`
+divmod-real-3/ob08	8	unknown	2	goal: true	z3=7v/0e	lusmt=6v/1e	stage-bail	elaborate failed: unsupported: unknown function symbol `divmod_real_3!DivModResult./DivModResult/?quotient`
+fuel-recursion-1/ob01	14	unknown	2107	goal: `decrease%init0` = `%I`(`n!`) ==> (`%I`(`n!`) = 0 ==> `tmp%4` = 0 ==> `%%switch_labe	z3=8v/0e	lusmt=2v/6e	solver-unknown	-
+fuel-recursion-1/ob02	14	unsat	7	goal: true	z3=8v/0e	lusmt=2v/6e	verified	-
+fuel-recursion-1/ob03	14	unsat	1118	goal: `fuel_recursion_1!sum_to.?`(I(0)) = 0	z3=8v/0e	lusmt=2v/6e	verified	-
+fuel-recursion-1/ob04	14	unknown	993	goal: fuel_bool(`fuel%fuel_recursion_1!sum_to.`) ==> (exists `fuel%`: Fuel. `fuel_nat%fuel	z3=8v/0e	lusmt=2v/6e	solver-unknown	-
+fuel-recursion-1/ob05	14	unsat	7	goal: true	z3=8v/0e	lusmt=2v/6e	verified	-
+fuel-recursion-1/ob06	14	unsat	652	goal: `fuel_recursion_1!sum_to.?`(I(nClip(Add(`n!`, 1)))) = nClip(Add(nClip(Add(`fuel_recu	z3=8v/0e	lusmt=2v/6e	verified	-
+fuel-recursion-1/ob07	14	unsat	7	goal: true	z3=8v/0e	lusmt=2v/6e	verified	-
+fuel-recursion-1/ob08	14	timeout	90451	goal: `decrease%init0` = `n!` ==> (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> check_de	z3=8v/0e	lusmt=2v/6e	solver-timeout	-
+fuel-recursion-1/ob09	14	unsat	8	goal: `n!` <= 1000 ==> (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> `ens%fuel_recursion	z3=8v/0e	lusmt=2v/6e	verified	-
+fuel-recursion-1/ob10	14	unknown	3229	goal: (has_type(`n@`, NAT) ==> `%I`(`n@`) <= 3 ==> fuel_bool(`fuel%fuel_recursion_1!sum_to	z3=8v/0e	lusmt=2v/6e	solver-unknown	-
+fuel-recursion-1/ob11	14	unsat	7	goal: true	z3=8v/0e	lusmt=2v/6e	verified	-
+fuel-recursion-1/ob12	14	timeout	91217	goal: `decrease%init0` = `n!` ==> (`n!` = 0 ==> `tmp%3` = 0 ==> `%%switch_label%%0`) and (	z3=8v/0e	lusmt=2v/6e	solver-timeout	-
+fuel-recursion-1/ob13	14	unsat	20	goal: `n!` <= 1000 ==> (`n!` = 0 ==> `tmp%3` = 0 ==> `%%switch_label%%0`) and (not (`n!` =	z3=8v/0e	lusmt=2v/6e	verified	-
+fuel-recursion-1/ob14	14	unsat	7	goal: true	z3=8v/0e	lusmt=2v/6e	verified	-
+fuel-recursion-2/ob01	16	unknown	895	goal: `decrease%init0` = `%I`(`n!`) ==> (`%I`(`n!`) = 0 ==> `tmp%4` = 1 ==> `%%switch_labe	z3=9v/0e	lusmt=2v/7e	solver-unknown	-
+fuel-recursion-2/ob02	16	unsat	7	goal: true	z3=9v/0e	lusmt=2v/7e	verified	-
+fuel-recursion-2/ob03	16	unknown	1992	goal: `decrease%init0` = `%I`(`n!`) ==> (`%I`(`n!`) = 0 ==> `tmp%4` = 1 ==> `%%switch_labe	z3=9v/0e	lusmt=2v/7e	solver-unknown	-
+fuel-recursion-2/ob04	16	unsat	6	goal: true	z3=9v/0e	lusmt=2v/7e	verified	-
+fuel-recursion-2/ob05	16	unknown	29570	goal: `decrease%init0` = `%I`(`n!`) ==> (`%I`(`n!`) = 0 ==> `tmp%3` = 0 ==> `%%switch_labe	z3=9v/0e	lusmt=2v/7e	solver-unknown	-
+fuel-recursion-2/ob06	16	unsat	7	goal: true	z3=9v/0e	lusmt=2v/7e	verified	-
+fuel-recursion-2/ob07	16	unknown	6031	goal: fuel_bool(`fuel%fuel_recursion_2!fact.`) ==> (exists `fuel%`: Fuel. `fuel_nat%fuel_r	z3=9v/0e	lusmt=2v/7e	solver-unknown	-
+fuel-recursion-2/ob08	16	unsat	7	goal: true	z3=9v/0e	lusmt=2v/7e	verified	-
+fuel-recursion-2/ob09	16	unknown	3199	goal: `decrease%init0` = `n!` ==> (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> check_de	z3=9v/0e	lusmt=2v/7e	solver-unknown	-
+fuel-recursion-2/ob10	16	unsat	8	goal: (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> `ens%fuel_recursion_2!lemma_pow2_pos	z3=9v/0e	lusmt=2v/7e	verified	-
+fuel-recursion-2/ob11	16	unknown	32592	goal: `decrease%init0` = `n!` ==> (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> check_de	z3=9v/0e	lusmt=2v/7e	solver-unknown	-
+fuel-recursion-2/ob12	16	unsat	8	goal: (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> `ens%fuel_recursion_2!lemma_pow2_gt.	z3=9v/0e	lusmt=2v/7e	verified	-
+fuel-recursion-2/ob13	16	unknown	4081	goal: `decrease%init0` = `n!` ==> (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> check_de	z3=9v/0e	lusmt=2v/7e	solver-unknown	-
+fuel-recursion-2/ob14	16	unsat	8	goal: (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> `ens%fuel_recursion_2!lemma_geo_clos	z3=9v/0e	lusmt=2v/7e	verified	-
+fuel-recursion-2/ob15	16	unsat	1095	goal: `ens%fuel_recursion_2!lemma_geo_closed.`(`n!`) ==> `fuel_recursion_2!geo.?`(I(`n!`))	z3=9v/0e	lusmt=2v/7e	verified	-
+fuel-recursion-2/ob16	16	unsat	9	goal: true	z3=9v/0e	lusmt=2v/7e	verified	-
+fuel-recursion-3/ob01	18	unknown	8538	goal: `decrease%init0` = `%I`(`n!`) ==> (`%I`(`n!`) = 0 ==> `tmp%7` = 0 ==> `%%switch_labe	z3=10v/0e	lusmt=2v/8e	solver-unknown	-
+fuel-recursion-3/ob02	18	unsat	6	goal: true	z3=10v/0e	lusmt=2v/8e	verified	-
+fuel-recursion-3/ob03	18	unknown	3243	goal: `decrease%init0` = `%I`(`n!`) ==> (`%I`(`n!`) = 0 ==> `tmp%3` = false ==> `%%switch_	z3=10v/0e	lusmt=2v/8e	solver-unknown	-
+fuel-recursion-3/ob04	18	unsat	7	goal: true	z3=10v/0e	lusmt=2v/8e	verified	-
+fuel-recursion-3/ob05	18	unknown	3319	goal: `decrease%init0` = `%I`(`n!`) ==> (`%I`(`n!`) = 0 ==> `tmp%3` = true ==> `%%switch_l	z3=10v/0e	lusmt=2v/8e	solver-unknown	-
+fuel-recursion-3/ob06	18	unsat	6	goal: true	z3=10v/0e	lusmt=2v/8e	verified	-
+fuel-recursion-3/ob07	18	unknown	7923	goal: fuel_bool(`fuel%fuel_recursion_3!fib.`) ==> (exists `fuel%`: Fuel. `fuel_nat%fuel_re	z3=10v/0e	lusmt=2v/8e	solver-unknown	-
+fuel-recursion-3/ob08	18	unknown	12576	goal: `fuel_recursion_3!fib.?`(I(`n!`)) = nClip(Add(`fuel_recursion_3!fib.?`(I(nClip(Sub(`	z3=10v/0e	lusmt=2v/8e	solver-unknown	-
+fuel-recursion-3/ob09	18	unsat	7	goal: true	z3=10v/0e	lusmt=2v/8e	verified	-
+fuel-recursion-3/ob10	18	unknown	3101	goal: `decrease%init0` = `n!` ==> (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> check_de	z3=10v/0e	lusmt=2v/8e	solver-unknown	-
+fuel-recursion-3/ob11	18	unsat	8	goal: (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> `ens%fuel_recursion_3!lemma_even_odd	z3=10v/0e	lusmt=2v/8e	verified	-
+fuel-recursion-3/ob12	18	unknown	620	goal: `fuel_recursion_3!is_even.?`(I(nClip(Add(`n!`, 2)))) = `fuel_recursion_3!is_even.?`(	z3=10v/0e	lusmt=2v/8e	solver-unknown	-
+fuel-recursion-3/ob13	18	unsat	7	goal: true	z3=10v/0e	lusmt=2v/8e	verified	-
+fuel-recursion-3/ob14	18	unknown	3048	goal: `decrease%init0` = `n!` ==> (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> check_de	z3=10v/0e	lusmt=2v/8e	solver-unknown	-
+fuel-recursion-3/ob15	18	unsat	8	goal: (`n!` > 0 ==> `tmp%1` = nClip(Sub(`n!`, 1)) ==> `ens%fuel_recursion_3!lemma_even_iff	z3=10v/0e	lusmt=2v/8e	verified	-
+fuel-recursion-3/ob16	18	unknown	3623	goal: `decrease%init0` = `n!` ==> (`n!` = 0 ==> `tmp%3` = true ==> `%%switch_label%%0`) an	z3=10v/0e	lusmt=2v/8e	solver-unknown	-
+fuel-recursion-3/ob17	18	unsat	8	goal: (`n!` = 0 ==> `tmp%3` = true ==> `%%switch_label%%0`) and (not (`n!` = 0) ==> uInv(6	z3=10v/0e	lusmt=2v/8e	verified	-
+fuel-recursion-3/ob18	18	unsat	8	goal: true	z3=10v/0e	lusmt=2v/8e	verified	-
+linear-euf-1/ob01	7	unsat	8	goal: `linear_euf_1!f.?`(I(`a!`)) = `linear_euf_1!f.?`(I(`b!`))	z3=6v/0e	lusmt=5v/1e	verified	-
+linear-euf-1/ob02	7	unsat	572	goal: `req%linear_euf_1!lemma_f_congruence.`(`a!`, `b!`) and (`ens%linear_euf_1!lemma_f_co	z3=6v/0e	lusmt=5v/1e	verified	-
+linear-euf-1/ob03	7	unsat	440	goal: `tmp%1` = (Add(`a!`, 1) <= `c!`) ==> `tmp%1` and (`tmp%1` ==> `tmp%2` = (Add(`a!`, 3	z3=6v/0e	lusmt=5v/1e	verified	-
+linear-euf-1/ob04	7	unsat	9	goal: not (`a!` = `b!`)	z3=6v/0e	lusmt=5v/1e	verified	-
+linear-euf-1/ob05	7	unknown	2203	goal: Add(`linear_euf_1!f.?`(I(`y!`)), 5) >= 15	z3=6v/0e	lusmt=5v/1e	solver-unknown	-
+linear-euf-1/ob06	7	unsat	7	goal: true	z3=6v/0e	lusmt=5v/1e	verified	-
+linear-euf-1/ob07	7	unsat	7	goal: true	z3=6v/0e	lusmt=5v/1e	verified	-
+linear-euf-2/ob01	10	unknown	1470	goal: `tmp%1` = (0 = `linear_euf_2!double.?`(I(0))) ==> `tmp%1` and (`tmp%1` ==> `linear_e	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+linear-euf-2/ob02	10	unsat	8	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+linear-euf-2/ob03	10	unknown	4803	goal: `ka@` = `%I`(as_type(`%%choose%%0`(INT, `a!`), INT)) ==> `kb@` = `%I`(as_type(`%%cho	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+linear-euf-2/ob04	10	unknown	17937	goal: `linear_euf_2!is_even.?`(I(`a!`)) ==> `linear_euf_2!is_even.?`(I(`b!`)) ==> has_type	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+linear-euf-2/ob05	10	unknown	543	goal: forall `x$`: Poly, `y$`: Poly. has_type(`x$`, INT) and has_type(`y$`, INT) ==> `%I`(	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+linear-euf-2/ob06	10	unsat	7	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+linear-euf-2/ob07	10	unknown	3054	goal: `tmp%1` = `linear_euf_2!between.?`(I(`lo!`), I(Add(`lo!`, 1)), I(`hi!`)) ==> `tmp%1`	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+linear-euf-2/ob08	10	unknown	8116	goal: (has_type(`k@`, INT) ==> `tmp%1` = (`linear_euf_2!double.?`(`k@`) = `linear_euf_2!do	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+linear-euf-2/ob09	10	unsat	8	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+linear-euf-2/ob10	10	unsat	7	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+linear-euf-3/ob01	8	unsat	820	goal: `tmp%1` = (`linear_euf_3!g.?`(I(`a!`)) <= `linear_euf_3!g.?`(I(`b!`))) ==> `tmp%1` a	z3=7v/0e	lusmt=6v/1e	verified	-
+linear-euf-3/ob02	8	unsat	31	goal: (not (`a!` = `b!`) and not (`b!` = `c!`)) and not (`a!` = `c!`)	z3=7v/0e	lusmt=6v/1e	verified	-
+linear-euf-3/ob03	8	unknown	1050	goal: `c1!` = `c2!`	z3=7v/0e	lusmt=6v/1e	solver-unknown	-
+linear-euf-3/ob04	8	unsat	8	goal: true	z3=7v/0e	lusmt=6v/1e	verified	-
+linear-euf-3/ob05	8	unsat	748	goal: let `tmp%%$` = 1 in let `tmp%%$1` = `linear_euf_3!code.?`(`Poly%linear_euf_3!Color.`	z3=7v/0e	lusmt=6v/1e	verified	-
+linear-euf-3/ob06	8	unsat	545	goal: iInv(64, Add(`a!`, `b!`)) and (iInv(64, Add(`a!`, `b!`)) ==> `r!` = iClip(64, Add(`a	z3=7v/0e	lusmt=6v/1e	verified	-
+linear-euf-3/ob07	8	unsat	50	goal: `m@0` = `a!` ==> (`b!` > `m@0` ==> `m@1` = `b!` ==> `%%switch_label%%1`) and (not (`	z3=7v/0e	lusmt=6v/1e	verified	-
+linear-euf-3/ob08	8	unsat	7	goal: true	z3=7v/0e	lusmt=6v/1e	verified	-
+nonlinear-1/ob01	1	unsat	8	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+nonlinear-2/ob01	9	unsat	7	goal: `a!` <= `b!` and (0 <= `c!` and (Mul(`a!`, `c!`) <= Mul(`b!`, `c!`) ==> Mul(`a!`, `c	z3=10v/0e	lusmt=5v/5e	verified	-
+nonlinear-2/ob02	9	unsat	7	goal: true	z3=10v/0e	lusmt=5v/5e	verified	-
+nonlinear-2/ob03	9	unsat	7	goal: true and (Mul(`a!`, Add(`b!`, `c!`)) = Add(Mul(`a!`, `b!`), Mul(`a!`, `c!`)) ==> tru	z3=10v/0e	lusmt=5v/5e	verified	-
+nonlinear-2/ob04	9	unsat	7	goal: true	z3=10v/0e	lusmt=5v/5e	verified	-
+nonlinear-2/ob05	9	unsat	7	goal: true and (Mul(Add(`x!`, `y!`), Add(`x!`, `y!`)) = Add(Add(Mul(`x!`, `x!`), Mul(2, Mu	z3=10v/0e	lusmt=5v/5e	verified	-
+nonlinear-2/ob06	9	unsat	6	goal: true	z3=10v/0e	lusmt=5v/5e	verified	-
+nonlinear-2/ob07	9	unsat	493	goal: `x!` < 1000 and (Mul(`x!`, `x!`) < 1000000 ==> uInv(64, Mul(`x!`, `x!`)) and (uInv(6	z3=10v/0e	lusmt=5v/5e	verified	-
+nonlinear-2/ob08	9	unsat	7	goal: true	z3=10v/0e	lusmt=5v/5e	verified	-
+nonlinear-2/ob09	9	unsat	9	goal: true	z3=10v/0e	lusmt=5v/5e	verified	-
+nonlinear-3/ob01	6	unsat	317	goal: `req%nonlinear_3!lemma_mul_nonneg.`(`x!`, `x!`) and (`ens%nonlinear_3!lemma_mul_nonn	z3=9v/0e	lusmt=4v/5e	verified	-
+nonlinear-3/ob02	6	unknown	703	goal: `req%nonlinear_3!lemma_mul_mono_right.`(`a!`, `c!`, `d!`) and (`ens%nonlinear_3!lemm	z3=9v/0e	lusmt=4v/5e	solver-unknown	-
+nonlinear-3/ob03	6	unsat	7	goal: true	z3=9v/0e	lusmt=4v/5e	verified	-
+nonlinear-3/ob04	6	unsat	1038	goal: (has_type(`x@`, INT) ==> true and (Mul(`%I`(`x@`), `%I`(`x@`)) >= 0 ==> `nonlinear_3	z3=9v/0e	lusmt=4v/5e	verified	-
+nonlinear-3/ob05	6	unsat	7	goal: true	z3=9v/0e	lusmt=4v/5e	verified	-
+nonlinear-3/ob06	6	unsat	8	goal: true	z3=9v/0e	lusmt=4v/5e	verified	-
+seq-vstd-1/ob01	10	unknown	3116	goal: `vstd!seq.Seq.len.?`(`$`, INT, `vstd!seq.Seq.push.?`(`$`, INT, `Poly%vstd!seq.Seq<in	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+seq-vstd-1/ob02	10	unknown	3081	goal: `tmp%2` = `vstd!seq.Seq.push.?`(`$`, INT, `Poly%vstd!seq.Seq<int.>.`(`s!`), I(`v!`))	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+seq-vstd-1/ob03	10	unknown	5236	goal: (has_type(`i@`, INT) ==> (let `tmp%%$` = 0 in let `tmp%%$1` = `%I`(`i@`) in let `tmp	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+seq-vstd-1/ob04	10	unsat	848	goal: `seq_vstd_1!all_nonneg.?`(`Poly%vstd!seq.Seq<int.>.`(`s!`)) ==> `v!` >= 0 ==> has_ty	z3=6v/0e	lusmt=2v/4e	verified	-
+seq-vstd-1/ob05	10	unknown	8628	goal: `vstd!seq.Seq.len.?`(`$`, INT, `vstd!seq.Seq.update.?`(`$`, INT, `Poly%vstd!seq.Seq<	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+seq-vstd-1/ob06	10	unknown	2354	goal: `seq_vstd_1!all_nonneg.?`(`vstd!seq.Seq.update.?`(`$`, INT, `Poly%vstd!seq.Seq<int.>	z3=6v/0e	lusmt=2v/4e	solver-unknown	-
+seq-vstd-1/ob07	10	unsat	708	goal: `seq_vstd_1!all_nonneg.?`(`Poly%vstd!seq.Seq<int.>.`(`s!`)) ==> (let `tmp%%$` = 0 in	z3=6v/0e	lusmt=2v/4e	verified	-
+seq-vstd-1/ob08	10	unsat	1524	goal: `s@` = `%Poly%vstd!seq.Seq<int.>.`(`vstd!seq.Seq.push.?`(`$`, INT, `vstd!seq.Seq.pus	z3=6v/0e	lusmt=2v/4e	verified	-
+seq-vstd-1/ob09	10	unsat	1261	goal: `s@` = `%Poly%vstd!seq.Seq<int.>.`(`vstd!seq.Seq.push.?`(`$`, INT, `vstd!seq.Seq.pus	z3=6v/0e	lusmt=2v/4e	verified	-
+seq-vstd-1/ob10	10	unsat	10	goal: true	z3=6v/0e	lusmt=2v/4e	verified	-
+seq-vstd-2/ob01	11	unknown	56807	goal: `vstd!seq.Seq.len.?`(`$`, INT, `vstd!seq.Seq.subrange.?`(`$`, INT, `Poly%vstd!seq.Se	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-2/ob02	11	unknown	1717	goal: (let `tmp%%$` = 0 in let `tmp%%$1` = `a!` in let `tmp%%$2` = `b!` in let `tmp%%$3` =	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-2/ob03	11	unknown	7502	goal: (has_type(`k@`, INT) ==> (let `tmp%%$` = 0 in let `tmp%%$1` = `%I`(`k@`) in let `tmp	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-2/ob04	11	unknown	4268	goal: `seq_vstd_2!all_nonneg.?`(`Poly%vstd!seq.Seq<int.>.`(`s!`)) ==> (let `tmp%%$` = 0 in	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-2/ob05	11	unknown	28817	goal: `tmp%1` = ext_eq(false, `TYPE%vstd!seq.Seq.`(`$`, INT), `vstd!seq.Seq.subrange.?`(`$	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-2/ob06	11	unsat	797	goal: `tmp%4` = I(`vstd!seq.Seq.len.?`(`$`, INT, `Poly%vstd!seq.Seq<int.>.`(`s!`))) ==> `r	z3=6v/0e	lusmt=1v/5e	verified	-
+seq-vstd-2/ob07	11	unknown	26734	goal: `tmp%1` = ext_eq(false, `TYPE%vstd!seq.Seq.`(`$`, INT), `vstd!seq.Seq.add.?`(`$`, IN	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-2/ob08	11	timeout	91406	goal: (let `tmp%%$` = 0 in let `tmp%%$1` = `m!` in let `tmp%%$2` = `vstd!seq.Seq.len.?`(`$	z3=6v/0e	lusmt=1v/5e	solver-timeout	-
+seq-vstd-2/ob09	11	unknown	15007	goal: `req%seq_vstd_2!lemma_subrange_split.`(`s!`, 0) and (`ens%seq_vstd_2!lemma_subrange_	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-2/ob10	11	unsat	971	goal: `ens%seq_vstd_2!lemma_subrange_split.`(`s!`, 0) ==> `ens%seq_vstd_2!lemma_subrange_f	z3=6v/0e	lusmt=1v/5e	verified	-
+seq-vstd-2/ob11	11	unsat	12	goal: true	z3=6v/0e	lusmt=1v/5e	verified	-
+seq-vstd-3/ob01	11	unknown	577	goal: `seq_vstd_3!ptwise_le.?`(`Poly%vstd!seq.Seq<int.>.`(`a!`), `Poly%vstd!seq.Seq<int.>.	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-3/ob02	11	unsat	9	goal: true	z3=6v/0e	lusmt=1v/5e	verified	-
+seq-vstd-3/ob03	11	unknown	4070	goal: (has_type(`i@`, INT) ==> (let `tmp%%$` = 0 in let `tmp%%$1` = `%I`(`i@`) in let `tmp	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-3/ob04	11	unknown	3171	goal: `seq_vstd_3!ptwise_le.?`(`Poly%vstd!seq.Seq<int.>.`(`a!`), `Poly%vstd!seq.Seq<int.>.	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-3/ob05	11	unknown	12973	goal: (has_type(`i@`, INT) ==> (let `tmp%%$` = 0 in let `tmp%%$1` = `%I`(`i@`) in let `tmp	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-3/ob06	11	unknown	12281	goal: `seq_vstd_3!ptwise_le.?`(`Poly%vstd!seq.Seq<int.>.`(`a!`), `Poly%vstd!seq.Seq<int.>.	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-3/ob07	11	unknown	3280	goal: (has_type(`j@`, INT) ==> (let `tmp%%$` = 0 in let `tmp%%$1` = `%I`(`j@`) in let `tmp	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-3/ob08	11	unknown	8767	goal: `seq_vstd_3!ptwise_le.?`(`Poly%vstd!seq.Seq<int.>.`(`a!`), `Poly%vstd!seq.Seq<int.>.	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-3/ob09	11	unknown	3413	goal: `req%seq_vstd_3!lemma_ptwise_le_push.`(`a!`, `b!`, `x1!`, `y1!`) and (`ens%seq_vstd_	z3=6v/0e	lusmt=1v/5e	solver-unknown	-
+seq-vstd-3/ob10	11	unsat	10	goal: true	z3=6v/0e	lusmt=1v/5e	verified	-
+seq-vstd-3/ob11	11	unsat	10	goal: true	z3=6v/0e	lusmt=1v/5e	verified	-
+abduct-boolean/ob01	2	unknown	465	goal: `b!`	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+abduct-boolean/ob02	2	unsat	7	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+abduct-eq-vars/ob01	2	unknown	514	goal: Sub(`x!`, `y!`) = 0	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+abduct-eq-vars/ob02	2	unsat	7	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+abduct-eq-zero/ob01	2	unknown	544	goal: `x!` = 0	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+abduct-eq-zero/ob02	2	unsat	7	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+abduct-negativity/ob01	2	unknown	509	goal: Add(`x!`, `y!`) < 0	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+abduct-negativity/ob02	2	unsat	7	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+abduct-pred/ob01	2	unknown	1275	goal: `abduct_pred!prop.?`(I(`x!`))	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+abduct-pred/ob02	2	unsat	6	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+abduct-relational/ob01	2	unknown	502	goal: Sub(`x!`, `y!`) >= 0	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+abduct-relational/ob02	2	unsat	7	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+abduct-sign/ob01	2	unknown	489	goal: Add(`x!`, `y!`) > 0	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+abduct-sign/ob02	2	unsat	7	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+abduct-spec-len/ob01	2	unknown	968	goal: `vstd!seq.Seq.len.?`(`$`, INT, `Poly%vstd!seq.Seq<int.>.`(`s!`)) > 0	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+abduct-spec-len/ob02	2	unsat	7	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+error-disequality/ob01	2	unknown	493	goal: not (`x!` = 0)	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+error-disequality/ob02	2	unsat	9	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+noabduct-false/ob01	2	unknown	509	goal: false	z3=0v/1e	lusmt=0v/1e	solver-unknown	-
+noabduct-false/ob02	2	unsat	7	goal: true	z3=0v/1e	lusmt=0v/1e	verified	-
+verify-arith/ob01	1	unsat	321	goal: Add(`x!`, `y!`) > 0	z3=1v/0e	lusmt=1v/0e	verified	-
+diff/ob01	3	unsat	1145	goal: `diff!abs.?`(I(`x!`)) >= 0	z3=3v/0e	lusmt=3v/0e	verified	-
+diff/ob02	3	unsat	557	goal: 0 <= `diff!code.?`(`Poly%diff!Color.`(`c!`)) and `diff!code.?`(`Poly%diff!Color.`(`c	z3=3v/0e	lusmt=3v/0e	verified	-
+diff/ob03	3	unsat	8	goal: true	z3=3v/0e	lusmt=3v/0e	verified	-

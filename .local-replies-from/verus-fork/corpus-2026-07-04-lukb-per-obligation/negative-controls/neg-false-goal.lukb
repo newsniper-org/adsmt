@@ -1,0 +1,3 @@
+# FALSE goal: a counterexample exists (any x); expected sat, NEVER unsat.
+const x: Int
+goal g: x > x + 1
