@@ -75,6 +75,30 @@ fn nested_term_ite_unsat() {
     assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
 }
 
+/// **`let`-blocked nested term-ite** (the #403 corpus residual): a `let`
+/// binding inside an ite branch hides the nested ite from the hoist descent —
+/// the skeleton ζ/β-inline surfaces it. With `p`, the value is
+/// `(ite (< x 5) x 5)`, which is `< 5` in the first branch and `5` in the
+/// second — never `7` (z3-confirmed unsat). (The `let` value is a bare var so
+/// the post-lift atoms stay in the fragment the bare LinArith claims — the
+/// verdict pins the LIFT, not compound-term normalization.)
+#[test]
+fn let_blocked_nested_term_ite_unsat() {
+    let src = "(declare-const p Bool) (declare-const x Int) \
+               (assert (= (ite p (let ((y x)) (ite (< y 5) y 5)) 0) 7)) (assert p)";
+    assert!(matches!(verdict(src), SatResult::Unsat { .. }), "expected unsat");
+}
+
+/// The **sat** control for the `let`-blocked lift: asking for `4` instead is
+/// satisfiable (`x = 4 < 5`) — the inline + lift does not over-constrain into
+/// a spurious unsat (z3-confirmed sat).
+#[test]
+fn let_blocked_nested_term_ite_sat() {
+    let src = "(declare-const p Bool) (declare-const x Int) \
+               (assert (= (ite p (let ((y x)) (ite (< y 5) y 5)) 0) 4)) (assert p)";
+    assert!(matches!(verdict(src), SatResult::Sat { .. }), "expected sat");
+}
+
 /// A satisfiable EUF query (`a = b` alone) is **sat** — a sanity check that the
 /// lowering does not over-constrain into a spurious unsat.
 #[test]
@@ -346,6 +370,65 @@ fn match_stays_sat_when_consistent() {
     );
     let goals = [eq_nat(Term::cnst("x"), succ(zero())), match_eq];
     assert!(matches!(kernel_verdict(&env, &goals), SatResult::Sat { .. }), "expected sat");
+}
+
+// ── #403: field-selector APPLICATIONS (the canonical `{ctor}!sel{i}` head) ──
+// The lukb face rewrites a surface field application `pred(x)` onto the
+// canonical positional selector `succ!sel0(x)`; `try_selector` lowers that
+// head as a `Const` leaf (the `lower_match` idiom). These drive the same
+// congruence verdict as the `match` tests — through the DIRECT selector
+// application rather than the match encoding.
+
+fn sel0_of_succ(a: Term) -> Term {
+    Term::app(Term::cnst("succ!sel0"), a)
+}
+
+/// `x = succ zero ∧ succ!sel0(x) ≠ zero` is **unsat** — the selector reduces
+/// through the congruence `x ~ succ zero` (the #330 gate), exactly as in the
+/// match encoding. A `Var`-leaf mis-lowering would leave the selector an
+/// uninterpreted function and read `sat` here, so this verdict also pins the
+/// `Const`-leaf choice.
+#[test]
+fn selector_application_reaches_a_sound_unsat_through_congruence() {
+    let env = nat_env();
+    let goals = [
+        eq_nat(Term::cnst("x"), succ(zero())),
+        Term::app(Term::cnst("not"), eq_nat(sel0_of_succ(Term::cnst("x")), zero())),
+    ];
+    assert!(matches!(kernel_verdict(&env, &goals), SatResult::Unsat { .. }), "expected unsat");
+}
+
+/// The **sat** control: `succ!sel0(x) = zero` alone is satisfiable (`x = zero`
+/// leaves the selector unconstrained; `x = succ zero` satisfies it directly) —
+/// the selector dispatch does not over-constrain into a spurious unsat.
+#[test]
+fn selector_application_stays_sat_when_consistent() {
+    let env = nat_env();
+    let goals = [eq_nat(sel0_of_succ(Term::cnst("x")), zero())];
+    assert!(matches!(kernel_verdict(&env, &goals), SatResult::Sat { .. }), "expected sat");
+}
+
+/// Fidelity: the canonical selector head lowers as an APPLICATION to the
+/// lowered argument (the engine-recognized `{ctor}!sel{i}` spelling).
+#[test]
+fn selector_application_lowers_to_the_canonical_application() {
+    let env = nat_env();
+    let lowered =
+        lower(&env, &[eq_nat(sel0_of_succ(Term::cnst("x")), zero())]).expect("lowers");
+    assert_eq!(lowered.goals.len(), 1);
+    let s = format!("{}", lowered.goals[0]);
+    assert!(s.contains("succ!sel0 x"), "the canonical selector applies to x: {s}");
+}
+
+/// A NEAR-MISS spelling (`succ!sel01` is NOT the canonical `succ!sel1`) must
+/// not silently alias onto a selector the engine declares — it falls through
+/// to the generic dispatch (here: unknown function → a sound abstain).
+#[test]
+fn selector_near_miss_spelling_falls_through() {
+    let env = nat_env();
+    let goals =
+        [eq_nat(Term::app(Term::cnst("succ!sel01"), Term::cnst("x")), zero())];
+    assert!(lower(&env, &goals).is_err(), "a near-miss selector name must not lower as a selector");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

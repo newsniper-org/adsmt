@@ -166,10 +166,26 @@ injection, which sort), not just a typecheck-time annotation — the same lever
      constructors of declared non-parametric datatypes — nullary → the bare
      licensed `x = C`; field-bearing → the kernel `Match`
      `match x { C(..) => true, _ => false }` (the kernel has no selector
-     constants; the case split's #325 lowering image IS the selector-applied
+     PRIMITIVE; the case split's #325 lowering image IS the selector-applied
      shape-equality form). Both gate on `require_eq` — the tester rides
      `Eq(T)`. Unknown ctor stays the unknown-symbol error; wrong arity /
      wrong argument sort are hard errors naming the tester.
+   * *Selectors (#403, the tester pattern one seat over)*: a `data` FIELD
+     name applied as a function (`field(x)` — verus emits AIR selector
+     applies `` `<Ind>./<Ctor>/?N`(x) `` verbatim) rewrites in the same
+     unknown-symbol arm onto the CANONICAL positional selector
+     `{ctor}!sel{i}`, postulated `D → fieldTy` at the `data` site (an opaque
+     `Open` constant — still no kernel selector primitive; `infer` just
+     types it). The #325 lowering recognizes the canonical spelling
+     (`try_selector`) and emits the `Const`-leaf application the engine's
+     datatype theory reduces (`sel(C(..a..)) = a_i`, congruence-closed,
+     #330) — the name `spec_to_decl` already registers, so the render's
+     `declare-datatypes` is its single declaration site. An AMBIGUOUS field
+     name (two constructors declare it) refuses to guess and keeps the
+     unknown-symbol error; a DECLARED symbol of the same name wins (the env
+     lookup precedes the hook). Closed the corpus's 33 stage-bail rows
+     (together with the `let`-blocked term-ite lift — see
+     TERM_ITE_LIFTING.md's #403 extension).
    * *Gate*: ob1-abs.lukb ELABORATES end-to-end (the two `is-diff!Color./…`
      testers were its only undeclared symbols). The NEXT chokepoint was the
      #325 lowering's conservative abstain on `∀b: Bool` binders — closed by

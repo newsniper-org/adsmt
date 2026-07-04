@@ -1245,6 +1245,94 @@ fn tester_arity_and_sort_are_checked() {
     }
 }
 
+// ── #403: datatype field-selector applications ────────────────────────────────
+
+/// A field name applied as a selector rewrites onto the CANONICAL positional
+/// selector head: the goal of `pred(n) = zero` is EXACTLY the goal of
+/// `` `succ!sel0`(n) = zero `` (the canonical name is postulated at the `data`
+/// site, so the spelled-out form elaborates through the ordinary declared
+/// path — same kernel term, hash-consed `==`).
+#[test]
+fn selector_application_rewrites_onto_the_canonical_head() {
+    let a = all_props(
+        "data Peano = zero | succ(pred: Peano)\nconst n: Peano\ngoal g: pred(n) = zero\n",
+        0,
+        1,
+    );
+    let b = all_props(
+        "data Peano = zero | succ(pred: Peano)\nconst n: Peano\ngoal g: `succ!sel0`(n) = zero\n",
+        0,
+        1,
+    );
+    assert_eq!(a.goals[0], b.goals[0], "pred(n) ≡ succ!sel0(n)");
+}
+
+/// The verus corpus shape (the 33-row stage-bail root cause): a fully-qualified
+/// AIR selector name (`<Ind>./<Ctor>/?N`) declared as a `data` field elaborates
+/// when applied — including on a BOUND variable under a `forall` (the fn-wrapper
+/// bridging axiom the emitter pairs with each selector).
+#[test]
+fn verus_qualified_selector_field_elaborates() {
+    all_props(
+        "data `M!Status.` = `M!Status./Idle` | `M!Status./Running`(`M!Status./Running/?0`: Int)\n\
+         fn `M!Running/0`(x0: `M!Status.`): Int\n\
+         axiom w: forall x: `M!Status.`. `M!Running/0`(x) = `M!Status./Running/?0`(x)\n\
+         const s: `M!Status.`\n\
+         goal g: `M!Status./Running/?0`(s) >= 0\n",
+        1,
+        1,
+    );
+}
+
+/// An AMBIGUOUS field name (declared by more than one constructor) refuses to
+/// guess a positional target — the call keeps the plain unknown-symbol error.
+#[test]
+fn selector_ambiguous_field_stays_unknown_symbol() {
+    match elaborate(
+        "data Shape = circle(r: Int) | square(r: Int)\nconst s: Shape\ngoal g: r(s) = 0\n",
+    ) {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("unknown function symbol"), "ambiguity refuses to guess: {m}");
+        }
+        Err(other) => panic!("expected the unknown-symbol error, got {other:?}"),
+        Ok(_) => panic!("an ambiguous selector must not elaborate"),
+    }
+}
+
+/// A recognized selector with the wrong arity or a wrongly-sorted argument is
+/// a hard error NAMING the selector (mirroring the tester checks).
+#[test]
+fn selector_arity_and_sort_are_checked() {
+    let src = "data Peano = zero | succ(pred: Peano)\nconst n: Peano\nconst i: Int\n";
+    match elaborate(&format!("{src}goal g: pred(n, n) = zero\n")) {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("pred") && m.contains("unary"), "arity error names it: {m}");
+        }
+        Err(other) => panic!("expected the arity error, got {other:?}"),
+        Ok(_) => panic!("a binary selector call must not elaborate"),
+    }
+    match elaborate(&format!("{src}goal g: pred(i) = zero\n")) {
+        Err(FaceError::Unsupported(m)) => {
+            assert!(m.contains("pred") && m.contains("expects"), "sort error names it: {m}");
+        }
+        Err(other) => panic!("expected the sort error, got {other:?}"),
+        Ok(_) => panic!("a wrongly-sorted selector call must not elaborate"),
+    }
+}
+
+/// A DECLARED symbol sharing a field's name wins (the env lookup precedes the
+/// selector hook — field-selector rewriting never hijacks a user function).
+#[test]
+fn declared_symbol_shadows_the_field_selector() {
+    // `pred` here resolves to the USER's Int→Int function, not Peano's field.
+    all_props(
+        "data Peano = zero | succ(pred: Peano)\nfn pred(x: Int): Int\nconst i: Int\n\
+         goal g: pred(i) = i\n",
+        0,
+        1,
+    );
+}
+
 /// The lawful datatype `Eq` derivation gates on the injected prover: an
 /// all-rejecting prover BUILD-REJECTS the `data` declaration (naming the
 /// lawful derivation), an all-accepting prover admits — and the pure-face

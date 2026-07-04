@@ -4,6 +4,9 @@
 //! a closed `Prop`), so a face bug can only ever yield a [`FaceError`], never a
 //! trusted ill-typed term — the same firewall as the SMT-LIB / ASP faces.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+
 use adsmt_class::resolve::{ClassGoal, ResolutionResult, Resolver};
 use adsmt_class::{Instance, InstanceDb, LawProver, Premise};
 use adsmt_ir::theory;
@@ -76,6 +79,13 @@ struct Elab<'p> {
     /// `Eq(T)` instance is admitted LAWFULLY (laws discharged at the concrete
     /// carrier, failure = build-reject); absent → the structural grant.
     prover: Option<&'p dyn LawProver>,
+    /// The field-selector registry (#403): surface field name → the datatype
+    /// plus the CANONICAL positional selector `{ctor}!sel{i}` (the name the
+    /// #325 lowering synthesizes into `DatatypeDecl.selectors`, so the
+    /// engine's datatype theory reduces its applications). `None` poisons an
+    /// AMBIGUOUS field name (declared by more than one constructor) — a call
+    /// on it keeps the unknown-symbol error rather than guessing a target.
+    selector_fields: HashMap<String, Option<(String, String)>>,
 }
 
 impl<'p> Elab<'p> {
@@ -166,6 +176,7 @@ impl<'p> Elab<'p> {
             fresh_n: 0,
             classes,
             prover,
+            selector_fields: HashMap::new(),
         };
         elab.grant_eq("Bool"); // surface Bool = kernel Prop: equality (iff), no order
         Ok(elab)
@@ -325,14 +336,19 @@ impl<'p> Elab<'p> {
                 // a non-parametric inductive datatype → `declare_inductive`. A
                 // field type may reference THIS datatype (recursive) — it is not
                 // in `env` yet, so the self-reference resolves to `cnst(name)`.
-                // Selector names are surface-only (the solver lowering
-                // synthesizes positional selectors).
                 let mut kctors: Vec<(String, Vec<K>)> = Vec::with_capacity(ctors.len());
+                // named fields, for the selector admission below (#403):
+                // `(surface field name, ctor, field index, elaborated field type)`.
+                let mut named_fields: Vec<(String, String, usize, K)> = Vec::new();
                 for (cname, fields) in ctors {
                     let mut ftypes = Vec::with_capacity(fields.len());
-                    for (_selname, fty) in fields {
+                    for (i, (selname, fty)) in fields.iter().enumerate() {
                         self.ensure_ring_sorts(fty)?; // pre-declare GF(p)/… field sorts
-                        ftypes.push(self.elab_field_type(fty, name)?);
+                        let kty = self.elab_field_type(fty, name)?;
+                        if let Some(sn) = selname {
+                            named_fields.push((sn.clone(), cname.clone(), i, kty.clone()));
+                        }
+                        ftypes.push(kty);
                     }
                     kctors.push((cname.clone(), ftypes));
                 }
@@ -341,6 +357,32 @@ impl<'p> Elab<'p> {
                 // injected (see `grant_eq_data`), structural in the pure
                 // face — the `is-{ctor}` testers ride this instance.
                 self.grant_eq_data(name)?;
+                // #403: field-selector admission. Each NAMED field postulates
+                // the CANONICAL positional selector `{ctor}!sel{i} : D → fieldTy`
+                // (so kernel `infer` types its applications; the #325 lowering
+                // recognizes the name and the engine's `DatatypeDecl` already
+                // declares it — see `spec_to_decl`) and registers the surface
+                // field name so `elab_call` can rewrite a field APPLICATION
+                // `field(x)` onto the canonical head. A second declaration of
+                // the same field name poisons the entry (ambiguous — refuse to
+                // guess which constructor's field was meant).
+                for (field, cname, i, kty) in named_fields {
+                    let canonical = format!("{cname}!sel{i}");
+                    if self.env.lookup(&canonical).is_none() {
+                        postulate(&mut self.env, &canonical, K::arrow(K::cnst(name), kty))?;
+                    }
+                    match self.selector_fields.entry(field) {
+                        Entry::Vacant(v) => {
+                            v.insert(Some((name.clone(), canonical)));
+                        }
+                        // duplicate targets are impossible (a ctor name is
+                        // kernel-unique and a ctor's fields are positional), so
+                        // any occupied hit IS a cross-constructor ambiguity.
+                        Entry::Occupied(mut o) => {
+                            o.insert(None);
+                        }
+                    }
+                }
             }
             Item::Axiom(_, t) | Item::Assume(_, t) => {
                 let kt = self.elab_prop(t)?;
@@ -923,6 +965,12 @@ impl<'p> Elab<'p> {
                             return Ok(k);
                         }
                     }
+                    // #403: a datatype FIELD name applied as a selector (verus
+                    // emits AIR selector applies verbatim) — rewrite onto the
+                    // canonical positional selector head.
+                    if let Some(k) = self.elab_selector(ctx, name, &kargs)? {
+                        return Ok(k);
+                    }
                     return Err(unsupported(format!("unknown function symbol `{name}`")));
                 }
                 // a declared function / bound functional — resolve as a Var head.
@@ -940,8 +988,9 @@ impl<'p> Elab<'p> {
     /// * nullary `C` ⟶ the bare equality `x = C` (a single licensed atom);
     /// * field-bearing `C` ⟶ the kernel `Match`
     ///   `match x { C(..) => true, _ => false }` — the kernel has NO selector
-    ///   constants (the #325 lowering synthesizes positional `{C}!sel{i}`
-    ///   names), so the kernel-native tester is the definitional case split;
+    ///   PRIMITIVE (the canonical `{C}!sel{i}` names are opaque postulates,
+    ///   see [`Self::elab_selector`]), so the kernel-native tester is the
+    ///   definitional case split;
     ///   its lowering image is exactly the selector-applied shape-equality
     ///   form the engine's datatype theory decides (the SMT-LIB face's
     ///   `9881b21` biconditional, encoded per-constructor).
@@ -1024,6 +1073,47 @@ impl<'p> Elab<'p> {
             })
             .collect();
         Ok(Some(K::mtch(dt, motive, minors, arg)))
+    }
+
+    /// The datatype **field-selector** application (#403 — the #391 tester
+    /// pattern one seat over): verus's AIR emits selector applies verbatim
+    /// (`` `<Ind>./<Ctor>/?N`(x) ``) while the `data` declaration names that
+    /// selector as constructor-field sugar — this hook connects the two.
+    /// `Some(term)` when `name` is the declared field of exactly ONE
+    /// constructor: the call rewrites onto the CANONICAL positional selector
+    /// `{ctor}!sel{i}` (postulated `D → fieldTy` at the `data` site — the
+    /// name the #325 lowering emits as a `Const` leaf and the engine's
+    /// datatype theory reduces, `sel(C(..a..)) = a_i` congruence-closed
+    /// (#330), unconstrained on the other constructors — exactly SMT-LIB
+    /// selector semantics). `None` when `name` is not a declared field (the
+    /// caller keeps its unknown-symbol error) or is AMBIGUOUS (two
+    /// constructors declare it — the positional target would be a guess);
+    /// the wrong arity or a wrongly-sorted argument is a hard error naming
+    /// the selector, mirroring [`Self::elab_tester`].
+    fn elab_selector(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        name: &str,
+        kargs: &[K],
+    ) -> Result<Option<K>, FaceError> {
+        let Some(Some((dt, canonical))) = self.selector_fields.get(name) else {
+            return Ok(None);
+        };
+        let (dt, canonical) = (dt.clone(), canonical.clone());
+        if kargs.len() != 1 {
+            return Err(unsupported(format!(
+                "selector `{name}` is unary, got {} argument(s)",
+                kargs.len()
+            )));
+        }
+        let arg = kargs[0].clone();
+        let asort = infer(&self.env, &kernel_ctx(ctx), &arg)?;
+        if !is_def_eq(&self.env, &asort, &K::cnst(dt.clone())) {
+            return Err(unsupported(format!(
+                "selector `{name}` expects a `{dt}`, got sort `{asort}`"
+            )));
+        }
+        Ok(Some(K::apps(K::cnst(canonical), [arg])))
     }
 
     fn elab_bin(

@@ -42,7 +42,7 @@ use std::collections::HashSet;
 use adsmt_core::{Kind as CKind, Term as CTerm, TermInner as CTermInner, Type as CType, Var as CVar};
 use adsmt_ir::{
     AdmissionStep, Ctx, Env, IndSpec, Modality, Term, TermKind, Univ, as_const_app, infer,
-    is_def_eq, whnf,
+    is_def_eq, occurs, subst_top, whnf,
 };
 use adsmt_theory::datatypes::DatatypeDecl;
 
@@ -172,9 +172,11 @@ impl Lowerer<'_> {
     }
 
     /// One kernel inductive spec → an engine `DatatypeDecl`. Selector names are
-    /// **synthesized** (the face drops them; no `Match`/selector term lowering
-    /// in this slice references them, but the engine needs them for injectivity
-    /// reasoning); a fresh `!`-tagged name cannot collide with a user symbol.
+    /// **synthesized** positionally (`{ctor}!sel{i}`) — the canonical spelling
+    /// [`Self::lower_match`]'s tester encoding and [`Self::try_selector`]'s
+    /// field-selector dispatch (#403) both emit, and the engine's datatype
+    /// theory reduces (`sel(C(..a..)) = a_i`, #330); a `!`-tagged name cannot
+    /// collide with a plainly-spelled user symbol.
     fn spec_to_decl(&self, spec: &IndSpec) -> Result<DatatypeDecl, LowerError> {
         if !spec.indices.is_empty() {
             return Err(unl(format!("indexed inductive `{}` (GADT) has no datatype image", spec.name)));
@@ -281,7 +283,14 @@ impl Lowerer<'_> {
         if matches!(name.as_str(), "not" | "and" | "or" | "exists" | "forall" | "ite") {
             return None;
         }
-        let ite = find_hoistable_ite(t)?; // an innermost term-ite in a term position
+        let Some(ite) = find_hoistable_ite(t) else {
+            // No hoistable ite — but a `let` / β-redex in the skeleton may be
+            // HIDING one (the verus fuel-definition shape
+            // `let p = sel(x) in ite(p < 10, …)` — the #403 corpus residual):
+            // ζ/β-inline it (the same definitional step `whnf` applies at head
+            // position) so the re-entry hoists what surfaces.
+            return inline_definitional_redex(t);
+        };
         let (_, ia) = as_const_app(&ite)?; // ia = [A, c, a, b]
         if ia.len() != 4 {
             return None;
@@ -351,6 +360,9 @@ impl Lowerer<'_> {
         if let Some(r) = self.try_arith(&name, &args, frames)? {
             return Ok(r);
         }
+        if let Some(r) = self.try_selector(&name, &args, frames)? {
+            return Ok(r);
+        }
         // a declared function symbol applied to arguments (EUF).
         let decl = self.env.lookup(&name).ok_or_else(|| unl(format!("unknown function `{name}`")))?;
         match &decl.modality {
@@ -373,6 +385,58 @@ impl Lowerer<'_> {
             }
             Modality::Def(_) => Err(unl(format!("def `{name}` application survived whnf"))),
         }
+    }
+
+    /// Dispatch a **canonical selector** application `{ctor}!sel{i}(t)` (#403),
+    /// or `Ok(None)` when `name` does not have the exact canonical shape /
+    /// `ctor` is not a declared constructor of a non-parametric datatype /
+    /// `i` is out of the constructor's field range — falling through keeps the
+    /// generic path, so a user symbol that merely LOOKS like a selector still
+    /// lowers as its own declared function. The head lowers as a **`Const`
+    /// leaf** — the exact idiom [`Self::lower_match`] uses for its synthesized
+    /// selector applications — because the engine already declares
+    /// `{ctor}!sel{i}` via the `DatatypeDecl` ([`Self::spec_to_decl`]); a
+    /// `Var` leaf here would make the render emit a colliding duplicate
+    /// `declare-fun`. The lukb face postulates the canonical name `Open` (so
+    /// kernel `infer` types the elaborated term), which is why this hook must
+    /// run BEFORE the generic declared-symbol dispatch.
+    fn try_selector(
+        &self,
+        name: &str,
+        args: &[Term],
+        frames: &mut Vec<Frame>,
+    ) -> Result<Option<CTerm>, LowerError> {
+        let Some((cname, idx)) = name.rsplit_once("!sel") else { return Ok(None) };
+        let Ok(i) = idx.parse::<usize>() else { return Ok(None) };
+        // exact canonical spelling only (`sel01` is NOT `sel1` — the engine
+        // declares the latter; a near-miss must not silently alias onto it).
+        if idx != i.to_string() {
+            return Ok(None);
+        }
+        let Some(decl) = self.env.lookup(cname) else { return Ok(None) };
+        if !matches!(decl.modality, Modality::Constructor) {
+            return Ok(None);
+        }
+        // the constructor's (non-parametric, non-dependent) telescope
+        // `field₀ → … → D`: the i-th domain is the selector's codomain.
+        let mut doms = Vec::new();
+        let mut rty = decl.ty.clone();
+        while let TermKind::Pi(d, b) = rty.kind() {
+            doms.push(d.clone());
+            rty = b.clone();
+        }
+        let Some((_dt, targs)) = as_const_app(&rty) else { return Ok(None) };
+        if !targs.is_empty() {
+            return Ok(None); // parametric datatype — its declaration abstains too
+        }
+        let Some(fty) = doms.get(i) else { return Ok(None) };
+        let dsort = self.lower_sort(&rty)?;
+        let fsort = self.lower_sort(fty)?;
+        let mut cur = CTerm::const_(name, cfun(dsort, fsort)?);
+        for a in args {
+            cur = capp(cur, self.lower_term(a, frames)?)?;
+        }
+        Ok(Some(cur))
     }
 
     /// Dispatch a prelude operator, or `Ok(None)` if `name` is not one. A
@@ -1015,6 +1079,59 @@ fn find_hoistable_ite(t: &Term) -> Option<Term> {
     }
     match t.kind() {
         TermKind::App(f, a) => find_hoistable_ite(f).or_else(|| find_hoistable_ite(a)),
+        _ => None,
+    }
+}
+
+/// ζ/β-inline ONE ite-carrying definitional redex in `t`'s binder-free term
+/// skeleton — the same application-spine + ite-branch descent as
+/// [`find_hoistable_ite`]. The verus fuel definitions bind selector reads
+/// inside data-valued ite branches (`let p = sel(x) in ite(p < 10, …)`); the
+/// `Let` node blocks the hoist descent, and by the time the ordinary
+/// recursion ζ-reduces it at head position (`whnf`) the enclosing atom is
+/// gone — the revealed non-Bool ite then has no lift site and abstains. Both
+/// redex forms are inlined: a kernel `Let` (the lukb face keeps them) and a
+/// β-redex `(λx. b) v` (the SMT-LIB face elaborates `let` that way). The
+/// rewrite is the kernel's own definitional ζ/β-step (`subst_top` — exactly
+/// what `whnf` applies at head position), so it is conversion-sound and, as a
+/// reduction of a strongly-normalizing kernel term, terminating. A redex with
+/// no `ite` anywhere inside is SKIPPED (it head-reduces on the normal path;
+/// rewriting it here would only force a wasted atom re-descent).
+fn inline_definitional_redex(t: &Term) -> Option<Term> {
+    if let TermKind::Let(_, v, b) = t.kind()
+        && (occurs("ite", v) || occurs("ite", b))
+    {
+        return Some(subst_top(b, v));
+    }
+    if let TermKind::App(f, a) = t.kind()
+        && let TermKind::Lam(_, b) = f.kind()
+        && (occurs("ite", a) || occurs("ite", b))
+    {
+        return Some(subst_top(b, a));
+    }
+    if let Some((name, args)) = as_const_app(t)
+        && name == "ite"
+        && args.len() == 4
+    {
+        // mirror the hoist descent: branches only (a condition's own atoms
+        // inline when the classical Bool-`ite` lowering recurses into it).
+        for i in [2usize, 3] {
+            if let Some(nb) = inline_definitional_redex(&args[i]) {
+                let mut na = args.clone();
+                na[i] = nb;
+                return Some(Term::apps(Term::cnst("ite"), na));
+            }
+        }
+        return None;
+    }
+    match t.kind() {
+        TermKind::App(f, a) => {
+            if let Some(nf) = inline_definitional_redex(f) {
+                Some(Term::app(nf, a.clone()))
+            } else {
+                inline_definitional_redex(a).map(|na| Term::app(f.clone(), na))
+            }
+        }
         _ => None,
     }
 }

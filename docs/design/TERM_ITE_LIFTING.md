@@ -84,3 +84,22 @@ term/formula AST with a de-Bruijn environment `eval`:
 - Nested / multiple ites in one atom (innermost-first expansion).
 - Out of scope (unchanged abstains): the Bool-`ite` path (already lowered), and
   anything the enclosing atom itself cannot lower (higher-order, recursion).
+
+## The `let`-blocked extension (#403 corpus residual)
+
+The hoist's ite search walks only the atom's binder-free skeleton (application
+spines + ite branches), so a `let` node hides any ite inside it — and the verus
+fuel definitions produce exactly that shape (`let p = sel(x) in ite(p < 10, …)`
+inside a data-valued ite branch). By the time the ordinary recursion ζ-reduces
+the `let` at head position (`whnf`), the enclosing atom is gone and the revealed
+non-Bool ite has no lift site (a sound but avoidable abstain). Fix
+(`inline_definitional_redex`): when an atom has NO hoistable ite, ζ/β-inline ONE
+ite-carrying definitional redex found on the same skeleton walk — a kernel `Let`
+(the lukb face keeps them) or a β-redex `(λx. b) v` (the SMT-LIB face elaborates
+`let` that way) — and re-enter; the surfaced ite then hoists normally. The
+rewrite is the kernel's own definitional step (`subst_top`, exactly what `whnf`
+applies at head position), so it is conversion-sound and needs no new
+verification lemma; termination is the strong normalization of kernel ζ/β plus
+the unchanged hoist measure. A redex with no `ite` inside is skipped (it
+head-reduces on the normal path; inlining it would only force a wasted atom
+re-descent).

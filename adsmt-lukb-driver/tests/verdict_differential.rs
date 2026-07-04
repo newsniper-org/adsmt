@@ -50,6 +50,40 @@ const CORPUS: &[(&str, &str, &str)] = &[
         "(declare-const x Int)(declare-const y Int)\
          (assert (>= x y))(assert (not (= x y)))(check-sat)",
     ),
+    (
+        // #403: a surface FIELD application elaborates as the datatype selector —
+        // valid through the selector-congruence reduction (`n ~ succ zero`).
+        "selector congruence valid (#403)",
+        "data Peano = zero | succ(pred: Peano)\nconst n: Peano\n\
+         goal g: n = succ(zero) |- pred(n) = zero\n",
+        "(declare-datatypes ((Peano 0)) (((zero) (succ (pred Peano)))))\
+         (declare-const n Peano)\
+         (assert (= n (succ zero)))(assert (not (= (pred n) zero)))(check-sat)",
+    ),
+    (
+        // the sat-side control: a selector is UNCONSTRAINED on the other
+        // constructors, so the converse is refutable (`n = zero` countermodel).
+        "selector unconstrained invalid (#403)",
+        "data Peano = zero | succ(pred: Peano)\nconst n: Peano\n\
+         goal g: pred(n) = zero |- n = succ(zero)\n",
+        "(declare-datatypes ((Peano 0)) (((zero) (succ (pred Peano)))))\
+         (declare-const n Peano)\
+         (assert (= (pred n) zero))(assert (not (= n (succ zero))))(check-sat)",
+    ),
+    (
+        // the verus fuel-definition shape (#403 residual): a `let`-bound
+        // selector read INSIDE a data-valued `if` branch — the kernel `Let`
+        // must not defeat the term-ite lift (skeleton ζ-inline).
+        "let-bound selector in ite branch valid (#403)",
+        "data Peano = zero | succ(pred: Peano)\nconst n: Peano\n\
+         goal g: n = succ(succ(zero)) |- \
+         (if `is-succ`(n) then let p = pred(n) in (if `is-succ`(p) then 1 else 0) else 0) = 1\n",
+        "(declare-datatypes ((Peano 0)) (((zero) (succ (pred Peano)))))\
+         (declare-const n Peano)\
+         (assert (= n (succ (succ zero))))\
+         (assert (not (= (ite ((_ is succ) n) \
+         (let ((p (pred n))) (ite ((_ is succ) p) 1 0)) 0) 1)))(check-sat)",
+    ),
 ];
 
 fn z3_verdict(smtlib: &str) -> Option<String> {
