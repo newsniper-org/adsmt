@@ -1314,10 +1314,26 @@ fn dispatch_one(
             // verdict would then be UNSOUND, since OxiZ replays the
             // full, correct buffer).
             let status = if delegated_ran {
+                // #401 — delegate the FOLDED view (AOT prelude + session text)
+                // so OxiZ sees the constraints the native engine restored.
+                let hist = driver.delegation_history(history);
                 let delegated = if streaming {
-                    oxiz_fallback_streaming(history)
+                    oxiz_fallback_streaming(&hist)
                 } else {
-                    oxiz_fallback(history)
+                    oxiz_fallback(&hist)
+                };
+                // #401 — an UNFOLDABLE prelude leaves the delegation deciding a
+                // strict SUBSET of the constraints: `Unsat` transfers (more
+                // constraints only shrink the model set), `Sat` does NOT —
+                // downgrade it to the sound `Unknown` (and re-aim the 5-level
+                // token so `--output-mode full` prints the honest level).
+                let delegated = match delegated {
+                    Some(LastStatus::Sat) if driver.aot_delegation_blind => {
+                        LAST_FULL_TOKEN
+                            .with(|c| *c.borrow_mut() = Some("possibly-sat".to_string()));
+                        Some(LastStatus::Unknown)
+                    }
+                    d => d,
                 };
                 let v = delegated.unwrap_or(status);
                 // Keep the driver's `last_result` consistent with the delegated
@@ -1656,6 +1672,184 @@ fn term_to_smtlib(t: &Term) -> String {
             format!("(lambda (({} {})) {})", v.name, v.ty, term_to_smtlib(body))
         }
     }
+}
+
+/// #401 — render the `--aot-load` prelude as a SELF-CONTAINED SMT-LIB prefix
+/// (`declare-sort` / `declare-const` / `declare-fun` lines + one `(assert …)`
+/// per prelude axiom) that every delegated query prepends, so the delegation
+/// backend decides the same constraint set the native engine restored from
+/// the bank. Returns `None` — the caller then arms the delegated-`Sat`
+/// downgrade instead — when any assertion carries a construct this renderer
+/// cannot reproduce faithfully: an unrecognized `Const` head (a datatype
+/// constructor would need its `declare-datatypes`, which the bank does not
+/// carry; a BV literal its `(_ BitVec n)` sort), a `Lam` outside the
+/// `∀`/`∃` binder shape, or a polymorphic/higher-order sort. Abstaining is
+/// sound in both directions: without the fold the delegation sees a strict
+/// SUBSET of the constraints, so its `Unsat` still transfers and its `Sat`
+/// is gated to `Unknown`. (If the live session re-declares a folded symbol,
+/// the doubled `declare-fun` makes the delegated script error out and the
+/// delegation returns `None` — fail-safe, never a wrong verdict.)
+fn prelude_to_smtlib(assertions: &[(Term, Option<String>)]) -> Option<String> {
+    use adsmt_core::TermInner;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::fmt::Write as _;
+
+    /// The interpreted heads the native parser builds as `Const` terms; they
+    /// pass through verbatim. ANY other non-literal `Const` aborts the fold.
+    fn interpreted(name: &str) -> bool {
+        matches!(
+            name,
+            "true"
+                | "false"
+                | "="
+                | "distinct"
+                | "not"
+                | "and"
+                | "or"
+                | "=>"
+                | "xor"
+                | "ite"
+                | "+"
+                | "-"
+                | "*"
+                | "div"
+                | "mod"
+                | "abs"
+                | "/"
+                | "to_real"
+                | "to_int"
+                | "is_int"
+                | "<"
+                | "<="
+                | ">"
+                | ">="
+        )
+    }
+
+    /// A numeric-literal `Const` name (`5`, `3.5`, the parser-internal
+    /// `int:5`), rendered without the internal prefix.
+    fn numeral(name: &str) -> Option<String> {
+        let n = name.strip_prefix("int:").unwrap_or(name);
+        let ok = !n.is_empty()
+            && n.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && n.chars().all(|c| c.is_ascii_digit() || c == '.');
+        if ok {
+            return Some(n.to_string());
+        }
+        // a negative literal needs the SMT-LIB `(- 5)` spelling.
+        let mag = name.strip_prefix('-')?;
+        let ok = !mag.is_empty() && mag.chars().all(|c| c.is_ascii_digit() || c == '.');
+        ok.then(|| format!("(- {mag})"))
+    }
+
+    /// An atomic (non-function, monomorphic) sort name, recorded for the
+    /// `declare-sort` emission. BV sorts (`BV<w>`) would need the indexed
+    /// `(_ BitVec w)` spelling — out of the fold's fragment.
+    fn atomic_sort(ty: &adsmt_core::Type, sorts: &mut BTreeSet<String>) -> Option<String> {
+        if ty.is_fun() {
+            return None;
+        }
+        match ty {
+            adsmt_core::Type::Const(c) if !c.name.starts_with("BV<") => {
+                sorts.insert(c.name.clone());
+                Some(c.name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn render(
+        t: &Term,
+        bound: &mut Vec<String>,
+        decls: &mut BTreeMap<String, adsmt_core::Type>,
+        sorts: &mut BTreeSet<String>,
+    ) -> Option<String> {
+        match t.kind() {
+            TermInner::Var(v) => {
+                if !bound.iter().any(|b| b == &v.name) {
+                    match decls.get(&v.name) {
+                        Some(prev) if *prev != v.ty => return None, // same name, two types
+                        Some(_) => {}
+                        None => {
+                            decls.insert(v.name.clone(), v.ty.clone());
+                        }
+                    }
+                }
+                Some(v.name.clone())
+            }
+            TermInner::Const(c) => {
+                if interpreted(&c.name) {
+                    return Some(c.name.clone());
+                }
+                numeral(&c.name) // anything else (ctor / BV / theory-internal) → abstain
+            }
+            TermInner::App(..) => {
+                let mut args: Vec<&Term> = Vec::new();
+                let mut head = t;
+                while let TermInner::App(f, x) = head.kind() {
+                    args.push(x);
+                    head = f;
+                }
+                args.reverse();
+                // the HOL binder shape `forall/exists (λv. body)` → the
+                // SMT-LIB binder (nested binders recurse through the body).
+                if let TermInner::Const(c) = head.kind()
+                    && matches!(c.name.as_str(), "forall" | "exists")
+                    && args.len() == 1
+                    && let TermInner::Lam(v, body) = args[0].kind()
+                {
+                    let sort = atomic_sort(&v.ty, sorts)?;
+                    bound.push(v.name.clone());
+                    let b = render(body, bound, decls, sorts);
+                    bound.pop();
+                    return Some(format!("({} (({} {sort})) {})", c.name, v.name, b?));
+                }
+                let h = render(head, bound, decls, sorts)?;
+                let mut parts = Vec::with_capacity(args.len());
+                for a in &args {
+                    parts.push(render(a, bound, decls, sorts)?);
+                }
+                Some(format!("({h} {})", parts.join(" ")))
+            }
+            // a lambda outside the quantifier shape is higher-order — abstain.
+            TermInner::Lam(..) => None,
+        }
+    }
+
+    let mut decls = BTreeMap::new();
+    let mut sorts = BTreeSet::new();
+    let mut asserts = String::new();
+    for (t, _qid) in assertions {
+        let mut bound = Vec::new();
+        let r = render(t, &mut bound, &mut decls, &mut sorts)?;
+        let _ = writeln!(asserts, "(assert {r})");
+    }
+    // symbol declarations (BTree order — deterministic output).
+    let mut decl_lines = String::new();
+    for (name, ty) in &decls {
+        if ty.is_fun() {
+            let mut doms = Vec::new();
+            let mut cur = ty.clone();
+            while let Some((d, c)) = cur.dest_fun() {
+                doms.push(atomic_sort(&d, &mut sorts)?);
+                cur = c;
+            }
+            let cod = atomic_sort(&cur, &mut sorts)?;
+            let _ = writeln!(decl_lines, "(declare-fun {name} ({}) {cod})", doms.join(" "));
+        } else {
+            let s = atomic_sort(ty, &mut sorts)?;
+            let _ = writeln!(decl_lines, "(declare-const {name} {s})");
+        }
+    }
+    let mut out = String::new();
+    for s in &sorts {
+        if !matches!(s.as_str(), "Int" | "Real" | "Bool") {
+            let _ = writeln!(out, "(declare-sort {s} 0)");
+        }
+    }
+    out.push_str(&decl_lines);
+    out.push_str(&asserts);
+    Some(out)
 }
 
 /// rc.35.1 — `TheoryAbduct` makes the cvc5 `(get-abduct)` invariant a
@@ -2221,6 +2415,21 @@ struct Driver {
     /// `cas` feature is on and one was found at startup. `None` ⇒ no CAS runs.
     #[cfg(feature = "cas")]
     cas_manifest: Option<adsmt_cas::manifest::CasManifest>,
+    /// #401 — the AOT⇄delegation seam, folded. `Some(script)` = the
+    /// `--aot-load` prelude rendered as a self-contained SMT-LIB prefix
+    /// (declarations + asserts) that [`Self::delegation_history`] prepends to
+    /// every delegated query, so OxiZ decides the SAME constraint set the
+    /// native engine restored from the bank (delegation otherwise replays
+    /// only the streamed session text — the prelude is invisible to it).
+    aot_prelude_smt: Option<String>,
+    /// #401 — `true` when an `--aot-load` prelude is active but could NOT be
+    /// folded into [`Self::aot_prelude_smt`] (a construct
+    /// [`prelude_to_smtlib`] cannot reproduce). Delegation then sees a strict
+    /// SUBSET of the constraints: its `Unsat` still transfers (more
+    /// constraints only shrink the model set) but its `Sat` does NOT — the
+    /// delegation sites downgrade a blind delegated `Sat` to `Unknown`
+    /// (the [[feedback_soundness_opaque_fallback]] asymmetry).
+    aot_delegation_blind: bool,
 }
 
 /// rc.35 — incremental-abduct state for cvc5 `(get-abduct-next)`.
@@ -2256,11 +2465,21 @@ impl Driver {
         let mut assertions: Vec<Term> = Vec::new();
         let mut assertion_qids: Vec<Option<String>> = Vec::new();
         let mut assertion_goal_neg: Vec<bool> = Vec::new();
+        let mut aot_prelude_smt = None;
+        let mut aot_delegation_blind = false;
         if let Some(prelude) = aot_prelude {
             for (term, qid) in &prelude.prelude.assertions {
                 assertions.push(term.clone());
                 assertion_qids.push(qid.clone());
                 assertion_goal_neg.push(false); // prelude axioms are hypotheses, never a goal
+            }
+            // #401 — fold the prelude into a delegation prefix (see the field
+            // docs). An empty prelude needs neither the fold nor the gate.
+            if !prelude.prelude.assertions.is_empty() {
+                match prelude_to_smtlib(&prelude.prelude.assertions) {
+                    Some(script) => aot_prelude_smt = Some(script),
+                    None => aot_delegation_blind = true,
+                }
             }
             solver = solver.with_aot_cdcl(prelude);
         }
@@ -2288,6 +2507,8 @@ impl Driver {
                 .ok()
                 .and_then(|d| adsmt_cas::manifest::CasManifest::discover_or_env(&d))
                 .map(|(_root, m)| m),
+            aot_prelude_smt,
+            aot_delegation_blind,
         }
     }
 
@@ -3132,6 +3353,19 @@ impl Driver {
     /// rendered to SMT-LIB (`term_to_smtlib`) for the delegated query;
     /// `history` is the session buffer, minus the adsmt-specific abductive
     /// commands (which OxiZ can't parse), used as `F`.
+    /// #401 — the DELEGATED view of the session buffer: the folded AOT
+    /// prelude (when [`Self::aot_prelude_smt`] rendered one) prepended to
+    /// `history`, so the delegation backend decides the same constraint set
+    /// the native engine restored from the bank. The prefix is CONSTANT for
+    /// the whole session, so the streaming persistent context's
+    /// monotone-growth invariant (feed only the un-fed suffix) is preserved.
+    fn delegation_history<'h>(&self, history: &'h str) -> std::borrow::Cow<'h, str> {
+        match &self.aot_prelude_smt {
+            Some(p) => std::borrow::Cow::Owned(format!("{p}{history}")),
+            None => std::borrow::Cow::Borrowed(history),
+        }
+    }
+
     fn decide_fh(&mut self, extra: &[Term], history: &str) -> FhVerdict {
         // 1. Native, in-engine (push/assert/check-sat/pop).
         self.solver.push();
@@ -3176,7 +3410,12 @@ impl Driver {
         let native_sat = match native {
             SatResult::Unsat { .. } => return FhVerdict::Unsat,
             SatResult::Sat { .. } => {
-                if !history_has_quantifier(history) {
+                // #401 — scan the FOLDED view (an `--aot-load` prelude may
+                // carry the quantifiers), and treat an unfoldable prelude as
+                // possibly-quantified (conservative: confirm via OxiZ).
+                if !history_has_quantifier(&self.delegation_history(history))
+                    && !self.aot_delegation_blind
+                {
                     return FhVerdict::Sat;
                 }
                 true // a SUSPECT sat over quantifiers — confirm via OxiZ below
@@ -3193,8 +3432,9 @@ impl Driver {
         }
         // 2. Delegate the *augmented* query — `F` (adsmt-abductive
         // commands stripped) + `(assert extra)` + `(check-sat)` — through
-        // the same OxiZ path the main solve uses.
-        let mut query = strip_abductive_commands(history);
+        // the same OxiZ path the main solve uses. #401: `F` is the FOLDED
+        // view, so an `--aot-load` prelude constrains the abduce checks too.
+        let mut query = strip_abductive_commands(&self.delegation_history(history));
         for t in extra {
             query.push_str("(assert ");
             query.push_str(&term_to_smtlib(t));
@@ -3203,7 +3443,9 @@ impl Driver {
         query.push_str("(check-sat)\n");
         match oxiz_fallback(&query) {
             Some(LastStatus::Unsat) => FhVerdict::Unsat,
-            Some(LastStatus::Sat) => FhVerdict::Sat,
+            // #401 — a delegated `Sat` blind to an unfoldable AOT prelude
+            // decided a SUBSET: fall through to the undecided arm instead.
+            Some(LastStatus::Sat) if !self.aot_delegation_blind => FhVerdict::Sat,
             // OxiZ also undecided: keep native's `sat` if it had one (a suspect
             // but un-refuted sat), else `Unknown`.
             _ => {
@@ -3258,8 +3500,12 @@ impl Driver {
         }
         // H = assumptions, minus the negated goal and the abductive/interactive
         // surface; a fresh self-contained query (the same delegation the main
-        // solve uses), so the live `F ∧ ¬G` stack is never consulted.
-        let mut query = strip_goal_negation(&strip_abductive_commands(history));
+        // solve uses), so the live `F ∧ ¬G` stack is never consulted. #401:
+        // the folded view — an AOT prelude is part of `H` (and an `unsat` of a
+        // SUBSET of `H` would still soundly imply `H` unsat, so the fold only
+        // sharpens detection, never the claim).
+        let mut query =
+            strip_goal_negation(&strip_abductive_commands(&self.delegation_history(history)));
         query.push_str("(check-sat)\n");
         if let Some(LastStatus::Unsat) = oxiz_fallback(&query) {
             // Build the structured finding (the shared `adsmt-lints` wire) and
@@ -4090,6 +4336,61 @@ mod abduct_render_tests {
         let zero = Term::const_("0", int());
         let app = Term::app(Term::app(gt, x).unwrap(), zero).unwrap();
         assert_eq!(term_to_smtlib(&app), "(> x 0)");
+    }
+
+    /// #401 — the AOT-prelude fold renders a self-contained prefix: sort +
+    /// symbol declarations first (BTree order), then the asserts, with the
+    /// HOL `forall (λv. body)` shape restored to the SMT-LIB binder.
+    #[test]
+    fn prelude_to_smtlib_folds_declarations_asserts_and_quantifiers() {
+        let inner = Type::fun(int(), Type::bool_()).unwrap();
+        let gt = Term::const_(">", Type::fun(int(), inner).unwrap());
+        let x = Term::var("x", int());
+        let ten = Term::const_("10", int());
+        let a1 = Term::app(Term::app(gt, x).unwrap(), ten).unwrap();
+        // ∀v:S. (p v) — an uninterpreted sort + a unary predicate.
+        let s = Type::const_("S", adsmt_core::Kind::Type);
+        let p_ty = Type::fun(s.clone(), Type::bool_()).unwrap();
+        let p = Term::var("p", p_ty);
+        let v = adsmt_core::Var { name: "v".to_string(), ty: s };
+        let body = Term::app(p, Term::var("v", v.ty.clone())).unwrap();
+        let a2 = Term::mk_forall(v, body).unwrap();
+        let out = prelude_to_smtlib(&[(a1, None), (a2, None)]).expect("folds");
+        assert_eq!(
+            out,
+            "(declare-sort S 0)\n\
+             (declare-fun p (S) Bool)\n\
+             (declare-const x Int)\n\
+             (assert (> x 10))\n\
+             (assert (forall ((v S)) (p v)))\n"
+        );
+    }
+
+    /// #401 — an unrecognized `Const` head (a datatype constructor: its
+    /// `declare-datatypes` is NOT reconstructible from the bank) aborts the
+    /// fold; the caller then arms the blind delegated-`Sat` downgrade.
+    #[test]
+    fn prelude_to_smtlib_abstains_on_a_constructor_const() {
+        let c = Type::const_("C", adsmt_core::Kind::Type);
+        let inner = Type::fun(c.clone(), Type::bool_()).unwrap();
+        let eq = Term::const_("=", Type::fun(c.clone(), inner).unwrap());
+        let k = Term::var("k", c.clone());
+        let red = Term::const_("red", c); // a ctor, not a numeral/op
+        let a = Term::app(Term::app(eq, k).unwrap(), red).unwrap();
+        assert!(prelude_to_smtlib(&[(a, None)]).is_none());
+    }
+
+    /// #401 — negative integer literals need the `(- 5)` spelling (a bare
+    /// `-5` symbol is not an SMT-LIB numeral).
+    #[test]
+    fn prelude_to_smtlib_respells_negative_literals() {
+        let inner = Type::fun(int(), Type::bool_()).unwrap();
+        let eq = Term::const_("=", Type::fun(int(), inner).unwrap());
+        let x = Term::var("x", int());
+        let neg = Term::const_("-5", int());
+        let a = Term::app(Term::app(eq, x).unwrap(), neg).unwrap();
+        let out = prelude_to_smtlib(&[(a, None)]).expect("folds");
+        assert!(out.ends_with("(assert (= x (- 5)))\n"), "got: {out}");
     }
 
     #[test]
