@@ -62,12 +62,21 @@ SMT-LIB differential measured a PRE-EXISTING sat-side completeness wall
 (selector-of-ctor reduction on the Apply form / acyclicity / injectivity,
 352/2000 spurious-sat) — tracked as task #406.
 
-Full-corpus re-sweep vs the pinned manifest (30s harness): 33 stage-bail
-conversions (#403's elaboration — 16 verified / 16 solver-unknown /
-1 timeout), **18 solver-unknown → verified** (fuel-recursion ×7,
-seq-vstd ×6, divmod-real ×3, linear-euf ×1, nonlinear ×1), held 153,
+Full-corpus re-sweep vs the pinned manifest: 33 stage-bail conversions
+(#403's elaboration — 20 verified / 12 solver-unknown / 1 timeout),
+**20 solver-unknown → verified** (fuel-recursion ×7, seq-vstd ×6,
+divmod-real ×3, datatypes-match-1 ×1, linear-euf ×2, nonlinear ×1),
 negative controls 4/4 (`neg-exhaustiveness-control` STAYS `sat` — the
-cover axioms do not over-constrain). Honest residuals: (a)
+cover axioms do not over-constrain). CANONICAL LEDGER (reconciled
+row-by-row with verus-fork's independent 90s re-sweep at `b4518db`):
+**143 verified** (104 pinned + 40 − 1), remaining z3-unsat targets
+**53**. Two sweep-hygiene lessons from the reconciliation: (a) summary
+counts in replies/docs are computed by SCRIPT from the sweep log, never
+tallied by hand (two prose-tally slips in two replies); (b) a sweep
+whose engine has a WALL-CLOCK guard (the 3s MBQI non-termination guard)
+must run on an otherwise-idle machine — running it alongside test
+suites/differentials pushed two ~740ms rows past the guard and
+misclassified them solver-unknown. Honest residuals: (a)
 `fuel-recursion-1/ob06` regressed verified → solver-unknown — bisected to
 the (mandatory) gap-2 SAT fix `3c49a00`: the now-biting lemmas change the
 per-round model and the `sum_to` recursion axiom enters a term-growth
