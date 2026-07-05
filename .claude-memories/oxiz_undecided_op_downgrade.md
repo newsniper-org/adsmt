@@ -1,0 +1,18 @@
+---
+name: oxiz-undecided-op-downgrade
+description: "OxiZ #291 (LANDED): parse abs/to_real/to_int/is_int/(_ divisible n) + extend the div/mod Sat→Unknown soundness downgrade to them; plus the reusable trap that soundness-critical term walks must use the COMPLETE oxiz_core::ast::get_children, not the incomplete clean_mbqi::subterms."
+metadata:
+  node_type: memory
+  type: project
+  originSessionId: 32a1dc0d-7730-4862-8df4-6958199ce84f
+---
+
+**#291 LANDED 2026-06-28 (OxiZ submodule `0e96573`→`53feaa3` branch `0.2.4-redesign`; adsmt pointer `bd165a8`; local/unpushed, no version bump).** OxiZ now parses the five SMT-LIB Int/Real ops the theory does NOT decide and routes them through the SAME soundness backstop as integer `div`/`mod`:
+- **Parser** (`oxiz-core/.../parser/terms.rs`): `abs`/`to_real`/`to_int`/`is_int` parse as **uninterpreted apps with correct result sorts** (abs→arg sort, to_real→Real, to_int→Int, is_int→Bool; before, they fell through to the fallback as **Bool**-sorted apps = wrong sort + undowngraded). `(_ divisible n) x` desugars to its SMT-LIB definition `(= (mod x n) 0)` (reuses `TermKind::Mod` → already downgraded).
+- **Downgrade** (`oxiz-solver/src/context.rs`): `term_contains_div_mod`→`term_contains_undecided_op` also flags `abs`/`to_real`/`to_int`/`is_int` `Apply` nodes (by name via `terms.resolve_str`). Over-approximation ⇒ a `Sat` resting on one is downgraded to the sound `Unknown`; `Unsat` preserved. Headline fix: `(< (abs x) 0)` went **fabricated `sat` → sound `unknown`**; `(< (to_int r) (to_int r))` stays `unsat` (congruence on the shared term — downgrade only touches Sat).
+
+**THE REUSABLE TRAP (adversarially found, the load-bearing lesson):** the soundness downgrade walked `clean_mbqi::subterms`, whose `_ => Vec::new()` catch-all **does NOT descend into `Let`/String/FP/BV/`Dt*` kinds** — so an undecided op hidden under a `let` (or `str.from_int`, a datatype ctor, …) escaped the walk and leaked a fabricated `sat` (e.g. `(let ((y (abs x))) (= y -1))`). This was a PRE-EXISTING gap in the div/mod downgrade too. FIX = recurse through the CANONICAL complete enumerator **`oxiz_core::ast::get_children`** (descends into let bindings+body + every wrapper). **Rule: any soundness-critical "does this term contain X" walk MUST use `get_children`, never `clean_mbqi::subterms` (which is an MBQI-scoped, deliberately-partial helper).**
+
+**Verification chain (design→선검증→구현→z3/diff→adversarial):** 선검증 `~/oxiz-undecided-op-verification` (Verus **5/5**: abstraction-monotonicity `concrete-SAT⟹relaxed-SAT` = the downgrade's justification, + `relaxation_can_fabricate_sat` necessity, + abs/divisible desugar identities; no integer_ring, system verus). z3/diff: **cvc5** oracle (this z3 build can't parse `(_ divisible n)`; cvc5 supports all 5) — 1200 samples **0 #291-scope violations**, 400-sample let/wrapper-nested stress **0**, 5 ground-soundness regressions. **The 4-lens adversarial workflow caught the let/coverage hole the 1200-sample RANDOM differential missed** — reaffirms [[feedback_empirical_adversarial_review]] (adversarial > random for structural gaps).
+
+**Side-findings (out of #291 scope, candidate future tasks):** (a) the coverage lens found OxiZ's **String + FP theories are independently unsound** on pure-constant unsat (e.g. `(= (str.from_int 9) (str.from_int 5))` → `sat`; `(fp.lt (to_fp 2.0) (to_fp 1.0))` → `sat`) — separate latent bug, now masked whenever a #291 op co-occurs (downgrade fires). (b) the differential reconfirmed **#289** (LIA integer-feasibility: `3 = 2y` over Int → spurious `sat`, still pending/deferred). See [[oxiz-relationship]], [[feedback-soundness-opaque-fallback]] (same dropping-constraints asymmetry).

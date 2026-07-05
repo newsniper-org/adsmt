@@ -23,6 +23,10 @@ I.e. for use cases that don't need leo4 (cert text emit, lu-smt
 CLI, direct Rust API), the current testing channel (adsmt `1.0.0-rc.2`)
 is the consumer-facing release line until v1.0.0 cuts.
 
+## ⚠️ 2026-06-25 EXPANSION — the typed-ASP face is now a v1.0.0 feature
+
+User decision D (2026-06-25): pull the **whole typed-ASP face** ([[asp-face-design]]) — the closed-world/stable-model sibling of the SMT-LIB face, with the abductive engine FULLY merged + the hard-gated L3 stable-model solver — **into the v1.0.0 cut, "기존 계획을 대폭 변경해서라도"**. To enable it, **develop on the `main` branch ONLY for the time being** (no `testing` backport during ASP-face dev). This OVERRIDES the [[pre_stable_feature_freeze]] posture for this feature. Consequence: the v1.0.0 cut now ALSO gates on the ASP-face program completing (a multi-slice effort: MVP = modality+θ+CanEq+L1-theory-interior+forward-lfp+definite-abduction+1st-order-matching → L6/L2 → L3 the research-grade stable-model-solver+loop-formula-cert-checker → L4/L5). New crate `~/adsmt-ir-asp` + AD1-workspace abductive-merge/Solver-wiring. This is a LARGER scope bump than the leo4 bundle below; the v1.0.0 timeline is now the max of (leo4 milestones, ASP-face program, user sign-off).
+
 ## Bundled scope (was deferred, now part of v1.0.0 cut)
 
 | ID | Source | Item | External gate | Status (2026-06-01) |
