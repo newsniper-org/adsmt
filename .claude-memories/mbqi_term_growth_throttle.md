@@ -1,0 +1,29 @@
+---
+name: mbqi-term-growth-throttle
+description: "#404: MBQI 항-성장 hard-cap 스로틀 SHELVED(정적 depth-tension). 후속 fuel-aware cost-scheduler P0.5→P3 LANDED(oxiz 0.2.4-feat/fuel-cost-scheduler, flag-off-safe). 코퍼스 A/B 측정 완료 → NET-NEGATIVE·default OFF 확정: 7-config 전면 판정-불변(GAIN 0/REGRESS 8), 4s 예산 후속은 악화(순손실 8→15, fire-all에 strictly dominated). 하드-캡처럼 baseline 미달, 코드는 flag-off 존치(succ-peel-heavy 코퍼스 재측정 여지)+P3a 가드 이득. §6 미착수 확정"
+metadata:
+  node_type: memory
+  type: project
+  originSessionId: 32a1dc0d-7730-4862-8df4-6958199ce84f
+---
+
+**결론: 항-성장 스로틀 SHELVED. 미랜딩 사유는 (예전 메모가 적었던 #407 위임-발산이 아니라 — 그건 stale-바이너리 오진이었음, [[feedback-adsmtc-build-target]]) 근본적 depth-tension. 워킹트리는 검증된 baseline b4518db로 복귀, AD1 서브모듈 포인터 그대로.**
+
+**스로틀 설계**(z3 generation, Ge & de Moura): GroundIndex가 항마다 instantiation GENERATION(입력=0, 인스턴스 항=1+max(binding gen))을 태깅; index-draw 채널이 `gen ≤ gen_cap`만 봄; gen_cap0=0 얕은-우선 + 정체 라운드에서 cap 2배(iterative deepening) + deadline/MATCH_SET_CEILING 백스톱.
+
+**결정적 측정 (adsmtc `-p adsmtc`, 코퍼스 209행, 스크립트 A/B):**
+- **전역 full-cap**: fr1/ob06 unknown→unsat 회복하지만 7행 회귀(fr2/ob01·fr2/ob03·fr3/ob03·fr3/ob05·fr3/ob08·divmod-real-3/ob04·seq-vstd-1/ob08). 재분배, 순 negative/marginal. 건전성은 무해(ground-DT differential 1500시드 SPURIOUS_UNSAT=0 — 지연만, 제조 없음).
+- **enumerate-only cap**(발산 입증 채널=트리거 없는 정의 공리 enumeration만 cap, e-match/CDQI 자유): 같은 빌드 cap-huge vs cap-0 A/B = **개선 0, 회귀 1**(fr1/ob04 unsat→unknown). fr1/ob06도 회복 안 됨 — fr1 발산이 e-match/CDQI도 경유. 순손실.
+- **per-quant throttle-on-count 적응형**: 비적용. fr1/ob06 발산이 **~50 quantifier에 분산**(quant1=57, 나머지 각 18-29 방출; 지배적 범인 없음) → 스로틀하려면 사실상 전역 cap.
+
+**근본 원인**: fuel-recursion 패밀리는 얕게 닫히는 obligation(스로틀 필요: fr1/ob06)과 깊게 닫히는 obligation(스로틀 거부: fr2/fr3/seq/dm)을 섞고, 종결 캐스케이드가 **모든 채널(e-match/CDQI/enumeration)을 공유**하며, 발산이 분산돼 있어 **어떤 정적 generation cap이나 채널 선택도 둘을 분리 못 함**. baseline(uncapped, 라운드-내 다세대 캐스케이드 빠름)이 이 코퍼스에서 파레토 최적. 계측으로 확인: baseline fr2/ob01은 2라운드 265방출로 unsat(뒤 quantifier가 앞이 방금 mint한 gen-1 항 위로 즉시 캐스케이드) — cap 0은 그 라운드-내 캐스케이드를 차단(117방출)하고 iterative deepening은 세대를 하나씩만 올려 MBQI 예산 내 미종결.
+
+**side-lead(미추적)**: enum-only 빌드의 uncapped 모드가 b4518db보다 fr1/ob04를 더 잘 품(unsat 4483ms vs baseline unknown) — gen cap과 무관한 ccfv **deadline-threading + MATCH_SET_CEILING**(발산 match-루프 유계화) 기계장치 자체 효과 가능성. 별개 focused 조사감(스로틀과 분리해 baseline 대비 clean A/B 필요).
+
+**보존/복귀**: 탐색 커밋 = oxiz 브랜치 `0.2.4-experiment/term-growth-throttle`(full-cap @8c8b98d, enum-only+A/B @4db2af0, 미푸시·미머지). 검증 baseline = `0.2.4-redesign` @ **b4518db**(AD1 커밋 포인터와 일치). **교훈**: 검증된 baseline이 완전성 최적일 수 있고, 단일 obligation(fr1/ob06) 회복을 위한 전역 MBQI 튜닝은 형제 obligation 회귀와 제로섬 — verdict-trust(회귀 0) 규칙상 랜딩 불가.
+
+**LANDED (P0.5→P3, 2026-07-07, oxiz 브랜치 `0.2.4-feat/fuel-cost-scheduler`)**: 옵션3 = **fuel-aware cost-scheduler**를 슬라이스로 구현. `b228ff3`(ledger reserved)→`4a25af3`(설계 rev2)→`45f56f2`(P0.5 E1 generation/E2 fuel_role/E3 content_key)→`c58939f`(P0 CostScheduler AWR bucket queue)→`7170ff8`(P1 cost/분류기 스텁)→`dc62414`(P2 fixpoint+§8, flag-off-safe)→`a00ff0b`(**P3a 월-클록 가드** = flag-on hang 해소, `set_deadline` fixpoint 폴링; 실측 fr2/ob01 flag-on **3.14s unknown**(가드) vs P2 20s+ hang)→`218e468`(**P3c 연료-peel 정적 분류기** `classify_static` 2-패스 peel-vs-grow + Δfuel discount + `g_out`=has-fired reconcile; 2 위조트랩 처리)→`f26feee`(P3b AWR age-pulse 검증+R7캐비엇)→`87f4d9c`(doc sweep). **flag `cost_schedule` 기본 off, 기본 `CostParams(0,0)`=Z3패리티라 분류기 계산되나 무해(inert)** → flag-off 바이트-동일. 스윕 노브 env: `OXIZ_COST_SCHEDULE`/`OXIZ_K_FUEL`/`OXIZ_GEN_CLASS_DELTA`/`OXIZ_AWR_AGE_RATIO`/`OXIZ_AWR_WEIGHT_RATIO`. **§6 causal-root 보류**(설계-강등; P3c+P3b가 코어 해법, emit provenance 신규배관 필요, A/B 잔차 시에만). **코퍼스 A/B 측정 완료(2026-07-08, 유휴-머신 직렬, 스크립트 집계) → NET-NEGATIVE, default OFF 확정.** 자체 flag-off baseline(213-row lukb, adsmtc --features oxiz)=103 SOLVED/110 open. **7-config 전면 판정-불변**: (k_fuel,gen_class_delta,age:wt)를 (0,0,0:1)~CAP-포화 (48,48,1:1)~age-지배 (0,48,3:1)까지 → 전부 GAIN=0/REGRESS=8/spurious=0, (0,0) 대비 213행 판정 0-차이. **재배열은 이 코퍼스 판정에 물리적 무효**(닫힘=예산-적합성 결정, 순서 무관). 8 회귀=순수 scheduled 간접비(경계선 unsat 2.0-3.1s가 3s 가드 초과→sound unknown, 전부 비-fuel). 분류기는 succ-peel 있는 행(fr1 `rec%sum_to(n!,succ(fuel%))`)엔 engage하나 판정 안 바뀜. **4s 예산 후속(env `OXIZ_MBQI_GUARD_MS`, `15fd3d6`): 오히려 악화** — flag-off-4s가 예산만으로 +8 닫는데(GAIN 8) 그 8행이 flag-on-4s 회귀 15개 중 8개와 정확히 일치(간접비가 가드 초과) → 스케줄러 순손실 8→15, **모든 예산에서 fire-all에 strictly dominated, 예산 클수록 격차↑**. 즉 하드-캡에 이어 cost-scheduler도 baseline 미달, 설계 핵심 베팅 **이 코퍼스에서 반증**. 코드는 flag-off 유지(byte-identical, shipped 회귀 0; succ-peel-heavy 코퍼스 재측정 여지) + P3a 가드는 독립 런어웨이-바운딩 이득으로 존치. 측정 상세=설계도큐 §11(`12039ee`+`15fd3d6`). §6 causal-root는 A/B가 잔차 안 보였으므로 미착수 확정. AD1 서브모듈 포인터 미범프(사용자 몫). 테스트: oxiz-mbqi 34/0+gating_frontier 7/0+oxiz-solver clean_mbqi 5/0.
+
+**guard 3s→4s는 트렁크(`0.2.4-redesign` `a396250`, 2026-07-09)에서 별개로 LANDED — scheduler 판단과 무관.** fire-all(scheduler off, 즉 실제 배포 경로) 단독 기준 재측정(SAT 코어 f2284ab 수정 반영 후): GAIN=5/REGRESS=0/FLIP=0, 전 항목 monotonic 개선 → 기본값을 4000으로 상향. 위 문단의 "4s가 스케줄러엔 악화"는 **cost_schedule=on일 때만의 얘기**(간접비가 여유 예산을 다 먹음); fire-all 자체엔 순수 이득이라 트렁크 기본값 확정. `OXIZ_MBQI_GUARD_MS` env로 재컴파일 없이 튜닝 가능.
+
+**후속(옵션3, #404-R/#408, 리서치-우선 2026-07-06)**: 제대로 된 해법 = **fuel/generativity-aware cost-scheduled instantiation**(hard cap 아님). 코퍼스는 fuel 인코딩(`succ`/`zero`/`fuel_bool`)이고 텐션은 fuel 깊이 1 vs 2. 문헌 4갈래 수렴(라이브러리 13→21편, 합성 `.claude-research-library/FUEL_AWARE_INSTANTIATION_RESEARCH.md`): (A) generativity 분류(fuel-decreasing=uncapped, ascending=budget; `g_out(q)=max(gen(minted)−gen(trigger))` 신호) — hard cap이 뭉갠 그 구분이 치료제; (B) generation=soft cost(z3 `weight+generation`, eager10/lazy20, conflict override, cheapest-first)—hard gate 아님; (C) fuel 항이 termination 인증서(succ 사슬을 zero까지, 무료); (D) 런타임 발산탐지(frontier "additional structure") + **causal-root 스로틀**(분산 blowup 87% 단일 루트). 설계/선검증/구현은 다음 단계. [[research-library-mbqi]] [[oxiz_mbqi_rewrite]] [[oxiz_trigger_inference]] [[feedback-adsmtc-build-target]]

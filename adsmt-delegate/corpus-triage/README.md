@@ -88,6 +88,23 @@ though its ddmin core closed; the residual is instantiation-side over
 the full axiom set. Both are the campaign's continuing tuning surface
 (term-growth throttle / relevance-gate), not ground-theory gaps.
 
+**Update 2026-07-13 (verus-fork resweep @ oxiz `b478199`, ground-DT
+completeness rounds #406/#418/#419/#422/#423/#424 — selector-reduction,
+acyclicity, well-foundedness, injectivity via a shared equality-closure
+fixpoint, `distinct` polarity, OR-branch case-splitting, cross-datatype
+name collisions, N-ary `distinct`, literal-constant conflicts):
+**CANONICAL LEDGER 145 verified / 50 remaining z3-unsat targets** (+2 vs
+the 143/53 above). Residual (b) above (`dm3/ob01`'s full 419-assert
+render) is now **CLOSED** — verified in 1.14s; `dm3/ob03` also newly
+verified (1.46s). Zero new regressions (`ob06` unchanged, still the sole
+one), negative controls 4/4 exact (the new acyclicity/injectivity/
+cover/`distinct`-decomposition machinery does not over-constrain).
+"verus exposure" reconfirmed nil across the full #406-#424 span, not
+just #406. Saturator bench list (10 rows, current-pin) delivered:
+`.local-replies-from/verus-fork/corpus-saturators-2026-07-13-b478199.txt`
+— to be used as the first regression-pin once the fuel-throttle/
+relevance-gate slice (residual (a) above) lands.
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it

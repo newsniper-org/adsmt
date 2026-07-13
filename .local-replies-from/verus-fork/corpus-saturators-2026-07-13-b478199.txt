@@ -1,0 +1,14 @@
+# 90s-harness saturators, corpus re-sweep @ oxiz b478199 / adsmt rc.42.1 (2026-07-13)
+# (the throttle-slice bench set. NOTE: this is the CURRENT-pin list, 10 rows —
+#  the phase-2-era 9-name list was not preserved by name; one row crossed 90s
+#  since, plausibly the MBQI guard 3s→4s shift. Pinned-timeout 4 excluded.)
+datatypes-match-2/ob01
+datatypes-match-2/ob03
+datatypes-match-2/ob05
+datatypes-match-2/ob07
+datatypes-match-2/ob08
+datatypes-match-3/ob11
+seq-vstd-2/ob03
+seq-vstd-2/ob04
+seq-vstd-2/ob05
+seq-vstd-2/ob09
