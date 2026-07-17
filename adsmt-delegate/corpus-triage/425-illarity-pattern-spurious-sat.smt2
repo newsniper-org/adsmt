@@ -1,0 +1,8 @@
+(set-logic ALL)
+(declare-sort P 0)
+(declare-fun f (P) Int)
+(declare-fun g2 (P P) P)
+(declare-const a P)
+(assert (forall ((x P)) (! (= (f (g2 x x)) (+ (f x) 1)) :pattern ((g2 x)))))
+(assert (not (= (f (g2 (g2 a a) (g2 a a))) (+ (f a) 2))))
+(check-sat)

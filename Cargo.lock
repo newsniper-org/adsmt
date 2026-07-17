@@ -262,6 +262,7 @@ dependencies = [
  "adsmt-core",
  "adsmt-engine",
  "adsmt-ir",
+ "adsmt-ir-lukb",
  "adsmt-ir-smtlib",
  "adsmt-theory",
 ]

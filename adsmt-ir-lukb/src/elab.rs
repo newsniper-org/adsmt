@@ -11,8 +11,8 @@ use adsmt_class::resolve::{ClassGoal, ResolutionResult, Resolver};
 use adsmt_class::{Instance, InstanceDb, LawProver, Premise};
 use adsmt_ir::theory;
 use adsmt_ir::{
-    Ctx, Env, Modality, Term as K, Univ, as_const_app, declare_inductive, define, infer,
-    is_def_eq, peel_pis, postulate, shift, subst_top, whnf,
+    Ctx, Env, Modality, Term as K, TriggerMap, Univ, as_const_app, declare_inductive, define,
+    infer, is_def_eq, peel_pis, postulate, record_triggers, shift, subst_top, whnf,
 };
 
 use crate::ast::{Arm, BinOp, Binder, Item, Module, PatArg, Pattern, Term as S, Type};
@@ -29,6 +29,13 @@ pub struct Elaborated {
     pub hypotheses: Vec<K>,
     /// `goal` bodies (the obligations, each to be checked under `H`).
     pub goals: Vec<K>,
+    /// Out-of-band `trigger` metadata: each triggered surface `forall`,
+    /// keyed by the hash-consed kernel term of the WHOLE quantifier (the
+    /// outermost `Π` of its telescope; see [`adsmt_ir::triggers`]). Pattern
+    /// terms are elaborated under the same de Bruijn window as the body.
+    /// Purely advisory: a pattern that fails to elaborate drops that
+    /// quantifier's triggers (never a [`FaceError`]).
+    pub triggers: TriggerMap,
 }
 
 /// Parse + elaborate lu-kb-successor source. The pure-face entry: no law
@@ -56,7 +63,7 @@ fn elaborate_impl(src: &str, prover: Option<&dyn LawProver>) -> Result<Elaborate
     for item in &module.items {
         e.item(item)?;
     }
-    Ok(Elaborated { env: e.env, hypotheses: e.hyps, goals: e.goals })
+    Ok(Elaborated { env: e.env, hypotheses: e.hyps, goals: e.goals, triggers: e.triggers })
 }
 
 struct Elab<'p> {
@@ -86,6 +93,8 @@ struct Elab<'p> {
     /// AMBIGUOUS field name (declared by more than one constructor) — a call
     /// on it keeps the unknown-symbol error rather than guessing a target.
     selector_fields: HashMap<String, Option<(String, String)>>,
+    /// Out-of-band trigger metadata (see [`Elaborated::triggers`]).
+    triggers: TriggerMap,
 }
 
 impl<'p> Elab<'p> {
@@ -177,6 +186,7 @@ impl<'p> Elab<'p> {
             classes,
             prover,
             selector_fields: HashMap::new(),
+            triggers: TriggerMap::new(),
         };
         elab.grant_eq("Bool"); // surface Bool = kernel Prop: equality (iff), no order
         Ok(elab)
@@ -713,13 +723,14 @@ impl<'p> Elab<'p> {
             S::Bin(op, l, r) => self.elab_bin(ctx, *op, l, r),
             S::Call(name, args) => self.elab_call(ctx, name, args),
             // triggers are MBQI matching control; the kernel `Π` cannot carry
-            // them, so they are dropped here (to be threaded out-of-band as
-            // solver metadata once the CIC→HOL solver path lands). Dropping is
-            // sound: triggers only *guide* instantiation, never change meaning.
-            S::Forall(bs, body, _trigs) | S::Exists(bs, body, _trigs) => {
-                let forall = matches!(t, S::Forall(..));
-                self.elab_quant(ctx, bs, body, forall)
-            }
+            // them, so a `forall`'s triggers are threaded OUT-OF-BAND into
+            // `self.triggers` (keyed by the whole hash-consed `Π` telescope;
+            // see [`adsmt_ir::triggers`]) — advisory metadata, so a pattern
+            // that fails to elaborate only drops that quantifier's triggers,
+            // never rejects the module. `exists` keeps dropping (the solver
+            // path Skolemizes; there is no instantiation to guide).
+            S::Forall(bs, body, trigs) => self.elab_quant(ctx, bs, body, true, trigs),
+            S::Exists(bs, body, _trigs) => self.elab_quant(ctx, bs, body, false, &[]),
             S::Let(x, e, body) => {
                 let ke = self.elab_term(ctx, e)?;
                 let ty = infer(&self.env, &kernel_ctx(ctx), &ke)?;
@@ -824,6 +835,7 @@ impl<'p> Elab<'p> {
         binders: &[Binder],
         body: &S,
         forall: bool,
+        trigs: &[Vec<S>],
     ) -> Result<K, FaceError> {
         let depth0 = ctx.len();
         let mut sorts = Vec::new();
@@ -885,6 +897,14 @@ impl<'p> Elab<'p> {
         // elaborate the guards + body in the binder context; restore the context
         // regardless of success so an error doesn't leave it dirty.
         let r = self.elab_guards_and_body(ctx, &guards, body);
+        // trigger patterns elaborate under the SAME binder window (identical
+        // de Bruijn indices as the body) — but ADVISORILY: any failure yields
+        // `None` (drop this quantifier's triggers), never a `FaceError`.
+        let ktrigs = if forall && !trigs.is_empty() && r.is_ok() {
+            self.elab_trigger_groups(ctx, trigs, &body_substs)
+        } else {
+            None
+        };
         ctx.truncate(depth0);
         let (kguards, kbody) = r?;
         // guard the body with the domain constraints.
@@ -899,7 +919,15 @@ impl<'p> Elab<'p> {
             }
         };
         if forall {
-            Ok(adsmt_ir::build_pi(&sorts, inner))
+            let pi = adsmt_ir::build_pi(&sorts, inner);
+            // record the triggers keyed by the WHOLE telescope term; arity =
+            // the number of value binders (guard-arrows sit INSIDE the
+            // telescope, so they don't count — the lowering peels exactly
+            // `arity` Πs and finds the guard implication in the residual).
+            if let Some(groups) = ktrigs {
+                record_triggers(&mut self.triggers, pi.clone(), sorts.len(), groups);
+            }
+            Ok(pi)
         } else {
             // ∃ nests right-to-left: Exists T0 (λT0. Exists T1 (λT1. … inner)).
             let mut acc = inner;
@@ -909,6 +937,76 @@ impl<'p> Elab<'p> {
             }
             Ok(acc)
         }
+    }
+
+    /// Elaborate a `forall`'s trigger groups in the (already extended) binder
+    /// context. Returns `None` — never an error — if ANY pattern fails to
+    /// elaborate or kernel-typecheck: triggers are advisory instantiation
+    /// guidance, and a bad pattern must not reject a working module.
+    fn elab_trigger_groups(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        trigs: &[Vec<S>],
+        body_substs: &[(String, S)],
+    ) -> Option<Vec<Vec<K>>> {
+        let kctx = kernel_ctx(ctx);
+        let mut groups = Vec::with_capacity(trigs.len());
+        for group in trigs {
+            let mut kgroup = Vec::with_capacity(group.len());
+            for pat in group {
+                // image binders unfold `y := f(x)` in the body — patterns get
+                // the SAME substitution (they range over the same window).
+                let pat_owned;
+                let pat = if body_substs.is_empty() {
+                    pat
+                } else {
+                    let mut p = pat.clone();
+                    for (y, e) in body_substs {
+                        p = subst_surface(&p, y, e);
+                    }
+                    pat_owned = p;
+                    &pat_owned
+                };
+                let kpat = match self.elab_term(ctx, pat) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
+                            eprintln!("[lukb-dbg] trigger pattern dropped (elab): {e}");
+                        }
+                        return None;
+                    }
+                };
+                // a pattern must at least be kernel-well-typed in the window.
+                let sort = match infer(&self.env, &kctx, &kpat) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
+                            eprintln!("[lukb-dbg] trigger pattern dropped (typecheck): {e}");
+                        }
+                        return None;
+                    }
+                };
+                // …and FULLY applied: a function-sorted pattern (a partial
+                // application like `g2(x)` for binary `g2`) is legal CIC but
+                // renders as an ill-arity `:pattern` the solver accepts yet can
+                // never e-match — a DEAD trigger that suppresses inference and
+                // denies the verdict. Drop it (over-application already fails
+                // `infer` above; this closes the under-application half).
+                if matches!(whnf(&self.env, &sort).kind(), adsmt_ir::TermKind::Pi(..)) {
+                    if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
+                        eprintln!(
+                            "[lukb-dbg] trigger pattern dropped (function-sorted / partial application)"
+                        );
+                    }
+                    return None;
+                }
+                kgroup.push(kpat);
+            }
+            if !kgroup.is_empty() {
+                groups.push(kgroup);
+            }
+        }
+        if groups.is_empty() { None } else { Some(groups) }
     }
 
     /// Elaborate the binder guards and the quantifier body in the (already

@@ -643,26 +643,94 @@ fn bounded_range_quantifiers() {
 }
 
 /// Triggers parse (single + multi-pattern, repeatable), are carried in the AST,
-/// round-trip, and elaborate (the kernel `Π` can't hold them, so they are
-/// dropped at elaboration — sound, since triggers only guide instantiation).
+/// round-trip, and elaborate into the OUT-OF-BAND trigger map (the kernel `Π`
+/// can't hold them): keyed by the whole hash-consed quantifier telescope, with
+/// the binder arity and one kernel-term group per `trigger` clause.
 #[test]
-fn triggers_parse_round_trip_and_are_dropped() {
+fn triggers_parse_round_trip_and_thread_out_of_band() {
     use adsmt_ir_lukb::ast::{Item, Term};
-    let m = parse(
-        "goal g: forall x: Int. prime(x) trigger prime(x) trigger { odd(x), prime(x) }\n",
-    )
-    .expect("parses triggers");
+    let src =
+        "goal g: forall x: Int. prime(x) trigger prime(x) trigger { odd(x), prime(x) }\n";
+    let m = parse(src).expect("parses triggers");
     let Item::Goal(_, Term::Forall(_, _, trigs)) = &m.items[0] else {
         panic!("expected a forall goal");
     };
     assert_eq!(trigs.len(), 2, "two trigger clauses");
     assert_eq!(trigs[0].len(), 1, "first is a single pattern");
     assert_eq!(trigs[1].len(), 2, "second is a multi-pattern");
-    // elaborates (triggers dropped, body is a Prop).
-    all_props("goal g: forall x: Int. prime(x) trigger prime(x)\n", 0, 1);
+    // elaborates; the goal term (the outermost Pi) keys the trigger entry.
+    let r = all_props(src, 0, 1);
+    let entries = r.triggers.get(&r.goals[0]).expect("the goal forall keys a trigger entry");
+    assert_eq!(entries.len(), 1, "one arity entry");
+    assert_eq!(entries[0].arity, 1, "single binder");
+    assert_eq!(entries[0].groups.len(), 2, "two groups");
+    assert_eq!(entries[0].groups[0].len(), 1, "first group is a single pattern");
+    assert_eq!(entries[0].groups[1].len(), 2, "second group is a multi-pattern");
     // round-trips.
     let m2 = parse(&print_module(&m)).expect("re-parses");
     assert_eq!(m, m2, "triggers round-trip");
+}
+
+/// A multi-binder telescope records ONE entry keyed by the OUTERMOST `Π` with
+/// arity = the binder count (not one entry per curried level).
+#[test]
+fn multi_binder_triggers_key_the_whole_telescope() {
+    let r = all_props(
+        "const f: Int -> Int -> Int\n\
+         axiom a: forall x: Int, y: Int. f(x, y) > 0 trigger f(x, y)\n",
+        1,
+        0,
+    );
+    let entries = r.triggers.get(&r.hypotheses[0]).expect("keyed by the outermost Pi");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].arity, 2, "two binders, one telescope");
+    assert_eq!(entries[0].groups.len(), 1);
+    assert_eq!(entries[0].groups[0].len(), 1);
+}
+
+/// Trigger elaboration failure is NEVER a `FaceError`: an unknown symbol in a
+/// pattern drops only that quantifier's triggers; the module still elaborates
+/// and every other quantifier keeps its entry.
+#[test]
+fn failing_trigger_pattern_drops_only_that_quantifier() {
+    let r = all_props(
+        "axiom ok: forall x: Int. prime(x) trigger prime(x)\n\
+         axiom bad: forall y: Int. odd(y) trigger mystery(y)\n",
+        2,
+        0,
+    );
+    assert!(
+        r.triggers.contains_key(&r.hypotheses[0]),
+        "the healthy quantifier keeps its triggers"
+    );
+    assert!(
+        !r.triggers.contains_key(&r.hypotheses[1]),
+        "the failing pattern drops that quantifier's triggers (module not rejected)"
+    );
+    assert_eq!(r.triggers.len(), 1);
+}
+
+/// A PARTIALLY-APPLIED pattern (`f(x)` for binary `f`) is legal CIC — the
+/// kernel infers its curried `Π` sort — but as a `:pattern` it is DEAD: the
+/// solver parses the ill-arity term yet can never e-match it, which
+/// suppresses trigger inference and denies the verdict. It must be dropped
+/// (advisorily) at elab; the saturated twin keeps its entry.
+#[test]
+fn partial_application_trigger_is_dropped() {
+    let r = all_props(
+        "const f: Int -> Int -> Int\n\
+         axiom ok: forall x: Int, y: Int. f(x, y) > 0 trigger f(x, y)\n\
+         axiom bad: forall x: Int, y: Int. f(x, y) > 1 trigger f(x)\n",
+        2,
+        0,
+    );
+    assert!(r.triggers.contains_key(&r.hypotheses[0]), "the saturated pattern is kept");
+    assert!(
+        !r.triggers.contains_key(&r.hypotheses[1]),
+        "a function-sorted (partially-applied) pattern drops that quantifier's \
+         triggers (module not rejected)"
+    );
+    assert_eq!(r.triggers.len(), 1);
 }
 
 /// Round-trip of a range binder nested with an inner triggered quantifier.

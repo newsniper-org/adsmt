@@ -64,6 +64,7 @@ pub mod inductive;
 pub mod reduce;
 pub mod term;
 pub mod theory;
+pub mod triggers;
 
 pub use bank::{BankError, bank_decode, bank_encode};
 pub use check::{Ctx, check, define, infer, infer_univ, postulate, type_of};
@@ -78,3 +79,4 @@ pub use term::{
     Term, TermKind, Univ, as_const_app, build_pi, collect_spine, occurs, peel_pis, shift,
     subst_top,
 };
+pub use triggers::{QuantTriggers, TriggerMap, record_triggers};

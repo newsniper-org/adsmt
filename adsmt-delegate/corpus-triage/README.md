@@ -105,6 +105,46 @@ just #406. Saturator bench list (10 rows, current-pin) delivered:
 — to be used as the first regression-pin once the fuel-throttle/
 relevance-gate slice (residual (a) above) lands.
 
+**Update 2026-07-17 (adsmt-side: lukb `trigger` → OxiZ `:pattern`
+threading — the dm2-class root fix)**: the delegated renders carried ZERO
+`:pattern` (the elaborator dropped the surface `trigger` clauses at its
+documented TODO), so OxiZ's own trigger inference picked guard-shaped
+(`has_type`) and 2-variable triggers → 3–4 orders of magnitude
+over-instantiation vs z3 (dm2/ob01: 2.3M matches, 100% unevaluable
+lemmas). Now threaded end-to-end, out-of-band at every stage: elaborator
+side-map keyed by the hash-consed outermost Π (patterns elaborated in the
+body's binder window; any failure drops only that quantifier's triggers —
+advisory metadata never rejects a module) → lower multi-binder takeover
+(`peel_pis` by recorded arity, body+patterns in one frame, byte-identical
+fold to the plain path, re-keyed through `fold_bool_lits`) → render binder
+re-collection + `(! body :pattern …)` emission behind an all-or-nothing
+dead-pattern guard (renderable ∧ per-group full binder cover ∧ head
+uninterpreted, saturated, and FREE-occurring in the body ∧ pattern decls
+collected). Completeness is floored DYNAMICALLY (`proves_goal`): if the
+annotated script doesn't prove, the obligation re-runs in the historical
+curried pattern-free shape — every pre-feature `unsat` stays `unsat` by
+construction (the adversarial gate caught seq-vstd-1/ob08+ob09 flipping
+verified→unknown from legitimate-but-engine-hostile patterns; the floor
+restored both). `ADSMT_DELEGATE_NO_PATTERNS=1` is the A/B kill-switch.
+Full-corpus gate: **LOCAL LEDGER 153 verified** (+5 over the 148
+guard-scope-campaign baseline: `datatypes-match-2/ob01` — the dm2
+headline, unknown-at-any-guard → 765 ms; `datatypes-match-2/ob07` — the
+former stack-overflow row; `datatypes-match-2/ob08`;
+`fuel-recursion-2/ob07`; `seq-vstd-2/ob04`), **zero verified→unknown
+flips**, `ob06` unchanged sole pinned regression, saturators 0, negative
+controls 4/4 exact. `seq-vstd-2/ob01` (sv2) remains speed-bound (42.9 s
+e2e at a 90 s guard — the sweep-protocol proposal), not trigger-bound.
+NEW upstream issue **#425** (engine-side, out of scope here): a dead or
+ill-arity EXPLICIT pattern makes standalone OxiZ answer a spurious `sat`
+on an unsat problem — explicit patterns suppress inference with zero
+validation and MBQI never model-checks trigger-guided quantifiers
+(repros: `425-dead-pattern-spurious-sat.smt2`,
+`425-illarity-pattern-spurious-sat.smt2` in this directory; z3 `unsat`
+both). adsmt is doubly shielded (never-trust-`sat` delegation posture +
+the completeness floor), so within adsmt the failure class is
+verdict-denial only — and the render guards drop exactly those pattern
+shapes.
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it

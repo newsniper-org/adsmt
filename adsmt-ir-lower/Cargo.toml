@@ -12,3 +12,5 @@ adsmt-theory = { path = "../adsmt-theory" }
 [dev-dependencies]
 adsmt-ir-smtlib = { path = "../adsmt-ir-smtlib" }
 adsmt-engine = { path = "../adsmt-engine" }
+# the REAL producer of the out-of-band TriggerMap (surface `trigger` clauses).
+adsmt-ir-lukb = { path = "../adsmt-ir-lukb" }

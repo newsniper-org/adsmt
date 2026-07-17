@@ -37,12 +37,12 @@
 //! (selector reduction through congruence).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use adsmt_core::{Kind as CKind, Term as CTerm, TermInner as CTermInner, Type as CType, Var as CVar};
 use adsmt_ir::{
-    AdmissionStep, Ctx, Env, IndSpec, Modality, Term, TermKind, Univ, as_const_app, infer,
-    is_def_eq, occurs, subst_top, whnf,
+    AdmissionStep, Ctx, Env, IndSpec, Modality, Term, TermKind, TriggerMap, Univ, as_const_app,
+    infer, is_def_eq, occurs, peel_pis, subst_top, whnf,
 };
 use adsmt_theory::datatypes::DatatypeDecl;
 
@@ -61,6 +61,20 @@ pub struct Lowered {
     pub datatypes: Vec<DatatypeDecl>,
     /// Each goal, a closed adsmt-core term of sort `Bool`.
     pub goals: Vec<CTerm>,
+    /// Lowered `:pattern` trigger annotations, keyed by the OUTERMOST lowered
+    /// HOL `forall` term (a subterm of some goal — hash-consed, so the
+    /// renderer's recursion recognizes it by `==`). Advisory metadata: absent
+    /// for every quantifier whose kernel triggers could not be honored.
+    pub triggers: HashMap<CTerm, LoweredTriggers>,
+}
+
+/// One lowered quantifier's trigger annotation: the telescope arity its
+/// re-collected binder list must span, plus the trigger groups (each a
+/// multi-pattern), lowered in the SAME binder frame as the body.
+#[derive(Debug, Clone)]
+pub struct LoweredTriggers {
+    pub arity: usize,
+    pub groups: Vec<Vec<CTerm>>,
 }
 
 /// Lower a checked kernel `Env` + its `Prop` goals into adsmt-core `Bool`
@@ -69,11 +83,29 @@ pub struct Lowered {
 /// never a partial assertion set (dropping a constraint preserves `Unsat` but
 /// destroys `Sat`; DESIGN.md §5.1).
 pub fn lower(env: &Env, goals: &[Term]) -> Result<Lowered, LowerError> {
+    lower_with_triggers(env, goals, &TriggerMap::new())
+}
+
+/// [`lower`] with an out-of-band kernel [`TriggerMap`] (the lu-kb face's
+/// `trigger` clauses; see `adsmt_ir::triggers`). On a map hit at a `Π` node
+/// whose whole telescope is plain data binders, the quantifier lowers in ONE
+/// multi-binder step so the pattern terms (de Bruijn over the FULL telescope)
+/// lower in the same frame as the body; the result is recorded in
+/// [`Lowered::triggers`]. ANY deviation (universe/`Prop` dom, proof binder,
+/// unlowerable pattern) just drops that quantifier's triggers — never an
+/// error, and with an empty map this is exactly [`lower`].
+pub fn lower_with_triggers(
+    env: &Env,
+    goals: &[Term],
+    triggers: &TriggerMap,
+) -> Result<Lowered, LowerError> {
     let lw = Lowerer {
         env,
         counter: Cell::new(0),
         extra_hyps: RefCell::new(Vec::new()),
         seen_refinement_consts: RefCell::new(HashSet::new()),
+        triggers,
+        out_triggers: RefCell::new(HashMap::new()),
     };
     // datatype declarations first (from the admission journal) — if ANY
     // declared inductive is unlowerable (indexed/parametric/Prop-sorted/bad
@@ -102,7 +134,24 @@ pub fn lower(env: &Env, goals: &[Term]) -> Result<Lowered, LowerError> {
     // Nat/WNat constant lowered above (a true fact — asserting it is sound and
     // is what keeps the sort-collapse honest; see the design doc §4 invariant A⟺B).
     out.extend(lw.extra_hyps.borrow_mut().drain(..));
-    Ok(Lowered { datatypes, goals: out })
+    // Re-key the trigger annotations through the SAME whole-formula literal
+    // fold the goals get: `fold_bool_lits` is a pure post-order rewrite, so
+    // wherever a quantifier survives in a folded goal, the surviving subterm
+    // IS `fold_bool_lits(key)` (the tester/`∀Bool` encodings inject literals
+    // INSIDE quantifier bodies, so an unfolded key would never be found by
+    // the renderer's recursion). A key whose quantifier folded away entirely
+    // becomes a dead entry — harmless, advisory.
+    let triggers = lw
+        .out_triggers
+        .into_inner()
+        .into_iter()
+        .map(|(k, v)| {
+            let groups =
+                v.groups.iter().map(|g| g.iter().map(fold_bool_lits).collect()).collect();
+            (fold_bool_lits(&k), LoweredTriggers { arity: v.arity, groups })
+        })
+        .collect();
+    Ok(Lowered { datatypes, goals: out, triggers })
 }
 
 /// One de Bruijn binder, paired across the two representations: the kernel
@@ -133,6 +182,12 @@ struct Lowerer<'e> {
     extra_hyps: RefCell<Vec<CTerm>>,
     /// Free-constant names already given a positivity hypothesis (dedup).
     seen_refinement_consts: RefCell<HashSet<String>>,
+    /// The out-of-band kernel trigger map ([`lower_with_triggers`]); empty for
+    /// plain [`lower`], in which case the takeover path never activates.
+    triggers: &'e TriggerMap,
+    /// Lowered trigger annotations, keyed by the outermost lowered `forall`
+    /// ([`Lowered::triggers`]).
+    out_triggers: RefCell<HashMap<CTerm, LoweredTriggers>>,
 }
 
 impl Lowerer<'_> {
@@ -249,7 +304,16 @@ impl Lowerer<'_> {
             }
             TermKind::Const(name) => self.lower_const(name),
             TermKind::App(..) => self.lower_app(&t, frames),
-            TermKind::Pi(dom, cod) => self.lower_pi(dom, cod, frames),
+            TermKind::Pi(dom, cod) => {
+                // trigger takeover: a map-keyed telescope lowers in ONE
+                // multi-binder step (pattern terms are de Bruijn over the FULL
+                // telescope, which the one-binder recursion cannot scope).
+                // `None` = no hit / a deviation ⇒ the unchanged path below.
+                if let Some(out) = self.try_pi_trigger_takeover(&t, frames)? {
+                    return Ok(out);
+                }
+                self.lower_pi(dom, cod, frames)
+            }
             TermKind::Lam(..) => Err(unl("a bare lambda (function value) is not first-order")),
             // whnf ζ-reduces Let and β-reduces (λ.)x, so these never survive as a head.
             TermKind::Let(..) => Err(unl("let survived whnf (unexpected)")),
@@ -944,6 +1008,101 @@ impl Lowerer<'_> {
             None => body,
         };
         CTerm::mk_forall(v, body).map_err(meq)
+    }
+
+    /// The **trigger takeover** for a map-keyed `Π` telescope (see
+    /// [`lower_with_triggers`]). Picks the LARGEST recorded arity whose
+    /// telescope peels cleanly into plain data binders, lowers the residual
+    /// body AND every pattern term in the SAME n-binder frame, then folds
+    /// `mk_forall` right-to-left — replicating the one-binder path's fresh-var
+    /// order and per-binder Nat/WNat positivity guard, so the folded result is
+    /// byte-identical to what [`Self::lower_pi`] would have produced. Returns
+    /// `Ok(None)` on no map hit or any telescope deviation (universe / `Prop`
+    /// dom, proof binder, non-first-order sort, non-`Prop` residual) — the
+    /// caller then takes the unchanged one-binder path (triggers dropped). A
+    /// pattern that fails to lower drops ONLY the annotation, never the
+    /// quantifier: advisory metadata must not degrade a working obligation.
+    fn try_pi_trigger_takeover(
+        &self,
+        t: &Term,
+        frames: &mut Vec<Frame>,
+    ) -> Result<Option<CTerm>, LowerError> {
+        if self.triggers.is_empty() {
+            return Ok(None);
+        }
+        let Some(entries) = self.triggers.get(t) else {
+            return Ok(None);
+        };
+        let mut cands: Vec<&adsmt_ir::QuantTriggers> =
+            entries.iter().filter(|e| e.arity > 0 && !e.groups.is_empty()).collect();
+        cands.sort_by_key(|e| std::cmp::Reverse(e.arity));
+        'cand: for qt in cands {
+            let Some((doms, residual)) = peel_pis(t, qt.arity) else { continue };
+            // every dom must be a PLAIN data binder (no universe, no `Prop`
+            // case-split dom, no proof binder, first-order non-function sort)
+            // — checked BEFORE any fresh var is allocated, so declining here
+            // leaves the one-binder path's output untouched.
+            let mut ctx = Self::ctx(frames);
+            let mut sorts = Vec::with_capacity(doms.len());
+            for dom in &doms {
+                if matches!(dom.kind(), TermKind::Sort(_)) {
+                    continue 'cand;
+                }
+                let Ok(dom_sort) = infer(self.env, &ctx, dom) else { continue 'cand };
+                if matches!(whnf(self.env, &dom_sort).kind(), TermKind::Sort(Univ::Prop)) {
+                    continue 'cand; // a proof binder — the mk_imp path owns it
+                }
+                let Ok(asort) = self.lower_sort(dom) else { continue 'cand };
+                if asort.is_fun() {
+                    continue 'cand;
+                }
+                sorts.push(asort);
+                ctx.push(dom.clone());
+            }
+            // the residual (guard-arrows included) must be a Prop formula.
+            let Ok(cod_sort) = infer(self.env, &ctx, &residual) else { continue 'cand };
+            if !is_def_eq(self.env, &cod_sort, &Term::prop()) {
+                continue 'cand;
+            }
+            // push the n binder frames in outer-to-inner order — the same
+            // fresh-name sequence the one-binder recursion would consume.
+            let base = frames.len();
+            let mut vars = Vec::with_capacity(doms.len());
+            for (dom, asort) in doms.iter().zip(sorts) {
+                let v = CVar { name: self.fresh(), ty: asort };
+                let v_term = CTerm::var(&v.name, v.ty.clone());
+                frames.push(Frame { ir_sort: dom.clone(), value: v_term.clone() });
+                vars.push((v, v_term, dom.clone()));
+            }
+            let body = self.lower_term(&residual, frames);
+            // patterns lower in the SAME frame (after the body, so a
+            // fresh-consuming body leaves identical names to the plain path);
+            // a failure yields `None` = keep the quantifier, drop the triggers.
+            let groups: Option<Vec<Vec<CTerm>>> = body.is_ok().then(|| {
+                qt.groups
+                    .iter()
+                    .map(|g| g.iter().map(|p| self.lower_term(p, frames)).collect())
+                    .collect::<Result<_, _>>()
+                    .ok()
+            }).flatten();
+            frames.truncate(base);
+            let body = body?; // the one-binder path fails identically here
+            // fold right-to-left, replicating lower_pi's positivity guard.
+            let mut acc = body;
+            for (v, v_term, dom) in vars.into_iter().rev() {
+                if let Some(lo) = self.refinement_lo(&dom) {
+                    acc = CTerm::mk_imp(self.positivity(lo, v_term)?, acc).map_err(meq)?;
+                }
+                acc = CTerm::mk_forall(v, acc).map_err(meq)?;
+            }
+            if let Some(groups) = groups {
+                self.out_triggers
+                    .borrow_mut()
+                    .insert(acc.clone(), LoweredTriggers { arity: qt.arity, groups });
+            }
+            return Ok(Some(acc));
+        }
+        Ok(None)
     }
 
     /// A kernel **type** (a sort) → an adsmt-core `Type`. `Prop`↦`Bool`; a

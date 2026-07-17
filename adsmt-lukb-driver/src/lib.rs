@@ -23,7 +23,7 @@
 use adsmt_core::Term;
 use adsmt_engine::{EngineLawProver, SatResult, Solver};
 use adsmt_ir_lukb::{Confidence, LuKbOutputMode, UnifiedVerdict, elaborate_with_prover};
-use adsmt_ir_lower::lower;
+use adsmt_ir_lower::lower_with_triggers;
 
 /// Solve a lu-kb-successor program `src`, returning its [`UnifiedVerdict`].
 ///
@@ -45,8 +45,12 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
         }
     };
     // Lower hypotheses + goals to engine HOL (#325). All-or-nothing: an
-    // unlowerable construct ⇒ sound `Unknown`.
-    let (hyps, goals) = match (lower(&elab.env, &elab.hypotheses), lower(&elab.env, &elab.goals)) {
+    // unlowerable construct ⇒ sound `Unknown`. The face's out-of-band trigger
+    // map rides along (one kernel-term-keyed map covers both calls).
+    let (hyps, goals) = match (
+        lower_with_triggers(&elab.env, &elab.hypotheses, &elab.triggers),
+        lower_with_triggers(&elab.env, &elab.goals, &elab.triggers),
+    ) {
         (Ok(h), Ok(g)) => (h, g),
         (a, b) => {
             if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
@@ -79,6 +83,45 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
         v
     };
 
+    // The merged `:pattern` map (hyps + goals) for the OxiZ renderer.
+    // Same-key collisions ARE possible (the `fold_bool_lits` re-key can fold
+    // two distinct kernel quantifiers onto one lowered term), so merge by
+    // GROUP-UNION — harmless alternative-trigger semantics, mirroring
+    // `adsmt_ir::record_triggers` — never a last-insert-wins overwrite. An
+    // arity conflict keeps the first entry (advisory metadata, logged).
+    #[cfg(any(feature = "oxiz", feature = "cas"))]
+    let patterns: adsmt_delegate::PatternMap = {
+        use std::collections::hash_map::Entry;
+        let mut m = adsmt_delegate::PatternMap::new();
+        for (k, v) in hyps.triggers.iter().chain(goals.triggers.iter()) {
+            match m.entry(k.clone()) {
+                Entry::Vacant(e) => {
+                    e.insert(adsmt_delegate::QuantPatterns {
+                        arity: v.arity,
+                        groups: v.groups.clone(),
+                    });
+                }
+                Entry::Occupied(mut e) => {
+                    let q = e.get_mut();
+                    if q.arity == v.arity {
+                        for g in &v.groups {
+                            if !q.groups.contains(g) {
+                                q.groups.push(g.clone());
+                            }
+                        }
+                    } else if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
+                        eprintln!(
+                            "[lukb-dbg] pattern-map merge: arity conflict on a shared \
+                             key ({} vs {}), keeping the first",
+                            q.arity, v.arity
+                        );
+                    }
+                }
+            }
+        }
+        m
+    };
+
     let mut overall = Confidence::DefiniteUnsat; // vacuously all-valid
     for g in &goals.goals {
         solver.push();
@@ -102,7 +145,7 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
                         };
                         #[cfg(any(feature = "oxiz", feature = "cas"))]
                         {
-                            delegate_resolve(&hyps.goals, g, &datatypes, native_conf)
+                            delegate_resolve(&hyps.goals, g, &datatypes, &patterns, native_conf)
                         }
                         #[cfg(not(any(feature = "oxiz", feature = "cas")))]
                         {
@@ -156,10 +199,11 @@ fn delegate_resolve(
     hyps: &[Term],
     goal: &Term,
     datatypes: &[adsmt_theory::datatypes::DatatypeDecl],
+    patterns: &adsmt_delegate::PatternMap,
     native: Confidence,
 ) -> Confidence {
     #[cfg(feature = "oxiz")]
-    if adsmt_delegate::oxiz::proves_goal(hyps, goal, datatypes) {
+    if adsmt_delegate::oxiz::proves_goal(hyps, goal, datatypes, patterns) {
         return Confidence::DefiniteUnsat;
     }
     #[cfg(feature = "cas")]
@@ -311,5 +355,28 @@ mod tests {
         let v = solve(NONLINEAR_VALID);
         assert_eq!(v.smt, Some(Confidence::DefiniteUnsat), "OxiZ should verify it: {v:?}");
         assert_eq!(v.collapse(), TriState::Unsat);
+    }
+
+    // ── `:pattern` completeness firewall, end-to-end: an advisory trigger may
+    // never make a verdict WORSE than its trigger-free twin. The partial
+    // application `g2(x)` is legal CIC (the kernel infers its curried `Π`
+    // sort) but would render as an ill-arity `:pattern` the solver parses yet
+    // can never e-match — a dead trigger that suppresses inference. It is
+    // dropped at elab (and, defense-in-depth, at the render guard + the
+    // pattern-free delegation fallback).
+    #[cfg(feature = "oxiz")]
+    #[test]
+    fn partial_application_trigger_matches_the_trigger_free_twin() {
+        const AXIOM: &str = "sort P\nfn f(x0: P): Int\nfn g2(x0: P, x1: P): P\nconst a: P\n\
+             axiom: forall x: P. f(g2(x, x)) = f(x) + 1";
+        const GOAL: &str = "goal g: f(g2(g2(a, a), g2(a, a))) = f(a) + 2\n";
+        let twin = solve(&format!("{AXIOM}\n{GOAL}"));
+        assert_eq!(twin.smt, Some(Confidence::DefiniteUnsat), "twin sanity: {twin:?}");
+        let with_trig = solve(&format!("{AXIOM} trigger g2(x)\n{GOAL}"));
+        assert_eq!(
+            with_trig.smt,
+            twin.smt,
+            "a partial-application trigger must not change the verdict: {with_trig:?}"
+        );
     }
 }

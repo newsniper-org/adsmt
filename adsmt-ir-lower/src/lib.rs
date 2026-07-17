@@ -39,4 +39,4 @@ mod error;
 mod lower;
 
 pub use error::LowerError;
-pub use lower::{Lowered, lower};
+pub use lower::{Lowered, LoweredTriggers, lower, lower_with_triggers};
