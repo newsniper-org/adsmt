@@ -145,6 +145,29 @@ the completeness floor), so within adsmt the failure class is
 verdict-denial only — and the render guards drop exactly those pattern
 shapes.
 
+**Update 2026-07-18 (sweep-protocol v2 ADOPTED — verus-fork accepted the
+`OXIZ_MBQI_GUARD_MS=90000` proposal)**: both sides' harnesses now pin the
+engine guard to the 90 s per-row wall (`resweep.py` in this directory is
+the promoted standing harness — guard as argv[1], `default` for the old
+4 s behavior; idle-machine-only unchanged). verus-fork's transition
+DUAL sweep @ AD1 `de78325` / oxiz `0c75ad7`: default-guard **153**
+(exactly matches our local — all +5 reproduced, dm2/ob01 769 ms);
+90 s-guard (v2) **CANONICAL LEDGER 155 verified / 21 unknown-or-bail /
+29 saturators / negatives 4/4 exact even at 22× budget**. The two v2
+gains: `seq-vstd-2/ob01` (sv2) **21.4 s unsat** — the speed-bound row the
+protocol was proposed for (half of the pre-perf 42.9 s measurement: the
+`37bad45`/`f7c3cce`/`0c75ad7` trio's dividend) — and the HEADLINE:
+`fuel-recursion-1/ob06`, the campaign's sole regression (gap-2-induced
+term-growth spiral), **converges to `unsat` within the 90 s budget** —
+the regression ledger is 0 for the first time, and the spiral is
+evidence of SLOW CONVERGENCE, not divergence (further deprioritizes the
+already-net-negative term-growth throttle). Both v2 claims re-verified
+first-hand here: ob06 8.5 s, sv2/ob01 21.7 s. The 29 v2 saturators
+(named in the 2026-07-18 inbox message) are the refreshed
+throttle-bench list — the expected v2 cost (rows that used to
+self-abandon at 4 s now burn full budget; sweep ~44 min idle). Formal
+re-pin follows the next manual push.
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it
