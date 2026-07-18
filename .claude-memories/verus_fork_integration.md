@@ -380,3 +380,21 @@ and §3.2 skeleton's eventual fully-traced CDCL.  Three layers:
 | **DONE** | verus-fork | §3.5.I — `SmtProcess::solver_argv` threads `--aot-load` from `VERUS_ADSMT_AOT_LUART` (2026-06-05); proven sound end-to-end at the rc.28 retry (driver → `1 verified, 0 errors` 530ms) |
 | **DONE** | verus-fork | §3.5.J — FUNCTIONAL SUCCESS at the rc.27 retry: `verus -V adsmt` → `1 verified, 0 errors` 511ms (baseline verus_smoke `unsat` 8ms), three orders inside the ≤1500ms window — the P-vb finish line |
 | (pending) | adsmt | §3.5.F engine-side event replay — wire `restore_cdcl_state(...)` into `check_sat_with_deadline` so guard-passed traces actually fire instead of just gating fallback. |
+
+## corpus-campaign era (2026-07) — sweep-protocol v2
+
+The rc.42-era working surface shifted from RC retry cycles to the pinned
+per-obligation corpus (`corpus-2026-07-04-lukb-per-obligation`, 209 rows,
+manifest-diffed sweeps).  Ledger arc: 143 (`b4518db`) → 145 (`b478199`,
+ground-DT #406-#424) → 148 (guard-scope campaign + perf trio) → 153
+(lukb trigger→`:pattern` threading, AD1 `de78325`) → **155 = v2 canonical
+(2026-07-18)**.  **Sweep-protocol v2 mutually adopted**: both harnesses pin
+`OXIZ_MBQI_GUARD_MS=90000` (engine budget aligned with the 90 s per-row
+wall; adsmt harness = `adsmt-delegate/corpus-triage/resweep.py`, guard as
+argv).  v2 dual-sweep headlines: `seq-vstd-2/ob01` 21.4 s unsat (the
+speed-bound row the protocol targeted), `fuel-recursion-1/ob06` — the
+campaign's sole regression — **recovers at 90 s (regression ledger 0 for
+the first time; slow convergence, not divergence)**, negatives 4/4 at 22×
+budget.  v2 saturators 29 rows = the refreshed throttle bench.  Formal
+re-pin follows each manual push (user's job).  See
+[[oxiz-mbqi-guard-scope-gap]], [[lukb-trigger-pattern-threading]].

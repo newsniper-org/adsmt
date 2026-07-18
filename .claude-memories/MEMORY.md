@@ -1,5 +1,8 @@
 - [Project layout](project_layout.md) — adsmt SMT solver workspace + logicutils submodule
 - [OxiZ 파서 PEG 재작성 장기 고려](oxiz_parser_peg_rewrite_consideration.md) — 사용자가 2026-07-11 언급, 미착수·미스코프, 명시 요청 전까지 먼저 제안 금지
+- [OxiZ MBQI 가드-스코프 갭](oxiz_mbqi_guard_scope_gap.md) — 전 트랙 종결(B+A+캐싱+perf+opt3+dm2 트리거 트랙); 스윕-프로토콜 v2(가드 90s) 상호 채택, v2 정본 원장 155·회귀 0(ob06 회복); 잔여 없음
+- [lukb trigger→:pattern 관통](lukb_trigger_pattern_threading.md) — LANDED 2026-07-17 AD1 main: elab 사이드맵→lower 테이크오버→render 가드 + 동적 완전성 플로어(`ADSMT_DELEGATE_NO_PATTERNS` kill-switch), 원장 148→153 플립 0; 신규 #425 = OxiZ 단독 dead-pattern spurious-sat(repro corpus-triage/425-*.smt2, 엔진 수정 후속)
+- [서브에이전트 백그라운드 조기반환 금지](feedback_subagent_background_early_return.md) — 장기 직렬 측정을 서브에이전트에 위임 금지(3회 재발): 에이전트 턴 종료와 함께 프로세스 사멸; 메인 세션이 직접 background Bash로
 - [oxiz-sat clause-id-recycle stale-watcher P0](oxiz_sat_clause_id_recycle_stale_watcher.md) — fixed 2026-07-09 (`0.2.4-redesign` f2284ab): reduce_clause_database didn't scrub watchers before recycling a clause id → spurious Sat; recurred 3x same session, see feedback_pop_scrub_cache_bug_class
 - [Verus integer_ring setup](verus_integer_ring_setup.md) — `integer_ring` (Singular Gröbner) for polynomial ring identities nlsat can't close: rebuilt-fork binary + `VERUS_SINGULAR_PATH` + `#[verifier::integer_ring]` attribute
 - [AFT adoption LANDED](aft_adoption.md) — SatLevel lattice meet/check_level + z3/full output modes + ASP well-founded 3-valued model; local/unpushed, no bump
@@ -63,7 +66,7 @@
 - [v1.0.0 scope expansion](v1_0_0_scope_expansion.md) — bundle D1+L1+L2+L3+L4 into v1.0.0 cut; testing channel is consumer line until cut
 - [adsmt-lean-binding out-of-tree workspace](adsmt_lean_binding_repo.md) — ~/adsmt-lean-binding hosts L1/L2/L3; v0.1 skeleton+JSON wire landed
 - [L3 callback minimum set](l3_callback_minimum_set.md) — AcceptanceFilter+Labeller+CostFunction, opt-in
-- [verus-fork integration as lu-smt's primary downstream](verus_fork_integration.md) — rc.7→rc.42 arc fully landed both sides; §3.5 JIT-on-AOT replay chain (rc.34.1-34.5) confirmed; see topic file for full history
+- [verus-fork integration as lu-smt's primary downstream](verus_fork_integration.md) — rc.7→rc.42 arc fully landed both sides; corpus-era: 스윕-프로토콜 v2 상호 채택, v2 정본 원장 155/회귀 0; see topic file for full history
 - [§3.5 JIT-on-AOT replay (mechanism rc.34)](jit_aot_replay_section_3_5.md) — replay recorded CDCL trace at check-sat to skip prelude search; rc.34.1 fix→rc.34.5 precomputed atom map, consult≈O(query delta)
 - [NBG → FOL/HOL translation as adsmt self-challenge](nbg_fol_hol_challenge.md) — translate Gödel-18/Bernays-8 NBG into adsmt-core HOL; no roadmap slot yet
 - [Higher-order SLD non-pattern deferral](ho_sld_nonpattern_deferral.md) — HO abductive SLD covers only Miller Lλ pattern fragment; rest deferred to v2.0.0
