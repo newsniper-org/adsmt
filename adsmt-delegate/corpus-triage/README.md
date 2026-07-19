@@ -172,6 +172,31 @@ the dual sweep (all 51 CONV + 29 SATURATOR rows match; wall-ms jitter
 only). 155/21/29 is the mutually-pinned canonical ledger; next re-pin
 trigger = the next landed engine/completeness slice.
 
+**Update 2026-07-19 (engine campaign slice E1, oxiz `d39bd09` — #425
+closed; LOCAL LEDGER 158)**: the #425 spurious-sat class (dead/ill-arity
+explicit `:pattern` suppressing both inference and model verification) is
+closed default-ON: provably-unmatchable-only static gate + ever-fired
+tracking + the new `SaturatedUnverified` confirm-but-never-sat verdict
+(restores the old exemption's beneficial early-stop soundly — without it
+dm3-class rows flooded anti-monotonically with the guard). v2 gate:
+**158 verified / 27 saturators / 20 unknown-or-bail / negatives 4/4 /
+zero canonical flips** (+3: `fuel-recursion-2/ob13` + `seq-vstd-2/ob09`
+— former 90 s saturators — and `linear-euf-1/ob05`). Randomized pattern
+differential (z3-ref + cvc5): 3000 total seeds, gated spurious 0 both
+modes. Additive-patterns mode ships DEFAULT OFF (`OXIZ_MBQI_ADDITIVE=1`
+opt-in): its A/B also reaches 158 but trades sideways — loses 3
+canonical rows (dm3/ob01, fr2/ob03, fr3/ob16) for 5 other saturators
+(dm3/ob05, fr3/ob12, sv1/ob03, sv1/ob06, sv3/ob08) at ~+80% wall on
+budget-bound rows; the union (163) marks a per-row additive-retry policy
+as a follow-up lever. NEW ledger items: **#426** fired-but-insufficient
+parsed-trigger exemption = standalone spurious-sat class (31/2000 seeds,
+zeroed by additive, adsmt shielded by never-trust-sat); **#427**
+`(set-logic ALL)` Saturated-confirm misses EUF↔LIA cross-theory
+conflicts (pre-existing, UFLIA correct); **Dt-as-App view upgrade**
+(constructor/selector applications currently view Opaque — real Dt-headed
+trigger matchability, the recovery lever for dm2/ob03) — all three are
+future engine slices.
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it
