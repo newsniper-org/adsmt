@@ -215,6 +215,18 @@ cycling → incomplete; `dual_simplex` cap path missing `incomplete`
 (spurious-sat-shaped, no callers); `propagate_bounds`/`tighten_bounds`
 trail-free bound writes (survive pop, API in-tree-dead).
 
+**Update 2026-07-19 (engine campaign slice E2a, oxiz `dd2714f` — hop
+instrumentation landed, E2b KILLED by measurement)**: feature
+`euf-find-stats` (byte-identical at rest) measured avg hops/find **< 1 on
+every row** (the EUF-bound saturator fr2/ob09 flattest at 0.517 across
+6.99e9 finds, 100M finds/s) — union-by-rank already keeps the forest
+flat, so trailed path compression (E2b) is killed before implementation;
+EufSolver::propagate dominance is call-VOLUME-driven. Recorded lever for
+the EUF-bound class: fewer find calls / cheaper per-call constant /
+canonical-args caching. Campaign slice status: E1 ✓ / S ✓ (infra,
+Snapshot default) / E2a ✓ / E2b killed / R deferred (gate met only on
+sv2/ob03).
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it
