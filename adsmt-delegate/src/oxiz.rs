@@ -16,7 +16,39 @@
 //! possibly-false native `Sat`) to a verified `DefiniteUnsat`, never introduce a
 //! new `Sat`.
 
+use std::time::Instant;
+
 use adsmt_core::Term;
+
+use crate::memo::{Memo, Shape};
+
+/// How [`proves_goal_impl`] arrived at its `proved == true` verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Via {
+    /// Tier-1 memo hit on the annotated script (no solve).
+    MemoHitAnnotated,
+    /// Tier-1 memo hit on the floor script (no solve).
+    MemoHitFloor,
+    /// A live OxiZ `unsat` on the annotated script.
+    SolvedAnnotated,
+    /// A live OxiZ `unsat` on the floor (pattern-free) script.
+    SolvedFloor,
+}
+
+/// [`proves_goal_impl`]'s full report — the public [`proves_goal`] surfaces
+/// only `proved`; `via` / `floor_first` are read by the memo round-trip
+/// tests (hence the non-test `dead_code` allowance).
+#[derive(Debug)]
+pub(crate) struct ProveReport {
+    pub(crate) proved: bool,
+    /// `Some` iff `proved` — how the verdict was reached.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) via: Option<Via>,
+    /// `true` iff the tier-2 shape hint reordered the solves (floor before
+    /// annotated) — an ordering fact, recorded whatever the outcome.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) floor_first: bool,
+}
 
 /// `true` iff in-process OxiZ decides `H ∧ ¬G` **unsat** — i.e. the goal `G` is
 /// VALID. Renders the obligation ([`crate::render_smtlib`]) and runs it on a fresh
@@ -49,6 +81,15 @@ use adsmt_core::Term;
 /// pre-feature `unsat` stays `unsat`, whatever the annotated shape does. The
 /// cost is a second solver run only on unproven obligations whose script
 /// differs from the historical one.
+///
+/// ## The unsat-memo (`ADSMT_DELEGATE_MEMO_DIR`)
+///
+/// With [`crate::memo::Memo`] enabled, a previously-recorded `unsat` for the
+/// byte-identical script under the byte-identical engine binary is replayed
+/// without a solve, and a tier-2 shape hint may put the floor solve FIRST
+/// (pure reordering — same two scripts, same trust story: every surfaced
+/// verdict is still an OxiZ `unsat` this exact binary produced). With the
+/// memo disabled the flow is byte-for-byte the historical one above.
 #[must_use]
 pub fn proves_goal(
     hyps: &[Term],
@@ -56,30 +97,123 @@ pub fn proves_goal(
     datatypes: &[adsmt_theory::datatypes::DatatypeDecl],
     patterns: &crate::PatternMap,
 ) -> bool {
+    let memo = Memo::from_env();
+    proves_goal_impl(hyps, goal, datatypes, patterns, memo.as_ref()).proved
+}
+
+/// [`proves_goal`] with the memo under caller control (`None` = the exact
+/// historical flow) and the full [`ProveReport`] surfaced — the seam the
+/// memo round-trip tests drive.
+pub(crate) fn proves_goal_impl(
+    hyps: &[Term],
+    goal: &Term,
+    datatypes: &[adsmt_theory::datatypes::DatatypeDecl],
+    patterns: &crate::PatternMap,
+    memo: Option<&Memo>,
+) -> ProveReport {
+    let not_proved =
+        |floor_first: bool| ProveReport { proved: false, via: None, floor_first };
+    let proved_via =
+        |via: Via, floor_first: bool| ProveReport { proved: true, via: Some(via), floor_first };
     let Some(script) = crate::render_smtlib(hyps, goal, datatypes, patterns) else {
         if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
             eprintln!("[dbg] render_smtlib bailed (None)");
         }
-        return false;
+        return not_proved(false);
     };
     if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
         eprintln!("[dbg] script:\n{script}");
     }
-    if run_script(&script) {
-        return true;
-    }
-    if let Some(floor) =
-        crate::render_smtlib_shaped(hyps, goal, datatypes, &crate::PatternMap::new(), false)
-        && floor != script
-    {
-        // Only retry when the first script differs from the historical shape
-        // (a pattern was emitted and/or re-collection merged a binder chain).
-        if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
-            eprintln!("[dbg] script (pre-pattern completeness-floor fallback):\n{floor}");
+    let Some(m) = memo else {
+        // Memo disabled: the historical flow, floor rendered LAZILY — zero
+        // behavior delta.
+        if run_script(&script) {
+            return proved_via(Via::SolvedAnnotated, false);
         }
-        return run_script(&floor);
+        if let Some(floor) =
+            crate::render_smtlib_shaped(hyps, goal, datatypes, &crate::PatternMap::new(), false)
+            && floor != script
+        {
+            // Only retry when the first script differs from the historical shape
+            // (a pattern was emitted and/or re-collection merged a binder chain).
+            if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
+                eprintln!("[dbg] script (pre-pattern completeness-floor fallback):\n{floor}");
+            }
+            if run_script(&floor) {
+                return proved_via(Via::SolvedFloor, false);
+            }
+        }
+        return not_proved(false);
+    };
+    // Memo enabled: render the floor EAGERLY so both tier-1 digests are
+    // consulted up front (a floor-render bail degrades to annotated-only).
+    let floor =
+        crate::render_smtlib_shaped(hyps, goal, datatypes, &crate::PatternMap::new(), false);
+    let ann_digest = Memo::script_digest(&script);
+    if m.lookup_unsat(&ann_digest) {
+        if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
+            eprintln!("[dbg] memo hit: tier-1 annotated {}", &ann_digest[..8]);
+        }
+        return proved_via(Via::MemoHitAnnotated, false);
     }
-    false
+    // The hoisted `floor != script` retry gate; a degenerate floor==script
+    // shares the annotated digest and gets ONE consult + ONE solve below.
+    let floor_distinct = floor.as_ref().filter(|f| **f != script);
+    let floor_digest = floor_distinct.map(|f| Memo::script_digest(f));
+    if let Some(fd) = &floor_digest
+        && m.lookup_unsat(fd)
+    {
+        if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
+            eprintln!("[dbg] memo hit: tier-1 floor {}", &fd[..8]);
+        }
+        return proved_via(Via::MemoHitFloor, false);
+    }
+    let bucket = floor.as_deref().map(Memo::shape_bucket);
+    let floor_first = floor_distinct.is_some()
+        && bucket.as_deref().and_then(|b| m.shape_hint(b)) == Some(Shape::Floor);
+    // Record a fresh live `unsat` in both tiers (never on a hit — hits
+    // returned above).
+    let record = |digest: &str, shape: Shape, guard_ms: u64| {
+        m.record_unsat(digest, shape, guard_ms);
+        if let Some(b) = &bucket {
+            m.record_shape(b, shape);
+        }
+    };
+    if floor_first
+        && let (Some(fl), Some(fd)) = (floor_distinct, &floor_digest)
+    {
+        if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
+            eprintln!("[dbg] script (memo tier-2 reorder: floor first):\n{fl}");
+        }
+        let t = Instant::now();
+        if run_script(fl) {
+            record(fd, Shape::Floor, t.elapsed().as_millis() as u64);
+            return proved_via(Via::SolvedFloor, true);
+        }
+        let t = Instant::now();
+        if run_script(&script) {
+            record(&ann_digest, Shape::Annotated, t.elapsed().as_millis() as u64);
+            return proved_via(Via::SolvedAnnotated, true);
+        }
+        return not_proved(true);
+    }
+    // Historical order: annotated first, then the distinct floor.
+    let t = Instant::now();
+    if run_script(&script) {
+        record(&ann_digest, Shape::Annotated, t.elapsed().as_millis() as u64);
+        return proved_via(Via::SolvedAnnotated, false);
+    }
+    if let (Some(fl), Some(fd)) = (floor_distinct, &floor_digest) {
+        if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
+            eprintln!("[dbg] script (pre-pattern completeness-floor fallback):\n{fl}");
+        }
+        let t = Instant::now();
+        if run_script(fl) {
+            record(fd, Shape::Floor, t.elapsed().as_millis() as u64);
+            return proved_via(Via::SolvedFloor, false);
+        }
+    }
+    not_proved(false)
 }
 
 /// Run one rendered script on a fresh in-process OxiZ `Context`; `true` iff it

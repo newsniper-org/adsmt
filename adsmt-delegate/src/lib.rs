@@ -640,6 +640,9 @@ fn is_numeral(t: &Term) -> bool {
 pub mod cas;
 
 #[cfg(feature = "oxiz")]
+pub(crate) mod memo;
+
+#[cfg(feature = "oxiz")]
 pub mod oxiz;
 
 #[cfg(test)]
@@ -923,14 +926,16 @@ mod tests {
         assert!(cx.plan(&q).is_none(), "a disabled context must plan nothing");
     }
 
-    /// (ix) the COMPLETENESS-FLOOR fallback (the seq-vstd ob08/ob09 class):
-    /// a guard-passing pattern that never e-matches the ground terms makes
-    /// the annotated script LOSE the proof OxiZ's own trigger inference
-    /// finds; [`crate::oxiz::proves_goal`] must retry pattern-free and still
-    /// verify the goal.
+    /// The defeating-pattern obligation (the seq-vstd ob08/ob09 class):
+    /// hyp `∀x:Int. f(g(x)) = f(x) + 1`, goal `f(g(g(a))) = f(a) + 2`, and a
+    /// `:pattern (g (g x))` every static guard passes — head `g` occurs in
+    /// the body, covers `x`, saturated — but no ground `g(g(g(a)))` exists,
+    /// so e-matching yields only ONE of the two needed instantiations: the
+    /// annotated script does NOT prove the goal (probe-verified against the
+    /// OxiZ CLI) and only the pattern-free floor recovers it. Shared by test
+    /// (ix) and the memo round-trip tests.
     #[cfg(feature = "oxiz")]
-    #[test]
-    fn defeating_pattern_falls_back_to_pattern_free() {
+    fn defeating_pattern_fixture() -> (Term, Term, PatternMap) {
         let int1 = Type::fun(int_ty(), int_ty()).unwrap();
         let f = Term::var("f", int1.clone());
         let g = Term::var("g", int1);
@@ -955,17 +960,219 @@ mod tests {
             app1(&f, app1(&g, app1(&g, a.clone()))),
             app2(&plus, app1(&f, a), int_const_op("2")),
         );
-        // pattern `(g (g x))`: head `g` occurs in the body, covers `x`,
-        // saturated — every static guard passes — but no ground `g(g(g(a)))`
-        // exists, so e-matching yields only ONE of the two needed
-        // instantiations: the annotated script does NOT prove the goal
-        // (probe-verified against the OxiZ CLI).
         let pat = app1(&g, app1(&g, x));
         let mut map = PatternMap::new();
         map.insert(hyp.clone(), QuantPatterns { arity: 1, groups: vec![vec![pat]] });
+        (hyp, goal, map)
+    }
+
+    /// (ix) the COMPLETENESS-FLOOR fallback (the seq-vstd ob08/ob09 class):
+    /// a guard-passing pattern that never e-matches the ground terms makes
+    /// the annotated script LOSE the proof OxiZ's own trigger inference
+    /// finds; [`crate::oxiz::proves_goal`] must retry pattern-free and still
+    /// verify the goal.
+    #[cfg(feature = "oxiz")]
+    #[test]
+    fn defeating_pattern_falls_back_to_pattern_free() {
+        let (hyp, goal, map) = defeating_pattern_fixture();
         assert!(
             crate::oxiz::proves_goal(&[hyp], &goal, &[], &map),
             "the pattern-free fallback must recover the proof"
         );
+    }
+
+    /// D1 unsat-memo tests. Every test drives the REAL producer —
+    /// [`crate::oxiz::proves_goal_impl`] with `Memo::at(tempdir)` — never a
+    /// hand-built store entry (the round-trip-through-the-real-producer
+    /// standing rule).
+    #[cfg(feature = "oxiz")]
+    mod memo {
+        use std::path::{Path, PathBuf};
+
+        use super::*;
+        use crate::memo::Memo;
+        use crate::oxiz::{Via, proves_goal_impl};
+
+        /// `⊢ x = x` — ground and pattern-free, so the floor render is
+        /// byte-identical to the annotated render (the degenerate shape).
+        fn trivial_goal() -> Term {
+            let eq_ty = Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap()).unwrap();
+            let eq = Term::const_("=", eq_ty);
+            let x = int_var("x");
+            Term::app(Term::app(eq, x.clone()).unwrap(), x).unwrap()
+        }
+
+        /// Every tier-1 entry file under `<root>/v0/unsat/` (any fp dir).
+        fn unsat_entries(root: &Path) -> Vec<PathBuf> {
+            let mut out = Vec::new();
+            let Ok(fps) = std::fs::read_dir(root.join("v0").join("unsat")) else {
+                return out;
+            };
+            for fp in fps.flatten() {
+                if let Ok(files) = std::fs::read_dir(fp.path()) {
+                    for f in files.flatten() {
+                        if f.path().extension().is_some_and(|e| e == "json") {
+                            out.push(f.path());
+                        }
+                    }
+                }
+            }
+            out
+        }
+
+        /// Every tier-2 shape file under `<root>/v0/shape/`.
+        fn shape_files(root: &Path) -> Vec<PathBuf> {
+            std::fs::read_dir(root.join("v0").join("shape"))
+                .map(|it| it.flatten().map(|d| d.path()).collect())
+                .unwrap_or_default()
+        }
+
+        #[test]
+        fn memo_roundtrip_records_then_hits_annotated() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let m = Memo::at(dir.path().to_path_buf()).expect("memo enabled");
+            let goal = trivial_goal();
+            let r1 = proves_goal_impl(&[], &goal, &[], &PatternMap::new(), Some(&m));
+            assert!(r1.proved);
+            assert_eq!(r1.via, Some(Via::SolvedAnnotated));
+            let entries = unsat_entries(dir.path());
+            assert_eq!(entries.len(), 1, "call1 must record exactly one entry");
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&entries[0]).unwrap()).expect("parseable");
+            assert_eq!(json["v"], 0);
+            assert_eq!(json["shape"], "annotated");
+            assert_eq!(json["instances"], serde_json::json!([]));
+            let r2 = proves_goal_impl(&[], &goal, &[], &PatternMap::new(), Some(&m));
+            assert!(r2.proved);
+            assert_eq!(r2.via, Some(Via::MemoHitAnnotated));
+        }
+
+        #[test]
+        fn memo_floor_roundtrip_reorder_and_upfront_floor_consult() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let m = Memo::at(dir.path().to_path_buf()).expect("memo enabled");
+            let (hyp, goal, map) = defeating_pattern_fixture();
+            let hyps = [hyp];
+            let r1 = proves_goal_impl(&hyps, &goal, &[], &map, Some(&m));
+            assert!(r1.proved);
+            assert_eq!(r1.via, Some(Via::SolvedFloor));
+            assert!(!r1.floor_first, "no hint yet: annotated must have gone first");
+            // tier-1 holds exactly the floor entry; tier-2 says "floor".
+            let entries = unsat_entries(dir.path());
+            assert_eq!(entries.len(), 1);
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&entries[0]).unwrap()).expect("parseable");
+            assert_eq!(json["shape"], "floor");
+            let shapes = shape_files(dir.path());
+            assert_eq!(shapes.len(), 1);
+            assert_eq!(std::fs::read_to_string(&shapes[0]).unwrap().trim(), "floor");
+            // call2: the UP-FRONT both-digest consult hits the floor entry
+            // without a solve (the annotated digest was never recorded).
+            let r2 = proves_goal_impl(&hyps, &goal, &[], &map, Some(&m));
+            assert!(r2.proved);
+            assert_eq!(r2.via, Some(Via::MemoHitFloor));
+            // call3: drop tier-1, keep tier-2 — the hint must REORDER.
+            std::fs::remove_dir_all(dir.path().join("v0").join("unsat")).unwrap();
+            let r3 = proves_goal_impl(&hyps, &goal, &[], &map, Some(&m));
+            assert!(r3.proved);
+            assert_eq!(r3.via, Some(Via::SolvedFloor));
+            assert!(r3.floor_first, "the tier-2 hint must put the floor first");
+        }
+
+        #[test]
+        fn memo_engine_fp_invalidation() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let m = Memo::at(dir.path().to_path_buf()).expect("memo enabled");
+            let goal = trivial_goal();
+            assert!(proves_goal_impl(&[], &goal, &[], &PatternMap::new(), Some(&m)).proved);
+            // the recorded fp dir IS this process's fingerprint; renaming it
+            // to a foreign 64-hex name simulates an engine upgrade.
+            let unsat = dir.path().join("v0").join("unsat");
+            let fp_dir = std::fs::read_dir(&unsat).unwrap().next().unwrap().unwrap().path();
+            let foreign = unsat.join("f".repeat(64));
+            assert_ne!(fp_dir, foreign, "fingerprint collided with the test constant");
+            std::fs::rename(&fp_dir, &foreign).unwrap();
+            let r = proves_goal_impl(&[], &goal, &[], &PatternMap::new(), Some(&m));
+            assert!(r.proved);
+            assert_eq!(r.via, Some(Via::SolvedAnnotated), "a foreign fp must be a miss");
+            // a fresh entry re-appears under the TRUE fp dir.
+            assert!(fp_dir.exists(), "the true-fp namespace must be repopulated");
+            assert_eq!(std::fs::read_dir(&fp_dir).unwrap().count(), 1);
+        }
+
+        #[test]
+        fn memo_corrupt_entry_and_hint_tolerated() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let m = Memo::at(dir.path().to_path_buf()).expect("memo enabled");
+            let (hyp, goal, map) = defeating_pattern_fixture();
+            let hyps = [hyp];
+            assert!(proves_goal_impl(&hyps, &goal, &[], &map, Some(&m)).proved);
+            // vandalize both tiers.
+            for e in unsat_entries(dir.path()) {
+                std::fs::write(&e, b"{ not json").unwrap();
+            }
+            for s in shape_files(dir.path()) {
+                std::fs::write(&s, b"neither-shape").unwrap();
+            }
+            let r = proves_goal_impl(&hyps, &goal, &[], &map, Some(&m));
+            assert!(r.proved, "corruption must degrade to a live solve");
+            assert_eq!(r.via, Some(Via::SolvedFloor));
+            assert!(!r.floor_first, "a corrupt hint is no hint");
+            // the store heals: the re-recorded entry parses again.
+            let entries = unsat_entries(dir.path());
+            assert_eq!(entries.len(), 1);
+            let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&entries[0]).unwrap())
+                .expect("re-recorded entry parses");
+            assert_eq!(json["v"], 0);
+            assert_eq!(json["shape"], "floor");
+        }
+
+        #[test]
+        fn memo_degenerate_floor_eq_script_single_run() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let m = Memo::at(dir.path().to_path_buf()).expect("memo enabled");
+            let goal = trivial_goal(); // ground: floor render == annotated render
+            let r = proves_goal_impl(&[], &goal, &[], &PatternMap::new(), Some(&m));
+            assert!(r.proved);
+            assert!(!r.floor_first);
+            assert_eq!(unsat_entries(dir.path()).len(), 1, "exactly one tier-1 entry");
+            // …and the bucket records the annotated shape.
+            let shapes = shape_files(dir.path());
+            assert_eq!(shapes.len(), 1);
+            assert_eq!(std::fs::read_to_string(&shapes[0]).unwrap().trim(), "annotated");
+        }
+
+        #[test]
+        fn memo_disabled_leaves_no_trace() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (hyp, goal, map) = defeating_pattern_fixture();
+            let r = proves_goal_impl(&[hyp], &goal, &[], &map, None);
+            assert!(r.proved, "the memo-less flow must still prove via the floor");
+            assert_eq!(r.via, Some(Via::SolvedFloor));
+            assert!(!r.floor_first);
+            assert_eq!(
+                std::fs::read_dir(dir.path()).unwrap().count(),
+                0,
+                "no memo directories may appear"
+            );
+        }
+
+        /// End-to-end env wiring through the PUBLIC `proves_goal`. `#[ignore]`
+        /// because it mutates process env (edition-2024 `unsafe` set_var) —
+        /// run serially and on demand:
+        /// `cargo test -p adsmt-delegate --features oxiz -- --ignored --test-threads=1`
+        #[test]
+        #[ignore]
+        fn memo_env_wiring_end_to_end() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            unsafe { std::env::set_var("ADSMT_DELEGATE_MEMO_DIR", dir.path()) };
+            let goal = trivial_goal();
+            let first = crate::oxiz::proves_goal(&[], &goal, &[], &PatternMap::new());
+            let entries_after_first = unsat_entries(dir.path()).len();
+            let second = crate::oxiz::proves_goal(&[], &goal, &[], &PatternMap::new());
+            unsafe { std::env::remove_var("ADSMT_DELEGATE_MEMO_DIR") };
+            assert!(first && second);
+            assert_eq!(entries_after_first, 1, "call1 must record through the env-built memo");
+        }
     }
 }

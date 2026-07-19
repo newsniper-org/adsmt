@@ -21,12 +21,18 @@ cas-backend-numtheory = { version = "=1.0.0-rc.42.1", path = "../cas-backends/ca
 # `oxiz` feature — the vendored in-process OxiZ (z3-parity). Same path dep as
 # adsmt-cli's `oxiz` feature.
 oxiz-solver = { path = "../external/oxiz/oxiz-solver", optional = true }
+# The unsat-memo store (`memo` module, `oxiz` feature): K12-256 digests
+# (lu-common `k12`) + serde JSON tier-1 entries.
+lu-common = { version = "=1.0.0-rc.42.1", path = "../lu-common", default-features = false, features = ["k12"], optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
 cas = ["dep:adsmt-cas", "dep:cas-backend-singular", "dep:cas-backend-mathhook", "dep:cas-backend-numtheory"]
-oxiz = ["dep:oxiz-solver"]
+oxiz = ["dep:oxiz-solver", "dep:lu-common", "dep:serde", "dep:serde_json"]
 
 [dev-dependencies]
 num-bigint.workspace = true
 num-rational.workspace = true
+tempfile = "3.27"

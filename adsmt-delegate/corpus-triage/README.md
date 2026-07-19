@@ -166,7 +166,11 @@ first-hand here: ob06 8.5 s, sv2/ob01 21.7 s. The 29 v2 saturators
 (named in the 2026-07-18 inbox message) are the refreshed
 throttle-bench list — the expected v2 cost (rows that used to
 self-abandon at 4 s now burn full budget; sweep ~44 min idle). Formal
-re-pin follows the next manual push.
+re-pin CONFIRMED 2026-07-18 at the pushed pins (AD1 `671937f` / oxiz
+`0c75ad7`): 155/21/29, regression 0, negatives 4/4 — ROW-IDENTICAL to
+the dual sweep (all 51 CONV + 29 SATURATOR rows match; wall-ms jitter
+only). 155/21/29 is the mutually-pinned canonical ledger; next re-pin
+trigger = the next landed engine/completeness slice.
 
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against

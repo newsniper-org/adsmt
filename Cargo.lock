@@ -111,9 +111,13 @@ dependencies = [
  "cas-backend-mathhook",
  "cas-backend-numtheory",
  "cas-backend-singular",
+ "lu-common",
  "num-bigint",
  "num-rational",
  "oxiz-solver",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
