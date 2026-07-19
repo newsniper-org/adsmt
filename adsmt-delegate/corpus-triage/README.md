@@ -197,6 +197,24 @@ conflicts (pre-existing, UFLIA correct); **Dt-as-App view upgrade**
 trigger matchability, the recovery lever for dm2/ob03) — all three are
 future engine slices.
 
+**Update 2026-07-19 (engine campaign slice S, oxiz `4a8b29d` — simplex
+trail infrastructure, opt-in)**: clone-on-push replaced by a single-funnel
+undo trail as `BacktrackMode::Trail` (`OXIZ_SIMPLEX_TRAIL=1`), measured
+push+pop containment 46.1%→0.01%, RSS −39%, recording overhead
+unmeasurable, 12,800-op committed + 204,800-op adversarial differential
+zero-divergence. **Snapshot stays DEFAULT** (kill criterion fired): the
+freed throughput is reinvested by guard-bound MBQI rows — the Trail A/B
+closed 2 simplex-bound saturators (seq-vstd-2/ob03, datatypes-match-3/
+ob05) but drowned 5 fuel-recursion rows (3 canonical). Pivot-victim
+selection is mode-split (Snapshot = legacy map-order, byte-identical
+trunk trajectory; Trail = Bland smallest-VarId, layout-independent).
+Final gate: **158 / 27 / 20 ROW-IDENTICAL to E1**, negatives 4/4.
+Follow-up gate for Trail-default: work-bounded (not deadline-bounded)
+round emission. New pre-existing leads ledgered: Bland 10k-pivot-cap
+cycling → incomplete; `dual_simplex` cap path missing `incomplete`
+(spurious-sat-shaped, no callers); `propagate_bounds`/`tighten_bounds`
+trail-free bound writes (survive pop, API in-tree-dead).
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it

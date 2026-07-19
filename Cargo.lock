@@ -2326,6 +2326,8 @@ dependencies = [
  "oxiz-sat",
  "portable-atomic-util",
  "portable-bijectives",
+ "portable-collection-primitives",
+ "portable-queues",
  "rustc-hash",
  "smallvec",
  "tracing",
