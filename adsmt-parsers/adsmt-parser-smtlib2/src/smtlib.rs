@@ -107,7 +107,24 @@ pub enum Command {
     /// over an empty vocabulary, so a front-end (Verus, Lean) declares
     /// the program variables / lemmas it would accept as a fix before
     /// asking for an abduct.
-    DeclareAbducible { pattern: SExpr, explanation: Option<String> },
+    ///
+    /// P3 (weighted abduction) — an optional `:weight <numeral>`
+    /// keyword argument, in any position after `<pattern>`, alongside
+    /// (or instead of) the explanation string:
+    /// `(declare-abducible <pattern> [<explanation-string>] [:weight w])`.
+    /// `w` is the MPE-style cost of assuming this hypothesis (smaller =
+    /// preferred); absent `:weight` parses to `None`, which the CLI
+    /// treats as the default cost `1.0` — the single most important
+    /// backward-compatibility invariant of this surface (see
+    /// `adsmt-abduce::rank`'s module doc). `w` accepts the same
+    /// integer/decimal/rational `Numeric` token forms the lexer already
+    /// produces elsewhere (`sexpr.rs`'s `Numeric` — "integer or
+    /// rational, kept as text").
+    DeclareAbducible {
+        pattern: SExpr,
+        explanation: Option<String>,
+        weight: Option<f64>,
+    },
     /// rc.35 — request ranked abductive hypotheses that would discharge
     /// `goal`.  Two surfaces route here:
     /// - `(abduce <goal>)` — adsmt-native; emits the full ranked
@@ -387,12 +404,57 @@ fn parse_command(s: SExpr) -> Result<Command, SmtLibError> {
                 .get(1)
                 .cloned()
                 .ok_or_else(|| malformed(&head, "missing abducible pattern"))?;
-            // Optional trailing string literal = explanation.
-            let explanation = match list.get(2) {
-                Some(SExpr::String(s)) => Some(s.clone()),
-                _ => None,
-            };
-            Ok(Command::DeclareAbducible { pattern, explanation })
+            // Optional trailing string literal (explanation) and/or a
+            // `:weight <numeral>` keyword argument, in EITHER order —
+            // scan every remaining element rather than assuming a fixed
+            // position, so `(declare-abducible p :weight 3)` (no
+            // explanation) and `(declare-abducible p "e" :weight 3)` /
+            // `(declare-abducible p :weight 3 "e")` all parse the same.
+            let mut explanation = None;
+            let mut weight = None;
+            let mut i = 2;
+            while i < list.len() {
+                match &list[i] {
+                    SExpr::String(s) => {
+                        if explanation.is_none() {
+                            explanation = Some(s.clone());
+                        }
+                        i += 1;
+                    }
+                    SExpr::Keyword(k) if k == "weight" => {
+                        let numeral = list.get(i + 1).and_then(SExpr::as_numeric);
+                        let parsed = numeral.and_then(parse_weight_numeral);
+                        match parsed {
+                            Some(w) => weight = Some(w),
+                            None => {
+                                return Err(malformed(
+                                    &head,
+                                    "`:weight` requires a numeral argument",
+                                ))
+                            }
+                        }
+                        i += 2;
+                    }
+                    // P0 fixup: any element that isn't a recognized
+                    // explanation string or `:weight <numeral>` pair is a
+                    // hard parse error, not a silently-skipped token.
+                    // Without this, `1e308`/`1.5e2` (the numeral lexer
+                    // stops at digit/./`/`, so the trailing `e...` becomes
+                    // a separate Symbol token) or a misspelled/miscased
+                    // keyword (`:wieght`, `:Weight`) would silently fall
+                    // through here, leaving `weight` at its default
+                    // (1.0) with zero diagnostic and exit code 0 —
+                    // indistinguishable from a correctly-applied weight.
+                    _ => {
+                        return Err(malformed(
+                            &head,
+                            "unexpected argument to declare-abducible (expected an \
+                             explanation string and/or `:weight <numeral>`)",
+                        ))
+                    }
+                }
+            }
+            Ok(Command::DeclareAbducible { pattern, explanation, weight })
         }
         "abduce" => {
             // adsmt-native: `(abduce <goal>)`.
@@ -428,6 +490,28 @@ fn expect_symbol(e: Option<&SExpr>, ctx: &str) -> Result<String, SmtLibError> {
 /// rc.30 (Y4) — short constructor for a `declare-datatype(s)` error.
 fn malformed(cmd: &str, msg: &str) -> SmtLibError {
     SmtLibError::Malformed { cmd: cmd.to_string(), message: msg.to_string() }
+}
+
+/// P3 (weighted abduction) — parse a `declare-abducible` `:weight`
+/// argument's raw [`SExpr::Numeric`] text into an `f64`. Covers the two
+/// shapes `sexpr.rs`'s lexer actually produces for a `Numeric` token
+/// ("integer or rational, kept as text"): a plain decimal (`3`, `-1`,
+/// `2.5` — handled by `f64::from_str` directly) and a bare rational
+/// `a/b` (`1/2` — `f64::from_str` rejects the `/`, so split and divide).
+/// Does NOT validate sign/finiteness — mirrors `adsmt-ir-asp`'s
+/// `weight_lit` precedent ("negative weights lex and parse fine…any
+/// rejection is an elaborator/solver decision"); the CLI's
+/// `declare_abducible` is where a non-positive/non-finite cost is
+/// rejected, since that's a business rule about COST, not this
+/// module's syntax concern.
+fn parse_weight_numeral(n: &str) -> Option<f64> {
+    if let Ok(v) = n.parse::<f64>() {
+        return Some(v);
+    }
+    let (num, den) = n.split_once('/')?;
+    let num: f64 = num.parse().ok()?;
+    let den: f64 = den.parse().ok()?;
+    (den != 0.0).then_some(num / den)
 }
 
 /// rc.30 (Y4) — parse one constructor declaration: a nullary symbol
@@ -674,19 +758,117 @@ mod tests {
     fn declare_abducible_parses_with_optional_explanation() {
         let cmds = parse_smtlib("(declare-abducible (> x 0))").unwrap();
         match &cmds[0] {
-            Command::DeclareAbducible { pattern, explanation } => {
+            Command::DeclareAbducible { pattern, explanation, weight } => {
                 assert_eq!(pattern.to_string(), "(> x 0)");
                 assert!(explanation.is_none());
+                assert!(weight.is_none());
             }
             other => panic!("expected DeclareAbducible, got {other:?}"),
         }
         let cmds =
             parse_smtlib("(declare-abducible (> x 0) \"x must be positive\")").unwrap();
         match &cmds[0] {
-            Command::DeclareAbducible { explanation, .. } => {
+            Command::DeclareAbducible { explanation, weight, .. } => {
                 assert_eq!(explanation.as_deref(), Some("x must be positive"));
+                assert!(weight.is_none());
             }
             other => panic!("expected DeclareAbducible, got {other:?}"),
+        }
+    }
+
+    // === P3 weighted abduction: `:weight` parsing ===
+
+    #[test]
+    fn declare_abducible_parses_weight_keyword() {
+        let cmds = parse_smtlib("(declare-abducible (> x 0) :weight 3)").unwrap();
+        match &cmds[0] {
+            Command::DeclareAbducible { explanation, weight, .. } => {
+                assert!(explanation.is_none());
+                assert_eq!(*weight, Some(3.0));
+            }
+            other => panic!("expected DeclareAbducible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declare_abducible_parses_weight_and_explanation_either_order() {
+        let cmds = parse_smtlib(
+            "(declare-abducible (> x 0) \"x must be positive\" :weight 2.5)",
+        )
+        .unwrap();
+        match &cmds[0] {
+            Command::DeclareAbducible { explanation, weight, .. } => {
+                assert_eq!(explanation.as_deref(), Some("x must be positive"));
+                assert_eq!(*weight, Some(2.5));
+            }
+            other => panic!("expected DeclareAbducible, got {other:?}"),
+        }
+        // `:weight` before the explanation string also parses.
+        let cmds = parse_smtlib(
+            "(declare-abducible (> x 0) :weight 2.5 \"x must be positive\")",
+        )
+        .unwrap();
+        match &cmds[0] {
+            Command::DeclareAbducible { explanation, weight, .. } => {
+                assert_eq!(explanation.as_deref(), Some("x must be positive"));
+                assert_eq!(*weight, Some(2.5));
+            }
+            other => panic!("expected DeclareAbducible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declare_abducible_weight_accepts_rational_form() {
+        let cmds = parse_smtlib("(declare-abducible (> x 0) :weight 1/2)").unwrap();
+        match &cmds[0] {
+            Command::DeclareAbducible { weight, .. } => {
+                assert_eq!(*weight, Some(0.5));
+            }
+            other => panic!("expected DeclareAbducible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declare_abducible_malformed_weight_errors() {
+        let err = parse_smtlib("(declare-abducible (> x 0) :weight not-a-number)").unwrap_err();
+        assert!(matches!(err, SmtLibError::Malformed { .. }));
+    }
+
+    /// P0 fixup regression: a numeral immediately followed by a
+    /// symbol-start character (`1e308`, `1.5e2`) lexes as a `Numeric`
+    /// token plus a *separate* trailing `Symbol` token (the numeral
+    /// lexer only consumes digit/./`/`). Before this fix that trailing
+    /// symbol fell through a silent catch-all and the declaration
+    /// quietly kept the default weight (1.0) with no diagnostic and
+    /// exit code 0 — indistinguishable from a correctly-applied weight.
+    #[test]
+    fn declare_abducible_weight_with_trailing_garbage_after_numeral_errors() {
+        for src in [
+            "(declare-abducible (> x 0) :weight 1e308)",
+            "(declare-abducible (> x 0) :weight 1.5e2)",
+        ] {
+            let err = parse_smtlib(src).unwrap_err();
+            assert!(
+                matches!(err, SmtLibError::Malformed { .. }),
+                "expected a hard parse error for {src:?}, got {err:?}"
+            );
+        }
+    }
+
+    /// P0 fixup regression: a misspelled or miscased `:weight` keyword
+    /// must not be silently accepted with the default weight — it must
+    /// be treated as an unrecognized argument and hard-error.
+    #[test]
+    fn declare_abducible_misspelled_or_miscased_weight_keyword_errors() {
+        for src in [
+            "(declare-abducible (> x 0) :wieght 999)",
+            "(declare-abducible (> x 0) :Weight 999)",
+        ] {
+            let err = parse_smtlib(src).unwrap_err();
+            assert!(
+                matches!(err, SmtLibError::Malformed { .. }),
+                "expected a hard parse error for {src:?}, got {err:?}"
+            );
         }
     }
 

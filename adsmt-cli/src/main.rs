@@ -1647,12 +1647,16 @@ fn run_stdin_streaming(
 /// ]}
 /// ```
 ///
-/// `rank` is the 1-based position in the input vector (the engine
-/// already returns candidates sorted ascending by score — see
-/// `adsmt-abduce::rank::rank_candidates`). `score` is the raw
-/// adsmt-abduce score (smaller = stronger). `hypotheses`,
-/// `explanations`, `sources` mirror the lock-step lists on
-/// [`adsmt_abduce::sld::Candidate`] one-to-one.
+/// `rank` is the 1-based position in the input vector (the caller
+/// already returns candidates sorted ascending by score — the SLD path
+/// via `adsmt_abduce::rank::{rank_candidates, rank_candidates_weighted}`,
+/// the theory-search path via `abduce_theory`'s own explicit sort using
+/// the SAME `adsmt_abduce::rank::candidate_cost`, see P3). `score` is the
+/// raw adsmt-abduce weighted-MPE cost (smaller = cheaper = stronger);
+/// with no declared `:weight` this is exactly the pre-P3
+/// cardinality+depth score. `hypotheses`, `explanations`, `sources`
+/// mirror the lock-step lists on [`adsmt_abduce::sld::Candidate`]
+/// one-to-one.
 ///
 /// rc.35.1 — both the per-hypothesis strings AND the new top-level
 /// `term` field are **re-parseable SMT-LIB** (via [`term_to_smtlib`]),
@@ -1929,6 +1933,8 @@ fn prelude_to_smtlib(assertions: &[(Term, Option<String>)]) -> Option<String> {
 /// root, so it can call `Driver`'s private `entails_under_theory` /
 /// `abduct_is_consistent` checks.)
 mod abduct {
+    use std::collections::HashMap;
+
     use super::{Driver, RankedCandidate, Term};
 
     pub struct TheoryAbduct {
@@ -1964,15 +1970,29 @@ mod abduct {
         }
 
         /// Lower a verified abduct into a `RankedCandidate` for emission.
-        pub fn into_ranked(self, score: f64) -> RankedCandidate {
-            RankedCandidate {
-                candidate: adsmt_abduce::sld::Candidate {
-                    hypotheses: self.hypotheses,
-                    explanations: self.explanations,
-                    sources: self.sources,
-                },
-                score,
-            }
+        ///
+        /// P3 (weighted abduction) — the score is now the SAME
+        /// [`adsmt_abduce::rank::candidate_cost`] the SLD path's
+        /// `rank_candidates_weighted` uses (`Σ weight(h) + 0.001*depth`,
+        /// `weights` keyed by declared-abducible pattern), not a raw
+        /// `combo.len()` cardinality count — this is the "one weighted
+        /// cost function" both scoring paths now route through. With an
+        /// empty (or all-default-1.0) `weights` table this is numerically
+        /// identical to `combo.len() as f64` for every candidate here (one
+        /// hypothesis per originating vocabulary index, so
+        /// `hypotheses.len() == combo.len()` always), plus the same
+        /// `0.001*depth` tiebreak `rank_candidates` already applied
+        /// elsewhere — see `abduce_theory`'s call site for why adding
+        /// that tiebreak (and the now-explicit sort by score) doesn't
+        /// change the unweighted order.
+        pub fn into_ranked(self, weights: &HashMap<Term, f64>) -> RankedCandidate {
+            let candidate = adsmt_abduce::sld::Candidate {
+                hypotheses: self.hypotheses,
+                explanations: self.explanations,
+                sources: self.sources,
+            };
+            let score = adsmt_abduce::rank::candidate_cost(&candidate, weights);
+            RankedCandidate { candidate, score }
         }
     }
 }
@@ -2839,8 +2859,8 @@ impl Driver {
                 println!("{}", msg);
                 DispatchResult::Continue
             }
-            Command::DeclareAbducible { pattern, explanation } => {
-                match self.declare_abducible(&pattern, explanation.as_deref()) {
+            Command::DeclareAbducible { pattern, explanation, weight } => {
+                match self.declare_abducible(&pattern, explanation.as_deref(), weight) {
                     Ok(()) => DispatchResult::Continue,
                     Err(e) => self.recoverable_command_error("declare-abducible", e),
                 }
@@ -3333,17 +3353,35 @@ impl Driver {
         convert_expr(&expanded, &self.symbols).map_err(|err: ConvertError| err.to_string())
     }
 
-    /// rc.35 — `(declare-abducible <pattern> [<explanation>])`: register
-    /// `<pattern>` as a hypothesis the abductive engine may propose.
+    /// rc.35 — `(declare-abducible <pattern> [<explanation>] [:weight w])`:
+    /// register `<pattern>` as a hypothesis the abductive engine may
+    /// propose. P3 (weighted abduction) — `weight` is the parsed
+    /// `:weight` argument (`None` ⇒ default cost `1.0`, preserved via
+    /// `Abducible::new`'s own default rather than this function
+    /// special-casing it). A declared, non-default weight is validated
+    /// HERE (finite, strictly positive) rather than at parse time — see
+    /// `adsmt_parser_smtlib2::smtlib::parse_weight_numeral`'s doc: the
+    /// parser stays a pure syntax layer, this is the business-rule
+    /// boundary (mirrors how a malformed sort/arity is rejected at the
+    /// declaration site, not the tokenizer).
     fn declare_abducible(
         &mut self,
         pattern: &SExpr,
         explanation: Option<&str>,
+        weight: Option<f64>,
     ) -> Result<(), String> {
         let term = self.abductive_term(pattern)?;
         let mut a = adsmt_abduce::Abducible::new(term, "declared");
         if let Some(e) = explanation {
             a = a.with_explanation(e);
+        }
+        if let Some(w) = weight {
+            if !w.is_finite() || w <= 0.0 {
+                // No "declare-abducible:" prefix here — `recoverable_command_error`
+                // (this fn's only caller) already prepends the command name.
+                return Err(format!("`:weight` must be a positive finite number, got {w}"));
+            }
+            a = a.with_weight(w);
         }
         // Keep a CLI-side copy for the `:abduct-theory` subset search
         // (the SLD path reads it back out of the solver instead).
@@ -3627,8 +3665,10 @@ impl Driver {
     /// entails `G` (and is consistent) the trivial `true` abduct is the
     /// single minimal answer (and prunes every non-empty subset, which
     /// would otherwise *all* spuriously "entail" `G`). Candidates are
-    /// ranked by minimality (subset size); each check honours the session
-    /// `:rlimit`/`:timeout`.
+    /// ranked by weighted cost (P3: `Σ` each included hypothesis's
+    /// declared `:weight`, default `1` — reduces to plain subset-size
+    /// minimality when nothing declares a weight); each check honours the
+    /// session `:rlimit`/`:timeout`.
     fn abduce_theory(
         &mut self,
         goal: &SExpr,
@@ -3668,6 +3708,18 @@ impl Driver {
             vocab = scored.into_iter().map(|(_, ab)| ab).collect();
         }
         let n = vocab.len();
+        // P3 (weighted abduction) — the SAME cost function
+        // `rank_candidates_weighted` uses, built once from this search's
+        // vocabulary (`declared_abducibles`, not `self.abducibles` — the
+        // theory path's own copy, see the field doc). Note this is a
+        // SEPARATE concern from `abduct_goal_relevance` above: that
+        // reorders which subsets get *examined* before the wall-clock
+        // budget bails; this decides which of the *found* abducts is
+        // reported best. Deliberately not merged into one heuristic — see
+        // this function's doc / the P3 report for why goal-relevance
+        // keeps its own separate role.
+        let weights: HashMap<Term, f64> =
+            vocab.iter().map(|a| (a.pattern.clone(), a.weight)).collect();
 
         // Each entry pairs the chosen index set (for minimality pruning +
         // the rank score) with a `TheoryAbduct` — a value that *cannot
@@ -3729,12 +3781,20 @@ impl Driver {
             }
         }
 
-        // Smaller subset = stronger: a 1-predicate abduct outranks a
-        // 2-predicate one.
-        Ok(minimal
+        // Cheapest total weight = strongest (a 1-predicate abduct still
+        // outranks a 2-predicate one when every weight defaults to 1 —
+        // see `into_ranked`'s doc for why this is a no-op for the
+        // unweighted case). `minimal`'s push order is already
+        // cardinality-ascending (the outer `for size in 0..=MAX_ABDUCT_SIZE`
+        // loop), so this sort is stable and, with all-default weights,
+        // reorders nothing — it only takes effect once a declared weight
+        // makes a larger, cheaper subset outrank a smaller, pricier one.
+        let mut ranked: Vec<RankedCandidate> = minimal
             .into_iter()
-            .map(|(combo, abduct)| abduct.into_ranked(combo.len() as f64))
-            .collect())
+            .map(|(_, abduct)| abduct.into_ranked(&weights))
+            .collect();
+        ranked.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
+        Ok(ranked)
     }
 
     /// rc.35 — `(get-abduct-next)`: emit the next ranked abduct after a

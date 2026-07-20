@@ -310,6 +310,45 @@ remains exposed. Scope: this is a base-engine soundness-class bug
 selector-group shape is at risk; flagging as the highest-priority
 follow-up independent of the MaxSAT initiative's own P2/P3.
 
+**P2 (AD1 `4913cf6`) — ASP weak constraints, single-level, adsmt-side
+only (external/oxiz untouched)**: `:~ body. [weight@0]` surface syntax
+in adsmt-ir-asp (lexer/parser/AST/elaborator, integer-only weights, 2+
+distinct levels cleanly rejected per the L3 first-slice-only precedent).
+Two semantics resolved empirically against real clingo 5.8.0 rather than
+guessed: polarity (pays weight when body HOLDS) and — the deeper,
+genuinely non-obvious subtlety — **counting**: ASP-Core-2 identifies a
+ground instance by `(weight, level, terms)`; with no `terms` clause in
+this grammar, clingo collapses every satisfied ground instance sharing
+an identical `(weight, level)` into ONE counted unit **globally across
+the whole program** (`p(1..3). :~ p(X). [5@0]` costs 5, not 15; three
+separate declarations sharing weight 5 also collapse to 5) — verified 3
+independent ways before implementing, re-verified independently by the
+adversarial lens with a from-scratch generator (400 more seeded cases,
+0 mismatches) plus hand-derived adversarial cases (dead bodies,
+negative/reward weights, negated-body constraints, duplicate
+declarations, theory-guarded bodies). Search scope: reuses the existing
+GL-reduct-verified stable-model enumeration unchanged and picks the
+cost-minimal candidate by plain evaluation (argmin over already-decided
+models) rather than a new weight-aware decision procedure — the
+pre-authorized simpler-but-correct alternative. Delegate boundary
+(`adsmt-delegate/src/asp.rs`) deliberately does NOT invoke an
+oxiz_sat/MaxSAT search (nothing left to search once a candidate model is
+fixed — only a cost to sum); cost still renders through
+`oxiz_opt::maxsat::Weight::Int` for downstream consistency.
+
+Adversarial pass caught a real P0: `weak_cost` summed satisfied weights
+as unchecked `i64` — the workspace's actual release profile (no
+overflow-checks) silently wrapped and sign-flipped the optimal cost on
+overflow, no error (debug hard-panicked instead). Fixed: sum in `i128`,
+check the total fits `i64`, abstain (`FaceError::Unsupported`) on
+overflow rather than report a wrapped number — reproduced through the
+real release binary before/after the fix.
+
+Gate: clingo optimal-cost differential (soundness-class, same discipline
+as P0/P1's z3 differential), 150 seeded programs, **150/150 exact
+match**; adversarial lens independently re-ran 400 more, 0 mismatches.
+Suites: adsmt-ir-asp 182/0, adsmt-delegate `--features asp` 17/0.
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it

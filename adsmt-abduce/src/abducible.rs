@@ -18,15 +18,32 @@ pub struct Abducible {
     pub explanation: Option<String>,
     /// Origin tag — `abduce-block`, `class`, theory name, etc.
     pub source: String,
+    /// P3 (weighted abduction) — the MPE-style cost of ASSUMING this
+    /// hypothesis: `(declare-abducible <pattern> :weight w)`. Defaults to
+    /// `1.0` (uniform cost), which makes weighted ranking reduce EXACTLY to
+    /// today's cardinality-first `|hyps|` score — see
+    /// `adsmt_abduce::rank::candidate_cost`. Always finite and strictly
+    /// positive; enforced where the weight is parsed
+    /// (`adsmt-cli::Driver::declare_abducible`), not here, so this type
+    /// itself stays a plain data carrier.
+    pub weight: f64,
 }
 
 impl Abducible {
     pub fn new(pattern: Term, source: impl Into<String>) -> Self {
-        Self { pattern, source: source.into(), explanation: None }
+        Self { pattern, source: source.into(), explanation: None, weight: 1.0 }
     }
 
     pub fn with_explanation(mut self, e: impl Into<String>) -> Self {
         self.explanation = Some(e.into());
+        self
+    }
+
+    /// Attach a declared cost (see the `weight` field doc). Callers that
+    /// want validation (finite, positive) should check before calling this
+    /// — it stores whatever it's given.
+    pub fn with_weight(mut self, w: f64) -> Self {
+        self.weight = w;
         self
     }
 }

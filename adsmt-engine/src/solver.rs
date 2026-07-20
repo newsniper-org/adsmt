@@ -7,7 +7,7 @@ use indexmap::IndexSet;
 use adsmt_abduce::abducible::AbducibleSet;
 use adsmt_abduce::sld::SldEngine;
 use adsmt_abduce::workflow::AbductionState;
-use adsmt_abduce::{minimize, rank_candidates, MinimizePolicy};
+use adsmt_abduce::{minimize, rank_candidates, rank_candidates_weighted, MinimizePolicy};
 use adsmt_cert::canonical::Sequent;
 use adsmt_cert::witness::TheoryWitness;
 use adsmt_cert::{CertBuilder, StepBody, StepId};
@@ -2840,7 +2840,17 @@ impl Solver {
         let raw = engine.candidates(goal);
         let filtered = self.abduction_state.filter_non_rejected(raw);
         let minimized = minimize(filtered, MinimizePolicy::Standard);
-        let ranked = rank_candidates(minimized);
+        // P3 (weighted abduction) — `self.abducibles` is the same
+        // `AbducibleSet` `register_abducible` populates (the CLI's
+        // `declare_abducible` writes into it via that call), so any
+        // declared `:weight` is visible here. Undeclared / non-abducible
+        // hypotheses (there are none on THIS path — every SLD hypothesis
+        // originates from an `Abducible` match or a Horn-rule body atom
+        // resolved down to one) default to `1.0` via
+        // `rank_candidates_weighted`'s own fallback.
+        let weights: HashMap<Term, f64> =
+            self.abducibles.iter().map(|a| (a.pattern.clone(), a.weight)).collect();
+        let ranked = rank_candidates_weighted(minimized, &weights);
         Abductive { candidates: ranked }
     }
 
