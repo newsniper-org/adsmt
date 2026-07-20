@@ -461,6 +461,253 @@ fn solve_stable(elab: &Elaborated, mode: AspOutputMode) -> Result<Solution, Face
     })
 }
 
+// ---------------------------------------------------------------------------
+// L5 first slice — weak constraints (`:~ B. [weight@level]`).
+//
+// A weak constraint's body is checked (elab.rs) and grounded (below) exactly
+// like an integrity constraint's, but a ground instance whose body HOLDS never
+// kills an answer set — it costs its declared `weight` instead (ASP-Core-2's
+// "violated" terminology, dual to a strong constraint: "violated" = "body
+// holds"; verified against clingo 5.8.0: `a. :~ a. [1@0]` ⇒ optimal cost `1`).
+// The optimal answer set(s) minimize the summed cost.
+//
+// **Counting rule** (the soundness-critical half of this design, beyond plain
+// polarity): ASP-Core-2 identifies a ground weak-constraint instance by the
+// tuple `(weight, level, terms)`; this surface has no `terms` clause, so
+// `terms` is always empty — and instances that end up sharing an identical
+// `(weight, level)` pair are **counted once**, not summed per instance, and
+// this dedup is GLOBAL across every weak constraint in the program, not
+// scoped to one declaration. Empirically re-verified three independent ways
+// against clingo 5.8.0 (not assumed from the task's own "one soft clause per
+// grounding" paraphrase, which is the naive-and-wrong reading):
+//   - `p(1..3). :~ p(X). [5@0].`                       ⇒ cost `5`  (not `15`)
+//   - `a. b. :~ a. [5@0]. :~ b. [5@0].`                 ⇒ cost `5`  (not `10`)
+//   - `p(1..3). :~ p(X). [X@0].`                        ⇒ cost `6`  (distinct
+//     per-instance weights ⇒ no collision ⇒ sums normally)
+// A caller wanting each ground instance counted independently must give it a
+// distinct weight — not a bug, the standard's own semantics for a `terms`-free
+// weak constraint (clingo's `[weight@level, t1, …]` extra-terms disambiguator
+// is out of scope this slice; see `ast::Item::WeakConstraint`'s doc comment).
+//
+// **Search scope**: finding the weight-optimal answer set in general needs a
+// weight-aware stable-model search (weight-aware unfounded-set propagation) —
+// out of scope for this slice. Instead: reuse the SAME trusted, GL-reduct-
+// gated enumeration `solve`/`solve_with_mode` already run (stratified ⇒ the
+// one perfect model; non-stratified ⇒ every constraint-consistent stable
+// model) to get the finite, already-verified candidate set, then pick the
+// cost-minimal one(s) by plain evaluation (`weak_cost`) — an argmin, not a new
+// search procedure. This is intentionally NOT a MaxSAT *search*: by the time a
+// candidate model is in hand its atoms are already fully decided by the
+// trusted gate, so there is nothing left to search for, only to evaluate.
+// `adsmt-delegate::asp` mirrors this cost using `oxiz-opt`'s own `Weight` type
+// for the trusted result's arithmetic, without re-invoking a solver.
+
+/// One ground instance of a weak constraint: the AtomIds of its positive body
+/// atoms and its `not`-negated atoms — theory guards are evaluated once, up
+/// front (model-independent, exactly `ground_n_program`'s `guard &&`), and an
+/// atom that is never interned by the rest of the program's grounding can
+/// never be in ANY candidate model, so (mirroring `violates_constraints`'s own
+/// `intern.get(..).is_some_and(..)` reading, but computed once since the
+/// interner — unlike the candidate model — does not vary per candidate): a
+/// positive reference to one prunes the whole instance (it can never hold),
+/// a negative reference to one is dropped (CWA: `not` trivially holds).
+struct GroundWeak {
+    pos: Vec<AtomId>,
+    neg: Vec<AtomId>,
+    weight: i64,
+}
+
+/// Ground every [`Elaborated::weak_constraints`] instance over the finite
+/// Herbrand universe — [`violates_constraints`]'s grounding shape, but
+/// recording the (pos, neg) AtomId sets instead of testing them against one
+/// fixed model (a weak-constraint instance is re-tested against EVERY
+/// candidate answer set — see [`solve_weak_optimal`]). `level` is not carried
+/// per-instance: the caller has already rejected a multi-level program via
+/// [`check_single_level`], so every instance here shares the program's one
+/// level.
+fn ground_weak_constraints(
+    elab: &Elaborated,
+    intern: &Interner,
+) -> Result<Vec<GroundWeak>, FaceError> {
+    let mut out = Vec::new();
+    for wc in &elab.weak_constraints {
+        let body = &wc.body;
+        let mut vars = Vec::new();
+        for a in body.iter().filter_map(as_pos) {
+            collect_vars(a, &elab.pred_sorts, &elab.ctor_sig, &mut vars);
+        }
+        'assign: for assign in assignments(&vars, &elab.domains)? {
+            if !body
+                .iter()
+                .filter_map(as_pos)
+                .all(|a| atom_in_universe(a, &vars, &assign, &elab.pred_sorts, &elab.domains))
+            {
+                continue;
+            }
+            let ints = int_bindings(&vars, &assign)?;
+            let mut pos = Vec::new();
+            let mut neg = Vec::new();
+            for lit in body {
+                match lit {
+                    Literal::Theory(t) => {
+                        if !eval_compare(t, &vars, &assign, &ints)? {
+                            continue 'assign;
+                        }
+                    }
+                    Literal::Pos(a) => match intern.get(&a.pred, &instantiate(a, &vars, &assign)) {
+                        Some(id) => pos.push(id),
+                        // never derivable anywhere in the program ⇒ this ground
+                        // instance's body can never hold in any candidate model.
+                        None => continue 'assign,
+                    },
+                    Literal::Neg(a) => {
+                        if let Some(id) = intern.get(&a.pred, &instantiate(a, &vars, &assign)) {
+                            neg.push(id);
+                        }
+                        // else: never derivable ⇒ `not a` trivially holds (CWA) —
+                        // no restriction to record.
+                    }
+                }
+            }
+            out.push(GroundWeak { pos, neg, weight: wc.weight });
+        }
+    }
+    Ok(out)
+}
+
+/// Whether one ground weak-constraint instance's body **holds** in `model`
+/// (every positive atom present, every `not`-atom absent) — see the module
+/// section comment above for the verified polarity.
+fn weak_holds(gw: &GroundWeak, model: &BTreeSet<AtomId>) -> bool {
+    gw.pos.iter().all(|id| model.contains(id)) && gw.neg.iter().all(|id| !model.contains(id))
+}
+
+/// The ASP-Core-2 weak-constraint cost of `model` under `instances` — grouped
+/// by weight (single-level, so `(weight, level)` collapses to just `weight`),
+/// each group counted **once** if any instance in it holds. See the module
+/// section comment above for the (clingo-verified) counting rule.
+///
+/// Sums in `i128` (a program can have arbitrarily many distinct weights, and
+/// `i64::MAX`-adjacent declared weights are legal individually), then checks
+/// the total still fits `i64` — the public [`WeakOptimum::cost`] type — before
+/// returning it. An out-of-range total is a loud [`FaceError::Unsupported`]
+/// abstain, never a silently wrapped (and possibly sign-flipped) wrong
+/// optimum: same "abstain, never approximate" discipline as a stable-model
+/// enumeration budget overrun elsewhere in this module.
+fn weak_cost(instances: &[GroundWeak], model: &BTreeSet<AtomId>) -> Result<i64, FaceError> {
+    let satisfied_weights: BTreeSet<i64> =
+        instances.iter().filter(|gw| weak_holds(gw, model)).map(|gw| gw.weight).collect();
+    let sum: i128 = satisfied_weights.iter().map(|&w| i128::from(w)).sum();
+    i64::try_from(sum).map_err(|_| {
+        FaceError::Unsupported(format!(
+            "weak-constraint cost overflowed i64: {} distinct satisfied weight(s) sum to \
+             {sum}, outside i64::MIN..=i64::MAX — refusing to report a wrapped optimum",
+            satisfied_weights.len()
+        ))
+    })
+}
+
+/// Reject a program whose weak constraints span more than one distinct
+/// `level` — **single-level only** this slice (see
+/// [`crate::ast::Item::WeakConstraint`]'s doc comment); full lexicographic
+/// multi-level stratification is a deferred follow-up, refused loudly rather
+/// than silently approximated.
+fn check_single_level(elab: &Elaborated) -> Result<(), FaceError> {
+    let levels: BTreeSet<i64> = elab.weak_constraints.iter().map(|w| w.level).collect();
+    if levels.len() > 1 {
+        let list: Vec<String> = levels.iter().map(i64::to_string).collect();
+        return Err(FaceError::Unsupported(format!(
+            "weak constraints span {} distinct optimization levels ({}) — this slice \
+             supports a single level only; full lexicographic multi-level \
+             stratification is a deferred follow-up",
+            levels.len(),
+            list.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// The result of [`solve_weak_optimal`]: the weak-constraint-optimal answer
+/// set(s) of a program (L5 first slice) and their shared minimal cost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeakOptimum {
+    /// Whether the program has an answer set at all (same meaning as
+    /// [`Solution::consistent`]) — `false` iff no (hard-)constraint-consistent
+    /// answer set exists, in which case `cost` is `None` and `models` is empty.
+    pub consistent: bool,
+    /// The minimal weak-constraint cost among the program's constraint-
+    /// consistent answer set(s). `None` iff `!consistent`.
+    pub cost: Option<i64>,
+    /// EVERY cost-minimal answer set (surface form, sorted — mirrors
+    /// [`StableModels::models`]); more than one iff several answer sets tie
+    /// for the minimal cost.
+    pub models: Vec<Vec<Atom>>,
+}
+
+/// Solve a program's weak constraints (L5 first slice): among its
+/// (hard-)constraint-consistent answer set(s) — the SAME set [`solve`] would
+/// report (stratified ⇒ the one perfect model; non-stratified ⇒ every
+/// constraint-consistent stable model, via the SAME trusted GL-reduct-gated
+/// enumeration, never re-decided) — pick the one(s) minimizing the summed
+/// weight of its satisfied weak-constraint ground instances (see the module
+/// section comment above for the exact, clingo-verified counting rule).
+///
+/// **Single-level only**: a program whose weak constraints span more than one
+/// `level` is refused ([`FaceError::Unsupported`]) rather than silently
+/// approximated. A budget overrun in the underlying stable-model enumeration
+/// propagates as the SAME [`FaceError`] `solve` would return for that program
+/// (never silently narrowed to a partial/possibly-wrong optimum).
+pub fn solve_weak_optimal(elab: &Elaborated) -> Result<WeakOptimum, FaceError> {
+    check_single_level(elab)?;
+    let mut intern = Interner::default();
+
+    let candidates: Vec<BTreeSet<AtomId>> = match &elab.stratify {
+        Stratification::Stratified(_) => {
+            let m = stratified_model(elab, &mut intern)?;
+            if violates_constraints(elab, &m, &intern)? { Vec::new() } else { vec![m] }
+        }
+        Stratification::NonStratified(_) => {
+            let p = ground_n_program(elab, &mut intern)?;
+            let sets = stable_models(&p)?;
+            let mut kept = Vec::with_capacity(sets.len());
+            for m in sets {
+                if !violates_constraints(elab, &m, &intern)? {
+                    kept.push(m);
+                }
+            }
+            kept
+        }
+    };
+
+    if candidates.is_empty() {
+        return Ok(WeakOptimum { consistent: false, cost: None, models: Vec::new() });
+    }
+
+    let weak = ground_weak_constraints(elab, &intern)?;
+    let costs: Vec<i64> =
+        candidates.iter().map(|m| weak_cost(&weak, m)).collect::<Result<Vec<i64>, FaceError>>()?;
+    let min_cost = *costs.iter().min().expect("candidates is non-empty (checked above)");
+
+    let rev = intern.reverse();
+    let mut surface: Vec<Vec<Atom>> = candidates
+        .into_iter()
+        .zip(costs)
+        .filter(|(_, c)| *c == min_cost)
+        .map(|(m, _)| {
+            let mut atoms: Vec<Atom> = m.iter().filter_map(|id| rev.get(id).cloned()).collect();
+            atoms.sort_by_cached_key(render_atom);
+            atoms
+        })
+        .collect();
+    surface.sort_by(|x, y| {
+        let kx: Vec<String> = x.iter().map(render_atom).collect();
+        let ky: Vec<String> = y.iter().map(render_atom).collect();
+        kx.cmp(&ky)
+    });
+
+    Ok(WeakOptimum { consistent: true, cost: Some(min_cost), models: surface })
+}
+
 /// Cautious query answers: a binding holds iff `in_every` accepts its ground atom
 /// id (membership in EVERY stable model). Shared by the enumerated path
 /// (`id ∈ ⋂ models`) and the well-founded partial path (`id ∈ L*`, a subset of
@@ -792,6 +1039,227 @@ fn render_atom(a: &Atom) -> String {
     } else {
         let inner: Vec<String> = a.args.iter().map(crate::elab::render).collect();
         format!("{}({})", a.pred, inner.join(","))
+    }
+}
+
+#[cfg(test)]
+mod weak_constraint_tests {
+    use super::*;
+    use crate::elab::elaborate;
+    use crate::parser::parse;
+
+    /// Parse + elaborate + `solve_weak_optimal` in one call — the shape every
+    /// test below uses.
+    fn opt(src: &str) -> Result<WeakOptimum, FaceError> {
+        let prog = parse(src).expect("test program should parse");
+        let elab = elaborate(&prog).expect("test program should elaborate");
+        solve_weak_optimal(&elab)
+    }
+
+    #[test]
+    fn no_weak_constraints_is_cost_zero() {
+        // degenerate sanity: an L0 program with no weak constraints at all has
+        // exactly one (trivially optimal, cost-0) answer set.
+        let w = opt("pred p(Int). p(1). p(2).").unwrap();
+        assert!(w.consistent);
+        assert_eq!(w.cost, Some(0));
+        assert_eq!(w.models.len(), 1);
+    }
+
+    #[test]
+    fn single_weak_constraint_pays_its_weight_when_body_holds() {
+        // `a.` is a fact ⇒ always true ⇒ `:~ a. [7@0]` always costs 7 — verified
+        // against clingo 5.8.0 as the ground truth for this exact polarity.
+        let w = opt("pred a. a. :~ a. [7@0]").unwrap();
+        assert_eq!(w.cost, Some(7));
+    }
+
+    #[test]
+    fn body_never_satisfiable_costs_zero() {
+        // `q` never derived by any rule/fact ⇒ `:~ q. […]` never holds in any
+        // answer set ⇒ cost is always 0, not an error (an undeclared-but-typed
+        // predicate with zero facts is a legal, if vacuous, program).
+        let w = opt("pred q. :~ q. [100@0]").unwrap();
+        assert_eq!(w.cost, Some(0));
+    }
+
+    #[test]
+    fn conflicting_weak_constraints_pick_the_cheaper_side() {
+        // choose(a) / choose(b) via the even-loop non-stratified idiom
+        // (`p :- not q. q :- not p.`) gives two stable models: {a} and {b}.
+        // Weak constraints make violating `a` cost 10, violating `b` cost 1 —
+        // the optimum must be the {b} model, cost 1, not {a} (cost 10).
+        let w = opt(
+            "pred a. pred b.
+             a :- not b.
+             b :- not a.
+             :~ a. [10@0]
+             :~ b. [1@0]",
+        )
+        .unwrap();
+        assert_eq!(w.cost, Some(1));
+        assert_eq!(w.models.len(), 1);
+        assert_eq!(w.models[0].len(), 1);
+        assert_eq!(w.models[0][0].pred, "b");
+    }
+
+    #[test]
+    fn tied_optimal_models_are_all_reported() {
+        // same shape as above but EQUAL weights ⇒ both {a} and {b} are optimal.
+        let w = opt(
+            "pred a. pred b.
+             a :- not b.
+             b :- not a.
+             :~ a. [5@0]
+             :~ b. [5@0]",
+        )
+        .unwrap();
+        assert_eq!(w.cost, Some(5));
+        assert_eq!(w.models.len(), 2);
+    }
+
+    #[test]
+    fn no_answer_set_is_inconsistent_not_a_cost() {
+        // `p :- not p.` (odd loop) has NO stable model — weak constraints don't
+        // change that; `consistent` must be false and `cost` must be `None`.
+        let w = opt("pred p. p :- not p. :~ p. [1@0]").unwrap();
+        assert!(!w.consistent);
+        assert_eq!(w.cost, None);
+        assert!(w.models.is_empty());
+    }
+
+    #[test]
+    fn single_level_only_rejects_two_distinct_levels() {
+        let err = opt("pred a. pred b. a. b. :~ a. [1@0] :~ b. [1@1]").unwrap_err();
+        assert!(matches!(err, FaceError::Unsupported(_)));
+    }
+
+    #[test]
+    fn single_level_only_accepts_repeated_same_level() {
+        // several weak constraints at the SAME level is fine — only >1 DISTINCT
+        // level value is rejected.
+        assert!(opt("pred a. pred b. a. b. :~ a. [1@0] :~ b. [2@0]").is_ok());
+    }
+
+    // --- the dedup / counting rule (the soundness-critical crux of this
+    // slice) — each program below was independently run against clingo 5.8.0
+    // to establish the expected cost; see the module-level comment above
+    // `GroundWeak` for the exact clingo invocations. ---
+
+    #[test]
+    fn dedup_same_weight_same_declaration_counts_once() {
+        // clingo: `p(1..3). :~ p(X). [5@0].` ⇒ cost 5 (NOT 15).
+        let w = opt("pred p(Int). p(1). p(2). p(3). :~ p(X). [5@0]").unwrap();
+        assert_eq!(w.cost, Some(5));
+    }
+
+    #[test]
+    fn dedup_same_weight_different_declarations_counts_once() {
+        // clingo: `a. b. :~ a. [5@0]. :~ b. [5@0].` ⇒ cost 5 (NOT 10) — the
+        // dedup key is GLOBAL across declarations, not scoped to one `:~`.
+        let w = opt("pred a. pred b. a. b. :~ a. [5@0] :~ b. [5@0]").unwrap();
+        assert_eq!(w.cost, Some(5));
+    }
+
+    #[test]
+    fn distinct_weights_sum_normally() {
+        // clingo: `p(1..3). :~ p(X). [X@0].` ⇒ cost 6 (1+2+3) — distinct
+        // per-instance weights never collide, so no dedup applies and the sum
+        // is the naive one. This surface has no variable-weight syntax
+        // (`WeightLit` is a literal), so we get the same effect with three
+        // separately-weighted declarations instead.
+        let w = opt(
+            "pred p(Int). p(1). p(2). p(3).
+             :~ p(1). [1@0]
+             :~ p(2). [2@0]
+             :~ p(3). [3@0]",
+        )
+        .unwrap();
+        assert_eq!(w.cost, Some(6));
+    }
+
+    // --- grounder hand-verification (the private `ground_weak_constraints` /
+    // `weak_cost` — a small program, hand-counted). ---
+
+    #[test]
+    fn grounder_produces_one_instance_per_ground_body() {
+        let prog = parse("pred p(Int). p(1). p(2). p(3). :~ p(X). [5@0]").unwrap();
+        let elab = elaborate(&prog).unwrap();
+        let mut intern = Interner::default();
+        let model = stratified_model(&elab, &mut intern).unwrap();
+        let gw = ground_weak_constraints(&elab, &intern).unwrap();
+        // three ground instances (p(1), p(2), p(3)), each weight 5.
+        assert_eq!(gw.len(), 3);
+        assert!(gw.iter().all(|g| g.weight == 5));
+        // all three hold in the (only) model ⇒ weak_cost dedups to 5, not 15.
+        assert_eq!(weak_cost(&gw, &model).unwrap(), 5);
+    }
+
+    #[test]
+    fn grounder_drops_instance_whose_positive_atom_is_never_derivable() {
+        // `q` is declared but never a fact/rule head ⇒ never interned ⇒ the
+        // ground instance is pruned entirely at grounding time (never even
+        // reaches `weak_cost`'s evaluation).
+        let prog = parse("pred p. pred q. p. :~ p, q. [1@0]").unwrap();
+        let elab = elaborate(&prog).unwrap();
+        let mut intern = Interner::default();
+        let _ = stratified_model(&elab, &mut intern).unwrap();
+        let gw = ground_weak_constraints(&elab, &intern).unwrap();
+        assert!(gw.is_empty(), "an instance referencing a never-derivable atom must be pruned");
+    }
+
+    #[test]
+    fn grounder_neg_atom_never_derivable_holds_by_cwa() {
+        // `not q` with `q` never derivable holds trivially (CWA) — so the
+        // instance survives grounding with an EMPTY `neg` list (nothing left
+        // to falsify it), and its cost is paid whenever the positive part
+        // holds.
+        let prog = parse("pred p. pred q. p. :~ p, not q. [9@0]").unwrap();
+        let elab = elaborate(&prog).unwrap();
+        let mut intern = Interner::default();
+        let model = stratified_model(&elab, &mut intern).unwrap();
+        let gw = ground_weak_constraints(&elab, &intern).unwrap();
+        assert_eq!(gw.len(), 1);
+        assert!(gw[0].neg.is_empty());
+        assert_eq!(weak_cost(&gw, &model).unwrap(), 9);
+    }
+
+    #[test]
+    fn weak_cost_overflow_abstains_loudly_instead_of_wrapping() {
+        // Regression for a confirmed P0: three distinct large declared weights
+        // (each individually a legal i64) whose i64 SUM wraps — the exact
+        // repro from the finding. Before the fix, `cargo build --release`
+        // (this workspace's actual release profile: `lto = "thin"`, no
+        // `overflow-checks`) silently produced a wrong, sign-flipped cost;
+        // debug instead hard-panicked. Neither is acceptable: this must be a
+        // loud `FaceError`, never a wrapped/approximated optimum.
+        let err = opt(
+            "pred a. pred b. pred c.\n\
+             a. b. c.\n\
+             :~ a. [4611686018427387903@0]\n\
+             :~ b. [4611686018427387904@0]\n\
+             :~ c. [4611686018427387905@0]",
+        )
+        .expect_err("i64-overflowing weight sum must be refused, not wrapped");
+        assert!(
+            matches!(err, FaceError::Unsupported(_)),
+            "overflow must surface as Unsupported (abstain), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn weak_cost_exact_i64_max_boundary_overflow_abstains() {
+        // Two DISTINCT declarations (weight is a fixed per-declaration integer
+        // literal this slice — never a body variable — so a single `:~` can
+        // never itself produce colliding-but-distinct per-instance weights;
+        // overflow can only arise across declarations, as here): `i64::MAX`
+        // and `1`, both always holding, sum to exactly `i64::MAX + 1` — the
+        // textbook wrap-to-`i64::MIN` boundary. Confirms the checked-sum path
+        // catches a boundary overflow, not just the deeply-negative one from
+        // the P0 repro above.
+        let err = opt(&format!("pred a. pred b. a. b. :~ a. [{}@0]\n:~ b. [1@0]", i64::MAX))
+            .expect_err("i64::MAX + 1 must be refused, not wrapped to i64::MIN");
+        assert!(matches!(err, FaceError::Unsupported(_)));
     }
 }
 

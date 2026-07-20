@@ -17,8 +17,10 @@
 //!           | choiceatom "."                      % a fact (pooling / intervals)
 //!           | choiceatom ":-" choicebody "."      % a rule
 //!           | ":-" choicebody "."                 % an integrity constraint
+//!           | ":~" choicebody "." "[" weightlit ("@" IntLit)? "]"  % a weak constraint (L5)
 //!           | "?-" "abduce" atom "."              % an abductive query
 //!           | "?-" atom "."                       % a deductive query
+//! weightlit := "-"? IntLit                          % integer only this slice
 //! ctor     := Name ( "(" Name ("," Name)* ")" )?
 //! predargs := "(" Name ("," Name)* ")"
 //! atom     := Name ( "(" term ("," term)* ")" )?
@@ -76,7 +78,7 @@ use std::collections::HashSet;
 
 use crate::ast::{
     Atom, CmpOp, Ctor, DataDef, EnumDef, Expr, Item, Literal, PredDecl, Program, Rule, Term,
-    Theory,
+    Theory, WeightLit,
 };
 use crate::error::FaceError;
 use crate::lexer::{Token, TokKind, lex};
@@ -237,10 +239,13 @@ impl Parser<'_> {
             Some(TokKind::Ident(kw)) if kw == "pred" => Ok(vec![self.item_pred(false)?]),
             Some(TokKind::Ident(kw)) if kw == "abducible" => Ok(vec![self.item_pred(true)?]),
             Some(TokKind::ColonDash) => self.item_constraint(),
+            Some(TokKind::ColonTilde) => self.item_weak_constraint(),
             Some(TokKind::QuestionDash) => Ok(vec![self.item_query()?]),
             // anything else starting with an identifier is a fact or a rule.
             Some(TokKind::Ident(_)) => self.item_fact_or_rule(),
-            _ => Err(self.unexpected("an item (sort/enum/data/pred/abducible, an atom, `:-`, or `?-`)")),
+            _ => Err(self.unexpected(
+                "an item (sort/enum/data/pred/abducible, an atom, `:-`, `:~`, or `?-`)",
+            )),
         }
     }
 
@@ -349,6 +354,56 @@ impl Parser<'_> {
         let body = self.choice_body(HashSet::new())?;
         self.expect(&TokKind::Dot, "`.` to end the integrity constraint")?;
         Ok(self.expand_body(&body)?.into_iter().map(Item::Constraint).collect())
+    }
+
+    /// `:~ body. [weight@level]` — a **weak constraint** (L5 first slice). The
+    /// body parses/expands exactly like an integrity constraint's (pooling /
+    /// intervals expand it into several weak constraints, each keeping the
+    /// SAME `weight`/`level`); the `[weight@level]` tail follows the
+    /// terminating `.`, matching clingo's own weak-constraint grammar (verified
+    /// against clingo 5.8.0, not guessed). `@level` defaults to `0` when
+    /// omitted (the z3/clingo convention).
+    fn item_weak_constraint(&mut self) -> Result<Vec<Item>, FaceError> {
+        self.pos += 1; // `:~`
+        let body = self.choice_body(HashSet::new())?;
+        self.expect(&TokKind::Dot, "`.` to end the weak constraint")?;
+        self.expect(&TokKind::LBracket, "`[` to open the weak constraint's `[weight@level]` tail")?;
+        let weight = self.weight_lit()?;
+        let level = if matches!(self.peek(), Some(TokKind::At)) {
+            self.pos += 1;
+            self.signed_int("a weak constraint's `@level`")?
+        } else {
+            0
+        };
+        self.expect(&TokKind::RBracket, "`]` to close the weak constraint's `[weight@level]` tail")?;
+        Ok(self
+            .expand_body(&body)?
+            .into_iter()
+            .map(|body| Item::WeakConstraint { body, weight, level })
+            .collect())
+    }
+
+    /// `weightlit := "-"? IntLit` — a weak constraint's declared weight.
+    /// Integer only this slice (see [`WeightLit`]'s doc comment).
+    fn weight_lit(&mut self) -> Result<WeightLit, FaceError> {
+        Ok(WeightLit { value: self.signed_int("a weak constraint's `weight`")? })
+    }
+
+    /// An optionally-`-`-prefixed integer literal (shared by `weight_lit` and
+    /// the `@level` tail).
+    fn signed_int(&mut self, what: &str) -> Result<i64, FaceError> {
+        let neg = matches!(self.peek(), Some(TokKind::Minus));
+        if neg {
+            self.pos += 1;
+        }
+        match self.peek() {
+            Some(TokKind::Int(n)) => {
+                let n = *n;
+                self.pos += 1;
+                Ok(if neg { -n } else { n })
+            }
+            _ => Err(self.unexpected(what)),
+        }
     }
 
     /// `?- abduce atom .` or `?- atom .`
@@ -1116,11 +1171,15 @@ fn describe(k: &TokKind) -> String {
         TokKind::Int(n) => format!("integer `{n}`"),
         TokKind::Str(_) => "string literal".to_string(),
         TokKind::ColonDash => "`:-`".to_string(),
+        TokKind::ColonTilde => "`:~`".to_string(),
         TokKind::QuestionDash => "`?-`".to_string(),
         TokKind::LParen => "`(`".to_string(),
         TokKind::RParen => "`)`".to_string(),
         TokKind::LBrace => "`{`".to_string(),
         TokKind::RBrace => "`}`".to_string(),
+        TokKind::LBracket => "`[`".to_string(),
+        TokKind::RBracket => "`]`".to_string(),
+        TokKind::At => "`@`".to_string(),
         TokKind::Comma => "`,`".to_string(),
         TokKind::Bar => "`|`".to_string(),
         TokKind::Semi => "`;`".to_string(),
@@ -1545,5 +1604,87 @@ mod tests {
         ] {
             assert!(matches!(parse(bad), Err(FaceError::Parse(_))), "should reject: {bad:?}");
         }
+    }
+
+    #[test]
+    fn weak_constraint_parses_weight_and_level() {
+        let p = parse("a. :~ a. [3@2]").unwrap();
+        let Item::WeakConstraint { body, weight, level } = &p.items[1] else {
+            panic!("expected a weak constraint")
+        };
+        assert_eq!(body.len(), 1);
+        assert_eq!(weight.value, 3);
+        assert_eq!(*level, 2);
+    }
+
+    #[test]
+    fn weak_constraint_level_defaults_to_zero() {
+        let p = parse("a. :~ a. [5]").unwrap();
+        let Item::WeakConstraint { weight, level, .. } = &p.items[1] else {
+            panic!("expected a weak constraint")
+        };
+        assert_eq!(weight.value, 5);
+        assert_eq!(*level, 0);
+    }
+
+    #[test]
+    fn weak_constraint_negative_level_and_weight() {
+        // negative weights/levels lex and parse fine (a signed integer) — any
+        // rejection of a negative *weight* specifically is an elaborator/solver
+        // scope decision, not a parser one.
+        let p = parse("a. :~ a. [-1@-2]").unwrap();
+        let Item::WeakConstraint { weight, level, .. } = &p.items[1] else {
+            panic!("expected a weak constraint")
+        };
+        assert_eq!(weight.value, -1);
+        assert_eq!(*level, -2);
+    }
+
+    #[test]
+    fn weak_constraint_body_reuses_ordinary_body_grammar() {
+        // theory guards, `not`, and multi-literal bodies all parse exactly like
+        // an integrity constraint's (the body parser is shared).
+        let p = parse("p(1). q(2). :~ p(X), not q(X), { X < 5 }. [1@0]").unwrap();
+        let Item::WeakConstraint { body, .. } = p.items.last().unwrap() else {
+            panic!("expected a weak constraint")
+        };
+        assert_eq!(body.len(), 3);
+    }
+
+    #[test]
+    fn weak_constraint_pooling_expands_sharing_weight_level() {
+        // `:~ p(a; b). [1@0].` ⇒ two weak constraints, same weight/level.
+        let p = parse("p(a). p(b). :~ p(a; b). [7@1]").unwrap();
+        let wcs: Vec<_> = p
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::WeakConstraint { weight, level, .. } => Some((weight.value, *level)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wcs, vec![(7, 1), (7, 1)]);
+    }
+
+    #[test]
+    fn weak_constraint_malformed_tail_rejects() {
+        for bad in [
+            ":~ a.",           // missing `[weight@level]` tail entirely
+            ":~ a. [1@0",      // missing closing `]`
+            ":~ a. [@0].",     // missing weight
+            ":~ a. [1@].",     // missing level after `@`
+            ":~ a. 1@0].",     // missing opening `[`
+            ":~ .",            // empty body
+        ] {
+            assert!(matches!(parse(bad), Err(FaceError::Parse(_))), "should reject: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn colon_tilde_is_a_single_token_not_colon_then_tilde() {
+        // sanity: `:~` lexes as one token (via the lexer test module already,
+        // but re-asserted here at the parser boundary) — a stray bare `~`
+        // elsewhere is a lex error, not silently accepted.
+        assert!(matches!(parse("~ a."), Err(FaceError::Parse(_))));
     }
 }

@@ -636,6 +636,9 @@ fn is_numeral(t: &Term) -> bool {
     matches!(t.kind(), TermInner::Const(c) if c.name.parse::<i128>().is_ok() || c.name.parse::<f64>().is_ok())
 }
 
+#[cfg(feature = "asp")]
+pub mod asp;
+
 #[cfg(feature = "cas")]
 pub mod cas;
 

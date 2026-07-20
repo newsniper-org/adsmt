@@ -27,10 +27,20 @@ lu-common = { version = "=1.0.0-rc.42.1", path = "../lu-common", default-feature
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
+# `asp` feature — the L5-first-slice weak-constraint optimizer wrapping
+# `adsmt-ir-asp::solve::solve_weak_optimal`; the returned cost is rendered as
+# `oxiz-opt`'s own `Weight` type (arithmetic-type parity with the rest of the
+# delegation stack), but no `oxiz_sat`/`oxiz-opt` SEARCH is invoked — see
+# `asp.rs`'s module doc for why.
+adsmt-ir-asp = { path = "../adsmt-ir-asp", optional = true }
+oxiz-opt = { path = "../external/oxiz/oxiz-opt", optional = true }
+num-bigint = { workspace = true, optional = true }
+
 [features]
 default = []
 cas = ["dep:adsmt-cas", "dep:cas-backend-singular", "dep:cas-backend-mathhook", "dep:cas-backend-numtheory"]
 oxiz = ["dep:oxiz-solver", "dep:lu-common", "dep:serde", "dep:serde_json"]
+asp = ["dep:adsmt-ir-asp", "dep:oxiz-opt", "dep:num-bigint"]
 
 [dev-dependencies]
 num-bigint.workspace = true

@@ -51,6 +51,27 @@ pub enum Item {
     /// least model; if any ground instance does, the program is inconsistent (no
     /// answer set). A headless rule.
     Constraint(Vec<Literal>),
+    /// `:~ B. [weight@level]` — a **weak constraint** (L5 first slice): unlike
+    /// [`Item::Constraint`], a ground instance whose body `B` holds does *not*
+    /// make the program inconsistent — it costs `weight` at optimization
+    /// `level` (default `0`). The optimal answer set(s) are the ones minimizing
+    /// the summed cost. Same body grammar/safety as an integrity constraint
+    /// (typechecked identically — see `elab::Elaborator::check_constraint_body`).
+    /// **Single-level only** this slice: a program mixing more than one
+    /// distinct `level` value across its weak constraints is refused at solve
+    /// time (see `solve::solve_weak_optimal`) — full lexicographic
+    /// multi-level stratification is a deferred follow-up.
+    WeakConstraint { body: Vec<Literal>, weight: WeightLit, level: i64 },
+}
+
+/// A weak-constraint weight literal. **Integer only this slice** — the lexer
+/// has no rational/decimal numeral syntax to reuse yet (only `TokKind::Int`),
+/// so `[1.5@0]`-style rational weights are a clean parse error, not a silent
+/// truncation. Kept as a distinct type (rather than a bare `i64`) so a later
+/// slice can add a `Rational` variant without touching every call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeightLit {
+    pub value: i64,
 }
 
 /// `enum Name = { C0, C1, … }` — nullary, mutually-disjoint constructors.

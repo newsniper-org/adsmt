@@ -12,8 +12,10 @@
 //! - integer literals: `[0-9]+` (non-negative — a leading `-` is a separate
 //!   token, the parser folds it into a negative [`Term::Int`]);
 //! - string literals: `"…"` with `\"` / `\\` escapes;
-//! - the operators / punctuation `:-` `?-` `(` `)` `{` `}` `,` `|` `;` `.` `..`
-//!   and the comparison / arithmetic tokens `<` `<=` `=` `!=` `>` `>=` `+` `-` `*`.
+//! - the operators / punctuation `:-` `:~` `?-` `(` `)` `{` `}` `[` `]` `,` `|`
+//!   `;` `.` `..` `@` and the comparison / arithmetic tokens `<` `<=` `=` `!=`
+//!   `>` `>=` `+` `-` `*` (`:~` is the weak-constraint neck, `[` `]` `@` its
+//!   `[weight@level]` tail — L5 first slice).
 //!
 //! A single `.` is a statement terminator; a doubled `..` is the integer
 //! interval operator (there are no float literals, so a lone `.` never appears
@@ -34,6 +36,8 @@ pub enum TokKind {
     Str(String),
     /// `:-` — the rule / constraint neck.
     ColonDash,
+    /// `:~` — the **weak** constraint neck (L5 first slice).
+    ColonTilde,
     /// `?-` — the query / abduce lead-in.
     QuestionDash,
     /// `(`
@@ -44,6 +48,12 @@ pub enum TokKind {
     LBrace,
     /// `}`
     RBrace,
+    /// `[` — opens a weak constraint's `[weight@level]` tail.
+    LBracket,
+    /// `]` — closes a weak constraint's `[weight@level]` tail.
+    RBracket,
+    /// `@` — separates a weak constraint's `weight` from its `level`.
+    At,
     /// `,`
     Comma,
     /// `|` — the datatype-constructor alternation bar.
@@ -191,9 +201,12 @@ pub fn lex(src: &str) -> Result<Vec<Token>, FaceError> {
                 if i + 1 < n && b[i + 1] == b'-' {
                     out.push(Token { kind: TokKind::ColonDash, at: i });
                     i += 2;
+                } else if i + 1 < n && b[i + 1] == b'~' {
+                    out.push(Token { kind: TokKind::ColonTilde, at: i });
+                    i += 2;
                 } else {
                     return Err(FaceError::Parse(format!(
-                        "stray `:` at byte {i} (expected `:-`)"
+                        "stray `:` at byte {i} (expected `:-` or `:~`)"
                     )));
                 }
             }
@@ -253,6 +266,18 @@ pub fn lex(src: &str) -> Result<Vec<Token>, FaceError> {
             }
             b'}' => {
                 out.push(Token { kind: TokKind::RBrace, at: i });
+                i += 1;
+            }
+            b'[' => {
+                out.push(Token { kind: TokKind::LBracket, at: i });
+                i += 1;
+            }
+            b']' => {
+                out.push(Token { kind: TokKind::RBracket, at: i });
+                i += 1;
+            }
+            b'@' => {
+                out.push(Token { kind: TokKind::At, at: i });
                 i += 1;
             }
             b',' => {
@@ -345,6 +370,29 @@ mod tests {
     }
 
     #[test]
+    fn weak_constraint_tokens() {
+        assert_eq!(
+            kinds(":~ a. [1@0]"),
+            vec![
+                TokKind::ColonTilde,
+                TokKind::Ident("a".into()),
+                TokKind::Dot,
+                TokKind::LBracket,
+                TokKind::Int(1),
+                TokKind::At,
+                TokKind::Int(0),
+                TokKind::RBracket,
+            ]
+        );
+    }
+
+    #[test]
+    fn stray_colon_mentions_both_necks() {
+        let err = lex(":").unwrap_err();
+        assert!(matches!(err, FaceError::Parse(m) if m.contains(":-") && m.contains(":~")));
+    }
+
+    #[test]
     fn pooling_and_interval_tokens() {
         // `;` is the pooling separator; `..` is the interval; a lone `.` stays
         // the terminator.
@@ -377,7 +425,9 @@ mod tests {
     #[test]
     fn errors_not_panics() {
         assert!(lex("\"unterminated").is_err());
-        assert!(lex("@").is_err());
+        // `@`/`[`/`]` are now valid tokens (the weak-constraint `[weight@level]`
+        // tail) — `#` remains genuinely unlexable garbage.
+        assert!(lex("#").is_err());
         assert!(lex(":").is_err());
         assert!(lex("?").is_err());
         assert!(lex("!").is_err());

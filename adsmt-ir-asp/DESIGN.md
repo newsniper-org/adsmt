@@ -40,7 +40,7 @@ because it is the differentiator and is sound at the definite level for free.
 | L2 | **stratified** `not`, integrity constraints `:- B` | perfect / stratified | `Def`-completion |
 | **L3** | **stable models** (non-stratified `not`), `#external` | GL reduct ⊳ θ (bounded sweep now; + loop gate later) | + loop gate |
 | L4 | choice `{…}` + disjunctive heads | model + minimality | |
-| L5 | aggregates + weak constraints / optimization | bounded fixpoint + opt | `Open` arith |
+| **L5** | aggregates + **weak constraints** / optimization | bounded fixpoint + opt | `Open` arith |
 | **L6** | **first-class abduction** | merged ALP | abducible ⇒ `Open` choice atom |
 
 ## 2. The spine (built first; both workflows converged on it)
@@ -221,12 +221,48 @@ cycle) now *elaborates* and routes to a re-checkable stable-model gate that
   in-crate differential against exhaustive brute force over the whole Herbrand
   base (`solve.rs` `mod l3_tests`).
 
+**L5 first slice (weak constraints, single-level).** `:~ B. [weight@level]`
+(`ast::Item::WeakConstraint`, `lexer`/`parser`) elaborates through the SAME
+body-check as an integrity constraint (`elab::Elaborator::check_constraint_body`,
+extracted so neither duplicates the other's safety/scoping/theory-binding
+checks) but is tagged with its `(weight, level)` and never joins the hard-
+constraint set. `solve::solve_weak_optimal` does not add a new search
+procedure: it reuses the SAME trusted, GL-reduct-gated candidate set `solve`
+already enumerates (stratified ⇒ the one perfect model; non-stratified ⇒ every
+constraint-consistent stable model) and picks the cost-minimal one(s) by plain
+evaluation (`ground_weak_constraints` + `weak_cost`) — a full weight-aware
+stable-model search is out of scope for this slice. Two design points were
+resolved by consulting real ASP-Core-2/clingo semantics rather than guessing:
+
+- **Polarity**: a weak constraint "costs" its weight when its body **holds**
+  (ASP-Core-2's "violated" = "body holds", the dual reading of a strong
+  constraint's body holding making the program inconsistent) — verified
+  against clingo 5.8.0 (`a. :~ a. [1@0]` ⇒ optimal cost `1`).
+- **Counting**: ASP-Core-2 identifies a ground weak-constraint instance by the
+  tuple `(weight, level, terms)`; this surface has no `terms` clause, so
+  `terms` is always empty, and instances sharing an identical `(weight,
+  level)` pair — even from *different* weak-constraint declarations — are
+  counted **once**, not summed. Re-verified three independent ways against
+  clingo 5.8.0 (`solve.rs`'s L5 module comment has the exact programs/costs).
+  A caller wanting independent counting must give each instance a distinct
+  weight (clingo's `[w@l, terms…]` disambiguator is itself out of scope).
+
+`adsmt-delegate::asp` (adsmt-delegate's `asp` feature) wraps this for external
+callers, converting the `i64` cost into `oxiz-opt`'s own `Weight` type for
+arithmetic-type parity with the rest of the delegation stack — without
+re-invoking a MaxSAT solver (there is nothing left to search once the
+candidate set is in hand). **Single-level-only**: a program mixing more than
+one `level` value is refused (`FaceError::Unsupported`), not approximated.
+Aggregates and full lexicographic multi-level stratification remain
+unimplemented (the rest of L5).
+
 Pending: **the full L3 stable-model solver** (the unfounded-set propagator + the
 loop-formula certificate checker, lifting the work-budget abstain); **brave**
-queries; **L4** choice / disjunctive heads; **L5** aggregates + weak constraints
-(see the post-L3 feature decisions: stratified `#count`/`#sum`/`#min`/`#max`,
-`#avg`, weak constraints, pluggable-metric Fréchet medoid/variance over a finite
-group; weighted-abduction MPE; module/import reuse). **Non-ground abductive
+queries; **L4** choice / disjunctive heads; the **rest of L5** — aggregates and
+full lexicographic multi-level weak constraints (see the post-L3 feature
+decisions: stratified `#count`/`#sum`/`#min`/`#max`, `#avg`, pluggable-metric
+Fréchet medoid/variance over a finite group; weighted-abduction MPE;
+module/import reuse). **Non-ground abductive
 goals** (`?- abduce p(X)`, enumerated per binding) and the **native backward-SLD
 relevance grounder** (the adsmt-abduce algorithm ported onto the face's own u32
 ground atom ids — no `adsmt-core` dependency — replacing the bounded exhaustive

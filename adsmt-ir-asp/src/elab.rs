@@ -94,6 +94,16 @@ pub enum Stratification {
     NonStratified(String),
 }
 
+/// One elaborated weak constraint (`:~ B. [weight@level]`, L5 first slice):
+/// its kernel-checked body plus its declared `(weight, level)`. See
+/// [`Elaborated::weak_constraints`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeakConstraint {
+    pub body: Vec<Literal>,
+    pub weight: i64,
+    pub level: i64,
+}
+
 /// The result of elaborating a typed-ASP program.
 #[derive(Debug)]
 pub struct Elaborated {
@@ -104,6 +114,11 @@ pub struct Elaborated {
     /// Integrity constraint bodies (`:- B`) — kernel-checked, to be checked
     /// against the least model.
     pub constraints: Vec<Vec<Literal>>,
+    /// Weak constraint bodies (`:~ B. [weight@level]`, L5 first slice) —
+    /// kernel-checked identically to [`Self::constraints`] (see
+    /// `Elaborator::check_constraint_body`), each tagged with its declared
+    /// `(weight, level)`. See [`crate::solve::solve_weak_optimal`].
+    pub weak_constraints: Vec<WeakConstraint>,
     /// Abductive goals (`?- abduce G`), each a checked ground atom.
     pub abduce_goals: Vec<Atom>,
     /// The names of predicates declared `abducible` (their ground instances are
@@ -151,6 +166,7 @@ pub fn elaborate(program: &Program) -> Result<Elaborated, FaceError> {
         rules: e.rules,
         queries: e.queries,
         constraints: e.constraints,
+        weak_constraints: e.weak_constraints,
         abduce_goals: e.abduce_goals,
         abducibles: e.abducibles,
         domains: e.domains,
@@ -172,6 +188,7 @@ struct Elaborator {
     rules: Vec<Rule>,
     queries: Vec<Atom>,
     constraints: Vec<Vec<Literal>>,
+    weak_constraints: Vec<WeakConstraint>,
     abduce_goals: Vec<Atom>,
     abducibles: Vec<String>,
 }
@@ -212,6 +229,7 @@ impl Elaborator {
             rules: Vec::new(),
             queries: Vec::new(),
             constraints: Vec::new(),
+            weak_constraints: Vec::new(),
             abduce_goals: Vec::new(),
             abducibles: Vec::new(),
         })
@@ -256,6 +274,20 @@ impl Elaborator {
             Item::Constraint(body) => {
                 self.check_constraint(body)?;
                 self.constraints.push(body.clone());
+                Ok(())
+            }
+            Item::WeakConstraint { body, weight, level } => {
+                // same typechecking path as an integrity constraint (reused,
+                // not duplicated — see `check_constraint_body`); the only
+                // difference is where the checked body ends up: the *weak*
+                // constraint set (tagged with its weight/level), never the
+                // hard-constraint set that can make the program inconsistent.
+                self.check_constraint_body(body)?;
+                self.weak_constraints.push(WeakConstraint {
+                    body: body.clone(),
+                    weight: weight.value,
+                    level: *level,
+                });
                 Ok(())
             }
         }
@@ -763,6 +795,18 @@ impl Elaborator {
     /// patterns, theory-atom binding, constant auto-declaration) and kernel-check
     /// the closed `Prop` `∀X⃗. b₁ → … → bₙ → #false` (the negative carrier).
     fn check_constraint(&mut self, body: &[Literal]) -> Result<(), FaceError> {
+        self.check_constraint_body(body)
+    }
+
+    /// The body-validation shared by an integrity constraint (`:- B`) and a
+    /// **weak** constraint (`:~ B. [w@l]`, L5 first slice): both are, at the
+    /// kernel level, the SAME `∀X⃗. b₁ → … → bₙ → #false` carrier (safety,
+    /// scoping, and theory-atom binding are identical — a weak constraint only
+    /// differs in what the *solver* does once the body is found to hold: an
+    /// integrity constraint kills the answer set, a weak constraint costs its
+    /// declared weight instead). Extracted so neither caller duplicates the
+    /// other's checks.
+    fn check_constraint_body(&mut self, body: &[Literal]) -> Result<(), FaceError> {
         let mut vars: Vec<(String, String)> = Vec::new();
         for atom in body.iter().filter_map(as_pos) {
             let arg_sorts = self.arg_sorts_of(atom)?;
@@ -779,7 +823,7 @@ impl Elaborator {
         let prop = self.body_pi(body, Term::cnst(FALSE), &vars);
         let ty = infer(&self.env, &Ctx::new(), &prop)?;
         if !is_def_eq(&self.env, &ty, &Term::prop()) {
-            return Err(unsupported("integrity constraint did not check as a Prop"));
+            return Err(unsupported("constraint body did not check as a Prop"));
         }
         Ok(())
     }
@@ -1085,5 +1129,47 @@ pub(crate) fn render(t: &AspTerm) -> String {
             let inner: Vec<String> = args.iter().map(render).collect();
             format!("{c}({})", inner.join(","))
         }
+    }
+}
+
+#[cfg(test)]
+mod weak_constraint_tests {
+    use super::*;
+    use crate::parser::parse;
+
+    #[test]
+    fn weak_constraint_elaborates_carrying_weight_and_level() {
+        let prog = parse("pred p(Int). p(1). p(2). :~ p(X). [3@1]").unwrap();
+        let e = elaborate(&prog).unwrap();
+        assert_eq!(e.weak_constraints.len(), 1);
+        assert_eq!(e.weak_constraints[0].weight, 3);
+        assert_eq!(e.weak_constraints[0].level, 1);
+        // a weak constraint never joins the HARD constraint set — it can never
+        // by itself make the program inconsistent.
+        assert!(e.constraints.is_empty());
+    }
+
+    #[test]
+    fn weak_constraint_pooling_expands_to_several_weak_constraints() {
+        let prog = parse("pred p(Int). p(1). p(2). :~ p(1; 2). [1@0]").unwrap();
+        let e = elaborate(&prog).unwrap();
+        assert_eq!(e.weak_constraints.len(), 2);
+        assert!(e.weak_constraints.iter().all(|w| w.weight == 1 && w.level == 0));
+    }
+
+    #[test]
+    fn weak_constraint_reuses_constraint_typechecking() {
+        // an unknown predicate in a weak-constraint body is rejected exactly
+        // like it would be in an integrity constraint (shared check).
+        let prog = parse("sort Node. :~ unknown(X). [1@0]").unwrap();
+        assert!(matches!(elaborate(&prog), Err(FaceError::Unsupported(_))));
+    }
+
+    #[test]
+    fn weak_constraint_unsafe_neg_variable_rejected() {
+        // `not q(X)` with X unbound by any positive body atom — unsafe, same
+        // as an integrity constraint's own safety check.
+        let prog = parse("pred p(Int). pred q(Int). p(1). :~ not q(X). [1@0]").unwrap();
+        assert!(matches!(elaborate(&prog), Err(FaceError::Unsafe(_))));
     }
 }

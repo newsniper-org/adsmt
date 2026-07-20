@@ -15,7 +15,8 @@
 //! design (the negation ladder, the abductive merge, and the closed-world
 //! generate-and-check firewall).
 //!
-//! ## Status — L0–L2 landed; L3 first slice (bounded stable models)
+//! ## Status — L0–L2 landed; L3 first slice (bounded stable models); L5 first
+//! slice (weak constraints, single-level)
 //!
 //! The runtime core is [`GroundProgram`]'s **forward Horn least-fixpoint
 //! evaluator** ([`program`]) — the solver for the definite fragment, the answer
@@ -72,13 +73,25 @@
 //!   is common). [`lint_source`] adds **precise source locations** ([`SourceLoc`])
 //!   for an IDE squiggle (via the parser's span side-channel,
 //!   [`parse_with_spans`]). Default-off in a driver.
+//! - **L5 (first slice)** — **weak constraints** `:~ B. [weight@level]`:
+//!   optimization over the SAME trusted answer-set candidates `solve` already
+//!   enumerates ([`solve_weak_optimal`]) — a ground instance whose body holds
+//!   costs its declared weight (ASP-Core-2's "violated" = "body holds", not an
+//!   integrity-constraint kill); the optimal answer set(s) minimize the summed
+//!   cost, counted per the standard's `(weight, level, terms)` identity (this
+//!   surface has no `terms` clause, so instances sharing a `(weight, level)`
+//!   pair — even across different weak-constraint declarations — are counted
+//!   ONCE, not summed; verified against clingo 5.8.0, see `solve`'s module
+//!   comment). **Single-level only**: a program mixing more than one `level`
+//!   value is refused, not approximated; aggregates and full lexicographic
+//!   multi-level are a deferred follow-up.
 //!
 //! Pending: the remaining full-L3 slice (a loop-formula certificate checker +
 //! conflict learning, so the bounded guess-and-check over the *undefined* atoms
 //! is replaced by a clasp-style search when even that fragment is large — the
 //! well-founded unfounded-set propagation already landed); brave queries; choice
-//! / disjunction (L4); aggregates + weak constraints (L5). See `DESIGN.md` for
-//! the full ladder + build order.
+//! / disjunction (L4); aggregates + weak-constraint multi-level (rest of L5).
+//! See `DESIGN.md` for the full ladder + build order.
 //!
 //! [Gelfond–Lifschitz reduct]: https://en.wikipedia.org/wiki/Stable_model_semantics
 
@@ -91,12 +104,12 @@ pub mod parser;
 pub mod program;
 pub mod solve;
 
-pub use elab::{Elaborated, Stratification, elaborate};
+pub use elab::{Elaborated, Stratification, WeakConstraint, elaborate};
 pub use error::FaceError;
 pub use lint::{AspDiagnostic, Severity, SourceLoc, lint, lint_source};
 pub use parser::{parse, parse_with_spans};
 pub use program::{Atom, GroundNProgram, GroundNRule, GroundProgram, GroundRule};
 pub use solve::{
     AbduceAnswer, AspOutputMode, Entailment, QueryAnswer, Solution, StableModels, ThreeValued,
-    solve, solve_with_mode, well_founded_model,
+    WeakOptimum, solve, solve_weak_optimal, solve_with_mode, well_founded_model,
 };
