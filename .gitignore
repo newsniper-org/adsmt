@@ -29,3 +29,5 @@ perf.data.old
 **/*DRAFT.md
 
 .reports/
+
+.claude-research-libraries/

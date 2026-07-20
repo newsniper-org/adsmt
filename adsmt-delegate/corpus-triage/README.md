@@ -232,6 +232,84 @@ seq-vstd-2/ob09), saturators 29→27 explained row-for-row (fr2/ob13 +
 sv2/ob09 in-guard-converted via the SaturatedUnverified confirm).
 158/20/27 is the mutually-pinned canonical ledger.**
 
+**Update 2026-07-20/21 (MaxSAT integration, branch
+`0.2.4-fill-the-gap/maxsat` forked from `0.2.4-redesign` @ `dd2714f`) —
+P0 + P1 landed, not yet merged:**
+
+- **P0 (`ce47dbe`)**: fixed 3 pre-existing wrong-answer bugs — pmres.rs +
+  pmres_enhanced.rs relax-var aliasing (upfront global next_var seeding,
+  applied independently to both non-sharing implementations), sortmax.rs
+  + cardinality_network.rs sorting-network output-orientation (the
+  ascending network's easy/hard-threshold ends were swapped; a latent
+  twin in cardinality_network's own at-most-k Sorting branch was fixed
+  alongside it, previously untested for semantic correctness). 4
+  additional latent bugs found via differential and fixed in the same
+  pass. **rc2.rs itself was found unsound** during differential
+  (stratified path reported cost 3 on a brute-force-verified optimum of
+  7) — the differential's oracle was switched to brute-force enumeration
+  instead. `rc2_enhanced.rs` is an independently-coded duplicate (same
+  non-sharing pattern as pmres/pmres_enhanced) so does not mechanically
+  inherit rc2.rs's bug, but is **unverified** — anything depending on its
+  stratification (P2's ASP weak-constraint design explicitly does) must
+  run its own differential first. oxiz-opt ignored-failures 3→0;
+  project-wide tolerated ignored-failure ledger 5→2 (only oxiz-nl2
+  `differential_full` + oxiz-spacer `test_counter_unsafe` remain).
+- **P1 (fixup landed on top of the implementer's initial pass, same
+  branch, not yet committed as of this note)**: wired
+  `(maximize)/(minimize)/(assert-soft)/(get-objectives)` end-to-end via
+  a new `oxiz_core::ast::manager::transplant_term` (iterative, memoized,
+  DAG-sharing-preserving; builtin sorts Bool/Int/Real only — non-builtin
+  sorts fail cleanly) bridging `oxiz_solver::Context`'s TermManager to
+  `oxiz_opt::OptContext`'s own (a genuine cyclic-dependency constraint
+  ruled out embedding `OptContext` directly in `oxiz-solver`; the
+  integration lives in new `oxiz-opt/src/script.rs::OptScriptRunner`
+  instead). The initial MaxSAT-cost binary-search path
+  (`OptContext::optimize_maxsmt`) was replaced for the pure-Boolean
+  fragment by a new `oxiz-opt/src/bool_cnf_maxsat.rs` (Tseitin CNF +
+  totalizer-based binary search over the raw `oxiz_sat::Solver`) after
+  the original LIA-selector encoding was shown to be **unreliable at
+  6+ selector groups** — repro below. `PmresSolver` was tried first per
+  plan but found **weight-blind on mixed-weight multi-literal cores**
+  (reports cost 20 where the true optimum is 5) and abandoned for this
+  purpose. z3 optimum-correctness differential (the primary gate, exact
+  value not just SAT/UNSAT): **300/300 = 100%** on the maxsat + omt_bare
+  categories (5 independent re-runs during fixup, reconfirmed by the
+  main session with a fresh seed). Two categories explicitly NOT counted
+  in the gate, both pre-existing/orthogonal: `omt_compound`
+  (`optimize_single_objective`'s unbounded-detection reports `∞` for any
+  non-bare-variable objective, even trivially-bounded ones — pre-existing
+  `OptContext` gap, untouched by this slice) and `maxsat_grouped` (`:id`
+  soft-constraint group-reporting semantics diverge from z3's convention
+  — open design question, not a known-wrong bug, tracked separately).
+  Corpus spot-check: 168-row z3-parity suite unchanged (165 agree / 2
+  sound-incomplete / 1 stronger-than-z3 / 0 spurious); 5 representative
+  adsmtc corpus rows re-verified unsat with unchanged verdicts (no
+  corpus row uses optimization commands — the no-objective `CheckSat`
+  path is structurally byte-identical to pre-P1, confirmed by git-stash
+  diffing 10 non-optimization scripts pre/post).
+
+**NEW upstream issue #428 (oxiz core engine, independent of MaxSAT,
+found via P1's adversarial lens + confirmed by the main session)**: the
+BASE `oxiz_solver::Solver` (zero MaxSAT/opt code involved) returns a
+**false UNSAT on QF_LIA** for a specific Bool-selector + integer-cost-sum
+encoding shape once the formula reaches **6 independent selector/cost
+groups** summed into one linear inequality (5 groups: correct `sat`; 6
+groups: `unsat`) — z3 AND cvc5 both independently confirm `sat` with a
+matching witness on the same script. Minimized repro (36 lines, 6
+selector groups, no `get-model` needed to reproduce) preserved at
+`428-qflia-false-unsat-6plus-selector-groups.smt2`; the original
+41-line/`optimize_maxsmt`-shaped repro at
+`428-qflia-false-unsat-original-repro.smt2`. This is the genuine root
+cause `optimize_maxsmt`'s binary-search MaxSAT path inherited (not
+merely "a suboptimal search heuristic" as first characterized) — the
+`bool_cnf_maxsat.rs` fast-path sidesteps it for pure-Boolean MaxSAT by
+never emitting Int cost variables, but the general LIA-mixed fallback
+path (still reachable for problems with non-Boolean hard constraints)
+remains exposed. Scope: this is a base-engine soundness-class bug
+(false UNSAT), NOT specific to MaxSAT — any QF_LIA consumer hitting this
+selector-group shape is at risk; flagging as the highest-priority
+follow-up independent of the MaxSAT initiative's own P2/P3.
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it
