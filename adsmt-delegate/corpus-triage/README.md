@@ -225,7 +225,12 @@ EufSolver::propagate dominance is call-VOLUME-driven. Recorded lever for
 the EUF-bound class: fewer find calls / cheaper per-call constant /
 canonical-args caching. Campaign slice status: E1 ✓ / S ✓ (infra,
 Snapshot default) / E2a ✓ / E2b killed / R deferred (gate met only on
-sv2/ob03).
+sv2/ob03). **verus-fork re-pin CONFIRMED 2026-07-20 @ oxiz `dd2714f`:
+v2 sweep 158 / 20 / 27 / regressions 0 / negatives 4/4 — exact, +3
+conversions row-identical (fuel-recursion-2/ob13, linear-euf-1/ob05,
+seq-vstd-2/ob09), saturators 29→27 explained row-for-row (fr2/ob13 +
+sv2/ob09 in-guard-converted via the SaturatedUnverified confirm).
+158/20/27 is the mutually-pinned canonical ledger.**
 
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
