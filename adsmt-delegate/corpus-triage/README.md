@@ -349,6 +349,50 @@ as P0/P1's z3 differential), 150 seeded programs, **150/150 exact
 match**; adversarial lens independently re-ran 400 more, 0 mismatches.
 Suites: adsmt-ir-asp 182/0, adsmt-delegate `--features asp` 17/0.
 
+**P3 (AD1 `5d337f8`) — weighted abduction / MPE, adsmt-side only,
+COMPLETES the P0-P3 initiative**: optional `:weight w` cost on
+`(declare-abducible ...)` (default 1.0, byte-identical backward-compat
+with every existing unweighted script — verified structurally and
+empirically). Two design questions resolved by following P2's own
+just-set precedent for the identical structural shape: **scope** =
+re-rank an already-enumerated, already-minimality-pruned candidate set
+(argmin over a short list), not a fresh weighted-MPE search replacing
+the SLD/subset enumeration; **no live oxiz-opt/MaxSAT solver call** —
+wrapping an already-decided argmin in a fresh search adds a new
+untrusted surface for zero benefit, the exact reasoning P2's
+`adsmt-delegate/src/asp.rs` module doc gives, cited explicitly. Zero new
+Cargo deps; `external/oxiz` untouched. Consolidates the two previously-
+independent scoring paths (`adsmt-abduce::rank_candidates`'s
+cardinality+depth score and `adsmt-cli`'s separate
+`abduct_goal_relevance`-ordered subset-size score inside
+`abduce_theory`) through one `candidate_cost = Σweight(h) + 0.001*depth`.
+
+Gate: brute-force optimal-ranking differential (soundness-class — a
+worse-than-available candidate ranked #1 is the same bug class as
+P0/P1/P2's wrong-optimum findings), 150 seeded instances +
+adversarial-lens independent 500-instance re-run (600 combined, 0
+beaten), mutation-tested (reversed comparator caught at iteration 0).
+`f64` weight arithmetic saturates to `+Infinity` on overflow rather than
+wrapping — explicitly confirmed to NOT reproduce P2's `i64`-wrap bug
+class via the identical sum-of-weights pattern. Adversarial pass caught
+one real P1 (malformed `:weight` silently defaulted to 1.0 instead of
+erroring — fixed, hard-errors now). Known documented boundary (not a
+bug): `:weight 0` (the standard "free hypothesis" MPE case) is rejected
+at the CLI validation layer even though the ranking engine itself
+handles it correctly — a conservative choice, not silently loosened.
+Suites: adsmt-abduce 36/0 + differential 2/0, adsmt-parser-smtlib2
+60/0, adsmt-engine 210/0, adsmt-cli 37/0 (+39/0 with oxiz feature).
+
+**MaxSAT P0-P3 initiative COMPLETE.** oxiz-opt went from a 16.6k-LoC
+unwired liability (3 wrong-answer ignored-test failures) to a sound,
+wired, differential-verified asset backing two previously-design-only
+adsmt features (ASP weak constraints, weighted abduction). One new
+top-priority independent lead surfaced along the way: **#428** (base
+`oxiz_solver::Solver` QF_LIA false-UNSAT at 6+ selector/cost groups,
+scope-note above) — resuming the verus-facing engine-perf follow-up
+pool per [[engine_algorithmics_campaign]] is next, with #428 as the
+new highest-priority item in that pool.
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it
