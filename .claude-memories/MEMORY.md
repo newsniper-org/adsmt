@@ -57,7 +57,7 @@
 - [*Like family design (numberlike)](numberlike_family_design.md) — IntegerLike/RealLike/PartialIntegerLike/ComplexLike as adsmt-class Relations; first member landed SOUND
 - [nlsat algebraic-reduction KB](nlsat_algebraic_reduction_kb.md) — EXPERIMENT branch, NOT merged; leveled SAT-only-additive reduction KB for irrational/algebraic roots
 - [Don't run long full-workspace tests yourself](feedback_long_test_runs.md) — scoped suites only; hand full `cargo test --workspace` to the user via `!`
-- [Always add a `-- --ignored` test pass](feedback_test_ignored_pass.md) — ignored tests hide real bugs; known pre-existing ignored failure: oxiz-solver `test_bv_comparison_model_generation`
+- [Always add a `-- --ignored` test pass](feedback_test_ignored_pass.md) — ignored tests hide real bugs; 용인 목록(2026-07-19): oxiz-nl2 differential_full, oxiz-opt pmres/sortmax ×3, oxiz-spacer test_counter_unsafe (구 test_bv... 항목은 c556013으로 수정돼 통과)
 - [OxiZ undecided-op downgrade (#291)](oxiz_undecided_op_downgrade.md) — LANDED: abs/to_real/to_int/is_int/divisible parsed + Sat→Unknown downgrade; use complete `get_children` not `clean_mbqi::subterms`
 - [OxiZ total substitution (#290)](oxiz_total_substitution.md) — LANDED: `substitute_cached` made TOTAL, closing the CCFV E/F leak; surfaced #345/#346
 - [Clean-room MBQI rewrite](oxiz_mbqi_rewrite.md) — never-conclude-unsat engine, default+sole since 2026-06-18; M3 model completion; corpus sweeps closed several spurious sat/unsat pairs
@@ -79,6 +79,7 @@
 - [Multi-paradigm hybridization](multi_paradigm_hybridization.md) — adsmt as SMT-LIB-3.0 ⊕ typed-Datalog/ASP substrate; Unified Verification Gate spine fully pre-verified
 - [Typed CIC IR (adsmt-ir)](typed_cic_ir.md) — language-agnostic kernel; hash-consing+conversion-memo landed; M3-6 datatype face landed; standing rule: re-check M2.8+ deferrals each slice
 - [OxiZ distinct/const-fold FALSE_SAT (#315)](oxiz_distinct_constfold_falsesat.md) — FIXED; residual integer-feasibility false-sat tracked separately (#289)
-- [AOT/JIT application map](aotjit_application_map.md) — 19 ranked applications across OxiZ+oxiz-nl2; codegen rejected-reinforced
+- [AOT/JIT application map](aotjit_application_map.md) — 2026-07-19 재분석이 구 19-항목 랭킹 대체: OxiZ 코퍼스는 ~99.9% 탐색(전제 역전), 신랭킹 D1 위임층 2-계층 메모→V1 인스턴스화-트레이스 replay; 항-뱅크/CDCL replay/codegen 사망; z3 갭은 캐시 불가(엔진 알고리즘만)
+- [엔진 알고리즘 캠페인](engine_algorithmics_campaign.md) — 1차분 종결: D1+E1+S+E2a landed(oxiz dd2714f, 원장 155→158 플립 0), E2b 측정-킬(hops<1), R 보류; Trail·additive는 opt-in(재투자-홍수/사이드-트레이드); 후속 풀 = 작업-바운드 방출, find-호출량 캐싱, V1 replay, #426/#427, Dt-as-App
 - [Challenges must use adsmt](feedback_challenges_must_use_adsmt.md) — attack "도전과제" lists with adsmt as verifier+attacker, write up as Typst article in .reports/
 - [pop-scrub cache bug class](feedback_pop_scrub_cache_bug_class.md) — recurred 3x same session (binary_graph, clause-id-recycle, dt_var_constructors): audit any assert-time-populated cache for trail-undo on pop()

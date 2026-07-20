@@ -395,6 +395,10 @@ argv).  v2 dual-sweep headlines: `seq-vstd-2/ob01` 21.4 s unsat (the
 speed-bound row the protocol targeted), `fuel-recursion-1/ob06` — the
 campaign's sole regression — **recovers at 90 s (regression ledger 0 for
 the first time; slow convergence, not divergence)**, negatives 4/4 at 22×
-budget.  v2 saturators 29 rows = the refreshed throttle bench.  Formal
-re-pin follows each manual push (user's job).  See
-[[oxiz-mbqi-guard-scope-gap]], [[lukb-trigger-pattern-threading]].
+budget.  v2 saturators 29 rows = the refreshed throttle bench.  Formal re-pin
+CONFIRMED 2026-07-18 at the pushed pins (AD1 `671937f` / oxiz `0c75ad7`):
+row-identical to the dual sweep (51 CONV + 29 SATURATOR all match) —
+155/21/29 is the mutually-pinned canonical.  Next re-pin trigger = the
+next landed engine-perf (sv2-class inside the default guard) or
+completeness slice.  See [[oxiz-mbqi-guard-scope-gap]],
+[[lukb-trigger-pattern-threading]].
