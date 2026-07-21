@@ -81,5 +81,6 @@
 - [OxiZ distinct/const-fold FALSE_SAT (#315)](oxiz_distinct_constfold_falsesat.md) — FIXED; residual integer-feasibility false-sat tracked separately (#289)
 - [AOT/JIT application map](aotjit_application_map.md) — 2026-07-19 재분석이 구 19-항목 랭킹 대체: OxiZ 코퍼스는 ~99.9% 탐색(전제 역전), 신랭킹 D1 위임층 2-계층 메모→V1 인스턴스화-트레이스 replay; 항-뱅크/CDCL replay/codegen 사망; z3 갭은 캐시 불가(엔진 알고리즘만)
 - [엔진 알고리즘 캠페인](engine_algorithmics_campaign.md) — 1차분 종결: D1+E1+S+E2a landed(oxiz dd2714f, 원장 155→158 플립 0), E2b 측정-킬(hops<1), R 보류; Trail·additive는 opt-in(재투자-홍수/사이드-트레이드); 후속 풀 = 작업-바운드 방출, find-호출량 캐싱, V1 replay, #426/#427, Dt-as-App
+- [MaxSAT 통합 분석](maxsat_integration_analysis.md) — oxiz-opt(16.6k LoC RC2/MaxRes/OMT/SMT-LIB)이 이미 있으나 optional-미배선+3 red 테스트(pmres/sortmax wrong-answer, 국소수정); adsmt 표면 전무; ENABLED-BY: ASP weak-constraints=lex MaxSMT, weighted-abduction=weighted-partial-MaxSAT(설계-확정, 백엔드 없음); 병렬 트랙 P0(수정+default결정)→P1(CLI+differential)→P2(adsmt+ASP)→P3(abduction); 잘못된 최적값=soundness-class
 - [Challenges must use adsmt](feedback_challenges_must_use_adsmt.md) — attack "도전과제" lists with adsmt as verifier+attacker, write up as Typst article in .reports/
 - [pop-scrub cache bug class](feedback_pop_scrub_cache_bug_class.md) — recurred 3x same session (binary_graph, clause-id-recycle, dt_var_constructors): audit any assert-time-populated cache for trail-undo on pop()
