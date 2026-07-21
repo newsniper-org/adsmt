@@ -393,6 +393,59 @@ scope-note above) — resuming the verus-facing engine-perf follow-up
 pool per [[engine_algorithmics_campaign]] is next, with #428 as the
 new highest-priority item in that pool.
 
+**Update 2026-07-21 (oxiz `b191c71`) — #428 CLOSED, plus a second,
+more-severe soundness bug found and closed in the same pass:**
+
+- **#428 root cause**: `check_subsumption` (oxiz-sat/src/solver/learn.rs)
+  was the one clause-removal call site in that module never scrubbed for
+  stale watchers before recycling a clause id — the **4th recurrence**
+  of the clause-id-recycle stale-watcher bug class this project has now
+  fixed (see `feedback_pop_scrub_cache_bug_class`), independently in
+  three sibling call sites each time before. A stale watcher silently
+  attaches to an unrelated recycled clause, mis-propagates a bogus unit
+  fact, and 1-UIP conflict analysis pins it permanently — false UNSAT.
+  Fixed with the same +27-line scrub pattern the three siblings already
+  carry.
+- **NEW bug found by #428's own adversarial verification, MORE severe
+  (false-SAT, not false-UNSAT)**: a linear-arithmetic equality reachable
+  at negative polarity via the antecedent of `Implies`, the condition of
+  `Ite`, or a bare `Or` disjunct was never told to the arithmetic
+  (simplex) solver as a disequality — the old syntactic AST pre-pass
+  covering this only pattern-matched a hand-picked subset of shapes.
+  **88.4% reproduction rate** (221/250 seeds) on cancellation-form
+  equalities (e.g. `(= (+ X1 X0) (+ X2 X0))`). Fixed at the mechanism
+  level: an unconditional sound trichotomy clause
+  `Eq(lhs,rhs) ∨ Lt(lhs,rhs) ∨ Gt(lhs,rhs)` at the single Tseitin
+  encode choke-point for every Int/Real equality atom, closing every
+  syntactic position at once (not enumerating more AST shapes).
+- **Verification** (both are soundness-class, gated at this project's
+  highest rigor): #428-shape z3 differential 1500/1500 seeds 0
+  mismatches (harness pre-validated against a genuine pre-fix binary);
+  broad general-QF_LIA z3 differential 900+1500 seeds combined, 0
+  mismatches post-fix (was 88.4% false-sat pre-fix on the trichotomy
+  gap); threshold/stress sweep 231 trials 0 mismatches; workspace suite
+  7381/0.
+- **Corpus impact (full 209-row v2 gate, run by the main session — NOT
+  just the fixup's 50-row sample, which only caught 1 of the 3 actual
+  losses)**: **159 verified** (was 158), **0 regressions vs the PINNED
+  manifest**, negatives 4/4. Real row-level churn disclosed in full:
+  +4 (fuel-recursion-2/ob05, fuel-recursion-3/ob07/ob10/ob12;
+  fuel-recursion-2/ob07 — the fixup's one caught case — recovers
+  cleanly at the v2 90s guard) vs **3 losses that do NOT recover even
+  at a 300s guard** (checked by hand): `datatypes-match-3/ob03` (fast
+  unknown ~3.1s, guard-independent), `fuel-recursion-3/ob14`
+  (self-terminating unknown ~65s), `fuel-recursion-2/ob13` (genuine
+  saturator, still times out at 300s). All three losses are **sound**
+  (unknown/timeout, never a wrong answer) and mechanistically consistent
+  with the fix's own documented cost (new ground `Lt`/`Gt` atoms feed
+  MBQI's trigger-matching corpus, perturbing instantiation search on
+  quantifier-heavy rows — one row measured 510→2206 instantiations).
+  **This fix is mandatory, not opt-in-able** (unlike the S slice's Trail
+  mode): there is no sound way to toggle off a confirmed false-UNSAT and
+  an 88%-reproducible false-SAT, so it lands despite the churn.
+- **159/21/25** (verified/unknown-or-bail/saturator) is the new local
+  ledger pending verus-fork re-pin.
+
 Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it
