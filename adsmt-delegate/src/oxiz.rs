@@ -33,6 +33,10 @@ pub(crate) enum Via {
     SolvedAnnotated,
     /// A live OxiZ `unsat` on the floor (pattern-free) script.
     SolvedFloor,
+    /// A live OxiZ `unsat` on the BUDGETED middle rung — the pattern-free
+    /// script in the annotated script's RE-COLLECTED binder shape
+    /// ([`try_recollected`]).
+    SolvedRecollected,
 }
 
 /// [`proves_goal_impl`]'s full report — the public [`proves_goal`] surfaces
@@ -82,6 +86,40 @@ pub(crate) struct ProveReport {
 /// cost is a second solver run only on unproven obligations whose script
 /// differs from the historical one.
 ///
+/// ## The middle rung — the RE-COLLECTED pattern-free shape (budgeted)
+///
+/// The floor is pattern-free AND 1:1 curried, because it must reproduce the
+/// pre-`:pattern` renderer byte-for-byte. But those are TWO independent
+/// deltas from the annotated script, and OxiZ's trigger inference reacts to
+/// both: on `fuel-recursion-2/ob13` the annotated script abstains in 1.6 s,
+/// the curried floor burns 139 s and abstains, and the SAME obligation
+/// rendered pattern-free in the annotated script's re-collected binder shape
+/// is `unsat` in 9.2 s (z3: 0.03 s). So a third rung is inserted BETWEEN the
+/// two — `render_smtlib_shaped(…, recollect = true)` with an empty pattern
+/// map — and it must come before the floor, not after: the floor's own
+/// unbounded burn is exactly what puts the recovery out of reach of the
+/// caller's wall clock.
+///
+/// Two properties keep this from costing anything it should not:
+///
+/// * it is SKIPPED unless the render is distinct from BOTH neighbours — an
+///   obligation with no emitted `:pattern` renders identically to the
+///   annotated script, and one whose binders never chain renders identically
+///   to the floor, and in both cases the rung would be a pure re-solve;
+/// * it is the only rung with a WALL BUDGET ([`recollected_budget_ms`], a
+///   sixth of the effective MBQI guard) — the two load-bearing rungs keep
+///   the engine's own budget untouched, so the added wall is bounded and the
+///   floor's guarantee is unchanged.
+///
+/// Sound for the same reason as the floor: the verdict is an OxiZ `unsat` on
+/// a faithful render of the same obligation (binder re-collection is the
+/// `∀x. ∀y. φ` ⇒ `∀x y. φ` regrouping, semantics-preserving). And it is
+/// STRICTLY additive: both neighbouring rungs still run, with the same
+/// scripts, in the same relative order, under the same budget — the rung can
+/// only turn an abstain into an `unsat`, never the reverse.
+/// `ADSMT_DELEGATE_NO_RECOLLECTED_FLOOR` restores the historical two-rung
+/// flow exactly (no third render, no third solve).
+///
 /// ## The unsat-memo (`ADSMT_DELEGATE_MEMO_DIR`)
 ///
 /// With [`crate::memo::Memo`] enabled, a previously-recorded `unsat` for the
@@ -125,13 +163,17 @@ pub(crate) fn proves_goal_impl(
         eprintln!("[dbg] script:\n{script}");
     }
     let Some(m) = memo else {
-        // Memo disabled: the historical flow, floor rendered LAZILY — zero
-        // behavior delta.
+        // Memo disabled: the historical flow, both fallback renders LAZY —
+        // an obligation the annotated script proves renders exactly once.
         if run_script(&script) {
             return proved_via(Via::SolvedAnnotated, false);
         }
-        if let Some(floor) =
-            crate::render_smtlib_shaped(hyps, goal, datatypes, &crate::PatternMap::new(), false)
+        let floor =
+            crate::render_smtlib_shaped(hyps, goal, datatypes, &crate::PatternMap::new(), false);
+        if let Some(via) = try_recollected(hyps, goal, datatypes, &script, floor.as_deref()) {
+            return proved_via(via, false);
+        }
+        if let Some(floor) = floor
             && floor != script
         {
             // Only retry when the first script differs from the historical shape
@@ -195,6 +237,12 @@ pub(crate) fn proves_goal_impl(
             record(&ann_digest, Shape::Annotated, t.elapsed().as_millis() as u64);
             return proved_via(Via::SolvedAnnotated, true);
         }
+        // Under a tier-2 "the floor proves this family" hint the middle rung is
+        // the LAST resort, not the middle one: both load-bearing rungs have
+        // already run, so it can only add a verdict.
+        if let Some(via) = try_recollected(hyps, goal, datatypes, &script, floor.as_deref()) {
+            return proved_via(via, true);
+        }
         return not_proved(true);
     }
     // Historical order: annotated first, then the distinct floor.
@@ -202,6 +250,9 @@ pub(crate) fn proves_goal_impl(
     if run_script(&script) {
         record(&ann_digest, Shape::Annotated, t.elapsed().as_millis() as u64);
         return proved_via(Via::SolvedAnnotated, false);
+    }
+    if let Some(via) = try_recollected(hyps, goal, datatypes, &script, floor.as_deref()) {
+        return proved_via(via, false);
     }
     if let (Some(fl), Some(fd)) = (floor_distinct, &floor_digest) {
         if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
@@ -216,12 +267,82 @@ pub(crate) fn proves_goal_impl(
     not_proved(false)
 }
 
+/// The middle rung (module docs): the obligation rendered PATTERN-FREE but in
+/// the annotated script's RE-COLLECTED binder shape, solved under a wall
+/// budget. `Some(Via::SolvedRecollected)` iff that script is `unsat`.
+///
+/// Skipped — with no render and no solve — when
+/// `ADSMT_DELEGATE_NO_RECOLLECTED_FLOOR` is set (the historical two-rung
+/// flow), when the obligation does not render, or when the render is not
+/// DISTINCT from both the `annotated` script and the `floor` (either
+/// coincidence makes the rung a pure re-solve of a script that already
+/// abstained).
+fn try_recollected(
+    hyps: &[Term],
+    goal: &Term,
+    datatypes: &[adsmt_theory::datatypes::DatatypeDecl],
+    annotated: &str,
+    floor: Option<&str>,
+) -> Option<Via> {
+    if std::env::var_os("ADSMT_DELEGATE_NO_RECOLLECTED_FLOOR").is_some() {
+        return None;
+    }
+    let rc = crate::render_smtlib_shaped(hyps, goal, datatypes, &crate::PatternMap::new(), true)?;
+    if rc == annotated || floor == Some(rc.as_str()) {
+        return None;
+    }
+    let budget = recollected_budget_ms();
+    if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
+        eprintln!("[dbg] script (re-collected pattern-free rung, budget {budget} ms):\n{rc}");
+    }
+    run_script_budgeted(&rc, Some(budget)).then_some(Via::SolvedRecollected)
+}
+
+/// The middle rung's wall budget in milliseconds: `ADSMT_DELEGATE_SPEC_MS`
+/// when set, else a SIXTH of the effective MBQI guard (`OXIZ_MBQI_GUARD_MS`,
+/// default 4 s — the same env the engine reads), clamped to `[1 s, 15 s]`.
+///
+/// A fraction, not a constant, because the guard is what the caller aligns to
+/// its own per-obligation wall (the corpus protocol pins guard = wall = 90 s):
+/// tying the speculative rung to a sixth of it keeps the ADDED wall a bounded
+/// fraction of a budget the caller already accepted, whatever that budget is.
+/// The ceiling is what the measured wins need (the `fuel-recursion-2/ob13`
+/// class proves in ~9 s) plus headroom, not more.
+fn recollected_budget_ms() -> u64 {
+    let env_u64 = |k: &str| {
+        std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok()).filter(|&v| v > 0)
+    };
+    if let Some(ms) = env_u64("ADSMT_DELEGATE_SPEC_MS") {
+        return ms;
+    }
+    budget_from_guard(env_u64("OXIZ_MBQI_GUARD_MS").unwrap_or(4_000))
+}
+
+/// [`recollected_budget_ms`]'s env-free policy: a sixth of `guard_ms`, clamped
+/// to `[1 s, 15 s]`.
+pub(crate) fn budget_from_guard(guard_ms: u64) -> u64 {
+    (guard_ms / 6).clamp(1_000, 15_000)
+}
+
 /// Run one rendered script on a fresh in-process OxiZ `Context`; `true` iff it
 /// answers `unsat`. The script has exactly one `(check-sat)`. Trust ONLY an
 /// `unsat` (goal valid); `sat` / `unknown` / a parse error ⇒ no delegation
 /// (the module-doc soundness posture).
 fn run_script(script: &str) -> bool {
+    run_script_budgeted(script, None)
+}
+
+/// [`run_script`] with an optional per-solve wall budget (`Context::
+/// set_timeout_ms`, which takes precedence over `OXIZ_MBQI_GUARD_MS`). On
+/// expiry OxiZ answers the sound `Unknown`, so a budget can only LOSE a
+/// verdict, never fabricate one — the reason only the speculative rung
+/// carries one. `None` is the engine's own budget: byte-identical to the
+/// historical call.
+fn run_script_budgeted(script: &str, budget_ms: Option<u64>) -> bool {
     let mut ctx = oxiz_solver::Context::new();
+    if let Some(ms) = budget_ms {
+        ctx.set_timeout_ms(ms);
+    }
     let Ok(out) = ctx.execute_script(script) else {
         return false;
     };

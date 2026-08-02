@@ -81,6 +81,12 @@ pub fn render_smtlib(
 /// level, the pre-`:pattern` output, byte-identical to the historical
 /// renderer) and is only meaningful with an empty/ignored `patterns` map —
 /// it is the completeness-floor fallback shape ([`oxiz::proves_goal`]).
+///
+/// `recollect = true` with an EMPTY map is the third combination and a rung
+/// of its own: pattern-free in the annotated script's merged binder shape.
+/// Re-collection alone measurably shifts OxiZ's trigger inference, so this
+/// is a genuinely different query from both neighbours — see the middle-rung
+/// section of the [`oxiz`] module docs.
 #[must_use]
 pub(crate) fn render_smtlib_shaped(
     hyps: &[Term],
@@ -982,6 +988,127 @@ mod tests {
             crate::oxiz::proves_goal(&[hyp], &goal, &[], &map),
             "the pattern-free fallback must recover the proof"
         );
+    }
+
+    /// [`defeating_pattern_fixture`] with the quantifier CHAINED — the hyp is
+    /// `∀x. ∀y. f2(g(x), y) = f2(x, y) + 1` and the goal
+    /// `f2(g(g(a)), b) = f2(a, b) + 2`, so both instances the proof needs are
+    /// `y`-determined by the second argument. The multi-pattern
+    /// `(g (g x)) (f2 x y)` passes every static guard and covers both binders,
+    /// but its `g (g x)` leg only ever e-matches the ground `g(g(a))` — one of
+    /// the two instances — so the ANNOTATED script abstains.
+    ///
+    /// The point of the chain: the three rungs are pairwise DISTINCT renders —
+    /// annotated (`(forall ((x Int) (y Int)) (! … :pattern …))`), the middle
+    /// rung (the same merged binders, no annotation) and the floor
+    /// (`(forall ((x Int)) (forall ((y Int)) …))`) — which is exactly the
+    /// configuration in which the middle rung runs.
+    #[cfg(feature = "oxiz")]
+    fn chained_defeating_pattern_fixture() -> (Term, Term, PatternMap) {
+        let int1 = Type::fun(int_ty(), int_ty()).unwrap();
+        let int2 = Type::fun(int_ty(), int1.clone()).unwrap();
+        let g = Term::var("g", int1);
+        let f2 = Term::var("f2", int2);
+        let app1 = |h: &Term, a: Term| Term::app(h.clone(), a).unwrap();
+        let f2a = |a: Term, b: Term| app2(&f2, a, b);
+        let eq_ty = Type::fun(int_ty(), Type::fun(int_ty(), Type::bool_()).unwrap()).unwrap();
+        let plus_ty = Type::fun(int_ty(), Type::fun(int_ty(), int_ty()).unwrap()).unwrap();
+        let eq = Term::const_("=", eq_ty);
+        let plus = Term::const_("+", plus_ty);
+        let (x, y) = (int_var("x"), int_var("y"));
+        // hyp: ∀x. ∀y. f2(g(x), y) = f2(x, y) + 1
+        let body = app2(
+            &eq,
+            f2a(app1(&g, x.clone()), y.clone()),
+            app2(&plus, f2a(x.clone(), y.clone()), int_const_op("1")),
+        );
+        let vx = adsmt_core::Var { name: "x".into(), ty: int_ty() };
+        let vy = adsmt_core::Var { name: "y".into(), ty: int_ty() };
+        let hyp = Term::mk_forall(vx, Term::mk_forall(vy, body).unwrap()).unwrap();
+        // goal: f2(g(g(a)), b) = f2(a, b) + 2 — two axiom applications close it.
+        let (a, b) = (int_var("a"), int_var("b"));
+        let goal = app2(
+            &eq,
+            f2a(app1(&g, app1(&g, a.clone())), b.clone()),
+            app2(&plus, f2a(a, b), int_const_op("2")),
+        );
+        let mut map = PatternMap::new();
+        map.insert(
+            hyp.clone(),
+            QuantPatterns {
+                arity: 2,
+                groups: vec![vec![app1(&g, app1(&g, x.clone())), f2a(x, y)]],
+            },
+        );
+        (hyp, goal, map)
+    }
+
+    /// (x) the MIDDLE RUNG (`fuel-recursion-2/ob13` class): with the annotated
+    /// script defeated and all three renders distinct, the pattern-free
+    /// RE-COLLECTED script runs before the curried floor and carries the
+    /// verdict.
+    #[cfg(feature = "oxiz")]
+    #[test]
+    fn chained_defeating_pattern_proves_via_the_recollected_rung() {
+        use crate::oxiz::{Via, proves_goal_impl};
+        let (hyp, goal, map) = chained_defeating_pattern_fixture();
+        let r = proves_goal_impl(&[hyp], &goal, &[], &map, None);
+        assert!(r.proved, "the pattern-free rungs must recover the proof");
+        assert_eq!(
+            r.via,
+            Some(Via::SolvedRecollected),
+            "the re-collected rung runs BEFORE the curried floor"
+        );
+    }
+
+    /// The middle rung must NOT fire when its render coincides with a
+    /// neighbour's: [`defeating_pattern_fixture`]'s single binder makes the
+    /// pattern-free re-collected render byte-identical to the curried floor,
+    /// so the ladder stays two solves long and the floor keeps the verdict.
+    #[cfg(feature = "oxiz")]
+    #[test]
+    fn unchained_binder_skips_the_recollected_rung() {
+        use crate::oxiz::{Via, proves_goal_impl};
+        let (hyp, goal, map) = defeating_pattern_fixture();
+        let hs = std::slice::from_ref(&hyp);
+        let rc = render_smtlib_shaped(hs, &goal, &[], &PatternMap::new(), true);
+        let floor = render_smtlib_shaped(hs, &goal, &[], &PatternMap::new(), false);
+        assert_eq!(rc, floor, "no binder chain ⇒ nothing for re-collection to merge");
+        let r = proves_goal_impl(&[hyp], &goal, &[], &map, None);
+        assert_eq!(r.via, Some(Via::SolvedFloor), "no third solve may be spent");
+    }
+
+    /// `ADSMT_DELEGATE_NO_RECOLLECTED_FLOOR` restores the historical two-rung
+    /// ladder: the very fixture that proves via the middle rung must then
+    /// prove via the curried floor instead (same verdict — the kill-switch is
+    /// an ORDERING/cost switch, never a soundness one). `#[ignore]` because it
+    /// mutates process env (edition-2024 `unsafe` set_var) — run serially:
+    /// `cargo test -p adsmt-delegate --features oxiz -- --ignored --test-threads=1`
+    #[cfg(feature = "oxiz")]
+    #[test]
+    #[ignore]
+    fn recollected_rung_kill_switch_restores_the_two_rung_ladder() {
+        use crate::oxiz::{Via, proves_goal_impl};
+        let (hyp, goal, map) = chained_defeating_pattern_fixture();
+        unsafe { std::env::set_var("ADSMT_DELEGATE_NO_RECOLLECTED_FLOOR", "1") };
+        let r = proves_goal_impl(&[hyp], &goal, &[], &map, None);
+        unsafe { std::env::remove_var("ADSMT_DELEGATE_NO_RECOLLECTED_FLOOR") };
+        assert!(r.proved, "the floor still recovers the proof");
+        assert_eq!(r.via, Some(Via::SolvedFloor), "the middle rung must not run");
+    }
+
+    /// The middle rung's budget policy: a sixth of the effective MBQI guard,
+    /// clamped to `[1 s, 15 s]` — so the corpus protocol's 90 s guard yields
+    /// 15 s and the engine's own 4 s default yields the 1 s floor.
+    #[cfg(feature = "oxiz")]
+    #[test]
+    fn recollected_budget_is_a_clamped_sixth_of_the_guard() {
+        use crate::oxiz::budget_from_guard;
+        assert_eq!(budget_from_guard(90_000), 15_000);
+        assert_eq!(budget_from_guard(60_000), 10_000);
+        assert_eq!(budget_from_guard(4_000), 1_000, "clamped up from 666");
+        assert_eq!(budget_from_guard(0), 1_000);
+        assert_eq!(budget_from_guard(u64::MAX), 15_000, "clamped down");
     }
 
     /// D1 unsat-memo tests. Every test drives the REAL producer —
