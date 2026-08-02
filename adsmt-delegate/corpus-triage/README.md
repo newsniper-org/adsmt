@@ -630,20 +630,25 @@ reshaped by what lands before them).
     plausibly recovers `fr3/ob07` and `sv3/ob06` and may unlock more
     rows that integer reasoning can now reach. Highest-value perf item
     in the pool.
-2. **Q2 — class-level clause-removal invariant** (verus-fork's own
-   question: #428 is the 4th independent recurrence of the clause-id-
-   recycle stale-watcher class; base rate says a 5th is likely — design
-   a systemic device, not another one-off site fix).
+2. ~~**Q2 — class-level clause-removal invariant**~~ — **CLOSED
+   2026-08-02** (oxiz `ad42391`; the base rate was right — it found a
+   FIFTH, live instance in `vivify_clauses` the day it was installed).
 3. ~~**Lead 2 — `fr2/ob13` D1 tier-2 ordering**~~ — **CLOSED 2026-08-02**
    (the recorded mechanism was wrong; see the Lead-2 update below).
-4. **Lead 1 — `dm3/ob03` + `sv2/ob01` early abandonment** (both give up
-   well under the 90s budget while z3 proves BOTH rendered scripts
-   unsat — a completeness-floor-stage capability regression, not a
-   budget problem; root cause not yet known, needs investigation before
-   a fix shape is clear).
-5. **#426** — fired-but-insufficient parsed-trigger exemption spurious-
-   sat class (E1 finding, standalone-OxiZ, adsmt shielded by
-   never-trust-sat) — decide + close.
+4. **Lead 1 — ~~`dm3/ob03`~~ + `sv2/ob01` early abandonment** — **HALF
+   CLOSED 2026-08-02, without being worked on.** `dm3/ob03` was
+   recovered by the Lead 2 middle rung (3.4 s), attributed by
+   kill-switch A/B; the remaining scope is `sv2/ob01` ALONE, which is
+   `unknown` in all four kill-switch combinations, so neither Lead 2 nor
+   #426 touches it. That `dm3/ob03` fell to a render-shape rung is
+   itself evidence about the class: "gives up well under budget while z3
+   proves both rendered scripts" was a RENDER-SHAPE sensitivity, not a
+   capability regression. `sv2/ob01` should be re-investigated under
+   that hypothesis first (it is also the fgr-simplex-bound row from the
+   E2a profile, so item 9 may be the real owner).
+5. ~~**#426**~~ — **CLOSED 2026-08-02** (oxiz `88c2679`; fired-but-
+   insufficient parsed-trigger exemption made provisional). Corpus
+   contribution measured at **+0 rows** — a pure soundness fix.
 6. **Dt-as-App view upgrade** — `clean_mbqi.rs` TermView classifies
    datatype constructor/selector applications as Opaque; promoting them
    to real `App` views is the recorded recovery lever for the
@@ -738,3 +743,63 @@ slowly). Residual risk, stated honestly: a row that today verifies at
 75-90 s could cross the wall. The slowest preserved `unsat` in the sample
 was 21.7 s and the slowest baseline one 8.8 s, but only the full-corpus
 sweep can price the tail.
+
+**Update 2026-08-02 — joint gate for Lead 2 + #426: ledger 162, the
+corpus's own high-water mark, with ZERO losses:**
+
+Gated jointly (AD1 `97d52c7` + oxiz `88c2679`) on one binary, full 209
+rows, sweep-protocol v2 (`OXIZ_MBQI_GUARD_MS=90000`):
+
+```
+verified            : 162      (159 -> 162)
+unknown-or-bail     :  18
+solver-timeout      :  25 (+4 skipped)
+REGRESSIONS vs PINNED (unsat lost): 0
+negative controls   : 8/8
+```
+
+Row-by-row vs the #27+#429 gate:
+
+```
+CONV  lost   : NONE
+CONV  gained : datatypes-match-3/ob03, fuel-recursion-2/ob13, seq-vstd-3/ob08
+SAT   lost   : fuel-recursion-2/ob13, seq-vstd-3/ob08   (both moved to CONV)
+SAT   gained : NONE
+```
+
+**Attribution, measured — not assumed.** Because the two changes landed
+under one gate, the three recovered rows plus `sv2/ob01` were re-run
+across all FOUR kill-switch combinations on the same binary:
+
+| row | BOTH ON | Lead2 OFF | #426 OFF | BOTH OFF |
+|---|---|---|---|---|
+| `datatypes-match-3/ob03` | `unsat` | `unknown` | `unsat` | `unknown` |
+| `fuel-recursion-2/ob13` | `unsat` | `unknown` | `unsat` | `unknown` |
+| `seq-vstd-3/ob08` | `unsat` | `unknown` | `unsat` | `unknown` |
+| `seq-vstd-2/ob01` | `unknown` | `unknown` | `unknown` | `unknown` |
+
+(`ADSMT_DELEGATE_NO_RECOLLECTED_FLOOR=1` / `OXIZ_MBQI_LAX_PATTERN_SAT=1`.)
+
+So **all +3 belong to the Lead 2 middle rung, and #426 contributes +0
+rows** — exactly the shape its structural argument predicts, and the
+reason it could be landed as a pure soundness fix. The three prove in
+3.4 s / 6.1 s / 8.5 s, all inside the rung's 15 s budget at this guard,
+so the recoveries do not depend on the budget's ceiling.
+
+Two of the three are not incidental:
+
+- **`datatypes-match-3/ob03` was Lead 1's** (backlog item 4). It fell to
+  a render-shape rung with no Lead 1 work at all, which reclassifies the
+  lead: "abandons well under budget while z3 proves both rendered
+  scripts" was RENDER-SHAPE sensitivity, not a capability regression.
+  `sv2/ob01` remains, and is unmoved by all four combinations.
+- **`seq-vstd-3/ob08` was an additive-mode-only row** in E1's
+  `default ∪ additive = 163` union. It now verifies in the DEFAULT
+  configuration. That is independent evidence for #426's own finding
+  that additive's win on this class came from stripping the exemption
+  (`augment_parsed_triggers` sets `augmented = true` unconditionally,
+  and `augmented` already strips it), not from the added trigger groups
+  — even though #426 is not itself what recovered this row.
+
+The remaining union gap for per-row additive-retry (item 8) therefore
+needs re-measuring against 162 before it is worth building.
