@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-const s String)
+(assert (> (str.len s) 0))
+(assert (< (str.len s) 1))
+(check-sat)

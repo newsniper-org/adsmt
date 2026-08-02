@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-datatypes ((P 0)) (((mk (fst Int) (snd Int)))))
+(declare-const p P)
+(assert (> (fst p) 0))
+(assert (< (fst p) 1))
+(check-sat)

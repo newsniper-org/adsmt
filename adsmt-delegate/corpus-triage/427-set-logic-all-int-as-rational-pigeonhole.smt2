@@ -1,0 +1,7 @@
+(set-logic ALL)
+(declare-fun hole (Int) Int)
+(assert (and (>= (hole 0) 1) (<= (hole 0) 2)))
+(assert (and (>= (hole 1) 1) (<= (hole 1) 2)))
+(assert (and (>= (hole 2) 1) (<= (hole 2) 2)))
+(assert (forall ((i Int) (j Int)) (=> (and (>= i 0) (<= i 2) (>= j 0) (<= j 2) (not (= i j))) (not (= (hole i) (hole j))))))
+(check-sat)

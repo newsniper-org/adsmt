@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-const a (_ BitVec 8))
+(assert (> (bv2nat a) 0))
+(assert (< (bv2nat a) 1))
+(check-sat)

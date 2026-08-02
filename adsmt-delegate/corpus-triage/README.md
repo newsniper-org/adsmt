@@ -451,6 +451,99 @@ NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it
 lands — see `feedback_z3_differential_for_unsat_trust`.
 
+**Update 2026-08-02 — #427 CLOSED (root cause was NOT the recorded
+framing), and it turns out the whole lukb corpus had been running with
+integer arithmetic relaxed to rationals:**
+
+- **Real root cause** (the old "`(set-logic ALL)`'s Saturated confirm
+  misses EUF↔LIA cross-theory conflicts" framing was wrong):
+  `ArithSolver` carried ONE GLOBAL `is_integer` flag, chosen by
+  **substring-matching the `(set-logic …)` name** (`NIA`/`NRA`/`LIA`/
+  `IDL`/`LRA`/`RDL`/`BV`) and defaulting to LRA when nothing matched.
+  So `(set-logic ALL)`, **no `(set-logic)` at all**, and `AUFLIRA` all
+  ran Int problems through the *rational* solver. Every integrality
+  mechanism was gated on that one flag: the integer branch-and-bound in
+  `Theory::check`, `assert_lt`/`assert_gt`'s `x<k ⇒ x≤k−1`
+  strengthening, `assert_eq`'s GCD-infeasibility test, `value()`,
+  `fixed_value_with_reasons`. Minimized from the reported quantified
+  pigeonhole down to **four lines with no quantifier, no UF, no counting
+  argument**: `(set-logic ALL)(declare-const x Int)(assert (> x 0))
+  (assert (< x 1))` → z3 `unsat`, oxiz `sat`. Repros:
+  `427-set-logic-all-int-as-rational-{minimal,pigeonhole}.smt2`.
+- **Fix**: per-term integrality — `declared_sorts: FxHashMap<TermId,bool>`
+  in `ArithSolver`, every gate above re-keyed to the *term's sort*, with
+  the old global flag kept as fallback for undeclared terms (so
+  correctly-logic-named paths stay bit-identical). Sorts are declared at
+  the 4 arith-intern sites in `encode.rs` and 3 assertion sites in
+  `theory_manager.rs`. `config.rs` deliberately UNCHANGED: the obvious
+  `ALL → lia()` mapping is a **proven-wrong** fix — it creates a mirror
+  **false-UNSAT** on `(set-logic ALL)(declare-const r Real)(assert
+  (> r 0.0))(assert (< r 1.0))`, verified experimentally before being
+  rejected. Three further unsound edges closed as a consequence: a
+  `Real` under any `…LIA…`-named logic was being forced integral
+  (false-UNSAT); `assert_lt` over-tightened on fractional rhs
+  (`2x < 1/2` → `2x ≤ −1/2`, excluding `x = 0`); GCD-infeasibility fired
+  on fractional coefficients.
+- **THE COROLLARY THAT MATTERS FOR THIS CORPUS**: `adsmt-delegate`'s
+  `TheoryFlags::logic()` (lib.rs) emits **`ALL` for everything** except
+  quantifier-free nonlinear obligations. So *every* Int-arithmetic
+  obligation in the 209-row corpus has been solved with a rational
+  relaxation for this entire campaign. This never produced a wrong
+  `verified` — a rational relaxation makes formulas *more* satisfiable,
+  so it can only cause failure-to-prove, and adsmt trusts `unsat` only —
+  but it means every prior corpus number was measured with integer
+  reasoning effectively switched off. The fix turns it on for the first
+  time (`fuel-recursion-1/ob10`: a 90 s full-budget saturator → **`unsat`
+  in 4 s**).
+- **Verification** (soundness-class rigor, as #428): implementer
+  differentials 660 + 560 + 400 seeds; an INDEPENDENT adversarial lens
+  wrote its own generator from scratch and ran **1800 randomized seeds +
+  ~70 hand-built cases under a dual z3∧cvc5 oracle — 0 mismatches in
+  either direction** on the fixed binary (pre-fix, same harness: **239
+  false-SATs**, so the harness is proven non-vacuous). Workspace suite
+  **7404 passed / 0 failed**; `--ignored` tolerated set exactly the
+  usual 2. The lens also cleared all five self-flagged risk items with
+  evidence — notably that `declared_sorts` not being rolled back on
+  `pop` is **structurally safe**: `TermId`s come from a monotone
+  counter over an append-only arena (no `truncate`/`pop`/`clear`
+  anywhere), and vars are hash-consed by `(name, sort)`, so `v:Int` and
+  `v:Real` are distinct ids.
+- **Corpus gate (v2, full 209 rows, main session)**: **158 verified /
+  19 unknown-or-bail / 28 saturators**, 0 regressions vs the PINNED
+  manifest, **negative controls 8/8** (including verus-fork's four new
+  trichotomy controls). Net **−1 vs the 159 canonical**, accounted
+  row-by-row: **+1** `fuel-recursion-1/ob10` (saturator → verified,
+  4 s); **−1** `fuel-recursion-3/ob07` — **not a capability loss**: it
+  still proves `unsat` at the 90 s guard, but its wall grew 88.5 s →
+  168 s and the harness's 90 s per-row subprocess cutoff now cuts it
+  (this is *exactly* the row verus-fork's Lead 3 flagged as a 1.5 s
+  margin that "could flip on machine load"); **−1** `seq-vstd-3/ob06` —
+  a genuine completeness loss (self-terminating `unknown` at 170 s
+  wall). Two further rows moved unknown-or-bail → saturator (both
+  already non-verified, so no verified loss). All losses are sound
+  (`unknown`/timeout, never a wrong answer). Cause is the known perf
+  cost: `ALL`-logic Int problems now take the correct-but-slower LIA
+  branch-and-bound path — the adversarial lens confirmed this is **not a
+  new algorithmic regression** (the same rows rewritten with a `QF_LIA`
+  header are identically slow on the *pre-fix* binary; the fix merely
+  makes `ALL` reach that path).
+- **Mandatory, not opt-in-able** — same reasoning as #428: there is no
+  sound way to keep shipping a solver that answers `sat` for
+  `0 < x < 1` over an `Int`.
+
+**NEW issue #429 — Int-sorted terms produced by OTHER theories never
+reach arithmetic integrality at all** (found by #427's adversarial lens,
+**orthogonal to #427**: all four reproduce under LIA-named logics where
+the global flag was already correct, so no sort-declaration gap can
+explain them). Each returns `sat` where **z3 and cvc5 both** say `unsat`,
+confirmed first-hand: a quantified UF application with no ground trigger
+(`(forall ((i Int)) (and (> (f i) 0) (< (f i) 1)))` under `AUFLIA`), a
+datatype selector (`0 < (fst p) < 1`), `str.len`, and `bv2nat`. Repros:
+`429-int-from-other-theory-{quantified-uf,dt-selector,strlen,bv2nat}.smt2`.
+Control proving the header really selects integer mode: a plain
+`(declare-const x Int) 0<x<1` under the same header is correctly `unsat`
+even pre-fix.
+
 ## Follow-up backlog priority (2026-07-21, post-#428)
 
 verus-fork's `2026-07-21-b191c71-CONFIRMED-...` reply (3 actionable leads +
@@ -461,12 +554,27 @@ best-understood first), then the existing perf/completeness pool by
 effort and dependency (foundational items last since they may be
 reshaped by what lands before them).
 
-1. **#427 re-investigation** (soundness-class, still open — CHECKED
-   FIRST and confirmed NOT closed by the trichotomy fix: `ph_all.smt2`
-   still reproduces `sat` on oxiz vs z3 `unsat` at `b191c71`. Different
-   mechanism — quantified pigeonhole under `(set-logic ALL)`, not a
-   ground Eq-atom Tseitin gap — so it needs its own root-cause pass at
-   the same rigor as #428).
+1. ~~**#427 re-investigation**~~ — **DONE 2026-08-02** (see the update
+   above; root cause was the global `is_integer` logic-name gate, not
+   the recorded EUF↔LIA framing). Two items were spawned by it and
+   inserted into this backlog: **#429** (new, promoted to the top of the
+   soundness tier below) and the **`ALL`-logic branch-and-bound perf
+   cost**, which is no longer theoretical — it is now on the corpus
+   critical path and is what cost `fr3/ob07` + `sv3/ob06`.
+
+0a. **#429 — Int-sorted terms from other theories bypass integrality**
+    (soundness-class false-SAT, 4 confirmed repros under dual z3∧cvc5
+    oracle, orthogonal to #427). Same tier and rigor as #427/#428.
+
+0b. **`ALL`-logic B&B perf** (newly corpus-critical): the correct-but-
+    slow integer branch-and-bound path now runs for every Int-bearing
+    obligation the corpus renders (which is nearly all of them, since
+    `TheoryFlags::logic()` emits `ALL`). A cheap integrality pre-filter
+    (e.g. a GCD test on non-strict bound pairs, which the adversarial
+    lens showed would immediately settle two of its pathological probes)
+    plausibly recovers `fr3/ob07` and `sv3/ob06` and may unlock more
+    rows that integer reasoning can now reach. Highest-value perf item
+    in the pool.
 2. **Q2 — class-level clause-removal invariant** (verus-fork's own
    question: #428 is the 4th independent recurrence of the clause-id-
    recycle stale-watcher class; base rate says a 5th is likely — design
