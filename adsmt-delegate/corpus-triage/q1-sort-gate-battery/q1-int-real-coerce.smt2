@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-fun x () Int) (declare-fun y () Real)
+(assert (=> (= (to_real x) y) (> y 0.0)))
+(assert (= (to_real x) y))
+(assert (= x 3))
+(check-sat)

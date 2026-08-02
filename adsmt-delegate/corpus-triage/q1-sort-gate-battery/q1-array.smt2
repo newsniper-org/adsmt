@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-fun A () (Array Int Int)) (declare-fun B () (Array Int Int))
+(assert (=> (= A B) (= (select A 0) 7)))
+(assert (= A B))
+(assert (= (select A 0) 7))
+(check-sat)

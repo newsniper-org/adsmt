@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-fun x () Int) (declare-fun y () Int)
+(assert (=> (= x y) false))
+(assert (= x y))
+(check-sat)

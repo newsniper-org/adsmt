@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-fun x () Int) (declare-fun b () (_ BitVec 8))
+(assert (=> (= x b) (> x 0)))
+(assert (= x b))
+(assert (= x 5))
+(check-sat)

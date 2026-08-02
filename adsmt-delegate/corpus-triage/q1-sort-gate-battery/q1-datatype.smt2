@@ -1,0 +1,7 @@
+(set-logic ALL)
+(declare-datatypes ((L 0)) (((nil) (cons (hd Int) (tl L)))))
+(declare-fun p () L) (declare-fun q () L)
+(assert (=> (= p q) (= p nil)))
+(assert (= p q))
+(assert (= p nil))
+(check-sat)

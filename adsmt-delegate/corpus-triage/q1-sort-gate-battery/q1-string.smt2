@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-fun s () String) (declare-fun t () String)
+(assert (=> (= s t) (= (str.len s) 3)))
+(assert (= s t))
+(assert (= s "abc"))
+(check-sat)

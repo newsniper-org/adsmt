@@ -1,0 +1,7 @@
+(set-logic ALL)
+(declare-sort U 0)
+(declare-fun x () Int) (declare-fun a () U)
+(assert (=> (= x a) (> x 0)))
+(assert (= x a))
+(assert (= x 5))
+(check-sat)
