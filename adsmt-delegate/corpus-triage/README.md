@@ -803,3 +803,74 @@ Two of the three are not incidental:
 
 The remaining union gap for per-row additive-retry (item 8) therefore
 needs re-measuring against 162 before it is worth building.
+
+**Update 2026-08-02 — #39 (EUF use-list never undone on pop) — ledger 169,
+the two `#427` perf losses both recovered, 0 losses:**
+
+Gate (v2, full 209 rows, oxiz `26d8d8a`):
+
+```
+verified            : 169      (162 -> 169)
+unknown-or-bail     :  22
+solver-timeout      :  14 (+4 skipped)     <- was 25
+REGRESSIONS vs PINNED (unsat lost): 0
+negative controls   : 8/8
+```
+
+Row-by-row vs the Lead 2 + #426 gate:
+
+```
+CONV  lost   : NONE
+CONV  gained : datatypes-match-1/ob08, fuel-recursion-2/ob07,
+               fuel-recursion-2/ob11, fuel-recursion-3/ob07,
+               seq-vstd-1/ob06, seq-vstd-2/ob07, seq-vstd-3/ob06
+SAT   gained : NONE
+SAT   lost   : the 7 above, plus linear-euf-2/ob03, linear-euf-2/ob04,
+               seq-vstd-1/ob03, seq-vstd-2/ob03
+```
+
+**Both rows `#427` cost us are back**: `fuel-recursion-3/ob07` (the row
+verus-fork's Lead 3 flagged as a 1.5 s margin, which `#427` pushed from
+88.5 s to 168 s and beyond) and `seq-vstd-3/ob06`. Disclosed in the same
+breath: the four saturators that did NOT convert moved to
+unknown-or-bail — they now SELF-TERMINATE as `unknown` instead of burning
+the full 90 s guard. Those rows were never verified, so this is a cheaper
+abstain rather than a loss, but it is a behaviour change and is recorded
+as one.
+
+The ledger trajectory is now 155 -> 158 -> 159 -> 162 -> **169**.
+
+**The recorded cause for these rows was wrong, and that is the lesson.**
+The `#427` entry above attributes `fr3/ob07`'s slowdown to "`ALL`-logic
+Int problems now take the correct-but-slower LIA branch-and-bound path".
+A symbol-resolved profile says 68.3% self in `EufSolver::propagate` and
+~27% in libc memcpy: the row is EUF-bound. `#427` did not make B&B the
+bottleneck — it raised the merge volume feeding an EUF structure that
+grew FIBONACCI because nothing undid it on backtrack. Profiling first
+would have found this two updates earlier. (The first profile attempt was
+also wasted: the release profile carries no debuginfo, so it reported bare
+addresses. `CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=none`
+into a separate target dir is the recipe.)
+
+**Two NEW pre-existing soundness bugs came out of #39's differential** and
+are filed with repros here:
+
+- **`430-euf-arith-implies-false-unsat*.smt2` — ground QF_UFLIA
+  false-UNSAT.** The fatal class: adsmt trusts `unsat` only, so this is a
+  direct path to a false `verified`. z3 AND cvc5 both answer `sat`.
+  Minimal at 5 asserts, and it does NOT need push/pop — it reproduces
+  flat. Localization so far: `(or (not A) p)` is `sat` (correct) while
+  `(=> A p)`, `(= p A)` and `(ite A B true)` are `unsat`; pinning `A`
+  true gives the correct `unsat` and pinning it false gives the correct
+  `sat`, so BOTH branches are individually right and only the searched
+  combination is wrong; replacing the arithmetic `>` with a pure-EUF
+  disequality makes it `sat`, so the EUF<->arith interface is required.
+  `theory_manager.rs`'s `suppress_stale_bounds` band-aid already
+  describes this exact failure shape ("two distinct assertions of one
+  atom under opposite polarities left in the simplex by a SAT backtrack
+  the theory frame did not retract ... would be a spurious UNSAT").
+- **`431-incremental-euf-false-sat.smt2` — incremental false-SAT**, not
+  yet minimized.
+
+Both reproduce on a pre-#39 binary AND on a pre-`#427` snapshot, so
+neither is caused by this session's work.
