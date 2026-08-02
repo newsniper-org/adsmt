@@ -1,0 +1,5 @@
+# VALID: cancellation gives x1 = x2, hence not (x1 > x2).
+const x0: Int
+const x1: Int
+const x2: Int
+goal g: (x1 + x0 = x2 + x0) ==> not (x1 > x2)

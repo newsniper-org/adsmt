@@ -1,0 +1,5 @@
+# INVALID: antecedent forces x1 = x2, so `x1 > x2` is false — never `unsat`.
+const x0: Int
+const x1: Int
+const x2: Int
+goal g: (x1 + x0 = x2 + x0) ==> x1 > x2

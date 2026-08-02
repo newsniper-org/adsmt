@@ -450,3 +450,70 @@ Verdict-trust rule: any change motivated by these tools that can produce a
 NEW `unsat` goes through the fork suites + a full-corpus re-sweep against
 the pinned manifest (0 regressions, negative controls exact) before it
 lands — see `feedback_z3_differential_for_unsat_trust`.
+
+## Follow-up backlog priority (2026-07-21, post-#428)
+
+verus-fork's `2026-07-21-b191c71-CONFIRMED-...` reply (3 actionable leads +
+2 questions) merged with the standing `engine_algorithmics_campaign`
+follow-up pool into one ordered backlog. Ordering rule: soundness/
+hardening first, then verus-fork-flagged live regressions (smallest/
+best-understood first), then the existing perf/completeness pool by
+effort and dependency (foundational items last since they may be
+reshaped by what lands before them).
+
+1. **#427 re-investigation** (soundness-class, still open — CHECKED
+   FIRST and confirmed NOT closed by the trichotomy fix: `ph_all.smt2`
+   still reproduces `sat` on oxiz vs z3 `unsat` at `b191c71`. Different
+   mechanism — quantified pigeonhole under `(set-logic ALL)`, not a
+   ground Eq-atom Tseitin gap — so it needs its own root-cause pass at
+   the same rigor as #428).
+2. **Q2 — class-level clause-removal invariant** (verus-fork's own
+   question: #428 is the 4th independent recurrence of the clause-id-
+   recycle stale-watcher class; base rate says a 5th is likely — design
+   a systemic device, not another one-off site fix).
+3. **Lead 2 — `fr2/ob13` D1 tier-2 ordering** (small, well-understood:
+   we own the exact mechanism — the fallback script z3-proves unsat in
+   <1s but the row's cap hits before the floor fallback runs).
+4. **Lead 1 — `dm3/ob03` + `sv2/ob01` early abandonment** (both give up
+   well under the 90s budget while z3 proves BOTH rendered scripts
+   unsat — a completeness-floor-stage capability regression, not a
+   budget problem; root cause not yet known, needs investigation before
+   a fix shape is clear).
+5. **#426** — fired-but-insufficient parsed-trigger exemption spurious-
+   sat class (E1 finding, standalone-OxiZ, adsmt shielded by
+   never-trust-sat) — decide + close.
+6. **Dt-as-App view upgrade** — `clean_mbqi.rs` TermView classifies
+   datatype constructor/selector applications as Opaque; promoting them
+   to real `App` views is the recorded recovery lever for the
+   `dm2/ob03`-class rows E1's fix left as a saturator.
+7. **EUF find-call-volume / canonical-args caching** — E2a's own
+   conclusion (EUF-bound rows are call-volume-bound, not depth-bound;
+   E2b was killed on exactly this basis) names the real lever.
+8. **per-row additive-retry** — E1's `default∪additive=163` union
+   showed additive mode wins rows default misses (and vice versa); a
+   per-row retry policy could realize that union instead of the current
+   global on/off.
+9. **fgr simplex warm-start** (rank-4, measure-gated) — re-measure
+   first (S's Trail infra + the trichotomy fix both changed the
+   profile since the original 2026-07-16 measurement); implement only
+   if the gate still holds.
+10. **Work-bounded round emission** (foundational, large) — MBQI's
+    round emission is deadline-bounded today; work-bounding it is the
+    documented prerequisite for flipping S's Trail mode to default
+    (currently opt-in because deadline-bounded emission reinvests freed
+    throughput into fuel-flood-prone rows) and is a plausible shared
+    root cause behind several of the churn patterns seen across E1/S/
+    the trichotomy fix.
+11. **V1 instantiation-trace replay** (largest, newest feature) — D1's
+    on-disk memo store already reserves the schema (`instances: []`)
+    for this; last because it is the most speculative/large-scope item
+    with the least existing groundwork beyond the reserved field.
+
+Lead 3 (`fr3/ob07`, 88.5s/90s guard margin) is **informational only** —
+no action item, just a ledger-stability note for future sweeps.
+
+Execution discipline unchanged from the rest of this campaign: each item
+lands as its own commit, gated by the same rigor its risk class demands
+(soundness items get randomized differentials at #428-scale; completeness/
+perf items get the standing corpus-gate + suite discipline), main session
+runs any corpus-scale sweep directly (setsid-detached).
