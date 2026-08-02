@@ -126,6 +126,9 @@ curried pattern-free shape — every pre-feature `unsat` stays `unsat` by
 construction (the adversarial gate caught seq-vstd-1/ob08+ob09 flipping
 verified→unknown from legitimate-but-engine-hostile patterns; the floor
 restored both). `ADSMT_DELEGATE_NO_PATTERNS=1` is the A/B kill-switch.
+(Since 2026-08-02 the ladder has a THIRD rung between those two — the
+pattern-free render in the annotated script's RE-COLLECTED binder shape,
+budget-capped at a sixth of the guard; see the Lead-2 update below.)
 Full-corpus gate: **LOCAL LEDGER 153 verified** (+5 over the 148
 guard-scope-campaign baseline: `datatypes-match-2/ob01` — the dm2
 headline, unknown-at-any-guard → 765 ms; `datatypes-match-2/ob07` — the
@@ -544,6 +547,58 @@ Control proving the header really selects integer mode: a plain
 `(declare-const x Int) 0<x<1` under the same header is correctly `unsat`
 even pre-fix.
 
+**Update 2026-08-02 — #429 CLOSED (partially) + a class-level invariant
+that found a 5th live instance of the clause-recycle bug; ledger back to
+159:**
+
+- **#429** (oxiz `9dec53c`) turned out to be **three distinct mechanisms**
+  plus one unimplemented operator, not one bug. (i) `extract_linear_terms`
+  whitelists the kinds it can decompose and returns `None` otherwise; that
+  `None` propagates out of `parse_arith_comparison` so **nothing at all**
+  is asserted into the simplex — the comparison survives only as a free
+  Boolean the SAT layer satisfies by fiat, which is why `0 < (fst p) < 1`
+  was `sat` (BOTH atoms vanished). Fixed with a two-pass parse: the strict
+  pass is unchanged (existing formulas bit-identical), a relaxed retry
+  admits an undecomposable subterm as ONE opaque Nelson-Oppen interface
+  variable. (ii) The interface variable carried no domain axiom —
+  `str.len ≥ 0` was never told to arithmetic, a separate false-SAT that
+  only surfaced once (i) was fixed. (iii) MBQI's constant-range completion
+  tested interval emptiness over the **rationals**, so `∀i. 0 < f(i) < 1`
+  for `f : Int → Int` certified a saturation that does not exist.
+  `bv2nat` is not implemented at all (no parser builtin) — added to the
+  undecided-op list so it abstains soundly rather than guessing; a real
+  BV↔Int bridge is deferred. Result: 2 of the 4 repros now `unsat`, 2
+  downgraded from false-`sat` to sound `unknown` (honest partial close —
+  the quantified-UF row has no ground terms so e-matching yields zero
+  bindings). Differential: 657 checked, 0 mismatches either direction;
+  **same seeds pre-fix: 197 false-SAT (29.9%)**.
+- **Class-level invariant** (oxiz `ad42391`), answering verus-fork's Q2
+  ("the base rate predicts a 5th recurrence"): `ClauseDatabase::remove`
+  now *requires* the watcher sink as an argument (`remove(id, &mut impl
+  ClauseIndexScrub)`), so removing without scrubbing is **not
+  expressible** — pinned by a permanent `compile_fail` doctest — plus two
+  O(1) `debug_assert`s at the consumption points as a backstop for the
+  one escape hatch Rust's visibility rules leave nameable. Rejected
+  alternatives are recorded with their costs (generation-tagged
+  `ClauseId`: +50% on `Watcher`, the solver's hottest structure, and it
+  *tolerates* leaks rather than preventing them; no-recycling: ≥64 B
+  leaked per deleted slot forever).
+  **It found the 5th instance the day it was installed**: `vivify_clauses`
+  is live and ungated (every 10th restart after a DB reduction) and
+  removed a literal in place with no watch repair — when the dropped index
+  was 0 or 1 it deleted a *watched* literal, so `propagate` could skip a
+  clause that is actually unit. "Would have caught the 4 known
+  recurrences" was **measured, not asserted**: reverting each historical
+  fix and running that bug's own regression gives 3/3, 2/2, 3, and a
+  PHP(9) failure **in 0.00 s** (versus ~38–60 s of search before it
+  previously produced a wrong verdict).
+- **Corpus gate (v2, full 209 rows)**: **159 verified / 19
+  unknown-or-bail / 27 saturators**, 0 regressions vs the PINNED
+  manifest, negative controls **8/8**. Row-by-row vs the #427 gate:
+  **+1 `fuel-recursion-3/ob14` recovered** (it had been lost at #428),
+  **0 losses**. The ledger is back to 159 — the same total as before the
+  #427/#428 churn, but now with integer reasoning actually enabled.
+
 ## Follow-up backlog priority (2026-07-21, post-#428)
 
 verus-fork's `2026-07-21-b191c71-CONFIRMED-...` reply (3 actionable leads +
@@ -579,9 +634,8 @@ reshaped by what lands before them).
    question: #428 is the 4th independent recurrence of the clause-id-
    recycle stale-watcher class; base rate says a 5th is likely — design
    a systemic device, not another one-off site fix).
-3. **Lead 2 — `fr2/ob13` D1 tier-2 ordering** (small, well-understood:
-   we own the exact mechanism — the fallback script z3-proves unsat in
-   <1s but the row's cap hits before the floor fallback runs).
+3. ~~**Lead 2 — `fr2/ob13` D1 tier-2 ordering**~~ — **CLOSED 2026-08-02**
+   (the recorded mechanism was wrong; see the Lead-2 update below).
 4. **Lead 1 — `dm3/ob03` + `sv2/ob01` early abandonment** (both give up
    well under the 90s budget while z3 proves BOTH rendered scripts
    unsat — a completeness-floor-stage capability regression, not a
@@ -625,3 +679,62 @@ lands as its own commit, gated by the same rigor its risk class demands
 (soundness items get randomized differentials at #428-scale; completeness/
 perf items get the standing corpus-gate + suite discipline), main session
 runs any corpus-scale sweep directly (setsid-detached).
+
+**Update 2026-08-02 — Lead 2 (`fr2/ob13`) CLOSED, but NOT as an ordering
+bug: the delegation ladder gained a third rung.**
+
+The recorded framing ("the cap fires before the fallback is reached") does
+not hold at the current pins. Measured with `ADSMT_DELEGATE_DEBUG=1` at
+`OXIZ_MBQI_GUARD_MS=90000` (each `run_script` builds a FRESH `Context`, so
+every rung gets its own full guard — `oxiz-solver/src/solver/mod.rs:816`):
+
+| rung | script | wall | verdict |
+|---|---|---|---|
+| 1 | annotated (`:pattern`) | **1.6 s** | `unknown` (self-terminates, does NOT burn the guard) |
+| 2 | floor (pattern-free, CURRIED) | **139.3 s** | `unknown` (guard-bound, 1.55× overshoot) |
+
+The fallback *is* reached, in under two seconds. It is the FLOOR that
+saturates — and z3 proves that very script `unsat` in **0.03 s**
+(468 quant-instantiations), while it cannot prove the *annotated* one in
+60 s. So reordering rungs 1 and 2 recovers nothing: 1.6 + 139.3 s blows
+the 90 s per-row wall from either end. D1's tier-2 hint would not have
+helped this row even with the memo enabled.
+
+What DOES recover it: the floor is pattern-free **and** 1:1 curried —
+two independent deltas from the annotated render, and OxiZ's trigger
+inference reacts to both. The same obligation rendered pattern-free in the
+annotated script's **re-collected** binder shape is `unsat` in ~9 s. That
+render was previously never tried by anything (`ADSMT_DELEGATE_NO_PATTERNS`
+produces it, but that is a triage kill-switch, not a rung).
+
+So `proves_goal_impl` now runs **annotated → re-collected pattern-free →
+curried floor**. The new middle rung is:
+
+- **skipped entirely** unless its render is distinct from BOTH neighbours
+  (no emitted pattern ⇒ identical to rung 1; no binder chain ⇒ identical
+  to the floor — this is why `seq-vstd-1/ob08`/`ob09`'s single-binder
+  fixtures still take the historical two-solve path in the unit suite);
+- the **only budgeted** rung (`Context::set_timeout_ms`, a sixth of the
+  effective `OXIZ_MBQI_GUARD_MS`, clamped to `[1 s, 15 s]` — 15 s under
+  sweep-protocol v2), so the two load-bearing rungs keep the engine's own
+  budget and the added wall is bounded;
+- **strictly additive**: both original rungs still run, same scripts, same
+  relative order, same budget. The completeness floor's guarantee ("every
+  pre-feature `unsat` stays `unsat`") is untouched, and the trust story is
+  the floor's own — the verdict is an OxiZ `unsat` on a faithful render of
+  the same obligation (binder re-collection is `∀x.∀y.φ ⇒ ∀x y.φ`).
+- `ADSMT_DELEGATE_NO_RECOLLECTED_FLOOR=1` restores the historical two-rung
+  ladder byte-for-byte (the A/B baseline used below);
+  `ADSMT_DELEGATE_SPEC_MS` overrides the budget.
+
+**Measured (29 rows, guard 90 s, 90 s per-row subprocess wall, same binary,
+kill-switch set vs unset):** `fuel-recursion-2/ob13` **timeout(91 s) →
+`unsat` in 15.8 s**; 22 base-`unsat` rows all still `unsat`; **0
+regressions**; 8 negative controls identical in both modes. Cost: bounded
+by the budget, and paid only by obligations rung 1 fails to prove whose
+shape is distinct — worst measured `+12.9 s` (`fr2/ob09`, `seq-vstd-1/ob09`
+class: the middle rung proves what the floor would also have proved, more
+slowly). Residual risk, stated honestly: a row that today verifies at
+75-90 s could cross the wall. The slowest preserved `unsat` in the sample
+was 21.7 s and the slowest baseline one 8.8 s, but only the full-corpus
+sweep can price the tail.
