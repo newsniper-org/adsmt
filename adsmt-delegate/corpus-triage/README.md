@@ -874,3 +874,69 @@ are filed with repros here:
 
 Both reproduce on a pre-#39 binary AND on a pre-`#427` snapshot, so
 neither is caused by this session's work.
+
+**Update 2026-08-03/04 — #430 NOT LANDED. The ledger stays at 169 and the
+submodule pointer stays at oxiz `26d8d8a`.**
+
+The #430 fix (oxiz `90c17af` + measurement commit `4a5a425`) closes two
+real false-UNSAT mechanisms and is verified correct — the repros flip to
+`sat` in agreement with z3 AND cvc5, the genuine-`unsat` control still
+answers `unsat`, and 2481 scoped tests pass. **It also costs 7 corpus rows**
+(169 -> 162 verified, 0 regressions vs PINNED, negative controls 8/8; every
+loss is `unsat` -> saturator, never a wrong answer). Among the losses are
+`fuel-recursion-3/ob07` and `fuel-recursion-2/ob13`, both recovered earlier
+the same day.
+
+So the oxiz commits exist but **nothing points at them**: AD1's committed
+pointer is still `26d8d8a`. Do not bump it until the redesign below lands.
+
+**Two distinct pathologies, one per row family** — which is why looking for
+a single explanation failed repeatedly:
+
+- **Conflict-clause growth** (e.g. `fuel-recursion-3/ob12`, 1.9 s -> 110 s).
+  `propagate_euf_equalities_to_arith` asserts an EUF-derived equality into
+  the simplex as an unconditional fact; making the resulting conflict clause
+  theory-valid means carrying the EUF explanation, and that explanation
+  grows with the proof forest. Measured with `OXIZ_EUF_EQ_DBG=1`: average
+  clause length 7 -> 23 literals, peak 60, over 128 conflicts, with
+  `arith_terms = 428` and 116,797 EUF-equal pairs handed to the simplex.
+  Longer clauses learn less, so more conflicts follow, so the explanation
+  grows again. The precise per-conflict filter (only equalities whose
+  `assert_eq` reason term appears in the arithmetic conflict) does not stop
+  it.
+- **The `term_to_node` trail** (e.g. `fuel-recursion-2/ob13`). Erasing the
+  mapping on every pop forces re-interning. `OXIZ_EUF_NO_TERM_TRAIL=1`
+  alone restores the row: 165 s `unknown` -> 4.8 s `unsat`, against a 5.0 s
+  baseline.
+
+**The redesign both want:**
+- Clause growth: proper Nelson-Oppen theory propagation — propagate the
+  equality as a LITERAL with its explanation and let the SAT layer own it,
+  instead of asserting it into the simplex as an unconditional fact. This
+  is what z3 and cvc5 do and it makes the reason structurally correct
+  rather than reconstructed after the fact.
+- Trail: O(1) scope-stamped invalidation, or trailing only the mappings
+  created by a `sig_table` congruence hit (the only ones that can be wrong)
+  — not erase-and-reintern.
+
+**Methodology failures from this investigation, recorded so they are not
+repeated.** Four causes were reported and all four were wrong. The common
+root was never verifying that the comparison being run was the comparison
+intended:
+
+1. A stale binary was measured three times: a `CARGO_TARGET_DIR` override
+   sent the build to one target directory while `cp` copied from another.
+   The build "succeeded", so the `&&` guard did not catch it, and the three
+   configurations were byte-identical (proved afterwards by md5).
+2. A file-level bisect used the wrong per-file baseline — `HEAD` already
+   contained both changes, so it only bisected the later refinements. The
+   corrected version then failed to build at all, because `explain_equality`
+   being made `pub` couples the two files.
+3. A "0 conflicts" instrumentation reading retired the CORRECT hypothesis
+   for hours; re-instrumenting showed the site fires constantly.
+4. Machine contention was suspected and should have been dismissed
+   immediately — the baseline binary held 2.0 s under the same load.
+
+Rule adopted: **every A/B prints the md5 of each artifact before measuring
+it**, and a kill-switch A/B is only trusted after the switch is shown to
+change the measured quantity on at least one input.
