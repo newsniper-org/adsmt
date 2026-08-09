@@ -940,3 +940,68 @@ intended:
 Rule adopted: **every A/B prints the md5 of each artifact before measuring
 it**, and a kill-switch A/B is only trusted after the switch is shown to
 change the measured quantity on at least one input.
+
+**Update 2026-08-04/09 — #430 stays OPEN. Revisit the landing decision when
+a cost reduction lands, not before.**
+
+Three redesigns were built and measured after the first attempt; none
+recovered the cost. The submodule pointer stays at oxiz `26d8d8a` and the
+ledger stays at **169**.
+
+| attempt | oxiz commit | rows lost (of 8 candidates) |
+|---|---|---|
+| alias + undo trail | `90c17af` + `4a5a425` | 8 |
+| in-scope congruence as a MERGE | `b92ebe4` | 8 |
+| narrowed alias rule + star injection + one arith check | `d09f990` | 7 |
+
+The third attempt did close the last open MECHANISM: expressing an in-scope
+signature hit as a retractable merge (rather than as permanent node
+identity) makes `corpus-triage/430-407-*.smt2` answer `sat`, agreeing with
+z3 and cvc5. **All three #430 mechanisms are now understood and fixed** —
+what is unresolved is only what they cost.
+
+**The shared premise of all three designs is false on the worst row.** Star
+injection cut the injected equalities 116,797 -> at most 428 and the LIA
+branch-and-bound invocations from N to 1; `fuel-recursion-3/ob12` moved
+109.1 s -> 109.0 s. The cost is not the scan volume.
+
+**How bad the loss actually is** (GATE 0, 10x guard): six of eight rows
+recover at 1.0-2.5x the baseline wall — `fuel-recursion-2/ob13` is FASTER
+than baseline and `seq-vstd-1/ob06` is 1.0x — and only `fr3/ob12` and
+`fr3/ob14` fail even at 1000 s. These are wall-clock-guard timeouts, not a
+learning collapse.
+
+**Why open rather than landed.** The precedent points the other way (#427
+cost 2 rows and #428 cost 3, both landed as mandatory correctness), and
+#430 is a genuine false-UNSAT — a silent false `verified` under verus's
+negate-and-refute discipline. The call was made deliberately: at 6-7 rows
+the cost is large enough, and the ledger is mutually pinned with verus-fork
+closely enough, that it waits for a cost reduction. #430 is disclosed to
+verus-fork as unfixed (AD1 `2565cea`) and stays disclosed.
+
+**Gating condition for revisiting: a landed cost reduction.** Re-run the
+eight rows above; if they come back within the 90 s protocol guard, land
+#430 and file the re-pin. Candidate levers, in the order the evidence
+supports:
+
+1. **Measure the LEARNT clause, which nobody has.** `avg_lits` in the
+   `OXIZ_EUF_EQ_DBG` output counts the theory conflict SET.
+   `analyze_theory_conflict` skips level-0 literals entirely and pushes only
+   LOWER-level ones into `learnt`, so the learned clause is strictly shorter
+   and has never been instrumented. The whole "clause growth" story rests on
+   the wrong number.
+2. Exact attribution by arith reason ID rather than by `TermId` — make
+   `assert_eq` return its `add_reason` id and filter the cited equalities by
+   the ids the conflict actually used.
+3. Nelson-Oppen proper: propagate the equality as a literal carrying its
+   explanation instead of asserting it into the simplex as an unconditional
+   fact. Two structural blockers are recorded: a theory cannot mint an atom
+   mid-solve (`TheoryHooks` methods take no solver handle, and `term_to_var`
+   is moved into the TheoryManager which is moved into the Trail), and
+   `solve_with_hooks_inner` treats an `Undef` propagated literal at
+   `final_check_complete` as `Sat`.
+
+Everything needed to resume is committed: three repros, four kill-switches
+(`OXIZ_EUF_ALIAS_IN_SCOPE`, `OXIZ_EUF_NO_TERM_TRAIL`,
+`OXIZ_NO_ARITH_EQ_REASONS`, `OXIZ_EUF_EQ_DBG`), and the scan/conflict
+instrumentation.
