@@ -295,7 +295,7 @@ fn try_recollected(
     if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
         eprintln!("[dbg] script (re-collected pattern-free rung, budget {budget} ms):\n{rc}");
     }
-    run_script_budgeted(&rc, Some(budget)).then_some(Via::SolvedRecollected)
+    run_script_labelled(&rc, Some(budget), Rung::Recollected).then_some(Via::SolvedRecollected)
 }
 
 /// The middle rung's wall budget in milliseconds: `ADSMT_DELEGATE_SPEC_MS`
@@ -332,6 +332,25 @@ fn run_script(script: &str) -> bool {
     run_script_budgeted(script, None)
 }
 
+/// Which rung of the completeness-floor ladder a solve belongs to. Only used
+/// to label `ADSMT_DELEGATE_LEVEL_LOG` lines; it does not affect any verdict.
+#[derive(Clone, Copy)]
+enum Rung {
+    Annotated,
+    Recollected,
+    Floor,
+}
+
+impl Rung {
+    fn as_str(self) -> &'static str {
+        match self {
+            Rung::Annotated => "annotated",
+            Rung::Recollected => "recollected",
+            Rung::Floor => "floor",
+        }
+    }
+}
+
 /// [`run_script`] with an optional per-solve wall budget (`Context::
 /// set_timeout_ms`, which takes precedence over `OXIZ_MBQI_GUARD_MS`). On
 /// expiry OxiZ answers the sound `Unknown`, so a budget can only LOSE a
@@ -339,6 +358,39 @@ fn run_script(script: &str) -> bool {
 /// carries one. `None` is the engine's own budget: byte-identical to the
 /// historical call.
 fn run_script_budgeted(script: &str, budget_ms: Option<u64>) -> bool {
+    run_script_labelled(script, budget_ms, Rung::Annotated)
+}
+
+/// [`run_script_budgeted`] with a rung label for the level log.
+///
+/// # Reading the verdict at 5 levels instead of 3
+///
+/// The verdict is now taken from [`Context::last_level`] rather than by
+/// scanning the printed tokens. The two are the SAME predicate here, and the
+/// equality is by construction rather than by assertion:
+///
+/// * this module never calls `set_output_mode`, so the context stays in
+///   `OutputMode::Z3Compatible`;
+/// * in that mode `execute_script` prints `unsat` exactly when
+///   `level.collapse() == Unsat`, which holds exactly for `DefiniteUnsat`
+///   (every unconfirmed level collapses to `unknown`);
+/// * the renderer emits exactly one `(check-sat)` per script, so the old
+///   `any()` over the output lines could only ever match that one token;
+/// * a parse error and a script with no verdict both yield `false` either way.
+///
+/// A `debug_assert` re-checks the equality on every solve in debug builds, so
+/// the claim is pinned rather than trusted.
+///
+/// What this BUYS is the un-collapsed level. `unsat` is one bit; the level
+/// distinguishes an OxiZ that claims a model (`definite-sat`) from one that
+/// was downgraded for an undecided operator (`possibly-sat`) from one that
+/// simply gave up (`unknown`) — and those are three different bugs. The
+/// corpus ledger is a JOINT measurement of this crate's rendering and the
+/// engine's capability, and this is the first step towards separating them.
+/// `ADSMT_DELEGATE_LEVEL_LOG=<path>` appends one line per solve; unset (the
+/// default, and what the corpus gate runs) it costs one `env::var_os`.
+fn run_script_labelled(script: &str, budget_ms: Option<u64>, rung: Rung) -> bool {
+    let t = Instant::now();
     let mut ctx = oxiz_solver::Context::new();
     if let Some(ms) = budget_ms {
         ctx.set_timeout_ms(ms);
@@ -349,5 +401,30 @@ fn run_script_budgeted(script: &str, budget_ms: Option<u64>) -> bool {
     if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
         eprintln!("[dbg] oxiz out: {out:?}");
     }
-    out.iter().any(|l| matches!(l.trim(), "unsat" | "definite-unsat"))
+    let level = ctx.last_level();
+    let proved = matches!(level, Some(oxiz_solver::SatLevel::DefiniteUnsat));
+    debug_assert_eq!(
+        proved,
+        out.iter().any(|l| matches!(l.trim(), "unsat" | "definite-unsat")),
+        "the 5-level read must project onto the printed token exactly"
+    );
+    log_level(script, rung, level, t.elapsed().as_millis() as u64);
+    proved
+}
+
+/// Append one `ADSMT_DELEGATE_LEVEL_LOG` line, if the env names a path.
+/// Best-effort: a log that cannot be written must never change a verdict.
+fn log_level(script: &str, rung: Rung, level: Option<oxiz_solver::SatLevel>, wall_ms: u64) {
+    let Some(path) = std::env::var_os("ADSMT_DELEGATE_LEVEL_LOG") else {
+        return;
+    };
+    use std::io::Write as _;
+    let digest = lu_common::k12::hex(&lu_common::k12::hash_with_customization(
+        script.as_bytes(),
+        b"adsmt-delegate-level-log-v1",
+    ));
+    let lvl = level.map_or("no-verdict", oxiz_solver::SatLevel::as_full_str);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{}\t{}\t{}\t{}", rung.as_str(), lvl, wall_ms, digest);
+    }
 }
