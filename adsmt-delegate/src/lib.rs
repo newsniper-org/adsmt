@@ -1097,6 +1097,63 @@ mod tests {
         assert_eq!(r.via, Some(Via::SolvedFloor), "the middle rung must not run");
     }
 
+    /// The level log must name the ROW and the RUNG that produced each line.
+    ///
+    /// Both halves were broken, and neither was visible from inside the crate:
+    /// the floor solves went through a `run_script` helper that defaulted to
+    /// `Rung::Annotated`, so every floor line claimed to be an annotated one;
+    /// and the only identifier was a digest of the script, which is not the
+    /// question anyone asks of this log (three attempts to trace a level back
+    /// to its obligation failed on exactly that). This test drives the ladder
+    /// twice — once through the floor, once through the middle rung — and reads
+    /// the log back.
+    ///
+    /// `#[ignore]` because it mutates process env (edition-2024 `unsafe`
+    /// set_var) — run serially:
+    /// `cargo test -p adsmt-delegate --features oxiz -- --ignored --test-threads=1`
+    #[cfg(feature = "oxiz")]
+    #[test]
+    #[ignore]
+    fn level_log_names_the_row_and_the_rung() {
+        use crate::oxiz::{Via, proves_goal_impl};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("levels.tsv");
+        unsafe { std::env::set_var("ADSMT_DELEGATE_LEVEL_LOG", &log) };
+        unsafe { std::env::set_var("ADSMT_DELEGATE_LEVEL_TAG", "fixture/ob01") };
+
+        let (hyp, goal, map) = defeating_pattern_fixture();
+        let floor_r = proves_goal_impl(&[hyp], &goal, &[], &map, None);
+        let (hyp2, goal2, map2) = chained_defeating_pattern_fixture();
+        let mid_r = proves_goal_impl(&[hyp2], &goal2, &[], &map2, None);
+
+        unsafe { std::env::remove_var("ADSMT_DELEGATE_LEVEL_LOG") };
+        unsafe { std::env::remove_var("ADSMT_DELEGATE_LEVEL_TAG") };
+
+        assert_eq!(floor_r.via, Some(Via::SolvedFloor), "fixture precondition");
+        assert_eq!(mid_r.via, Some(Via::SolvedRecollected), "fixture precondition");
+
+        let text = std::fs::read_to_string(&log).expect("the log was written");
+        let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
+        assert!(rows.len() >= 4, "two ladders, at least two solves each: {rows:?}");
+        for r in &rows {
+            assert_eq!(r.len(), 6, "tag, seq, rung, level, wall_ms, digest: {r:?}");
+            assert_eq!(r[0], "fixture/ob01", "the tag column identifies the row");
+        }
+        let seqs: Vec<u64> = rows.iter().map(|r| r[1].parse().expect("seq is a number")).collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]), "seq is strictly monotonic: {seqs:?}");
+
+        let rungs: Vec<&str> = rows.iter().map(|r| r[2]).collect();
+        // The defect: without a per-call-site label these are all "annotated".
+        assert!(rungs.contains(&"floor"), "a floor solve must SAY floor: {rungs:?}");
+        assert!(rungs.contains(&"annotated"), "the first rung is still labelled: {rungs:?}");
+        assert!(rungs.contains(&"recollected"), "the middle rung is labelled: {rungs:?}");
+        // The verdict-bearing line of each ladder is the one that proved it.
+        assert!(
+            rows.iter().any(|r| r[2] == "floor" && r[3] == "definite-unsat"),
+            "the floor line carries the level that produced Via::SolvedFloor: {rows:?}"
+        );
+    }
+
     /// The middle rung's budget policy: a sixth of the effective MBQI guard,
     /// clamped to `[1 s, 15 s]` — so the corpus protocol's 90 s guard yields
     /// 15 s and the engine's own 4 s default yields the 1 s floor.

@@ -165,7 +165,7 @@ pub(crate) fn proves_goal_impl(
     let Some(m) = memo else {
         // Memo disabled: the historical flow, both fallback renders LAZY —
         // an obligation the annotated script proves renders exactly once.
-        if run_script(&script) {
+        if run_annotated(&script) {
             return proved_via(Via::SolvedAnnotated, false);
         }
         let floor =
@@ -181,7 +181,7 @@ pub(crate) fn proves_goal_impl(
             if std::env::var_os("ADSMT_DELEGATE_DEBUG").is_some() {
                 eprintln!("[dbg] script (pre-pattern completeness-floor fallback):\n{floor}");
             }
-            if run_script(&floor) {
+            if run_floor(&floor) {
                 return proved_via(Via::SolvedFloor, false);
             }
         }
@@ -228,12 +228,12 @@ pub(crate) fn proves_goal_impl(
             eprintln!("[dbg] script (memo tier-2 reorder: floor first):\n{fl}");
         }
         let t = Instant::now();
-        if run_script(fl) {
+        if run_floor(fl) {
             record(fd, Shape::Floor, t.elapsed().as_millis() as u64);
             return proved_via(Via::SolvedFloor, true);
         }
         let t = Instant::now();
-        if run_script(&script) {
+        if run_annotated(&script) {
             record(&ann_digest, Shape::Annotated, t.elapsed().as_millis() as u64);
             return proved_via(Via::SolvedAnnotated, true);
         }
@@ -247,7 +247,7 @@ pub(crate) fn proves_goal_impl(
     }
     // Historical order: annotated first, then the distinct floor.
     let t = Instant::now();
-    if run_script(&script) {
+    if run_annotated(&script) {
         record(&ann_digest, Shape::Annotated, t.elapsed().as_millis() as u64);
         return proved_via(Via::SolvedAnnotated, false);
     }
@@ -259,7 +259,7 @@ pub(crate) fn proves_goal_impl(
             eprintln!("[dbg] script (pre-pattern completeness-floor fallback):\n{fl}");
         }
         let t = Instant::now();
-        if run_script(fl) {
+        if run_floor(fl) {
             record(fd, Shape::Floor, t.elapsed().as_millis() as u64);
             return proved_via(Via::SolvedFloor, false);
         }
@@ -324,12 +324,24 @@ pub(crate) fn budget_from_guard(guard_ms: u64) -> u64 {
     (guard_ms / 6).clamp(1_000, 15_000)
 }
 
-/// Run one rendered script on a fresh in-process OxiZ `Context`; `true` iff it
+/// Run the ANNOTATED script on a fresh in-process OxiZ `Context`; `true` iff it
 /// answers `unsat`. The script has exactly one `(check-sat)`. Trust ONLY an
 /// `unsat` (goal valid); `sat` / `unknown` / a parse error ⇒ no delegation
 /// (the module-doc soundness posture).
-fn run_script(script: &str) -> bool {
-    run_script_budgeted(script, None)
+fn run_annotated(script: &str) -> bool {
+    run_script_labelled(script, None, Rung::Annotated)
+}
+
+/// [`run_annotated`] for the FLOOR (pattern-free) rung — same solve, different
+/// level-log label.
+///
+/// There are two rung-bearing helpers rather than one with a defaulted
+/// parameter because a single `run_script` WAS the defect: every call site
+/// (including the two floor ones) went through the `Rung::Annotated` default,
+/// so the log claimed every floor solve was an annotated one. A label that a
+/// call site can forget to pass is a label that will be wrong.
+fn run_floor(script: &str) -> bool {
+    run_script_labelled(script, None, Rung::Floor)
 }
 
 /// Which rung of the completeness-floor ladder a solve belongs to. Only used
@@ -351,17 +363,12 @@ impl Rung {
     }
 }
 
-/// [`run_script`] with an optional per-solve wall budget (`Context::
-/// set_timeout_ms`, which takes precedence over `OXIZ_MBQI_GUARD_MS`). On
-/// expiry OxiZ answers the sound `Unknown`, so a budget can only LOSE a
-/// verdict, never fabricate one — the reason only the speculative rung
-/// carries one. `None` is the engine's own budget: byte-identical to the
-/// historical call.
-fn run_script_budgeted(script: &str, budget_ms: Option<u64>) -> bool {
-    run_script_labelled(script, budget_ms, Rung::Annotated)
-}
-
-/// [`run_script_budgeted`] with a rung label for the level log.
+/// Run one rendered script, labelled with the rung it belongs to, under an
+/// optional per-solve wall budget (`Context::set_timeout_ms`, which takes
+/// precedence over `OXIZ_MBQI_GUARD_MS`). On expiry OxiZ answers the sound
+/// `Unknown`, so a budget can only LOSE a verdict, never fabricate one — the
+/// reason only the speculative rung carries one. `None` is the engine's own
+/// budget: byte-identical to the historical call.
 ///
 /// # Reading the verdict at 5 levels instead of 3
 ///
@@ -387,8 +394,9 @@ fn run_script_budgeted(script: &str, budget_ms: Option<u64>) -> bool {
 /// simply gave up (`unknown`) — and those are three different bugs. The
 /// corpus ledger is a JOINT measurement of this crate's rendering and the
 /// engine's capability, and this is the first step towards separating them.
-/// `ADSMT_DELEGATE_LEVEL_LOG=<path>` appends one line per solve; unset (the
-/// default, and what the corpus gate runs) it costs one `env::var_os`.
+/// `ADSMT_DELEGATE_LEVEL_LOG=<path>` appends one line per solve, identified by
+/// row and rung (see [`log_level`]); unset (the default, and what the corpus
+/// gate runs) it costs one `env::var_os`.
 fn run_script_labelled(script: &str, budget_ms: Option<u64>, rung: Rung) -> bool {
     let t = Instant::now();
     let mut ctx = oxiz_solver::Context::new();
@@ -412,19 +420,70 @@ fn run_script_labelled(script: &str, budget_ms: Option<u64>, rung: Rung) -> bool
     proved
 }
 
+/// Monotonic per-process solve counter, so lines from one process are ordered
+/// and countable even when several processes append to a SHARED log (the
+/// corpus gate does exactly that).
+static SOLVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// What obligation this process is working on, for the level log's first
+/// column. `ADSMT_DELEGATE_LEVEL_TAG` when the caller sets one, else this
+/// process's `argv[1]` — which for every driver in the tree IS the input path,
+/// and for the corpus gate is exactly the row (`<family>/<obNN>.lukb`). `-`
+/// when there is neither.
+///
+/// ## Why the log identifies itself instead of asking the harness to
+///
+/// The first version of this log recorded ONLY a K12 digest of the script.
+/// That made it useless for the thing it was built for: three separate
+/// attempts to trace a level back to the row that produced it failed, because
+/// a digest identifies the *script* and the question is always about the
+/// *obligation*. The workaround — a driver script that records line-count
+/// boundaries around each row — did not survive contact either: it changed the
+/// invocation, and a run whose boundaries were recorded found zero
+/// `definite-sat` where the gate had found six.
+///
+/// So the identifier is taken from inside the process. `argv[1]` costs
+/// nothing, needs no cooperation from the caller, and cannot drift out of sync
+/// with the run. `ADSMT_DELEGATE_LEVEL_TAG` overrides it for callers whose
+/// `argv[1]` is not the obligation (a REPL, a library embedding).
+fn level_log_tag() -> String {
+    if let Some(t) = std::env::var_os("ADSMT_DELEGATE_LEVEL_TAG") {
+        return t.to_string_lossy().into_owned();
+    }
+    std::env::args_os()
+        .nth(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "-".to_owned())
+}
+
 /// Append one `ADSMT_DELEGATE_LEVEL_LOG` line, if the env names a path.
 /// Best-effort: a log that cannot be written must never change a verdict.
+///
+/// Columns: `tag`, per-process solve `seq`, `rung`, full level name, wall ms,
+/// script digest. The digest stays — it is what proves two rungs rendered the
+/// same bytes — but it is no longer the only identifier (see
+/// [`level_log_tag`]).
 fn log_level(script: &str, rung: Rung, level: Option<oxiz_solver::SatLevel>, wall_ms: u64) {
     let Some(path) = std::env::var_os("ADSMT_DELEGATE_LEVEL_LOG") else {
         return;
     };
     use std::io::Write as _;
+    let seq = SOLVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let digest = lu_common::k12::hex(&lu_common::k12::hash_with_customization(
         script.as_bytes(),
         b"adsmt-delegate-level-log-v1",
     ));
     let lvl = level.map_or("no-verdict", oxiz_solver::SatLevel::as_full_str);
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "{}\t{}\t{}\t{}", rung.as_str(), lvl, wall_ms, digest);
+        let _ = writeln!(
+            f,
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            level_log_tag(),
+            seq,
+            rung.as_str(),
+            lvl,
+            wall_ms,
+            digest
+        );
     }
 }
