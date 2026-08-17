@@ -1005,3 +1005,68 @@ Everything needed to resume is committed: three repros, four kill-switches
 (`OXIZ_EUF_ALIAS_IN_SCOPE`, `OXIZ_EUF_NO_TERM_TRAIL`,
 `OXIZ_NO_ARITH_EQ_REASONS`, `OXIZ_EUF_EQ_DBG`), and the scan/conflict
 instrumentation.
+
+**Update 2026-08-17 — #431 LANDED. Ledger 169 -> 171, the corpus's own
+high-water mark, with zero losses and zero regressions.**
+
+Two soundness fixes, both false-SAT, both closed on top of the 169-ledger
+baseline oxiz `26d8d8a`:
+
+- **`6f8e54f`** — `Solver::pop` cleared `trivially_unsat` unconditionally,
+  so a BARE matched `(push)(pop)` discarded a level-0 contradiction:
+  `(assert p) (assert (not p)) (check-sat)` answered `unsat`, and after
+  `(push 1) (pop 1)` the same query answered `sat`. `add_clause`'s
+  `level == 0` arm sets that flag and stores NO clause, so the flag is the
+  only record and clearing it left nothing to re-derive. Seventh member of
+  the pop-scrub family. Upstream v0.3.2 is also wrong here (it answers
+  `unknown`), so there was nothing to backport.
+- **`5cbff16`** — `propagate` batched its signature publications until after
+  the use-list scan, so two parents acquiring the SAME signature in one merge
+  event never saw each other and their congruence was never enqueued. Three
+  lines of QF_UF at level 0. Publishing eagerly is what upstream does, and it
+  is where the differential found the bug. **A test was pinning this bug**:
+  it asserted "batched updates must not detect the in-burst hab/hba
+  collision", i.e. it required the engine NOT to notice a congruence that
+  genuinely holds — a behaviour-identity pin is only as sound as the
+  behaviour it was snapshotted from.
+
+```
+verified            : 171   (169 -> 171)
+unknown-or-bail     :  20
+solver-timeout      :  14
+REGRESSIONS vs PINNED: 0
+negative controls   : 8/8
+
+CONV lost   : NONE
+CONV gained : divmod-real-2/ob05, seq-vstd-3/ob05
+```
+
+Trajectory: 155 -> 158 -> 159 -> 162 -> 169 -> **171**.
+
+Removing the batching was expected to cost a constant factor and instead
+GAINED time: `fuel-recursion-1/ob06` 10.9 s -> 7.0 s, `seq-vstd-1/ob06`
+15.9 s -> 11.2 s, `seq-vstd-2/ob07` 15.3 s -> 13.0 s. Catching a congruence
+earlier prunes more than the saved hash lookups cost. Disclosed alongside:
+`seq-vstd-2/ob03` moved from unknown-or-bail to saturator — it now burns the
+guard instead of self-terminating. Never verified, so not a loss, but a
+behaviour change.
+
+**A CONFOUNDED MEASUREMENT NEARLY KILLED BOTH FIXES, and how it was caught
+is the part worth keeping.** An earlier attempt gated this pair at
+**169 -> 155 with THREE regressions against the pinned manifest** — the
+first non-zero PINNED regression of the whole campaign — and a follow-up
+attribution A/B then blamed the pop-scrub half, reporting rows going from
+2.8 s to 112 s. Both results were artefacts: the submodule under test was
+`1ff42a6`, which carries the four **#430** commits as well, and #430's cost
+(independently measured at 6-7 rows and deliberately NOT landed) was being
+charged to #431. The only clue was that saving and restoring a single `bool`
+at `push`/`pop` cannot cost 100x, and that the direction was wrong anyway —
+a preserved `trivially_unsat` makes `solve()` return EARLIER, not later.
+Re-measuring each fix alone on a clean `26d8d8a` baseline showed both are
+free. The rule this adds to `feedback-ab-verify-the-artifact`: verifying that
+two binaries DIFFER is not enough; verify that they differ **only** in the
+change under test. `git log <baseline>..<candidate>` before every A/B.
+
+#430 is preserved on the oxiz branch `0.2.4-wip/430-not-landed` (tip
+`1ff42a6`) and stays unlanded — its own gating condition (a landed cost
+reduction) is unchanged.
