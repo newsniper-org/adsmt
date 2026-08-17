@@ -1070,3 +1070,73 @@ change under test. `git log <baseline>..<candidate>` before every A/B.
 #430 is preserved on the oxiz branch `0.2.4-wip/430-not-landed` (tip
 `1ff42a6`) and stays unlanded — its own gating condition (a landed cost
 reduction) is unchanged.
+
+**Update 2026-08-17 (later) — five oxiz commits landed, ledger UNCHANGED at
+171 with 0 regressions, which is the result they were predicted to have.**
+
+Submodule `5cbff16` → `e9c43a0`. Gate: **171 verified / 20 unknown-or-bail /
+14 saturators**, 0 regressions vs PINNED, negative controls 8/8, class
+distribution identical to the 171 gate above.
+
+The prediction was made BEFORE the gate and is worth recording as the reason
+the gate was still run: `render_smtlib` emits exactly one non-assertion
+command, `(set-logic ALL)` — no `define-fun`, no `set-option` — so none of the
+parser or lexer fixes below can reach a rendered obligation, and the work
+budget ships default-off. Predicting no change is not the same as measuring it.
+
+- **`85b2018`** — `OXIZ_MBQI_ROUND_DBG`, one line per instantiation round.
+  `OXIZ_MBQI_DBG` prints per LEMMA with no round or time axis, so it shows what
+  was instantiated and never the RATE. Immediately showed that emission is
+  geometric within an episode and that `seq-vstd-2/ob03`'s LAST round consumes
+  **40.0 s of a 90 s guard alone**, emitting 3,643 instances. The 100-round cap
+  never binds (2 to 7 rounds per episode); the wall deadline binds INSIDE a
+  round where the loop-top check cannot see it.
+- **`4d8f9d7`** — lexer progress guarantee, BACKPORTED from upstream 0.3.3
+  (its only substantive solver-side change past v0.3.2). A character that can
+  neither start nor continue a symbol made `read_symbol_chars` consume nothing,
+  so `next_token` minted the same zero-width token for ever. `,` suffices. This
+  HANGS the parser: the unknown-command recovery in `parser/commands.rs` pulls
+  tokens until depth zero or `Eof`, and neither arrives. Two binaries differing
+  only in that file: `rc=124` before, `sat` after, `unsupported` + `sat` from
+  z3.
+- **`677b5ea`** — **#432**, `define-fun` formals stayed FREE in the expansion.
+  Found by testing upstream v0.3.2's release notes against this fork. Upstream
+  reports it as "arguments could silently vanish"; the direction they do not
+  name is worse — two calls that should be independent collapse into ONE shared
+  constraint, so `(isfive 5)` and `(not (isfive 6))`, both trivially true,
+  become `(= k 5)` and `(not (= k 5))` and the script reports **`unsat`**. A
+  false `unsat` is a false proof. Mechanism confirmed by a discriminating
+  triple in which TWO of three cases used to pass by coincidence (the `Bool`
+  fallback sort; a formal name colliding with a same-sorted global, which the
+  hash-cons then aliases).
+- **`8395934`** — every NUMERIC `set-option` value was silently dropped
+  (`expect_symbol().unwrap_or_default()`), so `(set-option :timeout 5000)` set
+  nothing and said nothing. Found because a new numeric option worked through
+  its env var and not through `set-option`.
+- **`e9c43a0`** — **#35**, work-bounded round emission, default OFF. See the
+  census file for the calibration.
+
+**The census is the durable artifact here**
+(`2026-08-17-mbqi-instance-census.tsv`): verified rows peak at **1,554**
+accumulated instances, the unverified side reaches **74,199**. No verified row
+reaches 2,000, so a budget there cannot regress one — provable from the
+measurement rather than hoped for.
+
+**Why #35 is the gate on the remaining perf backlog.** A re-profile after
+#39/#431 killed one backlog item and re-aimed the rest. `EufSolver::propagate`,
+once 68.31% self, is now **1.67%** — that figure was a symptom of the #39
+Fibonacci defect, and the EUF find-call caching item built on it is worth under
+2% and is closed as measurement-killed. What the profile shows instead, on
+`fuel-recursion-2/ob07` (41 s): simplex **45.4%** self, of which
+`update_assignment` is **26.7%** (it recomputes the whole assignment on every
+pivot where Dutertre-de Moura's `pivotAndUpdate` is O(column nnz)), plus
+`Simplex::push`'s `tableau.clone()` at **7.24%** and `pop`'s stale-row scrub
+`retain` at **7.20%** — both `BacktrackMode::Snapshot`-only paths that
+`Trail` removes by construction. On `seq-vstd-1/ob06` (11 s) the shape is
+different again: `ast::manager` term construction **15.8%**, EUF **1.15%**.
+
+Every one of those is a pure speedup, and a pure speedup is exactly what
+drowned five fuel-recursion rows in the 2026-07-19 `Trail` A/B: under a
+deadline-bounded loop the freed throughput is reinvested into more
+instantiation per window instead of into finishing earlier. Until emission is
+work-bounded, each of these levers is a coin flip against the corpus.
