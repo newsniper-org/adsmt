@@ -1140,3 +1140,45 @@ drowned five fuel-recursion rows in the 2026-07-19 `Trail` A/B: under a
 deadline-bounded loop the freed throughput is reinvested into more
 instantiation per window instead of into finishing earlier. Until emission is
 work-bounded, each of these levers is a coin flip against the corpus.
+
+**Update 2026-08-23 — #433 (2 of 3) CLOSED: Bool truth values now reach EUF.
+Ledger 171, zero regressions, row-identical to the previous gate — after a RED
+first gate whose attribution REDESIGNED the fix.**
+
+Submodule `e9c43a0` → `246657d`. Two of the three false-SAT families the
+v0.3.2-notes battery found in this fork are closed:
+
+- `(= b1 b2)` with `h(b1) = 1`, `h(b2) != 1` reported `sat` — the Bool
+  equality was a Tseitin iff gate only, invisible to congruence.
+- `p, q, (not (= (k p) (k q)))` reported `sat` — a Bool ARGUMENT's truth
+  value never reached EUF at all (`BoolApp` completes application RESULTS
+  only).
+
+**The first attempt gated RED, and the A/B is the story.** Implementing both
+of upstream's fixes (a `Constraint::Eq` registration per Bool equality + the
+argument watches) measured **171 → 165 with one PINNED regression** — the lost
+rows all long ones. A four-way kill-switch A/B on one binary put the ENTIRE
+cost on the equality registration and none on the watches (`fr1/ob06` 7.4 s →
+21.6 s under eq-registration, 7.4 s under watches-only; `fr2/ob07` 42 s →
+guard-out vs 42 s). And the watches SUBSUME the equality registration for
+completeness, because Bool is a TWO-VALUED domain: equality is value
+agreement — the iff gate forces equal operands to one value, the watches land
+both nodes in the same canonical class; unequal operands land in the two
+mutually-disequal classes. An operand with no watch never appears as a UF
+argument, participates in no congruence signature, and has nothing to tell
+EUF the gates don't already tell the SAT core. So the equality registration
+was REMOVED, not tuned: the final mechanism is one `Constraint::BoolValue`
+watch per Bool-sorted UF argument (polarity-folded), plus tying the
+`true`/`false` LITERALS to the canonical bool nodes in both intern paths (two
+routes to "true" used to land in two disjoint classes).
+
+Final gate: **171 / 20 / 14, 0 regressions vs PINNED, negative controls 8/8,
+row-identical** to the previous gate — the soundness completion costs the
+corpus nothing. The equality-family regression tests all pass on the value
+route alone, which is the subsumption argument checked rather than believed.
+
+Remaining from the battery: **05 only** — the non-convex arith⇄EUF case split
+(`1 <= x <= 2`, `f(1) = f(2) = a`, `(not (= (f x) a))` reports `sat`;
+upstream bounds an explicit `(or (= t lo) … (= t hi))` split at span ≤ 12,
+≤ 48 terms/round). Exposure: CLI/direct SMT-LIB only — the adsmt delegation
+trusts `unsat` alone in every one of these families.
