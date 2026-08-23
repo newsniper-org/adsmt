@@ -1182,3 +1182,28 @@ Remaining from the battery: **05 only** — the non-convex arith⇄EUF case spli
 upstream bounds an explicit `(or (= t lo) … (= t hi))` split at span ≤ 12,
 ≤ 48 terms/round). Exposure: CLI/direct SMT-LIB only — the adsmt delegation
 trusts `unsat` alone in every one of these families.
+
+**Update 2026-08-23 (later) — #433 (3 of 3) CLOSED: bounded int case split.
+The v0.3.2-notes battery is now 12/12 against z3. Ledger 171, row-identical
+again.**
+
+Submodule `246657d` → `a970703`. The non-convex arith⇄EUF gap (`1 <= x <= 2`,
+`f(1) = f(2) = a`, `(not (= (f x) a))` was `sat`) closes with a conditional
+LIA-tautology case split (span ≤ 12, ≤ 48 terms/round, ≤ 8 rounds,
+`OXIZ_NO_INT_CASE_SPLIT` kill-switch), fed by an assert-time unit-bound
+journal in `ArithSolver` — the simplex can't answer "the asserted bounds of
+x" because every constraint lives behind a slack variable.
+
+Verified by an 800-seed randomized z3 differential (the standing rule for a
+change that can mint a new `unsat`): fabricated-unsat 0, A/B divergence 0,
+gap instances closed 342. The 54 remaining our-sat/z3-unsat rows are 49
+spans above the cap (by design) plus **5 cross-linked spans = #434**, a real
+residual: a split disjunct set by CLAUSE ASSIGNMENT does not push a linked
+variable's entailed fix into EUF, though the same equality asserted as a
+unit refutes the model. Repro committed as
+`434-cross-linked-span-disjunct-assignment-misses-theory-conflict-OPEN.smt2`;
+the feature is sound with the bug present (it only under-closes).
+
+Gate: **171 / 20 / 14, 0 regressions, negative controls 8/8, row-identical**
+to both preceding gates. Trajectory unchanged at 171 — every #433 closure was
+soundness-side, none of the corpus rows sat on these gaps.
