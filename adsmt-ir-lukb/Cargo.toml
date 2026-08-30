@@ -14,3 +14,10 @@ adsmt-ir = { path = "../adsmt-ir" }
 # unification (F2 of docs/design/EQ_ORD_UPCAST_RELATIONS.md).
 adsmt-class = { version = "=1.0.0-rc.42.1", path = "../adsmt-class" }
 adsmt-core = { version = "=1.0.0-rc.42.1", path = "../adsmt-core" }
+
+[dev-dependencies]
+# Phase 1a' measurement driver only (`examples/lukb_solve.rs`): the native
+# decide path. NOT a dependency of the face itself — the face's trust boundary
+# is the kernel admitters, and nothing here may widen it.
+adsmt-ir-lower = { path = "../adsmt-ir-lower" }
+adsmt-engine = { path = "../adsmt-engine" }
