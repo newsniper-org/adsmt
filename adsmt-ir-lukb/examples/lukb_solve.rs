@@ -78,6 +78,10 @@ fn solve(src: &str) -> (&'static str, String) {
     match s.check_sat() {
         SatResult::Unsat { .. } => ("unsat", "verified natively".to_owned()),
         SatResult::Sat { .. } => ("sat", "engine found a model".to_owned()),
-        _ => ("unknown", "engine abstained".to_owned()),
+        // The engine's `Unknown` carries a REASON. Surfacing it is the whole
+        // point of this driver's second column: an abstain attributed to a
+        // stage is a work item, an abstain lumped under "unknown" is not.
+        SatResult::Unknown { reason } => ("unknown", format!("engine: {reason}")),
+        other => ("unknown", format!("engine: {other:?}")),
     }
 }

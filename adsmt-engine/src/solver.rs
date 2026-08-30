@@ -2782,10 +2782,25 @@ impl Solver {
                 if forced_uninterpreted || self.theories.had_uninterpreted_atom() {
                     // Plain detail — the CLI wraps it as the Verus-canonical
                     // `(incomplete …)` reason-unknown (do not pre-wrap here).
+                    // Name the dropped atoms when we have them: the bare flag
+                    // keeps the verdict sound but says nothing about WHAT is
+                    // missing, and a corpus-wide abstain count with no
+                    // attribution is not a work list.
+                    let samples = self.theories.uninterpreted_atom_samples();
+                    let detail = if samples.is_empty() {
+                        String::new()
+                    } else {
+                        let shown: Vec<String> = samples
+                            .iter()
+                            .map(|(th, at)| format!("{th}:{at}"))
+                            .collect();
+                        format!(" [{}]", shown.join(", "))
+                    };
                     TheoryCheck::Verdict(SatResult::Unknown {
-                        reason: "native theory abstraction: a theory atom was \
-                                 assigned without theory interpretation"
-                            .to_string(),
+                        reason: format!(
+                            "native theory abstraction: a theory atom was \
+                             assigned without theory interpretation{detail}"
+                        ),
                     })
                 } else {
                     TheoryCheck::Verdict(SatResult::Sat {

@@ -35,6 +35,16 @@ pub struct Combination {
     /// the rc.27 (S.1) `had_opaque` lesson generalized from nested
     /// boolean structure to theory atoms.
     uninterpreted: bool,
+    /// A bounded SAMPLE of the atoms that set [`Self::uninterpreted`], as
+    /// `(theory name, atom rendering)`.
+    ///
+    /// The flag alone says "some atom's theory meaning was dropped", which is
+    /// enough to keep the verdict sound but not enough to fix anything. The
+    /// sample names WHICH theory dropped WHICH shape, turning a
+    /// whole-corpus abstain count into a work list. Capped at
+    /// [`Self::UNINTERPRETED_SAMPLE_CAP`]: this runs inside the assert loop, and
+    /// an unbounded log on a prelude-scale query would be its own cost.
+    uninterpreted_atoms: Vec<(String, String)>,
 }
 
 
@@ -103,6 +113,16 @@ impl Combination {
                     && matches!(r, AssertResult::Ignored)
                 {
                     self.uninterpreted = true;
+                    if self.uninterpreted_atoms.len() < Self::UNINTERPRETED_SAMPLE_CAP {
+                        // The HEAD symbol only. A full `Debug` of a prelude
+                        // term is hundreds of characters and useless in a
+                        // sweep; the head is what names the missing rule.
+                        let a = head_symbol(&lit.term);
+                        let entry = (t.name().to_string(), a);
+                        if !self.uninterpreted_atoms.contains(&entry) {
+                            self.uninterpreted_atoms.push(entry);
+                        }
+                    }
                 }
                 out.push((t.name().to_string(), r));
             }
@@ -116,6 +136,18 @@ impl Combination {
     /// when so, so the verdict never rests on an atom whose theory
     /// semantics were silently dropped (see the `uninterpreted` flag).
     pub fn had_uninterpreted_atom(&self) -> bool { self.uninterpreted }
+
+    /// How many distinct `(theory, atom)` pairs [`Self::uninterpreted_atoms`]
+    /// keeps before it stops recording.
+    pub const UNINTERPRETED_SAMPLE_CAP: usize = 8;
+
+    /// The bounded sample of atoms whose theory meaning was dropped — see
+    /// [`Self::uninterpreted_atoms`]. Empty iff
+    /// [`Self::had_uninterpreted_atom`] is false.
+    #[must_use]
+    pub fn uninterpreted_atom_samples(&self) -> &[(String, String)] {
+        &self.uninterpreted_atoms
+    }
 
     /// Run `check` on each theory with Nelson-Oppen equality
     /// propagation, followed by polite cardinality enforcement
@@ -380,6 +412,7 @@ impl Combination {
     /// Drop all theory state.
     pub fn reset(&mut self) {
         self.uninterpreted = false;
+        self.uninterpreted_atoms.clear();
         for t in &mut self.theories {
             t.reset();
         }
@@ -614,5 +647,23 @@ mod tests {
             !diagn.is_empty(),
             "expected disagreement for finite vs infinite mix",
         );
+    }
+}
+
+/// The head constant of an applied term — `f` for `f(a, b)` — or a short tag
+/// for a non-application. Used to label the dropped atoms in
+/// [`PoliteCombination::uninterpreted_atom_samples`] without dumping a whole
+/// prelude-scale term.
+fn head_symbol(t: &Term) -> String {
+    use adsmt_core::term::TermInner;
+    let mut cur = t.clone();
+    loop {
+        let next = match cur.kind() {
+            TermInner::App(f, _) => f.clone(),
+            TermInner::Const(c) => return c.name.clone(),
+            TermInner::Var(v) => return format!("var:{}", v.name),
+            TermInner::Lam(..) => return "<lam>".to_owned(),
+        };
+        cur = next;
     }
 }
