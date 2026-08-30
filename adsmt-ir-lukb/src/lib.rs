@@ -67,6 +67,7 @@ pub mod error;
 pub mod lexer;
 pub mod parser;
 pub mod printer;
+pub mod promote;
 pub mod verdict;
 
 pub use elab::{Elaborated, elaborate, elaborate_with_prover};

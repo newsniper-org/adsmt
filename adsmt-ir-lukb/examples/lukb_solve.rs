@@ -43,6 +43,26 @@ fn main() -> ExitCode {
 }
 
 fn solve(src: &str) -> (&'static str, String) {
+    // `ADSMT_PROMOTE_TAGGED_UNIONS=1` runs the tagged-union recogniser first,
+    // rewriting `sort S` + injections + projections + round-trip axioms into a
+    // real `data S = …`. Off by default so the A/B is a one-variable change.
+    let owned;
+    let src = if std::env::var_os("ADSMT_PROMOTE_TAGGED_UNIONS").is_some() {
+        match adsmt_ir_lukb::parse(src) {
+            Ok(m) => {
+                let (m2, unions) = adsmt_ir_lukb::promote::promote_tagged_unions(&m);
+                if unions.is_empty() {
+                    src
+                } else {
+                    owned = adsmt_ir_lukb::printer::print_module(&m2);
+                    &owned
+                }
+            }
+            Err(_) => src,
+        }
+    } else {
+        src
+    };
     let e = match adsmt_ir_lukb::elaborate(src) {
         Ok(e) => e,
         Err(err) => return ("unknown", format!("elaborate: {err}")),
