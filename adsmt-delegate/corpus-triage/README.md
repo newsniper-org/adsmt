@@ -1333,3 +1333,81 @@ together with a proposal to change what the shared 171 MEANS (from "the
 delegate said `unsat`" to "a checked `unsat`") — a change that needs their
 agreement because the number is mutually canonical, and one whose floor is now
 known to be 90 rather than 0.
+
+**Update 2026-08-30 — #430 re-reviewed on the CURRENT baseline, per the
+standing instruction to revisit "when something that reduces its cost lands".
+It stays unlanded, and the profile says the next attempt should aim somewhere
+else than the last three did.**
+
+Several things that plausibly relieve it HAVE landed since the cost was
+measured — #39 (the EUF use-list growing fibonacci across backtracks), #433's
+case split, the fixed-value probe guard. So the fix was rebased onto `fd2ea4a`
+(branch `0.2.4-wip/430-remeasure`, cherry-picking the two #430-unique commits;
+the old branch's #431 and push/pop commits are already on the mainline) and
+re-measured.
+
+Artifacts, per the A/B discipline: `adsmtc-baseline`
+`0ed689517f43986b67b4161db707e08b` vs `adsmtc-430fix`
+`6a4fd0c8f7c707ac31c00fc14f490813`, differing by exactly
+`git log fd2ea4a..6476ac7` = the two #430 commits.
+
+**Correctness: the fix still works.** Both #430 repros answer `sat` under it,
+matching z3 and cvc5.
+
+**Cost: not recovered.** `OXIZ_MBQI_GUARD_MS=90000`, three candidate rows:
+
+```
+row                     baseline        430fix
+fuel-recursion-2/ob13   4,754ms unsat   112,509ms unknown    LOST
+fuel-recursion-3/ob07  19,420ms unsat    82,484ms unknown    LOST
+seq-vstd-3/ob06         8,427ms unsat     6,638ms unsat      kept
+```
+
+Two verdicts lost on three probes, so the ledger drops and the decision is
+unchanged: **do not land.** The full 209-row gate was NOT run — it would only
+refine "how many rows" for a decision that two lost rows already settle, and it
+costs hours of idle machine. Saying so beats implying a sweep happened.
+
+**Attribution (kill-switches, on `fuel-recursion-2/ob13`):**
+
+```
+merge, term_trail on  (default)   115,829ms unknown
+merge, term_trail off             116,225ms unknown   <- trail is FREE
+alias + term_trail                 13,159ms unsat
+alias, no trail                    35,621ms unknown
+```
+
+`term_trail` costs nothing (115.8 vs 116.2 s). **The whole cost is the merge
+mechanism** — expressing an in-scope signature hit as a fresh node merged with
+the existing one, instead of aliasing.
+
+**But the cheap configuration is NOT a substitute, and this is the new fact.**
+`alias + term_trail` is 9x faster and keeps the verdict — and closes only ONE
+of the two #430 repros. `430-407-level0-node-collapse` still answers `unsat`
+against `sat` from both oracles. Only the merge mechanism closes both. So the
+trade is not "same fix, cheaper spelling"; the cheap spelling is a weaker fix.
+
+**Where the cost actually is: SIMPLEX, not EUF.** `perf` on the 115 s run
+(22,447 samples):
+
+```
+36.78%  arithmetic::simplex::Simplex::update_assignment
+18.31%  arithmetic::simplex::Simplex::check
+ 5.68%  SmallVec::retain
+ 3.99%  HashMap::retain
+ 3.34%  Ratio<T>::cmp
+```
+
+55% in simplex plus ~8% in rational arithmetic. The merge mechanism is not
+slow because EUF does more work — it is slow because each in-scope signature
+hit mints a NEW EUF node, and every new node is another term the EUF→arith
+equality propagation hands to the tableau. The blowup is in the arithmetic
+interface the extra nodes create.
+
+That redirects the next attempt. The three redesigns already tried (star
+injection, single arith check, narrowed alias rule) aimed at the EUF side. The
+lever the profile points at is **not minting the node when the congruence is
+already justified at level 0** — those aliases are permanent and need no
+retractable form, and each one avoided is one fewer tableau entry. Whether
+that recovers the cost depends on what fraction of in-scope signature hits are
+level-0-justified, which is a measurement nobody has taken.
