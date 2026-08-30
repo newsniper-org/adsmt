@@ -408,22 +408,44 @@ needed) and human-readable.
 ## 6. Staging (real Phase 1 and beyond)
 
 - **Phase 1a — language design (this doc) + the term/item grammar frozen. DONE.**
-- **Phase 1a′ — adsmt-ir Int/Real theory slice (PREREQUISITE, user-chosen §9c).**
-  Kernel gains `Int`/`Real` sorts + arithmetic, the `Nat`/`WNat` postulated sorts
-  + injections, and the `pow`/`mod`/`odd`/`prime` built-ins. Couples to kernel
-  #317. Phase 1b is gated on this.
-- **Phase 1b — `adsmt-ir-lukb` parser + elaborator for Tier 0 + Tier 1**
+- **Phase 1a′ — adsmt-ir Int/Real theory slice (PREREQUISITE, user-chosen §9c).
+  SUBSTANTIALLY DONE — re-measured 2026-08-30.** The `theory` prelude carries
+  `Int.{add,sub,mul,div,mod,neg,abs,lt,le,gt,ge}` (11) and
+  `Real.{add,sub,mul,div,neg,lt,le,gt,ge}` (9), and `adsmt-ir-lower` decides
+  them (`int_linear_entailment_unsat`, `int_bound_box_unsat`,
+  `ground_arith_eq_*`, …). The `Nat`/`WNat` postulated sorts and their
+  injections (`nat2int`/`wnat2int`/`nat2wnat`) exist with the positivity
+  collapse and 11 tests (`adsmt-ir-lower/tests/refinement_collapse.rs`).
+  **Still absent: a kernel refinement/subset CONSTRUCTOR** — `TermKind` is
+  still `Sort/Bound/Const/App/Lam/Pi/Let/Elim/Match/Fix`, so the
+  domain-constraint / body-antecedent split stays a surface concern exactly as
+  §2a′'s review said. That is an intent-preservation gap, not a soundness or a
+  capability one, and it did NOT gate Phase 1b in practice.
+- **Phase 1b — `adsmt-ir-lukb` parser + elaborator for Tier 0 + Tier 1. LANDED**
   (Int/Bool/EUF/quant/enums **plus** Real, real `/`, Int `div`/`mod`), with a
-  round-trip pretty-printer. (Plus: triggers carried as out-of-band solver
-  metadata; `exists` asymmetric lowering; a top-level `const x: T` decl form.)
+  round-trip pretty-printer, triggers carried as out-of-band metadata, the
+  asymmetric `exists` lowering, and the top-level `const x: T` decl form.
+  The crate is lexer + parser + ast + elab + printer + verdict, and it takes
+  refinement types `{v: T | φ}` in type position plus predicate-polymorphic
+  `'p`. **Measured on the 209-row verus corpus: parses 209/209, elaborates
+  209/209** — every hypothesis and goal a kernel-checked `Prop`.
 - **Phase 1c — verus AIR→successor printer for Tier 0 + Tier 1. LANDED**
   (verus-fork `748fc08fb`; `air/src/lukb.rs` + `-V emit-lukb`). Dual-emit + the
   structural (parse/elaborate) differential (`adsmt-ir-lukb`'s `check_lukb`
   example); validated end-to-end on a real `verus -V emit-lukb` run (full
   prelude → 301 well-formed lukb items, parses 100%, 5 `# fallback` comments at
-  the Tier-2 boundary). The **verdict**-differential stays gated on the kernel
-  CIC→HOL lowering (#325) — until the solver decides lukb obligations there is
-  no successor verdict to compare against the SMT-LIB oracle.
+  the Tier-2 boundary). **The verdict-differential is no longer gated —
+  re-measured 2026-08-30.** `adsmt-ir-lukb/examples/lukb_solve.rs` runs the
+  whole native path (`elaborate → lower → adsmt-engine`) with no delegation
+  anywhere, and decides **90 of the 209** obligations `unsat` against the
+  delegation's 171. Cross-tabulated, the native verdict set is a strict SUBSET:
+  there is no row where native claims `unsat` and the delegation does not, so
+  the sweep surfaces no native false-UNSAT candidate. Full table and the
+  abstain attribution:
+  `adsmt-delegate/corpus-triage/2026-08-30-native-only-lukb-verdicts.tsv`.
+
+  That number is the real answer to "how much does adsmt depend on delegation":
+  **81 rows, not 171.** See `adsmt-delegate/DELEGATION_TRUST_REDESIGN.md` §S1.
 - **Phase 1b slice 7 — `data` + `fn=body` (the Phase-2 surface). LANDED**
   (`adsmt-ir-lukb`): `data Peano = zero | succ(pred: Peano)` /
   `data Lst = nil | cons(head: Int, tail: Lst)` → kernel `declare_inductive`
@@ -451,6 +473,28 @@ needed) and human-readable.
   native datatypes + selectors instead of the box/unbox/height axioms).
 - **Phase 3+ — Tier 2 theory** (BitVec / Array), recursive defs, and the
   **theorem-package** layer (§7).
+
+### 6a. Where the native path actually stops (measured 2026-08-30)
+
+With the face and the lowering both complete for this corpus, the 119
+non-`unsat` rows are ENGINE abstains, not surface or lowering gaps. Attributed:
+
+| blocker | rows | slice |
+|---|---|---|
+| an uninterpreted theory atom | 58 | N3 landed but does not reach these; needs the arrangement |
+| the DPLL(T) refinement bound | 58 | **N5** — the block clause is the negation of the WHOLE model, so one round kills one model; a real core is needed |
+| a quantifier still unreached | 3 | N4 took this from 58 to 3 |
+
+Two slices have landed against these: **N3** (LinArith admits a UF-application
+operand as a Nelson-Oppen interface variable — the native twin of the delegated
+engine's #429) and **N4** (quantifiers are hoisted out of `and`/`⟹`/`∨` so the
+instantiation loop reaches them). Neither moved the verdict count; N4 moved the
+BLOCKER, which is how the N5 target was identified.
+
+An ablation (`2026-08-30-n0-axiom-family-ablation.tsv`) showed that removing the
+`has_type` and fuel axiom families — 19.5% and 37.1% of the corpus's 45,013
+axioms — changes nothing at all, so the "recognise the structure to shrink the
+search" slices have a ceiling of zero until N5 lands.
 
 ## 7. Theorem packages (build-time-proven axiom libraries — user proposal, 2026-06-26)
 
