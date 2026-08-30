@@ -1,0 +1,37 @@
+# N0 — does dropping the has_type / fuel axiom families unblock a row?
+#
+# Dropping hypotheses WEAKENS H, so `H AND NOT G` gains models and `unsat`
+# gets HARDER: a row that still closes did not need them. Pure measurement,
+# no code change. Stratified sample of 24 rows — 12 blocked on the DPLL(T)
+# refinement bound (B), 12 on an uninterpreted theory atom (A) — measured
+# 2026-08-30 after N3 and N4 landed.
+#
+# RESULT: NOTHING MOVES. All 24 rows stay `unknown` under all four
+# conditions. The N1 (has_type as a typing judgment) and N2 (fuel as
+# bounded unfolding) slices therefore have a ceiling of ZERO against the
+# current blockers — those blockers do not depend on axiom volume at all.
+row	group	baseline	no-fuel	no-has_type	neither
+abduct-boolean/ob01	B	unknown	unknown	unknown	unknown
+abduct-eq-vars/ob01	B	unknown	unknown	unknown	unknown
+abduct-eq-zero/ob01	B	unknown	unknown	unknown	unknown
+abduct-pred/ob01	B	unknown	unknown	unknown	unknown
+datatypes-match-1/ob01	B	unknown	unknown	unknown	unknown
+datatypes-match-1/ob03	B	unknown	unknown	unknown	unknown
+datatypes-match-1/ob05	B	unknown	unknown	unknown	unknown
+datatypes-match-1/ob10	B	unknown	unknown	unknown	unknown
+datatypes-match-2/ob01	B	unknown	unknown	unknown	unknown
+datatypes-match-2/ob08	B	unknown	unknown	unknown	unknown
+datatypes-match-3/ob01	B	unknown	unknown	unknown	unknown
+datatypes-match-3/ob03	B	unknown	unknown	unknown	unknown
+abduct-negativity/ob01	A	unknown	unknown	unknown	unknown
+abduct-relational/ob01	A	unknown	unknown	unknown	unknown
+abduct-sign/ob01	A	unknown	unknown	unknown	unknown
+abduct-spec-len/ob01	A	unknown	unknown	unknown	unknown
+datatypes-match-1/ob07	A	unknown	unknown	unknown	unknown
+datatypes-match-2/ob03	A	unknown	unknown	unknown	unknown
+datatypes-match-2/ob05	A	unknown	unknown	unknown	unknown
+datatypes-match-2/ob07	A	unknown	unknown	unknown	unknown
+datatypes-match-3/ob11	A	unknown	unknown	unknown	unknown
+diff/ob01	A	unknown	unknown	unknown	unknown
+diff/ob02	A	unknown	unknown	unknown	unknown
+divmod-real-1/ob01	A	unknown	unknown	unknown	unknown
