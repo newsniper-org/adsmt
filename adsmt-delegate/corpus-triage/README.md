@@ -1298,3 +1298,38 @@ false-`sat` costs adsmt nothing, a false-`unsat` stamps a proof, and 2 of the 3
 false-UNSATs found this month are OPEN) and `NATIVE_VIA_LUKB_STRUCTURE.md`
 (37.1% of the corpus's 45,013 axioms are fuel unfolding, 19.5% mention
 `has_type` — both structures adsmt already holds and pays MBQI to re-derive).
+
+**Update 2026-08-30 (#37 checkpoint) — the three OPEN items, measured against
+the SHIPPED DEFAULT rather than described.**
+
+"OPEN" alone does not tell a downstream whether it is exposed. So all three
+were run on the stock `fd2ea4a` release binary (md5
+`efaab848de27bdcc4c94a85167a75c54`, no options set) and cross-checked against
+z3 and cvc5:
+
+```
+repro                                             oxiz     z3     cvc5   direction
+430-euf-arith-implies-false-unsat-minimal         unsat    sat    sat    FALSE-UNSAT
+430-407-level0-node-collapse-false-unsat-OPEN     unsat    sat    sat    FALSE-UNSAT
+434-min-arrangement-false-sat-OPEN                sat      unsat  unsat  false-sat
+434-arith-euf-arrangement-...-false-sat-OPEN      sat      unsat  unsat  false-sat
+435-min-assert-after-checksat-...-OPEN            sat sat  sat sat sat sat  (agrees)
+```
+
+The row that changes a downstream's risk assessment is the last one: **#435 is
+NOT reachable at the shipped default.** What exposed it was
+`persist_const_index`, and that flag ships OFF precisely because turning it on
+minted false proofs. The open cause remains worth finding — but it is not
+currently anyone's exposure, and saying so is part of an honest disclosure.
+
+#430 is the opposite: still live, still the fabricated-proof direction. #434 is
+a false-`sat`, which costs adsmt nothing under the current trust posture (a
+delegated `sat` is already treated as "no delegation") — it is a real
+combination gap, not a live risk.
+
+Disclosed to verus-fork in
+`.local-replies-to/verus-fork/2026-08-30-repin-fd2ea4a-soundness-exposure-measured-and-ledger-definition-question.md`,
+together with a proposal to change what the shared 171 MEANS (from "the
+delegate said `unsat`" to "a checked `unsat`") — a change that needs their
+agreement because the number is mutually canonical, and one whose floor is now
+known to be 90 rather than 0.
