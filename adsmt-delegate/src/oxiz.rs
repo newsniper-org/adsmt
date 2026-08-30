@@ -15,6 +15,23 @@
 //! caller needs: delegation may only UPGRADE a native `Unknown` (or refute a
 //! possibly-false native `Sat`) to a verified `DefiniteUnsat`, never introduce a
 //! new `Sat`.
+//!
+//! ### This posture is UNDER REVIEW — see `../DELEGATION_TRUST_REDESIGN.md`
+//!
+//! The asymmetry above defends the direction that is cheap to be wrong about
+//! and leaves the expensive one undefended. A delegated false-`sat` costs
+//! nothing (it collapses to "no delegation"); a delegated false-`unsat` becomes
+//! a `DefiniteUnsat` and gets a verification stamp. In one 2026-08 session the
+//! delegate produced three confirmed false-`unsat` defects, two of which are
+//! still open (`#430` fixed-but-unlanded, `#435` cause unlocated) — so this is
+//! a measured frequency, not a hypothetical.
+//!
+//! The proposed replacement demotes a delegated `unsat` to `PossiblyUnsat` and
+//! makes it earn `DefiniteUnsat` through a certificate check (LRAT), an
+//! independent backend, or native reproduction. It is NOT implemented here; the
+//! code below still trusts `unsat` unconditionally. What makes the transition
+//! affordable is measured: 90 of the 171 verified rows already close natively
+//! with no delegation at all, so the honest floor is 90, not 0.
 
 use std::time::Instant;
 
