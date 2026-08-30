@@ -279,7 +279,9 @@ version = "0.1.0"
 dependencies = [
  "adsmt-class",
  "adsmt-core",
+ "adsmt-engine",
  "adsmt-ir",
+ "adsmt-ir-lower",
 ]
 
 [[package]]
