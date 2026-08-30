@@ -137,6 +137,23 @@ enum TheoryCheck {
 /// would not finish anyway, so abstaining early is the right trade.
 const THEORY_REFINE_BOUND: usize = 16;
 
+/// [`THEORY_REFINE_BOUND`], overridable at run time by
+/// `ADSMT_THEORY_REFINE_BOUND` for A/B attribution.
+///
+/// #N4 made this bound BIND. Reaching quantifiers nested in propositional
+/// structure multiplies the ground instances, and with more instances the
+/// number of theory-infeasible boolean models to block grows past 16 — the
+/// corpus abstain histogram moved 58 rows from "quantifier not reached" onto
+/// this cap in one step. The constant's own comment assumed 1-3 rounds, which
+/// was true of the shapes that could reach the loop before.
+fn theory_refine_bound() -> usize {
+    std::env::var("ADSMT_THEORY_REFINE_BOUND")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(THEORY_REFINE_BOUND)
+}
+
 /// The canonical KangarooTwelve-256 hash of a single clause, keyed by
 /// **atom name** (not a global index). Literals are rendered as
 /// `(atom.to_string(), polarity)` pairs, sorted + de-duplicated within
@@ -1986,7 +2003,15 @@ impl Solver {
                 SatResult::Sat { model: ground_model } => {
                     // Try quantifier instantiation; if no new
                     // instances, we're done at Sat.
-                    let (quants, rest) = crate::quant::partition_quantifiers(&combined);
+                    // #N4 — hoist quantifiers out of `and`/`⟹` first, so the
+                    // partition sees the ones the AIR prelude buries under a
+                    // guard (`fuel_defaults ==> forall id. …`). Equivalence-
+                    // preserving, so this only widens REACH.
+                    let hoisted = crate::quant::hoist_quantifiers(
+                        &combined,
+                        crate::quant::HOIST_BUDGET,
+                    );
+                    let (quants, rest) = crate::quant::partition_quantifiers(&hoisted);
                     if quants.is_empty() {
                         return SatResult::Sat {
                             model: ground_model,
@@ -2175,7 +2200,21 @@ impl Solver {
             // nested in propositional structure: the CNF flattener will leave it
             // an opaque atom whose semantics go unenforced, so a final `Sat`
             // must downgrade to `Unknown` (see the flag's declaration above).
-            if adsmt_quant::skolemize::contains_quantifier(term) {
+            // #N4 — ask the question AFTER hoisting: a quantifier this pass can
+            // lift to the top level IS reached by the instantiation loop, so it
+            // must not arm the downgrade. Only a quantifier that survives the
+            // hoist (under a disjunction, an `ite`, or a guard that binds the
+            // same variable) is genuinely unenforced.
+            let survives_hoist = crate::quant::hoist_quantifiers(
+                &[(term.clone(), *polarity)],
+                crate::quant::HOIST_BUDGET,
+            )
+            .into_iter()
+            .any(|(t, p)| {
+                !(p && t.dest_forall().is_some())
+                    && adsmt_quant::skolemize::contains_quantifier(&t)
+            });
+            if survives_hoist {
                 had_unhandled_quantifier = true;
             }
             let asserted = if *polarity {
@@ -2591,7 +2630,7 @@ impl Solver {
         // case) never pays the clause-set clone.
         let mut work_clauses: Option<Vec<Clause>> = None;
         let mut model = bool_assignment;
-        for round in 0..THEORY_REFINE_BOUND {
+        for round in 0..theory_refine_bound() {
             let clauses_ref: &[Clause] = work_clauses.as_deref().unwrap_or(clauses);
             match self.check_via_theories_inner(lits, clauses_ref, &model, deadline) {
                 TheoryCheck::Verdict(v) => return v,

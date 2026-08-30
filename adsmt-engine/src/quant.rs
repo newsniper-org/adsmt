@@ -36,6 +36,123 @@ use indexmap::IndexMap;
 /// quantifier (`had_unhandled_quantifier`) and downgrades a resulting `Sat` to
 /// `Unknown` (→ the OxiZ MBQI fallback). See #347 (the `A ∧ ¬A` spurious-sat).
 #[allow(clippy::type_complexity)]
+/// The step budget [`hoist_quantifiers`] runs under. Large enough for the AIR
+/// prelude (its guarded axioms are one implication deep and its conjunctions
+/// shallow), small enough that a pathological formula stops being rewritten
+/// instead of looping.
+pub const HOIST_BUDGET: usize = 4096;
+
+/// #N4 — bring quantifiers buried in propositional structure UP to the top
+/// level, where [`partition_quantifiers`] can see them.
+///
+/// `partition_quantifiers` claims an assertion only when the WHOLE assertion is
+/// a `forall` (`dest_forall`). A quantifier under `and` or on the right of an
+/// implication is left to the CNF flattener, which treats it as an opaque
+/// propositional atom whose ∀-semantics are never enforced — so the ground
+/// instantiation loop never sees it, and any resulting `Sat` has to be
+/// downgraded to `Unknown` (the `had_unhandled_quantifier` discipline in
+/// `solver.rs`). Measured on the 209-row lu-kb corpus that accounted for 58 of
+/// 119 native abstains, and the AIR prelude is full of the shape:
+///
+/// ```text
+/// axiom: fuel_defaults ==> (forall id: FuelId. fuel_bool(id) = …)
+/// ```
+///
+/// Two rewrites, applied to a fixpoint under a step budget:
+///
+/// * **conjunction split** — `P ∧ Q` becomes two assertions. An assertion set
+///   is a conjunction already, so this is an identity on the set.
+/// * **implication hoist** — `A ⟹ ∀x. B` becomes `∀x. (A ⟹ B)`, valid
+///   exactly when `x` is not free in `A`. Both are equivalences, so neither
+///   direction of the verdict can move: this can only let the instantiation
+///   loop REACH a quantifier it was already obliged to enforce.
+///
+/// Deliberately NOT done here: pushing a quantifier out of a disjunction or an
+/// `ite` (needs the dual/Skolem treatment and is where an unsound polarity slip
+/// would live), and hoisting when the bound variable IS free in `A` (which
+/// would capture). Both are left alone, so those assertions keep their previous
+/// behaviour — sound, just still unreached.
+///
+/// `budget` bounds the fixpoint; a formula that keeps producing new conjuncts
+/// stops being rewritten rather than looping.
+/// Would binding `v` capture an occurrence in `t`? The hoists are valid only
+/// when the bound variable does not already occur free in the part being
+/// pulled inside the binder.
+fn occurs_free(t: &Term, v: &Var) -> bool {
+    t.free_vars().iter().any(|fv| fv.name == v.name && fv.ty == v.ty)
+}
+
+#[must_use]
+pub fn hoist_quantifiers(assertions: &[(Term, bool)], budget: usize) -> Vec<(Term, bool)> {
+    let mut work: Vec<(Term, bool)> = assertions.to_vec();
+    let mut out: Vec<(Term, bool)> = Vec::with_capacity(work.len());
+    let mut steps = 0usize;
+    while let Some((t, p)) = work.pop() {
+        if steps >= budget {
+            out.push((t, p));
+            continue;
+        }
+        // Only POSITIVE assertions are rewritten. A negated conjunction is a
+        // disjunction and a negated implication is a conjunction with a negated
+        // consequent — both flip the quantifier's polarity to existential,
+        // which this pass does not handle.
+        if !p {
+            out.push((t, p));
+            continue;
+        }
+        if let Some((a, b)) = t.dest_and() {
+            steps += 1;
+            work.push((a, true));
+            work.push((b, true));
+            continue;
+        }
+        if let Some((a, b)) = t.dest_imp()
+            && let Some((v, body)) = b.dest_forall()
+            && !occurs_free(&a, &v)
+            && let Ok(inner) = Term::mk_imp(a, body)
+            && let Ok(hoisted) = Term::mk_forall(v, inner)
+        {
+            steps += 1;
+            work.push((hoisted, true));
+            continue;
+        }
+        // DISJUNCTION hoist — `A ∨ ∀x. B  ≡  ∀x. (A ∨ B)` when `x ∉ FV(A)`,
+        // either side. This is the shape that actually arrives: assertions
+        // carrying a quantifier go through `normalize_for_engine` (NNF +
+        // Skolemization) BEFORE reaching here, so the AIR prelude's
+        // `guard ==> ∀x. body` is already `¬guard ∨ ∀x. body` and the
+        // implication arm above never fires on it.
+        //
+        // Sound BECAUSE of that NNF: after it, polarity is explicit in the
+        // syntax, so a `forall` occurring here is genuinely universal — there
+        // is no negation above it that would make it existential and turn this
+        // rewrite into the unsound direction.
+        if let Some((a, b)) = t.dest_or() {
+            if let Some((v, body)) = b.dest_forall()
+                && !occurs_free(&a, &v)
+                && let Ok(inner) = Term::mk_or(a.clone(), body)
+                && let Ok(hoisted) = Term::mk_forall(v, inner)
+            {
+                steps += 1;
+                work.push((hoisted, true));
+                continue;
+            }
+            if let Some((v, body)) = a.dest_forall()
+                && !occurs_free(&b, &v)
+                && let Ok(inner) = Term::mk_or(body, b.clone())
+                && let Ok(hoisted) = Term::mk_forall(v, inner)
+            {
+                steps += 1;
+                work.push((hoisted, true));
+                continue;
+            }
+        }
+        out.push((t, p));
+    }
+    out.reverse();
+    out
+}
+
 pub fn partition_quantifiers(assertions: &[(Term, bool)]) -> (Vec<(Var, Term)>, Vec<(Term, bool)>) {
     let mut quants = Vec::new();
     let mut rest = Vec::new();

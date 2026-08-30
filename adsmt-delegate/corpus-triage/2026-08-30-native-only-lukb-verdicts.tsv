@@ -1,19 +1,28 @@
 #
-# N3 (LinArith interface variables) landed: verdicts UNCHANGED at 90/119.
-# Not a null result — see the commit. The remaining comparison atoms live
-# INSIDE quantifier bodies (`forall i: Int. 0 <= nClip(i) ...`), so they
-# never become ground and never reach LinArith at all. N3's ceiling of 59
-# was an over-estimate: most of it is gated behind N4 (quantifier reach).
+# N4 (quantifier hoisting) landed: verdicts still 90/119, but the abstain
+# histogram MOVED — which is the result:
+#
+#   reason                                    before N4   after N4
+#   quantifier not reached                           58          3
+#   DPLL(T) refinement bound                          2         58
+#   theory atom without interpretation               58         58
+#
+# The reach problem is essentially solved. Those rows now run the
+# instantiation loop and hit the NEXT wall: the whole-model blocking
+# scheme. Raising ADSMT_THEORY_REFINE_BOUND from 16 to 256 does not
+# convert them — they time out instead, because each round blocks exactly
+# ONE boolean model (the block clause is the negation of the whole model
+# assignment), so the budget would have to be exponential.
 row	native	stage
-abduct-boolean/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+abduct-boolean/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 abduct-boolean/ob02	unsat	verified natively
-abduct-eq-vars/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+abduct-eq-vars/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 abduct-eq-vars/ob02	unsat	verified natively
-abduct-eq-zero/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+abduct-eq-zero/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 abduct-eq-zero/ob02	unsat	verified natively
 abduct-negativity/ob01	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
 abduct-negativity/ob02	unsat	verified natively
-abduct-pred/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+abduct-pred/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 abduct-pred/ob02	unsat	verified natively
 abduct-relational/ob01	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
 abduct-relational/ob02	unsat	verified natively
@@ -21,79 +30,79 @@ abduct-sign/ob01	unknown	engine: native theory abstraction: a theory atom was as
 abduct-sign/ob02	unsat	verified natively
 abduct-spec-len/ob01	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
 abduct-spec-len/ob02	unsat	verified natively
-datatypes-match-1/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-1/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-1/ob02	unsat	verified natively
-datatypes-match-1/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-1/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-1/ob04	unsat	verified natively
-datatypes-match-1/ob05	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-1/ob05	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-1/ob06	unsat	verified natively
 datatypes-match-1/ob07	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 datatypes-match-1/ob08	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
 datatypes-match-1/ob09	unsat	verified natively
-datatypes-match-1/ob10	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-1/ob10	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-1/ob11	unsat	verified natively
-datatypes-match-2/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-2/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-2/ob02	unsat	verified natively
 datatypes-match-2/ob03	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
 datatypes-match-2/ob04	unsat	verified natively
 datatypes-match-2/ob05	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
 datatypes-match-2/ob06	unsat	verified natively
 datatypes-match-2/ob07	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
-datatypes-match-2/ob08	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-2/ob08	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-2/ob09	unsat	verified natively
-datatypes-match-3/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-3/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-3/ob02	unsat	verified natively
-datatypes-match-3/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-3/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-3/ob04	unsat	verified natively
-datatypes-match-3/ob05	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-3/ob05	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-3/ob06	unsat	verified natively
-datatypes-match-3/ob07	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-3/ob07	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-3/ob08	unsat	verified natively
-datatypes-match-3/ob09	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-3/ob09	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-3/ob10	unsat	verified natively
 datatypes-match-3/ob11	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
 datatypes-match-3/ob12	unsat	verified natively
-datatypes-match-3/ob13	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-3/ob13	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-3/ob14	unsat	verified natively
-datatypes-match-3/ob15	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-3/ob15	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 datatypes-match-3/ob16	unsat	verified natively
 diff/ob01	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
 diff/ob02	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 diff/ob03	unsat	verified natively
 divmod-real-1/ob01	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 divmod-real-1/ob02	unsat	verified natively
-divmod-real-1/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
-divmod-real-1/ob04	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+divmod-real-1/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+divmod-real-1/ob04	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 divmod-real-1/ob05	unsat	verified natively
 divmod-real-1/ob06	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 divmod-real-1/ob07	unsat	verified natively
 divmod-real-1/ob08	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
 divmod-real-1/ob09	unsat	verified natively
 divmod-real-1/ob10	unsat	verified natively
-divmod-real-2/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+divmod-real-2/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 divmod-real-2/ob02	unsat	verified natively
-divmod-real-2/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+divmod-real-2/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 divmod-real-2/ob04	unsat	verified natively
-divmod-real-2/ob05	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+divmod-real-2/ob05	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 divmod-real-2/ob06	unsat	verified natively
 divmod-real-2/ob07	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
-divmod-real-2/ob08	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+divmod-real-2/ob08	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 divmod-real-2/ob09	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
 divmod-real-2/ob10	unsat	verified natively
-divmod-real-3/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+divmod-real-3/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 divmod-real-3/ob02	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
-divmod-real-3/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+divmod-real-3/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 divmod-real-3/ob04	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 divmod-real-3/ob05	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
 divmod-real-3/ob06	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
 divmod-real-3/ob07	unsat	verified natively
 divmod-real-3/ob08	unsat	verified natively
-error-disequality/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+error-disequality/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 error-disequality/ob02	unsat	verified natively
-fuel-recursion-1/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-1/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-1/ob02	unsat	verified natively
-fuel-recursion-1/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
-fuel-recursion-1/ob04	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-1/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-1/ob04	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-1/ob05	unsat	verified natively
 fuel-recursion-1/ob06	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 fuel-recursion-1/ob07	unsat	verified natively
@@ -101,16 +110,16 @@ fuel-recursion-1/ob08	unknown	engine: native theory abstraction: a theory atom w
 fuel-recursion-1/ob09	unsat	verified natively
 fuel-recursion-1/ob10	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 fuel-recursion-1/ob11	unsat	verified natively
-fuel-recursion-1/ob12	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-1/ob12	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-1/ob13	unsat	verified natively
 fuel-recursion-1/ob14	unsat	verified natively
-fuel-recursion-2/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-2/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-2/ob02	unsat	verified natively
-fuel-recursion-2/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-2/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-2/ob04	unsat	verified natively
-fuel-recursion-2/ob05	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-2/ob05	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-2/ob06	unsat	verified natively
-fuel-recursion-2/ob07	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-2/ob07	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-2/ob08	unsat	verified natively
 fuel-recursion-2/ob09	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:>=, LRA:>=]
 fuel-recursion-2/ob10	unsat	verified natively
@@ -120,13 +129,13 @@ fuel-recursion-2/ob13	unknown	engine: native theory abstraction: a theory atom w
 fuel-recursion-2/ob14	unsat	verified natively
 fuel-recursion-2/ob15	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 fuel-recursion-2/ob16	unsat	verified natively
-fuel-recursion-3/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-3/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-3/ob02	unsat	verified natively
-fuel-recursion-3/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-3/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-3/ob04	unsat	verified natively
-fuel-recursion-3/ob05	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-3/ob05	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-3/ob06	unsat	verified natively
-fuel-recursion-3/ob07	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-3/ob07	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-3/ob08	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 fuel-recursion-3/ob09	unsat	verified natively
 fuel-recursion-3/ob10	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
@@ -135,20 +144,20 @@ fuel-recursion-3/ob12	unknown	engine: native theory abstraction: a theory atom w
 fuel-recursion-3/ob13	unsat	verified natively
 fuel-recursion-3/ob14	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 fuel-recursion-3/ob15	unsat	verified natively
-fuel-recursion-3/ob16	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+fuel-recursion-3/ob16	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 fuel-recursion-3/ob17	unsat	verified natively
 fuel-recursion-3/ob18	unsat	verified natively
 linear-euf-1/ob01	unsat	verified natively
-linear-euf-1/ob02	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+linear-euf-1/ob02	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 linear-euf-1/ob03	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 linear-euf-1/ob04	unsat	verified natively
 linear-euf-1/ob05	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
 linear-euf-1/ob06	unsat	verified natively
 linear-euf-1/ob07	unsat	verified natively
-linear-euf-2/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+linear-euf-2/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 linear-euf-2/ob02	unsat	verified natively
-linear-euf-2/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
-linear-euf-2/ob04	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+linear-euf-2/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+linear-euf-2/ob04	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 linear-euf-2/ob05	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 linear-euf-2/ob06	unsat	verified natively
 linear-euf-2/ob07	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
@@ -157,13 +166,13 @@ linear-euf-2/ob09	unsat	verified natively
 linear-euf-2/ob10	unsat	verified natively
 linear-euf-3/ob01	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 linear-euf-3/ob02	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
-linear-euf-3/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+linear-euf-3/ob03	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 linear-euf-3/ob04	unsat	verified natively
 linear-euf-3/ob05	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 linear-euf-3/ob06	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 linear-euf-3/ob07	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 linear-euf-3/ob08	unsat	verified natively
-noabduct-false/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+noabduct-false/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 noabduct-false/ob02	unsat	verified natively
 nonlinear-1/ob01	unsat	verified natively
 nonlinear-2/ob01	unsat	verified natively
@@ -181,28 +190,28 @@ nonlinear-3/ob03	unsat	verified natively
 nonlinear-3/ob04	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
 nonlinear-3/ob05	unsat	verified natively
 nonlinear-3/ob06	unsat	verified natively
-seq-vstd-1/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
-seq-vstd-1/ob02	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+seq-vstd-1/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-1/ob02	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 seq-vstd-1/ob03	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<, LIA:>=, LRA:>=]
 seq-vstd-1/ob04	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 seq-vstd-1/ob05	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 seq-vstd-1/ob06	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 seq-vstd-1/ob07	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
-seq-vstd-1/ob08	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
-seq-vstd-1/ob09	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+seq-vstd-1/ob08	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-1/ob09	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 seq-vstd-1/ob10	unsat	verified natively
 seq-vstd-2/ob01	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 seq-vstd-2/ob02	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 seq-vstd-2/ob03	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<, LIA:>=, LRA:>=]
 seq-vstd-2/ob04	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
-seq-vstd-2/ob05	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
-seq-vstd-2/ob06	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+seq-vstd-2/ob05	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-2/ob06	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 seq-vstd-2/ob07	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 seq-vstd-2/ob08	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
-seq-vstd-2/ob09	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
-seq-vstd-2/ob10	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+seq-vstd-2/ob09	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-2/ob10	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 seq-vstd-2/ob11	unsat	verified natively
-seq-vstd-3/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+seq-vstd-3/ob01	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 seq-vstd-3/ob02	unsat	verified natively
 seq-vstd-3/ob03	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 seq-vstd-3/ob04	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
@@ -210,7 +219,7 @@ seq-vstd-3/ob05	unknown	engine: native theory abstraction: a theory atom was ass
 seq-vstd-3/ob06	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 seq-vstd-3/ob07	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
 seq-vstd-3/ob08	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
-seq-vstd-3/ob09	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+seq-vstd-3/ob09	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 seq-vstd-3/ob10	unsat	verified natively
 seq-vstd-3/ob11	unsat	verified natively
 verify-arith/ob01	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
