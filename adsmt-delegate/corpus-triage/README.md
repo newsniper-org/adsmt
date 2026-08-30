@@ -1234,3 +1234,67 @@ and cannot reconcile one it merely AGREES with.
 Gate: **171 / 20 / 14, 0 regressions, negative controls 8/8, row-identical**
 to both preceding gates. Trajectory unchanged at 171 — every #433 closure was
 soundness-side, none of the corpus rows sat on these gaps.
+
+**Update 2026-08-30 — #434 root-caused, #435 found, and the fix for #434 is
+deliberately NOT enabled. Ledger 171, row-identical for the fourth gate running.**
+
+Submodule `93729f5` → `fd2ea4a`. One default-on fix, one default-off finding.
+
+**LANDED (default on): the fixed-value probe could report ANY term as fixed.**
+`ArithSolver::fixed_value_with_reasons` proves `t = v` by asserting `t >= v+1`,
+checking for infeasibility, popping, and repeating below — and never checked
+that the conflict USED the probe's own bound. Against an already-infeasible
+state every probe returns `Unsat` regardless, so every term reads as "fixed" at
+whatever `value()` last returned, with a reason set that omits the literals the
+caller then builds a conflict clause from. Measured: that clause refuted a
+satisfiable branch the search had not yet reached. The guard is that the
+explanation must mention the probe's own bound.
+
+**NOT ENABLED: `SolverConfig::persist_const_index`.**
+`interned_int_constants` maps an integer VALUE to its canonical EUF node, and
+is rebuilt EMPTY on every `TheoryManager` construction — once per iteration of
+`check_level`'s loop — while `euf` is carried forward. Since
+`intern_term_for_congruence` returns early for a term EUF already interned, a
+value registered in round 1 can never re-register, so from round 2 on the index
+is permanently empty and BOTH of its jobs stop: `model_based_combination`'s
+entailed-value merge and the pairwise constant-disequality edges. The struct's
+own comment calls this "scratch state ... reinitialised every round"; it is not
+scratch, it is a derived index over `euf`.
+
+Carrying it forward closes #434's repros — and opens a false `unsat`: 2
+fabricated refutations per 200 seeds of the new `arith_euf_merge_diff.py`,
+against 0 with it off. So it ships OFF. **A completeness bug in the `sat`
+direction is strictly preferable to a false proof**, and that is the whole
+decision.
+
+**#435, the unsoundness that exposed.** Reduced to a script with no case split,
+no quantifiers and no push/pop: assert a VALID clause after a `(check-sat)` and
+re-solve, and the second `(check-sat)` answers `unsat` where the same clause
+present from the start answers `sat`. All six theory conflict clauses emitted on
+that run were hand-checked as valid lemmas and none was empty, so the refutation
+is assembled somewhere this investigation did not reach — propositional level,
+not MBC. Repros committed; the cause is open.
+
+**#434's cause was recorded WRONG twice before this.** First as a clause-
+assignment defect, then as a missing level-0 equality. `(get-value)` on the
+accepted model settled it in one command — `x0 = 4, x1 = 3, (f0 3) = 0,
+(f0 x1) = 1`, i.e. the arithmetic holds and the UF is not a function — and
+should have been the first move both times. The retraction is `4e08e29`.
+
+**What actually closes #434**, per a 9-agent design review: ACKERMANN lemmas
+`(or (not (= a_i b_i)) ... (= (f a) (f b)))`, valid in FOL with equality and so
+independent of the model, the decision level and every value map. No merge, no
+probe, no `terms_to_conflict_clause`. The review rejected the merge-based
+approach for exactly the reason measured here. It also found
+`ArithSolver::derive_shared_equalities` (solver.rs:1235) — a complete
+model-bucketed care graph that is DEAD CODE, reachable only from its own tests
+because `TheoryCombination::get_shared_equalities` takes `&self` and cannot
+probe.
+
+Two design notes land alongside, on the user's architectural read that
+dependence on delegation itself has to come down:
+`DELEGATION_TRUST_REDESIGN.md` (the trust posture is backwards — a delegate
+false-`sat` costs adsmt nothing, a false-`unsat` stamps a proof, and 2 of the 3
+false-UNSATs found this month are OPEN) and `NATIVE_VIA_LUKB_STRUCTURE.md`
+(37.1% of the corpus's 45,013 axioms are fuel unfolding, 19.5% mention
+`has_type` — both structures adsmt already holds and pays MBQI to re-derive).
