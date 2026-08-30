@@ -1,12 +1,9 @@
 #
-# ABSTAIN ATTRIBUTION (added after the first sweep — the engine's
-# `Unknown { reason }` already carried this; the driver was discarding it):
-#
-#   59  LIA/LRA dropped a comparison atom  (<= 42, < 22, >= 11, > 5)
-#   58  a quantifier nested in propositional structure the ground
-#       instantiation loop does not reach
-#    2  theory-infeasible boolean models past the DPLL(T) refinement bound
-#
+# N3 (LinArith interface variables) landed: verdicts UNCHANGED at 90/119.
+# Not a null result — see the commit. The remaining comparison atoms live
+# INSIDE quantifier bodies (`forall i: Int. 0 <= nClip(i) ...`), so they
+# never become ground and never reach LinArith at all. N3's ceiling of 59
+# was an over-estimate: most of it is gated behind N4 (quantifier reach).
 row	native	stage
 abduct-boolean/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
 abduct-boolean/ob02	unsat	verified natively
@@ -84,7 +81,7 @@ divmod-real-2/ob08	unknown	engine: assertion set contains a quantifier nested in
 divmod-real-2/ob09	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
 divmod-real-2/ob10	unsat	verified natively
 divmod-real-3/ob01	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
-divmod-real-3/ob02	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+divmod-real-3/ob02	unknown	engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
 divmod-real-3/ob03	unknown	engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
 divmod-real-3/ob04	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
 divmod-real-3/ob05	unknown	engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]

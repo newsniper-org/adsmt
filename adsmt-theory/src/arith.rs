@@ -107,6 +107,31 @@ pub struct LinArith {
     /// verdict; the bare native engine stays sound at `Unknown`. Scoped
     /// alongside `bounds`/`two_vars` so a `pop` un-drops the constraint.
     incomplete: Option<String>,
+    /// #N3 — Nelson-Oppen INTERFACE VARIABLES: a canonical arithmetic variable
+    /// name for each Int/Real-sorted term the linear parser cannot decompose.
+    ///
+    /// `parse_comparison` accepts only a bare `Var` against an integer literal,
+    /// and `parse_sum_comparison` only two-variable forms. An operand that is a
+    /// UF APPLICATION — `height(x)`, `%I(p)`, `seq_len(s)` — matches neither, so
+    /// the whole atom used to be `Ignored` and its bound was lost. Measured on
+    /// the 209-row lu-kb corpus, that single gap accounted for 59 of the 119
+    /// native abstains (`<=` 42, `<` 22, `>=` 11, `>` 5). It is the native twin
+    /// of the delegated engine's #429, whose fix was exactly this: admit a
+    /// foreign sorted term as an interface variable rather than dropping the
+    /// atom that mentions it.
+    ///
+    /// Keyed by `Term`, whose `Hash`/`Eq` are hash-cons pointer identity — so
+    /// two structurally equal operands get the SAME name and their bounds
+    /// combine, while two merely-equal-in-the-model terms (`height(a)` and
+    /// `height(b)` under `a = b`) get DIFFERENT names. The latter is a MISSED
+    /// conflict, never a fabricated one: the bounds this store carries are
+    /// facts about the term's real value whatever the function is.
+    ///
+    /// Deliberately NOT scope-rolled. It is a naming cache, not state: the same
+    /// term must map to the same name for the life of the solver, and a `pop`
+    /// that forgot a name would silently split one variable into two. The
+    /// BOUNDS keyed by those names are scope-rolled as they always were.
+    iface_names: HashMap<Term, String>,
     #[allow(clippy::type_complexity)]
     scope_stack: Vec<(
         HashMap<String, Bounds>,
@@ -121,12 +146,12 @@ impl LinArith {
     pub fn lia() -> Self {
         Self { name_: "LIA", bounds: HashMap::new(), two_vars: Vec::new(),
                diseqs: Vec::new(), var_diseqs: Vec::new(), conflict: None,
-               incomplete: None, scope_stack: Vec::new() }
+               incomplete: None, iface_names: HashMap::new(), scope_stack: Vec::new() }
     }
     pub fn lra() -> Self {
         Self { name_: "LRA", bounds: HashMap::new(), two_vars: Vec::new(),
                diseqs: Vec::new(), var_diseqs: Vec::new(), conflict: None,
-               incomplete: None, scope_stack: Vec::new() }
+               incomplete: None, iface_names: HashMap::new(), scope_stack: Vec::new() }
     }
 
     /// Record that an arithmetic constraint was dropped because the
@@ -646,6 +671,84 @@ impl LinArith {
 
     /// Recognise `(<= x k)` / `(< x k)` / `(>= x k)` / `(> x k)`
     /// where `x` is a variable and `k` an integer literal.
+    /// The canonical arithmetic variable name for `t`, minting a Nelson-Oppen
+    /// interface variable when `t` is an Int/Real-sorted term the linear parser
+    /// cannot decompose. Returns `None` for a term of any other sort (that
+    /// literal belongs to another theory) and for an integer literal (which is
+    /// a constant, not a variable — interning one as a variable would let the
+    /// bound store pick a value for the numeral `5`).
+    ///
+    /// See [`iface_names`](Self::iface_names) for why this is sound and where
+    /// it is deliberately incomplete.
+    fn iface_name(&mut self, t: &Term) -> Option<String> {
+        if let TermInner::Var(v) = t.kind() {
+            return Some(v.name.clone());
+        }
+        if Self::int_lit(t).is_some() {
+            return None;
+        }
+        let ty = t.type_of().to_string();
+        if ty != "Int" && ty != "Real" {
+            return None;
+        }
+        // A term the linear parser CAN decompose must never become an interface
+        // variable. `(x + y + z)` linearizes to three variables; interning it
+        // whole would sever it from every other atom mentioning `x`, `y` or `z`
+        // and silently REPLACE the multi-variable incompleteness backstop with a
+        // wrong answer. (Caught by `multivar_comparison_drops_to_unknown`, which
+        // is exactly what that test is for.) Only a genuinely foreign
+        // shape — a UF application, a selector, a non-linear product — gets a
+        // name here.
+        if Self::linearize(t).is_some() {
+            return None;
+        }
+        if let Some(n) = self.iface_names.get(t) {
+            return Some(n.clone());
+        }
+        // The `%` prefix cannot collide with a source variable: the surfaces
+        // that reach here spell such names backtick-quoted, and this store is
+        // keyed by the resulting `Var::name`, which never begins with `%if#`.
+        let name = format!("%if#{}%", self.iface_names.len());
+        self.iface_names.insert(t.clone(), name.clone());
+        Some(name)
+    }
+
+    /// [`parse_comparison`](Self::parse_comparison) widened to accept ANY
+    /// Int/Real-sorted operand on the variable side, via
+    /// [`iface_name`](Self::iface_name). Handles both orientations
+    /// (`t op k` and `k op t`, the latter with the operator flipped).
+    fn parse_comparison_iface(&mut self, t: &Term) -> Option<(String, &'static str, i128)> {
+        let TermInner::App(outer, rhs) = t.kind() else { return None };
+        let TermInner::App(head, lhs) = outer.kind() else { return None };
+        let TermInner::Const(c) = head.kind() else { return None };
+        let op = match c.name.as_str() {
+            "<=" | "le" => "<=",
+            "<" | "lt" => "<",
+            ">=" | "ge" => ">=",
+            ">" | "gt" => ">",
+            _ => return None,
+        };
+        if let Some(k) = Self::int_lit(rhs)
+            && let Some(v) = self.iface_name(lhs)
+        {
+            return Some((v, op, k));
+        }
+        // `k op t` — the same bound on `t` with the operator mirrored.
+        if let Some(k) = Self::int_lit(lhs)
+            && let Some(v) = self.iface_name(rhs)
+        {
+            let flipped = match op {
+                "<=" => ">=",
+                "<" => ">",
+                ">=" => "<=",
+                ">" => "<",
+                _ => return None,
+            };
+            return Some((v, flipped, k));
+        }
+        None
+    }
+
     fn parse_comparison(t: &Term) -> Option<(String, &'static str, i128)> {
         if let TermInner::App(outer, rhs) = t.kind()
             && let TermInner::App(head, lhs) = outer.kind()
@@ -1140,6 +1243,35 @@ impl Theory for LinArith {
                 }
                 return AssertResult::Accepted;
             }
+            // #N3 — the operand is not a bare `Var` but IS Int/Real-sorted
+            // (a UF application). Carry the bound over an interface variable
+            // instead of losing the atom.
+            if let Some((var, op, k)) = self.parse_comparison_iface(&lit.term) {
+                let neg_op = match op {
+                    "<=" => ">",
+                    "<" => ">=",
+                    ">=" => "<",
+                    ">" => "<=",
+                    _ => return AssertResult::Ignored,
+                };
+                if let Some(w) = self.record_bound(var, neg_op, k) {
+                    self.conflict = Some(w.clone());
+                    return AssertResult::Conflict { witness: w };
+                }
+                // DELIBERATELY `Ignored`, not `Accepted`. The bound is recorded
+                // — so `check` can now derive a genuine `Unsat` it previously
+                // could not — but the atom's meaning is only PARTLY captured:
+                // arithmetic sees an opaque value where the formula has a
+                // function application, and nothing here discharges the
+                // Nelson-Oppen arrangement between that value and EUF's view of
+                // the same term. Reporting `Accepted` would switch off the
+                // polite combination's `uninterpreted` backstop and let a `Sat`
+                // through on an unchecked arrangement — exactly the failure the
+                // delegated engine hit as #434 after its own #429. `Ignored`
+                // keeps the `Sat` direction exactly as conservative as before
+                // while opening the `Unsat` direction.
+                return AssertResult::Ignored;
+            }
             // A negated multi-variable comparison the 1-var/2-var parsers
             // didn't claim (e.g. `(not (<= (+ x y z) 5))`) is dropped — arm
             // the backstop (#351) so `check` can't fabricate a Sat.
@@ -1156,6 +1288,15 @@ impl Theory for LinArith {
                 return AssertResult::Conflict { witness: w };
             }
             return AssertResult::Accepted;
+        }
+        // #N3 — same widening as the negated branch above; see there for why
+        // this returns `Ignored` despite having recorded the bound.
+        if let Some((var, op, k)) = self.parse_comparison_iface(&lit.term) {
+            if let Some(w) = self.record_bound(var, op, k) {
+                self.conflict = Some(w.clone());
+                return AssertResult::Conflict { witness: w };
+            }
+            return AssertResult::Ignored;
         }
         // A multi-variable comparison (`x + y + z ≤ 5`) the 1-var/2-var parsers
         // couldn't represent — arm the backstop (#351). Non-arithmetic atoms
