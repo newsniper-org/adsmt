@@ -1201,8 +1201,35 @@ spans above the cap (by design) plus **5 cross-linked spans = #434**, a real
 residual: a split disjunct set by CLAUSE ASSIGNMENT does not push a linked
 variable's entailed fix into EUF, though the same equality asserted as a
 unit refutes the model. Repro committed as
-`434-cross-linked-span-disjunct-assignment-misses-theory-conflict-OPEN.smt2`;
+`434-arith-euf-arrangement-model-equal-not-entailed-false-sat-OPEN.smt2`;
 the feature is sound with the bug present (it only under-closes).
+
+**CORRECTION 2026-08-30 — #434 was misattributed above, and to the split, and
+in the commit message that landed it.** It is NOT caused by the case split and
+NOT a clause-assignment defect: `OXIZ_NO_INT_CASE_SPLIT=1` answers `sat` on
+every #434 repro, so the bug PRE-DATES #433 by an unknown margin and rides on
+every ledger back through 143. What the split's differential did was find it.
+
+The real defect is the **Nelson-Oppen arrangement obligation**, undischarged.
+`(get-value ...)` on the accepted model returns `x0 = 4, x1 = 3, (f0 3) = 0,
+(f0 x1) = 1` — the arithmetic is satisfied and the UF is **not a function**.
+`x1` and the literal `3` carry the same arithmetic value; nothing ever tells
+EUF they are equal, so their `f0` images are free to differ.
+`model_based_combination` propagates only ENTAILED (fixed) values, and here
+x1's value is model-CHOSEN, so it is never reconciled.
+
+The earlier reading — "a level-0 equality goes missing from the re-solve's
+arith state" — was **wrong**, and wrong in the way this session has already
+been burned twice: a debug trace was read without confirming which `TermId`
+each line named. `(get-value)` on the model settles in one command what the
+trace could not, and should have been the first move. The `OXIZ_MBC_DBG`
+trace added for it is still useful, but its earlier interpretation is retracted.
+
+Two repros added alongside: `434-min-arrangement-*.smt2` (smaller, one
+function) and `434-control-directly-bounded-is-closed.smt2` — the same shape
+with the shared variable bounded DIRECTLY, which #433 already closes. The
+contrast is the diagnosis: the solver reconciles a shared term it can FORCE
+and cannot reconcile one it merely AGREES with.
 
 Gate: **171 / 20 / 14, 0 regressions, negative controls 8/8, row-identical**
 to both preceding gates. Trajectory unchanged at 171 — every #433 closure was
