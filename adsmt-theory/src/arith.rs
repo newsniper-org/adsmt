@@ -1164,12 +1164,43 @@ impl Theory for LinArith {
             // Non-var/non-literal operands. A *multi-variable* linear equality
             // (`x + y = z`) is genuinely ours but the bound + two-var pool has
             // no slot for it — drop it, but arm the backstop (#351) so `check`
-            // can't fabricate a Sat. A non-arithmetic shape (`(= (f x) 5)`)
-            // linearizes to `None`, so `is_multivar_arith` is false and it
-            // stays a pure UF literal — sound to leave for congruence.
-            if Self::is_multivar_arith(&lit.term) {
+            // can't fabricate a Sat.
+            //
+            // The old comment continued: "A non-arithmetic shape (`(= (f x) 5)`)
+            // linearizes to `None`, so `is_multivar_arith` is false and it stays
+            // a pure UF literal — sound to leave for congruence." That is true
+            // only when the OTHER side is a constant. It is FALSE when the other
+            // side is an arithmetic expression over variables, because
+            // congruence cannot evaluate `+`:
+            //
+            //     Add(a, a) = a + a          with  a = 1,  goal Add(a, a) = 2
+            //
+            // `linearize` gives `None` on the left and `2·a` on the right, so
+            // `arith_atom_arity` — which needs BOTH sides — answers `None`,
+            // `is_multivar_arith` is false, and the first backstop never arms.
+            // The second one does not either: the atom IS equality-shaped, and
+            // `Combination` only raises `uninterpreted` for a dropped
+            // NON-equality (`polite.rs`, the `!is_eq_shaped` guard). A genuinely
+            // arithmetic constraint was dropped with both backstops off and the
+            // engine reported `sat`, against `unsat` from z3 AND cvc5.
+            //
+            // That is the fourth recurrence of the class in
+            // `feedback_soundness_opaque_fallback` — "a fallback that drops
+            // constraints must never report sat/unsat" — and the first on the
+            // native path; the previous three were all delegation-side.
+            //
+            // So arm on the ASYMMETRIC case too, and narrowly: exactly one side
+            // linearizes AND that side mentions a variable. Requiring the
+            // variable is what keeps `(= (f x) 5)` on its old path — a constant
+            // is something congruence CAN match against, so arming there would
+            // trade a real completeness loss for no soundness gain.
+            let asymmetric_arith = match (Self::linearize(&a), Self::linearize(&b)) {
+                (Some((m, _)), None) | (None, Some((m, _))) => !m.is_empty(),
+                _ => false,
+            };
+            if Self::is_multivar_arith(&lit.term) || asymmetric_arith {
                 self.note_incomplete(|| {
-                    format!("multi-variable linear equality `{}` not representable", lit.term)
+                    format!("arithmetic equality `{}` not representable", lit.term)
                 });
             }
             return AssertResult::Ignored;

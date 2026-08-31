@@ -1,0 +1,238 @@
+# #64 — native false-SAT closed. Native-only lu-kb sweep, 209 rows.
+# Driver: adsmt-ir-lukb/examples/lukb_solve (no delegation).
+#
+# VERDICTS ROW-IDENTICAL to the N5 sweep: 92 unsat / 117 unknown, 0 changes.
+# A backstop can only move verdicts toward `unknown`, and none moved — the
+# atom this arms on was already costing those rows a verdict further down.
+#
+# THE REASON HISTOGRAM IS WHERE THE INFORMATION IS:
+#
+#   reason                                    N5      #64
+#   theory atom without interpretation        58       47
+#   LIA: arithmetic equality not representable  0       70
+#   DPLL(T) refinement bound                  56        1
+#   quantifier not reached                     3        3
+#
+# So "wall B = 56 rows stuck on the refinement bound" was largely a SYMPTOM.
+# Those rows dropped an arithmetic equality silently — both backstops
+# disarmed — and then failed later for a different reason. They now abstain
+# at the real cause. Any proposal aimed at the refinement bound should be
+# re-derived against this histogram rather than the N5 one.
+#
+# The defect itself: `Add(a,a) = a + a` with `a = 1` and goal `Add(a,a) = 2`
+# answered `sat` (a fabricated counterexample) against `unsat` from z3 AND
+# cvc5. `linearize` returns None on the UF-wrapped side, so
+# `arith_atom_arity` — which needs BOTH sides — answers None and the
+# `note_incomplete` backstop never armed; the atom is equality-shaped, so
+# polite's `uninterpreted` backstop (guarded on `!is_eq_shaped`) did not arm
+# either. Fourth recurrence of `feedback_soundness_opaque_fallback`, first on
+# the native path.
+abduct-boolean/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+abduct-boolean/ob02	unsat	# verified natively
+abduct-eq-vars/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+abduct-eq-vars/ob02	unsat	# verified natively
+abduct-eq-zero/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+abduct-eq-zero/ob02	unsat	# verified natively
+abduct-negativity/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
+abduct-negativity/ob02	unsat	# verified natively
+abduct-pred/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+abduct-pred/ob02	unsat	# verified natively
+abduct-relational/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+abduct-relational/ob02	unsat	# verified natively
+abduct-sign/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
+abduct-sign/ob02	unsat	# verified natively
+abduct-spec-len/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
+abduct-spec-len/ob02	unsat	# verified natively
+datatypes-match-1/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-1/ob02	unsat	# verified natively
+datatypes-match-1/ob03	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-1/ob04	unsat	# verified natively
+datatypes-match-1/ob05	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-1/ob06	unsat	# verified natively
+datatypes-match-1/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+datatypes-match-1/ob08	unknown	# engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-1/ob09	unsat	# verified natively
+datatypes-match-1/ob10	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-1/ob11	unsat	# verified natively
+datatypes-match-2/ob01	unknown	# engine: LIA: arithmetic equality `(datatypes_match_2!progress.? (Poly%datatypes_match_2!Status. s!) = t@)` not representable
+datatypes-match-2/ob02	unsat	# verified natively
+datatypes-match-2/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+datatypes-match-2/ob04	unsat	# verified natively
+datatypes-match-2/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+datatypes-match-2/ob06	unsat	# verified natively
+datatypes-match-2/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+datatypes-match-2/ob08	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-2/ob09	unsat	# verified natively
+datatypes-match-3/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-3/ob02	unsat	# verified natively
+datatypes-match-3/ob03	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-3/ob04	unsat	# verified natively
+datatypes-match-3/ob05	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-3/ob06	unsat	# verified natively
+datatypes-match-3/ob07	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-3/ob08	unsat	# verified natively
+datatypes-match-3/ob09	unknown	# engine: LIA: arithmetic equality `(datatypes_match_3!eval.? (Poly%datatypes_match_3!Expr. (datatypes_match_3!Expr./Lit (%I (I a!)))) = a!)` not representable
+datatypes-match-3/ob10	unsat	# verified natively
+datatypes-match-3/ob11	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
+datatypes-match-3/ob12	unsat	# verified natively
+datatypes-match-3/ob13	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-3/ob14	unsat	# verified natively
+datatypes-match-3/ob15	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+datatypes-match-3/ob16	unsat	# verified natively
+diff/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+diff/ob02	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+diff/ob03	unsat	# verified natively
+divmod-real-1/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+divmod-real-1/ob02	unsat	# verified natively
+divmod-real-1/ob03	unknown	# engine: LIA: arithmetic equality `(tmp%1 = EucDiv x! n!)` not representable
+divmod-real-1/ob04	unknown	# engine: LIA: arithmetic equality `(r! = EucMod x! n!)` not representable
+divmod-real-1/ob05	unsat	# verified natively
+divmod-real-1/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+divmod-real-1/ob07	unsat	# verified natively
+divmod-real-1/ob08	unknown	# engine: LIA: arithmetic equality `(tmp%2 = EucDiv x! n!)` not representable
+divmod-real-1/ob09	unsat	# verified natively
+divmod-real-1/ob10	unsat	# verified natively
+divmod-real-2/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+divmod-real-2/ob02	unsat	# verified natively
+divmod-real-2/ob03	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+divmod-real-2/ob04	unsat	# verified natively
+divmod-real-2/ob05	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+divmod-real-2/ob06	unsat	# verified natively
+divmod-real-2/ob07	unknown	# engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+divmod-real-2/ob08	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+divmod-real-2/ob09	unknown	# engine: LIA: arithmetic equality `(r! = Add x! 2)` not representable
+divmod-real-2/ob10	unsat	# verified natively
+divmod-real-3/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+divmod-real-3/ob02	unsat	# verified natively
+divmod-real-3/ob03	unknown	# engine: LIA: arithmetic equality `(r! = uClip 64 x!)` not representable
+divmod-real-3/ob04	unknown	# engine: LIA: arithmetic equality `(r@ = uClip 64 (EucDiv x! 2))` not representable
+divmod-real-3/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+divmod-real-3/ob06	unknown	# engine: LIA: arithmetic equality `(Add (Mul (divmod_real_3!DivModResult./DivModResult/quotient (%Poly%divmod_real_3!DivModResult. (Poly%divmod_real_3!DivModResult. res!))) n!) (divmod_real_3!DivModResult./DivModResult/remainder (%Poly%divmod_real_3!DivModResult. (Poly%divmod_real_3!DivModResult. res!))) = x!)` not representable
+divmod-real-3/ob07	unsat	# verified natively
+divmod-real-3/ob08	unsat	# verified natively
+error-disequality/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+error-disequality/ob02	unsat	# verified natively
+fuel-recursion-1/ob01	unknown	# engine: LIA: arithmetic equality `(decrease%init0 = %I n!)` not representable
+fuel-recursion-1/ob02	unsat	# verified natively
+fuel-recursion-1/ob03	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+fuel-recursion-1/ob04	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+fuel-recursion-1/ob05	unsat	# verified natively
+fuel-recursion-1/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-1/ob07	unsat	# verified natively
+fuel-recursion-1/ob08	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-1/ob09	unsat	# verified natively
+fuel-recursion-1/ob10	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-1/ob11	unsat	# verified natively
+fuel-recursion-1/ob12	unknown	# engine: LIA: arithmetic equality `(r! = fuel_recursion_1!sum_to.? (I n!))` not representable
+fuel-recursion-1/ob13	unsat	# verified natively
+fuel-recursion-1/ob14	unsat	# verified natively
+fuel-recursion-2/ob01	unknown	# engine: LIA: arithmetic equality `(decrease%init0 = %I n!)` not representable
+fuel-recursion-2/ob02	unsat	# verified natively
+fuel-recursion-2/ob03	unknown	# engine: LIA: arithmetic equality `(decrease%init0 = %I n!)` not representable
+fuel-recursion-2/ob04	unsat	# verified natively
+fuel-recursion-2/ob05	unknown	# engine: LIA: arithmetic equality `(decrease%init0 = %I n!)` not representable
+fuel-recursion-2/ob06	unsat	# verified natively
+fuel-recursion-2/ob07	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+fuel-recursion-2/ob08	unsat	# verified natively
+fuel-recursion-2/ob09	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:>=, LRA:>=]
+fuel-recursion-2/ob10	unsat	# verified natively
+fuel-recursion-2/ob11	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:>, LRA:>]
+fuel-recursion-2/ob12	unsat	# verified natively
+fuel-recursion-2/ob13	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-2/ob14	unsat	# verified natively
+fuel-recursion-2/ob15	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+fuel-recursion-2/ob16	unsat	# verified natively
+fuel-recursion-3/ob01	unknown	# engine: LIA: arithmetic equality `(decrease%init0 = %I n!)` not representable
+fuel-recursion-3/ob02	unsat	# verified natively
+fuel-recursion-3/ob03	unknown	# engine: LIA: arithmetic equality `(decrease%init0 = %I n!)` not representable
+fuel-recursion-3/ob04	unsat	# verified natively
+fuel-recursion-3/ob05	unknown	# engine: LIA: arithmetic equality `(decrease%init0 = %I n!)` not representable
+fuel-recursion-3/ob06	unsat	# verified natively
+fuel-recursion-3/ob07	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+fuel-recursion-3/ob08	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-3/ob09	unsat	# verified natively
+fuel-recursion-3/ob10	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-3/ob11	unsat	# verified natively
+fuel-recursion-3/ob12	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-3/ob13	unsat	# verified natively
+fuel-recursion-3/ob14	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-3/ob15	unsat	# verified natively
+fuel-recursion-3/ob16	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+fuel-recursion-3/ob17	unsat	# verified natively
+fuel-recursion-3/ob18	unsat	# verified natively
+linear-euf-1/ob01	unsat	# verified natively
+linear-euf-1/ob02	unknown	# engine: LIA: arithmetic equality `(tmp%2 = Add (linear_euf_1!f.? (I b!)) 1)` not representable
+linear-euf-1/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+linear-euf-1/ob04	unsat	# verified natively
+linear-euf-1/ob05	unknown	# engine: LIA: arithmetic equality `(x! = Add y! 0)` not representable
+linear-euf-1/ob06	unsat	# verified natively
+linear-euf-1/ob07	unsat	# verified natively
+linear-euf-2/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+linear-euf-2/ob02	unsat	# verified natively
+linear-euf-2/ob03	unknown	# engine: LIA: arithmetic equality `(ka@ = %I (as_type (%%choose%%0 INT a!) INT))` not representable
+linear-euf-2/ob04	unknown	# engine: LIA: arithmetic equality `(ka@ = %I (as_type (%%choose%%1 INT a!) INT))` not representable
+linear-euf-2/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+linear-euf-2/ob06	unsat	# verified natively
+linear-euf-2/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+linear-euf-2/ob08	unknown	# engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+linear-euf-2/ob09	unsat	# verified natively
+linear-euf-2/ob10	unsat	# verified natively
+linear-euf-3/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+linear-euf-3/ob02	unsat	# verified natively
+linear-euf-3/ob03	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+linear-euf-3/ob04	unsat	# verified natively
+linear-euf-3/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+linear-euf-3/ob06	unknown	# engine: LIA: arithmetic equality `(r! = Add a! b!)` not representable
+linear-euf-3/ob07	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+linear-euf-3/ob08	unsat	# verified natively
+noabduct-false/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+noabduct-false/ob02	unsat	# verified natively
+nonlinear-1/ob01	unsat	# verified natively
+nonlinear-2/ob01	unsat	# verified natively
+nonlinear-2/ob02	unsat	# verified natively
+nonlinear-2/ob03	unsat	# verified natively
+nonlinear-2/ob04	unsat	# verified natively
+nonlinear-2/ob05	unsat	# verified natively
+nonlinear-2/ob06	unsat	# verified natively
+nonlinear-2/ob07	unknown	# engine: LIA: arithmetic equality `(r! = Mul x! x!)` not representable
+nonlinear-2/ob08	unsat	# verified natively
+nonlinear-2/ob09	unsat	# verified natively
+nonlinear-3/ob01	unknown	# engine: LIA: arithmetic equality `(tmp%1 = Mul x! x!)` not representable
+nonlinear-3/ob02	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+nonlinear-3/ob03	unsat	# verified natively
+nonlinear-3/ob04	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+nonlinear-3/ob05	unsat	# verified natively
+nonlinear-3/ob06	unsat	# verified natively
+seq-vstd-1/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-1/ob02	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-1/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<, LIA:>=, LRA:>=]
+seq-vstd-1/ob04	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-1/ob05	unknown	# engine: LIA: arithmetic equality `(%I (vstd!seq.Seq.index.? $ INT (vstd!seq.Seq.update.? $ INT (Poly%vstd!seq.Seq<int.>. s!) (I i!) (I v!)) (I i!)) = v!)` not representable
+seq-vstd-1/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-1/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-1/ob08	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-1/ob09	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-1/ob10	unsat	# verified natively
+seq-vstd-2/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-2/ob02	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-2/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<, LIA:>=, LRA:>=]
+seq-vstd-2/ob04	unknown	# engine: LIA: arithmetic equality `(tmp%%$6@ = vstd!seq.Seq.len.? $ INT tmp%7)` not representable
+seq-vstd-2/ob05	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-2/ob06	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-2/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+seq-vstd-2/ob08	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+seq-vstd-2/ob09	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-2/ob10	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-2/ob11	unsat	# verified natively
+seq-vstd-3/ob01	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-3/ob02	unsat	# verified natively
+seq-vstd-3/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob04	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob08	unknown	# engine: LIA: arithmetic equality `(tmp%%$5@ = vstd!seq.Seq.len.? $ INT tmp%12)` not representable
+seq-vstd-3/ob09	unknown	# engine: LIA: arithmetic equality `(SZ = const_int (CONST_INT SZ))` not representable
+seq-vstd-3/ob10	unsat	# verified natively
+seq-vstd-3/ob11	unsat	# verified natively
+verify-arith/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
