@@ -1411,3 +1411,54 @@ already justified at level 0** — those aliases are permanent and need no
 retractable form, and each one avoided is one fewer tableau entry. Whether
 that recovers the cost depends on what fraction of in-scope signature hits are
 level-0-justified, which is a measurement nobody has taken.
+
+**Update 2026-08-31 — #434 CLOSED (Ackermann lemmas). Ledger 171 -> 173, and
+the row-level churn is +5 / -3 rather than a clean gain.**
+
+Submodule `fd2ea4a` -> `f73d234`. Gate:
+
+```
+verified            : 173   (171 -> 173)
+unknown-or-bail     :  21
+solver-timeout      :  11   (14 -> 11)
+REGRESSIONS vs PINNED: 0
+negative controls   : 8/8, every verdict identical to the baseline binary
+```
+
+**The "0 regressions" is against the PINNED 143-era manifest, and that is not
+the whole story.** A row-by-row A/B against the IMMEDIATE predecessor
+(`adsmtc-baseline` `0ed68951…` vs `adsmtc-final` `fb70990b…`, artifacts in
+`2026-08-31-434-rows-{baseline-fd2ea4a,ackermann}.tsv`) shows churn in both
+directions:
+
+```
+GAINED (5)  datatypes-match-3/ob11  timeout -> unsat
+            linear-euf-2/ob05       unknown -> unsat
+            seq-vstd-2/ob01         unknown -> unsat
+            seq-vstd-2/ob03         timeout -> unsat
+            seq-vstd-3/ob07         timeout -> unsat
+LOST   (3)  fuel-recursion-2/ob13   unsat 5s  -> unknown 32s
+            seq-vstd-2/ob07         unsat 13s -> unknown 25s
+            seq-vstd-3/ob05         unsat 39s -> timeout
+```
+
+Every loss reproduces across repeats and every loss is restored by
+`OXIZ_NO_ACKERMANN=1` at the baseline timing, so the whole cost is attributable
+to this mechanism. Budget caps were built and measured against the obvious
+"it burns budget" reading and REJECTED — neither a smaller round cap nor a
+scan bound recovers any lost row, and both cost `datatypes-match-3/ob11`. The
+losses are the lemmas redirecting the search (their new atoms feed the
+quantifier instantiation loop), not a budget artifact. Details and the
+comparison table live in the source, next to the constants.
+
+Landed on net +2 with the churn disclosed, following the practice set at the
+159-ledger gate. Soundness side is unambiguous: both #434 repros now answer
+`unsat` matching z3 AND cvc5, the whole `4*.smt2` repro corpus is unchanged
+otherwise, `arith_euf_merge_diff.py` at 600 seeds reports 0 fabricated `unsat`
+and 0 missed, and an Ackermann lemma is valid in FOL with equality, so it can
+expose an inconsistency but never create one.
+
+Also in this bump: upstream's pure-Rust **LRAT checker** (`oxiz-proof`, ported
+byte-identical from `v0.3.3`, 13 tests). It moves zero rows today — nothing in
+this fork produces an LRAT proof yet — and is the S2a half of
+`DELEGATION_TRUST_REDESIGN.md` §S2.
