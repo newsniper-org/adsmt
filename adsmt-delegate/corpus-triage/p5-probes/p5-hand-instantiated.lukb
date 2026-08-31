@@ -1,0 +1,7 @@
+fn Add(x0: Int, x1: Int): Int
+const `a!`: Int
+const `b!`: Int
+axiom: `a!` = 1
+axiom: `b!` = 1
+axiom: Add(`a!`, `b!`) = `a!` + `b!`
+goal: Add(`a!`, `b!`) < 5

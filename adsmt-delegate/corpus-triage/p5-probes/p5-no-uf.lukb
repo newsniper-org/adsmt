@@ -1,0 +1,7 @@
+const `a!`: Int
+const `b!`: Int
+const `s!`: Int
+axiom: `a!` = 1
+axiom: `b!` = 1
+axiom: `s!` = `a!` + `b!`
+goal: `s!` < 5

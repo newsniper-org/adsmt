@@ -1,0 +1,5 @@
+fn Dbl(x0: Int): Int
+axiom: forall x: Int. Dbl(x) = x + x trigger Dbl(x)
+const `a!`: Int
+axiom: `a!` = 1
+goal: Dbl(`a!`) < 5

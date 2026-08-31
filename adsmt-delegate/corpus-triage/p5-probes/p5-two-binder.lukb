@@ -1,0 +1,7 @@
+fn Add(x0: Int, x1: Int): Int
+axiom: forall x: Int, y: Int. Add(x, y) = x + y trigger Add(x, y)
+const `a!`: Int
+const `b!`: Int
+axiom: `a!` = 1
+axiom: `b!` = 1
+goal: Add(`a!`, `b!`) < 5
