@@ -30,7 +30,26 @@ use adsmt_theory::trait_::{AssertResult, Literal};
 #[derive(Clone, Debug)]
 pub enum LoopOutcome {
     Sat,
-    Unsat { theory: String, witness: TheoryWitness },
+    Unsat {
+        theory: String,
+        witness: TheoryWitness,
+        /// How many of `literals` had been broadcast when the conflict
+        /// fired — so `literals[..asserted]` is ALREADY a conflict set,
+        /// for free, and the literals after it played no part.
+        ///
+        /// The eager-conflict short-circuit below stops mid-sweep, so
+        /// this is often a strict prefix; when the conflict comes from
+        /// the final `check()` instead, every literal was broadcast and
+        /// this equals `literals.len()`.
+        ///
+        /// It is a SOUND over-approximation of the conflict core, never
+        /// an under-approximation: dropping a literal that did take part
+        /// would make the blocking clause non-theory-valid, which is a
+        /// false `unsat`. Callers may shrink it further only by
+        /// re-checking (see `minimize_conflict_core`), never by
+        /// reasoning about it.
+        asserted: usize,
+    },
     Unknown { theory: String, reason: String },
 }
 
@@ -60,7 +79,7 @@ pub fn run_once_with_deadline(
     literals: &[(Term, bool)],
     deadline: Option<std::time::Instant>,
 ) -> LoopOutcome {
-    for (atom, polarity) in literals {
+    for (i, (atom, polarity)) in literals.iter().enumerate() {
         let lit = if *polarity {
             Literal::positive(atom.clone())
         } else {
@@ -69,7 +88,9 @@ pub fn run_once_with_deadline(
         if let Ok(lit) = lit {
             for (name, r) in combo.assert(lit) {
                 if let AssertResult::Conflict { witness } = r {
-                    return LoopOutcome::Unsat { theory: name, witness };
+                    // `i + 1` — the literal that TRIGGERED the conflict is
+                    // part of it, so the prefix is inclusive.
+                    return LoopOutcome::Unsat { theory: name, witness, asserted: i + 1 };
                 }
             }
         }
@@ -77,7 +98,11 @@ pub fn run_once_with_deadline(
     combo.set_deadline(deadline);
     match combo.check() {
         CombinedCheck::Sat => LoopOutcome::Sat,
-        CombinedCheck::Unsat { theory, witness } => LoopOutcome::Unsat { theory, witness },
+        // The conflict surfaced only after the whole sweep, so every
+        // literal is in scope.
+        CombinedCheck::Unsat { theory, witness } => {
+            LoopOutcome::Unsat { theory, witness, asserted: literals.len() }
+        }
         CombinedCheck::Unknown { theory, reason } => LoopOutcome::Unknown { theory, reason },
     }
 }

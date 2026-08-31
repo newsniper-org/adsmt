@@ -1,0 +1,227 @@
+# N5 (conflict-core learning) — native-only lu-kb sweep, 209 rows.
+# Driver: adsmt-ir-lukb/examples/lukb_solve (no delegation).
+#
+# Verdicts 90 unsat / 119 unknown  ->  92 unsat / 117 unknown, 0 regressions.
+# Converted: divmod-real-3/ob02, linear-euf-3/ob02 (both re-checked unsat by
+# z3 AND cvc5 -- divmod-real-3/ob02 is NOT in the delegation-verified 171, its
+# manifest class is stage-bail, so it was cross-checked directly rather than
+# leaning on the pinned fixture).
+#
+# Abstain histogram:
+#   reason                                 before N5   after N5
+#   theory atom without interpretation            58         58
+#   DPLL(T) refinement bound                      58         56
+#   quantifier not reached                         3          3
+#
+# The remaining 56 are NOT budget-bound: ADSMT_CORE_MIN_BUDGET 64 -> 1024
+# changes nothing on any probe, and ADSMT_THEORY_REFINE_BOUND 16 -> 256 now
+# TIMES OUT where before N5 it returned at the cap.
+abduct-boolean/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+abduct-boolean/ob02	unsat	# verified natively
+abduct-eq-vars/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+abduct-eq-vars/ob02	unsat	# verified natively
+abduct-eq-zero/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+abduct-eq-zero/ob02	unsat	# verified natively
+abduct-negativity/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
+abduct-negativity/ob02	unsat	# verified natively
+abduct-pred/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+abduct-pred/ob02	unsat	# verified natively
+abduct-relational/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+abduct-relational/ob02	unsat	# verified natively
+abduct-sign/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
+abduct-sign/ob02	unsat	# verified natively
+abduct-spec-len/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
+abduct-spec-len/ob02	unsat	# verified natively
+datatypes-match-1/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-1/ob02	unsat	# verified natively
+datatypes-match-1/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-1/ob04	unsat	# verified natively
+datatypes-match-1/ob05	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-1/ob06	unsat	# verified natively
+datatypes-match-1/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+datatypes-match-1/ob08	unknown	# engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+datatypes-match-1/ob09	unsat	# verified natively
+datatypes-match-1/ob10	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-1/ob11	unsat	# verified natively
+datatypes-match-2/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-2/ob02	unsat	# verified natively
+datatypes-match-2/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+datatypes-match-2/ob04	unsat	# verified natively
+datatypes-match-2/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+datatypes-match-2/ob06	unsat	# verified natively
+datatypes-match-2/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+datatypes-match-2/ob08	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-2/ob09	unsat	# verified natively
+datatypes-match-3/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-3/ob02	unsat	# verified natively
+datatypes-match-3/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-3/ob04	unsat	# verified natively
+datatypes-match-3/ob05	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-3/ob06	unsat	# verified natively
+datatypes-match-3/ob07	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-3/ob08	unsat	# verified natively
+datatypes-match-3/ob09	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-3/ob10	unsat	# verified natively
+datatypes-match-3/ob11	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]
+datatypes-match-3/ob12	unsat	# verified natively
+datatypes-match-3/ob13	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-3/ob14	unsat	# verified natively
+datatypes-match-3/ob15	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+datatypes-match-3/ob16	unsat	# verified natively
+diff/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+diff/ob02	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+diff/ob03	unsat	# verified natively
+divmod-real-1/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+divmod-real-1/ob02	unsat	# verified natively
+divmod-real-1/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+divmod-real-1/ob04	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+divmod-real-1/ob05	unsat	# verified natively
+divmod-real-1/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+divmod-real-1/ob07	unsat	# verified natively
+divmod-real-1/ob08	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
+divmod-real-1/ob09	unsat	# verified natively
+divmod-real-1/ob10	unsat	# verified natively
+divmod-real-2/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+divmod-real-2/ob02	unsat	# verified natively
+divmod-real-2/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+divmod-real-2/ob04	unsat	# verified natively
+divmod-real-2/ob05	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+divmod-real-2/ob06	unsat	# verified natively
+divmod-real-2/ob07	unknown	# engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+divmod-real-2/ob08	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+divmod-real-2/ob09	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
+divmod-real-2/ob10	unsat	# verified natively
+divmod-real-3/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+divmod-real-3/ob02	unsat	# verified natively
+divmod-real-3/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+divmod-real-3/ob04	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+divmod-real-3/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+divmod-real-3/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
+divmod-real-3/ob07	unsat	# verified natively
+divmod-real-3/ob08	unsat	# verified natively
+error-disequality/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+error-disequality/ob02	unsat	# verified natively
+fuel-recursion-1/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-1/ob02	unsat	# verified natively
+fuel-recursion-1/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-1/ob04	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-1/ob05	unsat	# verified natively
+fuel-recursion-1/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-1/ob07	unsat	# verified natively
+fuel-recursion-1/ob08	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-1/ob09	unsat	# verified natively
+fuel-recursion-1/ob10	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-1/ob11	unsat	# verified natively
+fuel-recursion-1/ob12	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-1/ob13	unsat	# verified natively
+fuel-recursion-1/ob14	unsat	# verified natively
+fuel-recursion-2/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-2/ob02	unsat	# verified natively
+fuel-recursion-2/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-2/ob04	unsat	# verified natively
+fuel-recursion-2/ob05	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-2/ob06	unsat	# verified natively
+fuel-recursion-2/ob07	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-2/ob08	unsat	# verified natively
+fuel-recursion-2/ob09	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:>=, LRA:>=]
+fuel-recursion-2/ob10	unsat	# verified natively
+fuel-recursion-2/ob11	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:>, LRA:>]
+fuel-recursion-2/ob12	unsat	# verified natively
+fuel-recursion-2/ob13	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-2/ob14	unsat	# verified natively
+fuel-recursion-2/ob15	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+fuel-recursion-2/ob16	unsat	# verified natively
+fuel-recursion-3/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-3/ob02	unsat	# verified natively
+fuel-recursion-3/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-3/ob04	unsat	# verified natively
+fuel-recursion-3/ob05	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-3/ob06	unsat	# verified natively
+fuel-recursion-3/ob07	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-3/ob08	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-3/ob09	unsat	# verified natively
+fuel-recursion-3/ob10	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-3/ob11	unsat	# verified natively
+fuel-recursion-3/ob12	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-3/ob13	unsat	# verified natively
+fuel-recursion-3/ob14	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+fuel-recursion-3/ob15	unsat	# verified natively
+fuel-recursion-3/ob16	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+fuel-recursion-3/ob17	unsat	# verified natively
+fuel-recursion-3/ob18	unsat	# verified natively
+linear-euf-1/ob01	unsat	# verified natively
+linear-euf-1/ob02	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+linear-euf-1/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+linear-euf-1/ob04	unsat	# verified natively
+linear-euf-1/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+linear-euf-1/ob06	unsat	# verified natively
+linear-euf-1/ob07	unsat	# verified natively
+linear-euf-2/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+linear-euf-2/ob02	unsat	# verified natively
+linear-euf-2/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+linear-euf-2/ob04	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+linear-euf-2/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+linear-euf-2/ob06	unsat	# verified natively
+linear-euf-2/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+linear-euf-2/ob08	unknown	# engine: assertion set contains a quantifier nested in propositional structure that the ground instantiation loop does not reach; the propositional model leaves the quantifier atom uninterpreted, so satisfiability cannot be claimed
+linear-euf-2/ob09	unsat	# verified natively
+linear-euf-2/ob10	unsat	# verified natively
+linear-euf-3/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+linear-euf-3/ob02	unsat	# verified natively
+linear-euf-3/ob03	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+linear-euf-3/ob04	unsat	# verified natively
+linear-euf-3/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+linear-euf-3/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+linear-euf-3/ob07	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+linear-euf-3/ob08	unsat	# verified natively
+noabduct-false/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+noabduct-false/ob02	unsat	# verified natively
+nonlinear-1/ob01	unsat	# verified natively
+nonlinear-2/ob01	unsat	# verified natively
+nonlinear-2/ob02	unsat	# verified natively
+nonlinear-2/ob03	unsat	# verified natively
+nonlinear-2/ob04	unsat	# verified natively
+nonlinear-2/ob05	unsat	# verified natively
+nonlinear-2/ob06	unsat	# verified natively
+nonlinear-2/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<, LRA:<]
+nonlinear-2/ob08	unsat	# verified natively
+nonlinear-2/ob09	unsat	# verified natively
+nonlinear-3/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+nonlinear-3/ob02	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+nonlinear-3/ob03	unsat	# verified natively
+nonlinear-3/ob04	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>=, LRA:>=]
+nonlinear-3/ob05	unsat	# verified natively
+nonlinear-3/ob06	unsat	# verified natively
+seq-vstd-1/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-1/ob02	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-1/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<, LIA:>=, LRA:>=]
+seq-vstd-1/ob04	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-1/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-1/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-1/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-1/ob08	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-1/ob09	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-1/ob10	unsat	# verified natively
+seq-vstd-2/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-2/ob02	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-2/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<, LIA:>=, LRA:>=]
+seq-vstd-2/ob04	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-2/ob05	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-2/ob06	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-2/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+seq-vstd-2/ob08	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=]
+seq-vstd-2/ob09	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-2/ob10	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-2/ob11	unsat	# verified natively
+seq-vstd-3/ob01	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-3/ob02	unsat	# verified natively
+seq-vstd-3/ob03	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob04	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob05	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob06	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob07	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob08	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:<=, LRA:<=, LIA:<, LRA:<]
+seq-vstd-3/ob09	unknown	# engine: theory-infeasible boolean models persisted past the native DPLL(T) refinement bound
+seq-vstd-3/ob10	unsat	# verified natively
+seq-vstd-3/ob11	unsat	# verified natively
+verify-arith/ob01	unknown	# engine: native theory abstraction: a theory atom was assigned without theory interpretation [LIA:>, LRA:>]

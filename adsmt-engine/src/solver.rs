@@ -154,6 +154,32 @@ fn theory_refine_bound() -> usize {
         .unwrap_or(THEORY_REFINE_BOUND)
 }
 
+/// Maximum theory re-checks spent shrinking ONE conflict to a core
+/// (#N5, [`Solver::minimize_conflict_core`]). Deletion-based
+/// minimization is quadratic in the assignment size, so this is what
+/// keeps a large model from turning each refinement round into a
+/// re-solve storm. Exceeding it stops the shrink and keeps the core
+/// found so far, which is still a valid — merely longer — blocking
+/// clause, so the bound trades clause strength for time and never
+/// soundness.
+const CORE_MIN_BUDGET: usize = 64;
+
+/// [`CORE_MIN_BUDGET`], overridable by `ADSMT_CORE_MIN_BUDGET` so the
+/// clause-strength/time trade can be measured rather than assumed.
+fn core_min_budget() -> usize {
+    std::env::var("ADSMT_CORE_MIN_BUDGET")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(CORE_MIN_BUDGET)
+}
+
+/// `ADSMT_NO_CORE_MIN=1` restores the pre-#N5 whole-model blocking
+/// clause, so the corpus effect of core learning can be attributed by
+/// A/B rather than argued.
+fn core_min_disabled() -> bool {
+    std::env::var("ADSMT_NO_CORE_MIN").is_ok_and(|v| v == "1")
+}
+
 /// The canonical KangarooTwelve-256 hash of a single clause, keyed by
 /// **atom name** (not a global index). Literals are rendered as
 /// `(atom.to_string(), polarity)` pairs, sorted + de-duplicated within
@@ -2759,7 +2785,7 @@ impl Solver {
             &forced,
             deadline,
         ) {
-            LoopOutcome::Unsat { theory, witness } => {
+            LoopOutcome::Unsat { theory, witness, .. } => {
                 // Theory unsat threads `:loc` through the cert exactly
                 // like the SAT-level unsat path.
                 let lits_with_locs = self.attach_locs(lits);
@@ -2856,8 +2882,26 @@ impl Solver {
             // conjunction), so the bounded DPLL(T) refinement loop in
             // [`check_via_theories_with_model`] stays sound for any iteration
             // bound: CDCL exhaustion ⇒ sound `Unsat`, the cap ⇒ `Unknown`.
-            LoopOutcome::Unsat { .. } => {
-                let block: Clause = model_lits
+            LoopOutcome::Unsat { asserted, .. } => {
+                // #N5 — block the CONFLICT CORE, not the whole model.
+                //
+                // Negating the entire assignment rules out exactly ONE
+                // boolean model per round, so the refinement bound would
+                // have to be exponential to converge (measured: raising
+                // it 16 -> 256 converts nothing, the rows time out
+                // instead). A shorter clause subsumes exponentially many
+                // assignments, which is what a real DPLL(T) learns.
+                let core = if core_min_disabled() {
+                    model_lits.clone()
+                } else {
+                    self.minimize_conflict_core(
+                        &model_lits,
+                        asserted,
+                        core_min_budget(),
+                        deadline,
+                    )
+                };
+                let block: Clause = core
                     .iter()
                     .map(|(atom, pol)| Lit::new(atom.clone(), !pol))
                     .collect();
@@ -2869,6 +2913,90 @@ impl Solver {
                 })
             }
         }
+    }
+
+    /// Shrink a theory-infeasible assignment to a CONFLICT CORE whose
+    /// negation is still theory-valid (#N5).
+    ///
+    /// # Why the whole model is the wrong thing to block
+    ///
+    /// `¬(l₁ ∧ … ∧ lₙ)` for the full assignment kills exactly one
+    /// boolean model. With `n` atoms the refinement loop would need
+    /// `2ⁿ` rounds in the worst case, which is why raising
+    /// `ADSMT_THEORY_REFINE_BOUND` from 16 to 256 converted nothing on
+    /// the lu-kb corpus — the rows time out rather than converge. A core
+    /// of size `k` subsumes `2ⁿ⁻ᵏ` assignments at once.
+    ///
+    /// # Why every shrink is re-checked and never reasoned about
+    ///
+    /// A core that is too SMALL is a blocking clause that is not
+    /// theory-valid, which turns straight into a false `unsat` — the
+    /// expensive direction. So this never infers that a literal is
+    /// irrelevant: it removes the literal, re-runs the theory
+    /// combination, and keeps the removal ONLY on a measured conflict.
+    /// `Unknown` counts as "cannot remove", not as "still infeasible" —
+    /// a theory that gave up has not testified to anything.
+    ///
+    /// Two facts make the result sound for any budget or bailout point:
+    /// the starting set `lits[..asserted]` is measured infeasible (it is
+    /// what the caller's own conflict fired on), and any SUPERSET of an
+    /// infeasible set is infeasible. So stopping early always leaves a
+    /// valid — merely weaker — blocking clause.
+    ///
+    /// `budget` caps the re-checks — the caller passes
+    /// [`core_min_budget`]; a budget of 0 keeps the free prefix and
+    /// spends nothing.
+    fn minimize_conflict_core(
+        &mut self,
+        lits: &[(Term, bool)],
+        asserted: usize,
+        budget: usize,
+        deadline: Option<std::time::Instant>,
+    ) -> Vec<(Term, bool)> {
+        // The free half: the eager-conflict short-circuit already told us
+        // the literals after `asserted` were never broadcast, so they
+        // cannot have participated. Costs nothing and is often most of
+        // the reduction.
+        let mut core: Vec<(Term, bool)> = lits[..asserted.min(lits.len())].to_vec();
+        if core.is_empty() {
+            // `asserted == 0` should not happen (the conflict fired on
+            // SOME literal), but a zero-length block is the empty clause
+            // — a false `unsat` in one step. Fall back to the whole model
+            // rather than emit it.
+            return lits.to_vec();
+        }
+
+        let mut spent = 0usize;
+        // Walk from the back: the literal that TRIGGERED the conflict is
+        // the last one, and the early literals are the likelier
+        // bystanders, so a bounded budget is spent where it pays.
+        let mut i = core.len();
+        while i > 0 && spent < budget {
+            i -= 1;
+            if core.len() == 1 {
+                break;
+            }
+            if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                break;
+            }
+            let mut trial = core.clone();
+            let dropped = trial.remove(i);
+            self.theories.reset();
+            spent += 1;
+            match dpllt::run_once_with_deadline(&mut self.theories, &trial, deadline) {
+                // Still a conflict WITHOUT it — the literal was a
+                // bystander, and the shorter clause is still valid.
+                LoopOutcome::Unsat { .. } => core = trial,
+                // Satisfiable without it, or the theories could not say:
+                // either way we have no testimony that dropping it is
+                // safe, so it stays.
+                LoopOutcome::Sat | LoopOutcome::Unknown { .. } => {
+                    let _ = dropped;
+                }
+            }
+        }
+        self.theories.reset();
+        core
     }
 
     /// Expose the flattened literals as classical CNF — useful for
@@ -5083,6 +5211,132 @@ mod tests {
         assert!(
             matches!(s.check_sat(), SatResult::Unknown { .. }),
             "a baked opaque assertion must not be reported sat under --aot-load"
+        );
+    }
+
+    // ── #N5 — conflict-core learning ────────────────────────────────
+    //
+    // `minimize_conflict_core` shrinks a theory-infeasible assignment
+    // before its negation becomes a blocking clause. The clause must
+    // stay THEORY-VALID: a core that dropped a participating literal
+    // would block satisfiable assignments, i.e. a false `unsat`. These
+    // pin both directions — that it does shrink, and that it refuses to
+    // shrink past the truth.
+
+    /// `x = 5 ∧ x = 6` conflicts on its own; five unrelated literals
+    /// riding along must be dropped, because the shorter clause is what
+    /// subsumes the 2⁵ assignments they span.
+    #[test]
+    fn a_core_drops_the_literals_that_did_not_participate() {
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let mut lits = vec![
+            (Term::mk_eq(x.clone(), int_lit("5")).unwrap(), true),
+            (Term::mk_eq(x, int_lit("6")).unwrap(), true),
+        ];
+        for n in 0..5 {
+            let y = Term::var(&format!("y{n}"), int_ty());
+            lits.push((cmp(">", y, int_lit("0")), true));
+        }
+        let n = lits.len();
+        let core = s.minimize_conflict_core(&lits, n, 64, None);
+        assert!(core.len() < n, "the bystanders must not be in the clause");
+        assert!(
+            core.len() >= 2,
+            "both halves of the contradiction are needed: {core:?}"
+        );
+    }
+
+    /// THE SOUNDNESS PIN, stated as the property that matters: whatever
+    /// the minimizer returns must STILL be theory-infeasible. If it is
+    /// not, its negation is not a theory-valid clause and the refinement
+    /// loop can conclude a false `unsat`.
+    #[test]
+    fn a_returned_core_is_still_infeasible() {
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let lits = vec![
+            (cmp(">", x.clone(), int_lit("0")), true),
+            (cmp("<", x.clone(), int_lit("10")), true),
+            (Term::mk_eq(x.clone(), int_lit("5")).unwrap(), true),
+            (Term::mk_eq(x, int_lit("6")).unwrap(), true),
+        ];
+        let core = s.minimize_conflict_core(&lits, lits.len(), 64, None);
+        s.theories.reset();
+        assert!(
+            matches!(
+                dpllt::run_once_with_deadline(&mut s.theories, &core, None),
+                LoopOutcome::Unsat { .. }
+            ),
+            "the core must reproduce the conflict, else its negation is not valid"
+        );
+    }
+
+    /// ANTI-OVER-MINIMIZATION. Here EVERY literal participates:
+    /// `x > 0`, `x < 10` and `x = 20` are pairwise satisfiable, and only
+    /// the trio `x < 10` + `x = 20` conflicts. Dropping a needed literal
+    /// would be the false-`unsat` direction, so the core keeps what the
+    /// re-check says it must.
+    #[test]
+    fn a_needed_literal_is_never_dropped() {
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let lits = vec![
+            (cmp("<", x.clone(), int_lit("10")), true),
+            (Term::mk_eq(x, int_lit("20")).unwrap(), true),
+        ];
+        let core = s.minimize_conflict_core(&lits, lits.len(), 64, None);
+        assert_eq!(core.len(), 2, "neither half alone is a conflict: {core:?}");
+    }
+
+    /// The prefix is free: literals broadcast AFTER the conflict fired
+    /// never reached a theory, so they are excluded with no re-check at
+    /// all — budget 0 still shrinks.
+    #[test]
+    fn the_asserted_prefix_costs_no_budget() {
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let lits = vec![
+            (Term::mk_eq(x.clone(), int_lit("5")).unwrap(), true),
+            (Term::mk_eq(x, int_lit("6")).unwrap(), true),
+            (cmp(">", Term::var("z", int_ty()), int_lit("0")), true),
+        ];
+        let core = s.minimize_conflict_core(&lits, 2, 0, None);
+        assert_eq!(core.len(), 2, "budget 0 keeps exactly the prefix");
+    }
+
+    /// A zero-length prefix would make the blocking clause EMPTY, which
+    /// is an immediate false `unsat`. The whole model is returned
+    /// instead — longer, weaker, sound.
+    #[test]
+    fn a_zero_prefix_falls_back_to_the_whole_model() {
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        let lits = vec![
+            (Term::mk_eq(x.clone(), int_lit("5")).unwrap(), true),
+            (Term::mk_eq(x, int_lit("6")).unwrap(), true),
+        ];
+        let core = s.minimize_conflict_core(&lits, 0, 64, None);
+        assert_eq!(core.len(), 2, "never emit the empty clause");
+    }
+
+    /// END TO END, the direction that would break first: a SATISFIABLE
+    /// formula whose boolean models include theory-infeasible ones. The
+    /// refinement loop runs and learns cores; an over-eager core would
+    /// block the satisfying assignment too and report `unsat`.
+    #[test]
+    fn core_learning_does_not_fabricate_an_unsat() {
+        let mut s = Solver::new();
+        let x = Term::var("x", int_ty());
+        // (x = 1 ∨ x = 2) ∧ (x = 2 ∨ x = 3) — satisfied by x = 2.
+        let e1 = Term::mk_eq(x.clone(), int_lit("1")).unwrap();
+        let e2 = Term::mk_eq(x.clone(), int_lit("2")).unwrap();
+        let e3 = Term::mk_eq(x, int_lit("3")).unwrap();
+        s.assert(Term::mk_or(e1, e2.clone()).unwrap());
+        s.assert(Term::mk_or(e2, e3).unwrap());
+        assert!(
+            !matches!(s.check_sat(), SatResult::Unsat { .. }),
+            "x = 2 satisfies both clauses — reporting unsat is the fabricated proof"
         );
     }
 }
