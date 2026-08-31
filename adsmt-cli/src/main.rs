@@ -1339,6 +1339,28 @@ fn oxiz_available() -> bool {
     cfg!(feature = "oxiz") || std::env::var_os("ADSMT_OXIZ_PATH").is_some()
 }
 
+/// `ADSMT_NO_DELEGATION=1` — decide with the NATIVE engine only.
+///
+/// Added so a downstream can measure what adsmt proves on its own, without a
+/// rebuild. The build-time `--features oxiz` switch cannot answer that question
+/// for someone consuming a shipped binary, and the answer matters: a sweep of
+/// the 209-row lu-kb corpus with delegation removed found that 90 of the 171
+/// delegation-verified rows already close natively
+/// (`adsmt-delegate/corpus-triage/2026-08-30-native-only-lukb-verdicts.tsv`),
+/// so "how much of the ledger rests on trusting the delegate" was being
+/// overstated by a factor of nearly two.
+///
+/// This suppresses the delegation CALL. It does not weaken any verdict: a
+/// session that needed the delegate to be sound (`degraded`) reports `Unknown`
+/// rather than the native answer — see the guard at the delegation site. So the
+/// switch can only move verdicts toward `unknown`, never toward a wrong one.
+///
+/// Read per call rather than cached: this is consulted once per `(check-sat)`,
+/// not in any hot path.
+fn no_delegation() -> bool {
+    std::env::var_os("ADSMT_NO_DELEGATION").is_some_and(|v| v == "1" || v == "true")
+}
+
 fn dispatch_one(
     driver: &mut Driver,
     last: &mut LastStatus,
@@ -1377,7 +1399,13 @@ fn dispatch_one(
                 // #401 — delegate the FOLDED view (AOT prelude + session text)
                 // so OxiZ sees the constraints the native engine restored.
                 let hist = driver.delegation_history(history);
-                let delegated = if streaming {
+                let delegated = if no_delegation() {
+                    // Delegation-free measurement path. Skipping the call is
+                    // NOT the same as the call failing to reach a verdict —
+                    // both land on `None` here, and the guard below is what
+                    // makes either one sound on a degraded session.
+                    None
+                } else if streaming {
                     oxiz_fallback_streaming(&hist)
                 } else {
                     oxiz_fallback(&hist)
@@ -1395,7 +1423,45 @@ fn dispatch_one(
                     }
                     d => d,
                 };
-                let v = delegated.unwrap_or(status);
+                // A DEGRADED session whose delegation produced no verdict must
+                // NOT fall through to the native one.
+                //
+                // This was an OPEN HOLE, not a hypothetical: `oxiz_fallback`
+                // answers `None` whenever the in-process parse/exec fails AND
+                // no `ADSMT_OXIZ_PATH` subprocess is configured, and the old
+                // `delegated.unwrap_or(status)` then printed the native verdict
+                // on exactly the sessions whose native verdict the comment above
+                // calls UNSOUND. The delegation was carrying the soundness
+                // argument, so any path where it does not run needs the argument
+                // made explicitly.
+                //
+                // `Unknown` rather than the native answer, because `degraded` is
+                // a far blunter flag than "one conjunct was dropped": of its
+                // reachable producers only `Command::Assert` (main.rs, the
+                // `assert_expr` error arm) drops a conjunct. The others skip a
+                // DECLARATION, skip a macro DEFINITION — which changes how later
+                // terms are interpreted rather than removing a constraint — or,
+                // in `register_datatypes`, leave a datatype HALF-APPLIED with
+                // its sort registered and its laws missing. "Dropping a conjunct
+                // only weakens the conjunction, so `unsat` transfers" is a sound
+                // argument for one of those and not for the rest, and the flag
+                // cannot tell them apart.
+                let v = match delegated {
+                    Some(d) => d,
+                    None if *degraded => {
+                        LAST_FULL_TOKEN.with(|c| {
+                            *c.borrow_mut() = Some(
+                                match status {
+                                    LastStatus::Unsat => "possibly-unsat",
+                                    _ => "possibly-sat",
+                                }
+                                .to_string(),
+                            );
+                        });
+                        LastStatus::Unknown
+                    }
+                    None => status,
+                };
                 // Keep the driver's `last_result` consistent with the delegated
                 // verdict, so an interleaved `(get-model)` / `(get-info
                 // :reason-unknown)` doesn't contradict the printed line (else Verus's
@@ -1508,7 +1574,14 @@ fn dispatch_one(
             // to `Error(13)` (e.g. a bad `(abduce …)` term — which OxiZ
             // can't rescue anyway: it has no `(abduce)`) would be silently
             // deferred and the run would exit 0.
-            if oxiz_available() && (code == 11 || code == 13) && !cli.strict_commands {
+            // `code == 13` used to be part of this guard and was DEAD: both of
+            // its producers (`Command::Raw`'s unknown-command arm and
+            // `recoverable_command_error`) emit 13 only when
+            // `self.cfg.strict_commands` is set, which is wired 1:1 from
+            // `cli.strict_commands` — the very flag this guard requires to be
+            // OFF. Dropping it changes no behaviour and stops the comment above
+            // from describing a path that cannot be taken.
+            if oxiz_available() && code == 11 && !cli.strict_commands {
                 eprintln!("lu-smt: (native-skip, deferred to OxiZ) {msg}");
                 *degraded = true;
                 None

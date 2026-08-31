@@ -202,6 +202,27 @@ fn delegate_resolve(
     patterns: &adsmt_delegate::PatternMap,
     native: Confidence,
 ) -> Confidence {
+    // `ADSMT_NO_DELEGATION=1` — decide with the NATIVE engine only.
+    //
+    // Added so a downstream can measure what adsmt proves on its own from a
+    // SHIPPED binary. `--features oxiz` is a build-time switch and cannot answer
+    // that question for someone running `adsmtc`/`adsmtr`, and the answer turned
+    // out to matter: sweeping the 209-row lu-kb corpus with delegation removed
+    // showed 90 of the 171 delegation-verified rows already closing natively
+    // (`adsmt-delegate/corpus-triage/2026-08-30-native-only-lukb-verdicts.tsv`),
+    // so the dependence on the delegate was being overstated roughly twofold.
+    //
+    // Suppressing it here is trivially sound BECAUSE of the monotonicity the doc
+    // comment above states: both delegates only ever raise a verdict to
+    // `DefiniteUnsat`, so removing them can only lower a verdict toward
+    // `Unknown`. There is nothing to guard.
+    //
+    // (`lu-smt`'s delegation site is NOT like this — it trusts both directions
+    // and has a `degraded` mode where the native verdict is unsound on its own,
+    // so the same switch there needs an explicit guard. See `adsmt-cli`.)
+    if std::env::var_os("ADSMT_NO_DELEGATION").is_some_and(|v| v == "1" || v == "true") {
+        return native;
+    }
     #[cfg(feature = "oxiz")]
     if adsmt_delegate::oxiz::proves_goal(hyps, goal, datatypes, patterns) {
         return Confidence::DefiniteUnsat;
@@ -232,8 +253,23 @@ mod tests {
     use super::*;
     use adsmt_ir_lukb::TriState;
 
+    /// Every test in this module takes this lock.
+    ///
+    /// The `ADSMT_NO_DELEGATION` tests below set a PROCESS-GLOBAL variable, and
+    /// with the default parallel harness the other tests observed it mid-run —
+    /// which first showed up as the pre-existing
+    /// `oxiz_delegation_verifies_a_nonlinear_goal_native_cannot` failing, i.e.
+    /// as a broken fix rather than a broken test. Serializing the module is
+    /// cheap next to the solves themselves and makes the hazard structural.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn valid_lia_obligation_is_verified() {
+        let _g = guard();
         // x>0 ∧ y>0 ⟹ x+y>0 — a VALID LIA goal ⇒ ¬goal unsat ⇒ DefiniteUnsat
         // (verus convention: a discharged goal reads `unsat`).
         let v = solve("const x: Int\nconst y: Int\ngoal sum_pos: x > 0, y > 0 |- x + y > 0\n");
@@ -243,6 +279,7 @@ mod tests {
 
     #[test]
     fn invalid_obligation_has_counterexample() {
+        let _g = guard();
         // x>0 ⟹ x>5 is NOT valid (x=1) ⇒ ¬goal sat ⇒ DefiniteSat (counterexample).
         let v = solve("const x: Int\ngoal g: x > 0 |- x > 5\n");
         assert_eq!(v.smt, Some(Confidence::DefiniteSat), "got {v:?}");
@@ -251,6 +288,7 @@ mod tests {
 
     #[test]
     fn face_error_is_sound_unknown() {
+        let _g = guard();
         // an un-elaboratable program ⇒ sound Unknown, never a fabricated verdict.
         let v = solve("goal g: nope > 0\n");
         assert_eq!(v.collapse(), TriState::Unknown);
@@ -262,6 +300,7 @@ mod tests {
 
     #[test]
     fn surface_if_reaches_a_native_verdict() {
+        let _g = guard();
         // x>0 ⟹ (if x>0 then x else 0-x) > 0 — VALID (the then-branch fires).
         let v = solve("const x: Int\ngoal g: x > 0 |- (if x > 0 then x else 0 - x) > 0\n");
         assert_eq!(v.smt, Some(Confidence::DefiniteUnsat), "got {v:?}");
@@ -270,6 +309,7 @@ mod tests {
 
     #[test]
     fn surface_if_counterexample_is_found() {
+        let _g = guard();
         // (if p then 1 else 2) = 1 is NOT valid (p=false ⇒ 2≠1) ⇒ DefiniteSat.
         let v = solve("const p: Bool\ngoal g: (if p then 1 else 2) = 1\n");
         assert_eq!(v.smt, Some(Confidence::DefiniteSat), "got {v:?}");
@@ -283,6 +323,7 @@ mod tests {
 
     #[test]
     fn bool_forall_case_splits_to_a_native_verdict() {
+        let _g = guard();
         // #395: a `forall b: Bool` hypothesis lowers as the classical case
         // split `φ[⊤] ∧ φ[⊥]` (the former conservative whole-query abstain),
         // so the axiom GROUNDS and the obligation reaches a real verdict:
@@ -297,6 +338,7 @@ mod tests {
 
     #[test]
     fn surface_match_reaches_a_native_verdict() {
+        let _g = guard();
         // x = succ(zero) ⟹ (match x { zero => true, succ(n) => n = zero }) —
         // VALID: the succ-branch fires with n = pred(x) = zero.
         let v = solve(
@@ -309,6 +351,7 @@ mod tests {
 
     #[test]
     fn scalar_value_match_reaches_a_native_verdict() {
+        let _g = guard();
         // A VALUE-valued match over a NUMERIC scrutinee is a pure `ite` chain
         // (literal patterns = equality guards), so — unlike the data-valued
         // datatype match below — it rides the verified term-`ite` lowering to a
@@ -322,6 +365,7 @@ mod tests {
 
     #[test]
     fn value_valued_match_is_sound_unknown() {
+        let _g = guard();
         // a VALUE-valued match elaborates + kernel-checks, but the #325 lowering
         // abstains on a data-valued case split ⇒ the sound Unknown (never a
         // fabricated verdict).
@@ -343,13 +387,70 @@ mod tests {
     #[cfg(not(any(feature = "oxiz", feature = "cas")))]
     #[test]
     fn native_alone_abstains_on_a_nonlinear_goal() {
+        let _g = guard();
         let v = solve(NONLINEAR_VALID);
         assert_eq!(v.collapse(), TriState::Unknown, "native alone should abstain: {v:?}");
+    }
+
+    /// `ADSMT_NO_DELEGATION=1` — the delegation-free measurement path.
+    ///
+    /// Two things are pinned. That the switch HAS AN EFFECT: the nonlinear goal
+    /// below is verified only by the delegate, so with the switch on it must
+    /// fall back to the native abstain. A switch nobody has watched change a
+    /// verdict is not evidence of anything, and this project has misattributed
+    /// results to unverified kill-switches before. And that the effect is only
+    /// ever DOWNWARD: `Unknown`, never a flipped or fabricated verdict, which
+    /// is what makes suppressing a soundness-monotone delegate safe.
+    ///
+    /// Serialized because the variable is process-global.
+    #[cfg(feature = "oxiz")]
+    #[test]
+    fn the_no_delegation_switch_falls_back_to_the_native_verdict() {
+        let _g = guard();
+
+        let with_delegation = solve(NONLINEAR_VALID);
+        assert_eq!(
+            with_delegation.smt,
+            Some(Confidence::DefiniteUnsat),
+            "precondition: the delegate is what verifies this goal"
+        );
+
+        // SAFETY: single-threaded under the lock; no other test reads this var.
+        unsafe { std::env::set_var("ADSMT_NO_DELEGATION", "1") };
+        let without = solve(NONLINEAR_VALID);
+        unsafe { std::env::remove_var("ADSMT_NO_DELEGATION") };
+
+        assert_eq!(
+            without.collapse(),
+            TriState::Unknown,
+            "native alone cannot decide it, so the switch must abstain: {without:?}"
+        );
+        assert_ne!(without.smt, Some(Confidence::DefiniteUnsat), "the switch had no effect");
+        assert_eq!(
+            solve(NONLINEAR_VALID).smt,
+            Some(Confidence::DefiniteUnsat),
+            "and delegation returns when the variable is cleared"
+        );
+    }
+
+    /// A goal the NATIVE engine closes on its own must be unaffected by the
+    /// switch — otherwise "delegation-free" would be measuring the switch
+    /// rather than the engine.
+    #[test]
+    fn the_no_delegation_switch_does_not_disturb_a_native_verdict() {
+        let _g = guard();
+        const G: &str = "const x: Int\nconst y: Int\ngoal sum_pos: x > 0, y > 0 |- x + y > 0\n";
+        // SAFETY: single-threaded under the lock.
+        unsafe { std::env::set_var("ADSMT_NO_DELEGATION", "1") };
+        let v = solve(G);
+        unsafe { std::env::remove_var("ADSMT_NO_DELEGATION") };
+        assert_eq!(v.smt, Some(Confidence::DefiniteUnsat), "native closes this one: {v:?}");
     }
 
     #[cfg(feature = "oxiz")]
     #[test]
     fn oxiz_delegation_verifies_a_nonlinear_goal_native_cannot() {
+        let _g = guard();
         // render → `(set-logic QF_NIA)` + `x>0 ∧ x*x<=0` → OxiZ `unsat` → verified.
         // Also a soundness guard: delegation must NEVER introduce a `DefiniteSat`.
         let v = solve(NONLINEAR_VALID);
@@ -367,6 +468,7 @@ mod tests {
     #[cfg(feature = "oxiz")]
     #[test]
     fn partial_application_trigger_matches_the_trigger_free_twin() {
+        let _g = guard();
         const AXIOM: &str = "sort P\nfn f(x0: P): Int\nfn g2(x0: P, x1: P): P\nconst a: P\n\
              axiom: forall x: P. f(g2(x, x)) = f(x) + 1";
         const GOAL: &str = "goal g: f(g2(g2(a, a), g2(a, a))) = f(a) + 2\n";
