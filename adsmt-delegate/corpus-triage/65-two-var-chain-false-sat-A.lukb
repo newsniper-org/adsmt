@@ -1,0 +1,7 @@
+const `x`: Int
+const `y`: Int
+const `z`: Int
+axiom: `x` + `y` <= 0
+axiom: `z` - `y` <= 0
+axiom: `x` + `z` >= 1
+goal: false

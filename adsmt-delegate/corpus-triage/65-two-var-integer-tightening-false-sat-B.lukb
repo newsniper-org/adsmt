@@ -1,0 +1,6 @@
+const `x`: Int
+const `y`: Int
+axiom: `x` = `y`
+axiom: `x` + `y` <= 1
+axiom: `x` + `y` >= 1
+goal: false

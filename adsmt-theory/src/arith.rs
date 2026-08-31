@@ -501,6 +501,62 @@ impl LinArith {
         None
     }
 
+    /// Does the pool hold a pair of `≤`/`<` entries that COULD cancel a shared
+    /// variable, but which [`Self::fm_cross_eliminate`] never attempts?
+    ///
+    /// The elimination fires only for `a.sign == -1 && a.y == b.x` — a
+    /// POSITIONAL test, while `norm_two_var` does not sort a pair by name. So a
+    /// chain whose shared variable lands in the `y` slot of both entries is
+    /// silently skipped, and a `Sat` resting on the resulting non-closure is
+    /// wrong. Two measured cases, both `unsat` under z3 AND cvc5 (#65):
+    /// `x+y ≤ 0, z−y ≤ 0, x+z ≥ 1` and `x = y, x+y ≤ 1, x+y ≥ 1`.
+    ///
+    /// This detects the miss rather than guessing at it, which matters: the
+    /// blunter test "any `sign == +1` entry" also withholds `Sat` from
+    /// `x ≥ 0, y ≥ 0, x+y ≤ 10`, which the pool decides correctly and which
+    /// `fourier_motzkin_two_var_consistent_is_sat` pins.
+    ///
+    /// In an entry `x + sign·y ≤ k`, a variable's coefficient is `+1` in the
+    /// `x` slot and `sign` in the `y` slot; two entries can be added to cancel
+    /// `v` exactly when its coefficients sum to zero. Self-pairs (`x == y`) are
+    /// skipped — their coefficient is not slot-determined, and the `sign == -1`
+    /// case is the harmless `0 ≤ k` shape `self_loop_infeasible` owns.
+    fn has_unattempted_chain(&self) -> bool {
+        let le: Vec<&TwoVar> = self
+            .two_vars
+            .iter()
+            .filter(|t| matches!(t.op, "<=" | "<") && t.x != t.y)
+            .collect();
+        let coeff = |t: &TwoVar, v: &str| -> Option<i128> {
+            if t.x == v {
+                Some(1)
+            } else if t.y == v {
+                Some(t.sign)
+            } else {
+                None
+            }
+        };
+        for a in &le {
+            for b in &le {
+                if std::ptr::eq(*a, *b) {
+                    continue;
+                }
+                let attempted = (a.sign == -1 && a.y == b.x) || (b.sign == -1 && b.y == a.x);
+                if attempted {
+                    continue;
+                }
+                for v in [a.x.as_str(), a.y.as_str()] {
+                    if let (Some(ca), Some(cb)) = (coeff(a, v), coeff(b, v))
+                        && ca + cb == 0
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Direct same-pair feasibility over the two-variable pool.
     ///
     /// Each `TwoVar` constrains the "virtual variable" `v = x + sign·y`.
@@ -1401,6 +1457,45 @@ impl Theory for LinArith {
             // OxiZ delegation recovers the precise verdict.
             None => match &self.incomplete {
                 Some(reason) => CheckResult::Unknown { reason: reason.clone() },
+                // #65 — the two-variable closure is INCOMPLETE in a way the
+                // `incomplete` flag never learned about, so a `Sat` resting on
+                // it is not trustworthy either.
+                //
+                // `fm_cross_eliminate` chains two entries only when the first
+                // has `sign == -1` and the shared variable sits in ITS `y` slot
+                // and the other's `x` slot. That test is POSITIONAL, while
+                // `norm_two_var` does not sort the pair by name — it only flips
+                // `sign == -1` entries whose operator is `>=`/`>`. So a chain
+                // whose shared variable lands in the `y` slot of both entries is
+                // simply never attempted. Two measured false-SATs, both against
+                // `unsat` from z3 AND cvc5:
+                //
+                //   A  x+y <= 0, z-y <= 0, x+z >= 1
+                //      (add the first two: x+z <= 0. Rational-level — the
+                //       closure just never adds them.)
+                //   B  x = y, x+y <= 1, x+y >= 1
+                //      (forces 2x = 1, which has no integer solution. Needs the
+                //       octagon diagonal tightening, which does not exist.)
+                //
+                // Until the closure is replaced (an octagon DBM over the 2n
+                // signed literals with Floyd-Warshall and integer tightening is
+                // the standard answer, and is what makes `±x ±y <= k` complete),
+                // a `Sat` is only trustworthy when the pool holds nothing the
+                // closure can fail to chain. `sign == +1` entries are exactly
+                // those — they can never serve as the `a` of a chain — and an
+                // `x == y` self-pair is the shape the tightening would own.
+                //
+                // Sound by the same asymmetry as #351: this only ever turns a
+                // `Sat` into `Unknown`. Every `Unsat` the pool finds is still
+                // reported, so nothing that works today stops working.
+                None if self.has_unattempted_chain() =>
+                {
+                    CheckResult::Unknown {
+                        reason: "two-variable closure cannot chain a `x + y` entry \
+                                 (#65); Sat withheld"
+                            .to_string(),
+                    }
+                }
                 None => CheckResult::Sat,
             },
         }
