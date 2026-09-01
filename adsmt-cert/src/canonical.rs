@@ -532,6 +532,46 @@ pub struct Certificate {
     /// Cross-cutting pattern markers. Each one attaches markers
     /// to every step that matches its pattern.
     pub pattern_markers: Vec<PatternMarker>,
+    /// The [`StepBody::Assume`] step carrying this refutation's
+    /// **negated goal**.
+    ///
+    /// # Why a consumer cannot work without it
+    ///
+    /// A refutation certificate's `Assume` set is, by definition,
+    /// JOINTLY UNSATISFIABLE — that is what `unsat` means — and on a
+    /// goal-directed path one of those assumptions is the negation of
+    /// the thing being proved. Without knowing WHICH, a consumer sees
+    /// an undifferentiated hypothesis list and the only thing it can
+    /// reconstruct is `⊢ False`.
+    ///
+    /// That is not hypothetical. `adsmt-emit-isabelle` rendered every
+    /// `Assume` as a global `axiomatization where …`, which makes the
+    /// emitted theory INCONSISTENT: `theorem result` then passes with
+    /// any proposition in it, and — the part that actually hurts — no
+    /// acceptance test written against that output can fail. Reported
+    /// by verus-fork 2026-09-01 and verified here.
+    ///
+    /// With the marker a consumer can emit the honest shape,
+    /// `lemma: ⟦φ₁; …; φₖ⟧ ⟹ goal`, where the hypotheses are
+    /// PREMISES rather than axioms.
+    ///
+    /// # Invariants
+    ///
+    /// * **A** — if `Some(id)`, `steps[id]` is a [`StepBody::Assume`].
+    /// * **B** — the final sequent's `hyps` contain that step's
+    ///   proposition. A certificate violating B proved an
+    ///   inconsistency UNRELATED to the goal, which is exactly the
+    ///   forgery a re-checker must reject.
+    ///
+    /// Both are checked by [`Certificate::validate_goal_step`].
+    ///
+    /// `None` means "not a goal-directed refutation" (a standalone
+    /// consistency check) OR a certificate produced before this field
+    /// existed — `#[serde(default)]` keeps those readable, and a
+    /// consumer should degrade to "cannot reproduce goal-directed",
+    /// never to "assume the goal is whatever".
+    #[serde(default)]
+    pub goal_step: Option<StepId>,
 }
 
 impl Certificate {
@@ -550,7 +590,76 @@ impl Certificate {
             .iter()
             .filter(|s| matches!(s.body, StepBody::Assumed { .. }))
     }
+
+    /// Check the two [`Certificate::goal_step`] invariants.
+    ///
+    /// `Ok(None)` means the certificate is not goal-directed, which is
+    /// legitimate (a standalone consistency check, or a certificate
+    /// produced before the field existed). `Ok(Some(term))` hands back
+    /// the negated goal itself, so a consumer that needs it does not
+    /// have to re-derive which step it was.
+    ///
+    /// Invariant B is the one that matters for soundness of a
+    /// downstream replay: a certificate whose final sequent does NOT
+    /// depend on the negated goal proved an inconsistency that has
+    /// nothing to do with the obligation. Emitting that as a discharged
+    /// proof is a forgery, and it is the shape a re-checker must
+    /// refuse — see the `adsmt-emit-isabelle` P0 this field was added
+    /// for.
+    pub fn validate_goal_step(&self) -> Result<Option<&Term>, GoalStepError> {
+        let Some(id) = self.goal_step else {
+            return Ok(None);
+        };
+        let step = self
+            .steps
+            .get(id.0 as usize)
+            .ok_or(GoalStepError::OutOfRange(id))?;
+        let StepBody::Assume(phi) = &step.body else {
+            return Err(GoalStepError::NotAnAssume(id));
+        };
+        let seq = self.final_sequent().ok_or(GoalStepError::NoFinalSequent)?;
+        if !seq.hyps.iter().any(|h| h == phi) {
+            return Err(GoalStepError::GoalNotInFinalHyps(id));
+        }
+        Ok(Some(phi))
+    }
 }
+
+/// Why a certificate's [`Certificate::goal_step`] is not usable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GoalStepError {
+    /// A producer tried to mark a second, different step as the goal.
+    Conflict { prev: StepId, new: StepId },
+    /// The recorded id is not a step of this certificate.
+    OutOfRange(StepId),
+    /// The recorded step exists but is not an `Assume` (invariant A).
+    NotAnAssume(StepId),
+    /// The certificate has no final sequent to check against.
+    NoFinalSequent,
+    /// The final sequent does not depend on the negated goal
+    /// (invariant B) — the refutation is unrelated to the obligation.
+    GoalNotInFinalHyps(StepId),
+}
+
+impl core::fmt::Display for GoalStepError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Conflict { prev, new } => {
+                write!(f, "goal_step already set to {prev:?}, refusing to overwrite with {new:?}")
+            }
+            Self::OutOfRange(id) => write!(f, "goal_step {id:?} is not a step of this certificate"),
+            Self::NotAnAssume(id) => write!(f, "goal_step {id:?} is not an Assume step"),
+            Self::NoFinalSequent => write!(f, "certificate has no final sequent"),
+            Self::GoalNotInFinalHyps(id) => write!(
+                f,
+                "the final sequent does not depend on goal_step {id:?} — this refutation is \
+                 unrelated to the obligation"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GoalStepError {}
 
 /// Mutable builder that hands out fresh step ids.
 #[derive(Default, Debug)]
@@ -565,6 +674,9 @@ pub struct CertBuilder {
     pub(crate) mid_blocks: Vec<MidBlock>,
     /// Pattern markers (D1.A-1.pat.* = α, v0.18). Default empty.
     pub(crate) pattern_markers: Vec<PatternMarker>,
+    /// The negated-goal `Assume` step, if this build is goal-directed.
+    /// See [`Certificate::goal_step`].
+    pub(crate) goal_step: Option<StepId>,
 }
 
 impl CertBuilder {
@@ -663,12 +775,35 @@ impl CertBuilder {
         self.steps.last().map(|s| s.id)
     }
 
+    /// Record which `Assume` step carries the negated goal.
+    ///
+    /// Idempotent for the same id; a SECOND, different id is a
+    /// producer bug (a refutation has one goal) and is rejected rather
+    /// than silently overwriting — overwriting would let the last
+    /// writer decide what the certificate claims to prove.
+    pub fn set_goal_step(&mut self, step: StepId) -> Result<(), GoalStepError> {
+        match self.goal_step {
+            Some(prev) if prev != step => Err(GoalStepError::Conflict { prev, new: step }),
+            _ => {
+                self.goal_step = Some(step);
+                Ok(())
+            }
+        }
+    }
+
+    /// The negated-goal step recorded so far, if any.
+    #[must_use]
+    pub fn goal_step(&self) -> Option<StepId> {
+        self.goal_step
+    }
+
     pub fn finalize(self, conclusion: StepId) -> Certificate {
         Certificate {
             steps: self.steps,
             conclusion,
             mid_blocks: self.mid_blocks,
             pattern_markers: self.pattern_markers,
+            goal_step: self.goal_step,
         }
     }
 
@@ -682,6 +817,7 @@ impl CertBuilder {
             conclusion,
             mid_blocks: self.mid_blocks.clone(),
             pattern_markers: self.pattern_markers.clone(),
+            goal_step: self.goal_step,
         }
     }
 

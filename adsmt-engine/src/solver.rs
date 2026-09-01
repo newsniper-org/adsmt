@@ -302,6 +302,13 @@ pub struct Solver {
     abducibles: AbducibleSet,
     abduction_state: AbductionState,
     cert_builder: CertBuilder,
+    /// The GOAL this session is refuting, as passed to
+    /// [`Solver::assert_goal_negation`] — i.e. the un-negated `G` whose
+    /// negation was asserted. Used to mark
+    /// [`adsmt_cert::Certificate::goal_step`] when the certificate is
+    /// assembled. `None` when the caller never said which assertion is
+    /// the goal.
+    goal_negation: Option<Term>,
     proof_mode: ProofMode,
     /// §3.5.B/C — cached CDCL scope-0 snapshot loaded from a
     /// `.luart-cdcl` v1 artefact via [`Self::with_aot_cdcl`].
@@ -424,6 +431,7 @@ impl Default for Solver {
             abducibles: AbducibleSet::new(),
             abduction_state: AbductionState::new(),
             cert_builder: CertBuilder::new(),
+            goal_negation: None,
             // v0.15: default to recording certificates. Callers
             // that don't need them can opt out with
             // `.with_proof_mode(ProofMode::None)` to skip the
@@ -1648,6 +1656,35 @@ impl Solver {
         self.assert_with_polarity_at(t, false, Some(loc));
     }
 
+    /// Assert `¬goal` AND record that this assertion is the negated
+    /// goal, so an `unsat` certificate can mark which of its
+    /// jointly-unsatisfiable `Assume`s is the obligation.
+    ///
+    /// Without the mark a consumer sees an undifferentiated hypothesis
+    /// list and can only reconstruct `⊢ False` — which is what let
+    /// `adsmt-emit-isabelle` render every assumption as a global axiom
+    /// and emit an INCONSISTENT theory (verus-fork P0, 2026-09-01).
+    ///
+    /// LIMITATION, stated rather than papered over: the mark is
+    /// attached by matching the recorded goal against the literal the
+    /// theory layer conflicts on. A QUANTIFIED goal goes through
+    /// NNF + Skolemization on the way in, so the literal no longer
+    /// equals `goal` and no mark is set. The certificate is then
+    /// exactly as it was before this existed — `goal_step: None`, and a
+    /// consumer must degrade to "cannot reproduce goal-directed", never
+    /// to guessing. Ground goals, which is what the lu-kb driver and
+    /// the Verus obligation path produce, do get marked.
+    pub fn assert_goal_negation(&mut self, goal: Term) {
+        self.goal_negation = Some(goal.clone());
+        self.assert_with_polarity(goal, false);
+    }
+
+    /// [`Self::assert_goal_negation`] with a source position.
+    pub fn assert_goal_negation_at(&mut self, goal: Term, loc: adsmt_cert::SourceLoc) {
+        self.goal_negation = Some(goal.clone());
+        self.assert_with_polarity_at(goal, false, Some(loc));
+    }
+
     /// Full-control variant: pick polarity and optionally attach a loc.
     ///
     /// Quantified asserts are first oriented (the polarity is folded
@@ -1754,6 +1791,7 @@ impl Solver {
         self.theories.reset();
         self.abduction_state = AbductionState::new();
         self.cert_builder = CertBuilder::new();
+        self.goal_negation = None;
     }
 
     /// Collected (atom, polarity) literals across every active scope,
@@ -2542,6 +2580,17 @@ impl Solver {
                 Sequent { hyps: vec![phi.clone()], concl: phi.clone() },
                 *loc,
             );
+            // Mark the negated goal, if the caller named one and this
+            // literal is it. Matching on `(term, polarity)` rather than
+            // on the built `phi` keeps it exact: `phi` is `mk_not(t)`
+            // here, and re-deriving it to compare would just reintroduce
+            // the chance of a near-miss.
+            if !*p && self.goal_negation.as_ref().is_some_and(|g| g == t) {
+                // A second match would mean the same goal was asserted
+                // twice; keeping the first is right and the builder
+                // rejects a CONFLICTING id rather than overwriting.
+                let _ = self.cert_builder.set_goal_step(id);
+            }
             assume_ids.push(id);
             hyps.push(phi);
         }

@@ -99,6 +99,9 @@ fn per_itp_emit_signatures_compile() {
         conclusion: StepId(0),
         mid_blocks: vec![],
         pattern_markers: vec![],
+        // Added 2026-09-01 — which `Assume` is the negated goal. `None`
+        // here because this surface-freeze cert has no steps at all.
+        goal_step: None,
     };
     let _: String = emit_lean(&cert);
     let _: Result<String, _> = try_emit_lean(&cert);

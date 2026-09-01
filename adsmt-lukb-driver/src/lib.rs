@@ -128,9 +128,16 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
         for h in &hyps.goals {
             solver.assert(h.clone());
         }
+        // `assert_goal_negation` rather than `assert(mk_not(g))`: it does
+        // the same assertion AND records WHICH assumption is the negated
+        // goal, so an `unsat` certificate can tell a consumer apart the
+        // hypotheses from the obligation. Without that mark every
+        // assumption looks alike and a downstream can only reconstruct
+        // `⊢ False` — which is how `adsmt-emit-isabelle` came to render
+        // them all as global axioms and emit an inconsistent theory.
         let goal_verdict = match Term::mk_not(g.clone()) {
-            Ok(neg) => {
-                solver.assert(neg);
+            Ok(_) => {
+                solver.assert_goal_negation(g.clone());
                 match solver.check_sat() {
                     SatResult::Unsat { .. } => Confidence::DefiniteUnsat, // goal valid
                     native => {
