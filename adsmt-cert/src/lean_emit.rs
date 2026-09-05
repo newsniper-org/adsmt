@@ -148,15 +148,25 @@ pub fn try_emit_lean(cert: &Certificate) -> Result<String, MissingImports> {
         out.push('\n');
     }
 
+    emit_oracles(cert, &mut out);
+    out.push_str("section\n\n");
+
     for step in &cert.steps {
         emit_step(step, &mut out);
     }
 
     if let Some(seq) = cert.final_sequent() {
-        let concl_lean = render_term(&seq.concl);
-        let final_id = format!("s{}", cert.conclusion.0);
-        writeln!(out, "\ntheorem result : {concl_lean} := {final_id}").unwrap();
+        // Inside the section this is the bare conclusion; closing the
+        // section generalises it over the `variable` hypotheses.
+        writeln!(
+            out,
+            "\ntheorem result : {} := s{}",
+            render_term(&seq.concl),
+            cert.conclusion.0
+        )
+        .unwrap();
     }
+    out.push_str("\nend\n");
     out.push_str("\nend AdsmtCert\n");
     Ok(out)
 }
@@ -178,173 +188,148 @@ fn render_body(cert: &Certificate) -> String {
         }
         out.push('\n');
     }
+    emit_oracles(cert, &mut out);
+    out.push_str("section\n\n");
     for step in &cert.steps {
         emit_step(step, &mut out);
     }
     if let Some(seq) = cert.final_sequent() {
-        let concl_lean = render_term(&seq.concl);
-        let final_id = format!("s{}", cert.conclusion.0);
-        writeln!(out, "\ntheorem result : {concl_lean} := {final_id}").unwrap();
+        // Inside the section this is the bare conclusion; closing the
+        // section generalises it over the `variable` hypotheses.
+        writeln!(
+            out,
+            "\ntheorem result : {} := s{}",
+            render_term(&seq.concl),
+            cert.conclusion.0
+        )
+        .unwrap();
     }
+    out.push_str("\nend\n");
     out.push_str("\nend AdsmtCert\n");
     out
 }
 
+/// Conclusion of `id`, if that step exists.
+fn step_concl(cert: &Certificate, id: crate::canonical::StepId) -> Option<String> {
+    cert.steps.iter().find(|s| s.id == id).map(|s| render_term(&s.result.concl))
+}
+
+/// `[p1; p2]`, `c` -> `p1 → p2 → c`; no premises -> just `c`.
+fn lean_arrow(prems: &[String], concl: &str) -> String {
+    if prems.is_empty() { concl.to_owned() } else { format!("{} → {concl}", prems.join(" → ")) }
+}
+
+/// Oracle axioms for steps no Lean tactic can replay.
+///
+/// Stated as *premises → conclusion*, never as the bare conclusion:
+/// `axiom s2 : False` is false, while `axiom adsmt_s2 : p → ¬p → False`
+/// is true and merely records the theory solver's decision, so the
+/// namespace stays consistent however contradictory the hypotheses are.
+fn emit_oracles(cert: &Certificate, out: &mut String) {
+    let mut any = false;
+    for step in &cert.steps {
+        let name = format!("adsmt_s{}", step.id.0);
+        match &step.body {
+            StepBody::Theory { name: theory_name, witness, parents } => {
+                let prems: Vec<String> =
+                    parents.iter().filter_map(|q| step_concl(cert, *q)).collect();
+                let prop = lean_arrow(&prems, &render_term(&step.result.concl));
+                writeln!(out, "-- theory `{theory_name}`; witness: {}",
+                         escape_for_comment(&witness_summary(witness))).unwrap();
+                if !parents.is_empty() {
+                    write!(out, "-- parents:").unwrap();
+                    for q in parents {
+                        write!(out, " s{}", q.0).unwrap();
+                    }
+                    out.push('\n');
+                }
+                // A CAS delegation step carries ADVISORY step-by-step provenance
+                // (e.g. a MathHook explanation) inside its serialized `CasProof`.
+                // Surface it as a COMMENT only — the trusted thing is the oracle
+                // axiom, re-checkable offline via `CasProof::recheck`, so the
+                // comment carries zero proof force.
+                if let TheoryWitness::Cas { proof_json, .. } = witness
+                    && let Some(prov) =
+                        crate::prover_emit::common::cas_provenance(proof_json)
+                {
+                    writeln!(
+                        out,
+                        "-- CAS provenance (advisory): {}",
+                        escape_for_comment(&prov)
+                    )
+                    .unwrap();
+                }
+                writeln!(out, "axiom {name} : {prop}").unwrap();
+                any = true;
+            }
+            StepBody::Instance { relation, .. } => {
+                writeln!(out, "-- type-class instance for `{relation}`").unwrap();
+                writeln!(out, "axiom {name} : {}", render_term(&step.result.concl)).unwrap();
+                any = true;
+            }
+            StepBody::Assumed { formula, explain } => {
+                writeln!(out, "-- abductive marker: {}",
+                         escape_for_comment(explain.as_deref().unwrap_or(""))).unwrap();
+                writeln!(out, "axiom {name} : {}", render_term(formula)).unwrap();
+                any = true;
+            }
+            _ => {}
+        }
+    }
+    if any { out.push('\n'); }
+}
+
+/// Emit one step inside the section.
+///
+/// `Assume` becomes a `variable`, not an `axiom`: Lean discharges section
+/// variables when the section closes, so `result` generalises to
+/// `h1 → ... → hn → concl` and the namespace never asserts the hypotheses.
 fn emit_step(step: &Step, out: &mut String) {
     let name = format!("s{}", step.id.0);
     let concl_lean = render_term(&step.result.concl);
 
     match &step.body {
         StepBody::Assume(t) => {
-            writeln!(out, "axiom {name} : {}", render_term(t)).unwrap();
+            writeln!(out, "variable ({name} : {})", render_term(t)).unwrap();
         }
         StepBody::Refl(t) => {
             let t_lean = render_term(t);
             writeln!(out, "theorem {name} : {t_lean} = {t_lean} := rfl").unwrap();
         }
         StepBody::Trans { lhs, rhs } => {
-            writeln!(
-                out,
-                "theorem {name} : {concl_lean} := Eq.trans s{} s{}",
-                lhs.0, rhs.0,
-            )
-            .unwrap();
+            writeln!(out, "theorem {name} : {concl_lean} := Eq.trans s{} s{}", lhs.0, rhs.0).unwrap();
         }
         StepBody::EqMp { iff, p } => {
-            writeln!(
-                out,
-                "theorem {name} : {concl_lean} := (s{}).mp s{}",
-                iff.0, p.0,
-            )
-            .unwrap();
+            writeln!(out, "theorem {name} : {concl_lean} := (s{}).mp s{}", iff.0, p.0).unwrap();
         }
         StepBody::Deduct { a, b } => {
-            // v0.19 K-full: real proof term. Γ ⊢ a → b from
-            // Γ,a ⊢ b — Lean expresses this as a λ-abstraction
-            // over the hypothesis. The conclusion type is
-            // `<antecedent> → <consequent>`; `b`'s proof
-            // already discharges Γ,a so we wrap it in
-            // `fun h_a => s_b`.
-            //
-            // Note: the resulting term doesn't actually
-            // reference `s_a` — the hypothesis is named at
-            // λ-abstraction time. We keep `s_a` reachable for
-            // type elaboration; if the proof body mentions it,
-            // Lean's `_` binds it implicitly during elaboration.
-            writeln!(
-                out,
-                "theorem {name} : {concl_lean} := fun _h_s{} => s{}",
-                a.0, b.0,
-            )
-            .unwrap();
+            writeln!(out, "theorem {name} : {concl_lean} := fun _h_s{} => s{}", a.0, b.0).unwrap();
         }
         StepBody::Beta { redex } => {
-            // v0.19 K-full: real proof term. β-reduction yields
-            // an equation between the redex and its reduct;
-            // Lean's kernel proves `redex = reduct` definitionally,
-            // so `rfl` discharges it.
-            writeln!(
-                out,
-                "theorem {name} : {concl_lean} := rfl -- β-reduce: {}",
-                escape_for_comment(&render_term(redex)),
-            )
-            .unwrap();
+            writeln!(out, "theorem {name} : {concl_lean} := rfl -- β-reduce: {}",
+                     escape_for_comment(&render_term(redex))).unwrap();
         }
         StepBody::Abs { var, eq } => {
-            // v0.19 K-full: real proof term. Abs over a bound
-            // var lifts an equation `s_eq : a = b` to
-            // `(fun var => a) = (fun var => b)`. Lean's
-            // `funext` discharges that — applied to the
-            // pointwise proof.
-            writeln!(
-                out,
-                "theorem {name} : {concl_lean} := funext (fun {} => s{})",
-                var.name, eq.0,
-            )
-            .unwrap();
+            writeln!(out, "theorem {name} : {concl_lean} := funext (fun {} => s{})",
+                     var.name, eq.0).unwrap();
         }
-        StepBody::Inst { thm, .. } => {
-            // v0.19 K-full: real proof term. Inst applies a
-            // generic theorem to specific terms; the
-            // substitution payload is unused at the Lean level
-            // because Lean's elaborator infers the instances
-            // from the goal type. v0.18 emitted `by sorry`;
-            // v0.19 emits `s<thm>` and lets elaboration unify.
-            writeln!(
-                out,
-                "theorem {name} : {concl_lean} := s{}",
-                thm.0,
-            )
-            .unwrap();
+        StepBody::Inst { thm, .. } | StepBody::InstType { thm, .. } => {
+            writeln!(out, "theorem {name} : {concl_lean} := s{}", thm.0).unwrap();
         }
-        StepBody::InstType { thm, .. } => {
-            // v0.19 K-full: real proof term. Same shape as
-            // Inst — Lean's elaborator unifies the type-level
-            // substitution against the goal automatically.
-            writeln!(
-                out,
-                "theorem {name} : {concl_lean} := s{}",
-                thm.0,
-            )
-            .unwrap();
+        StepBody::Theory { parents, .. } => {
+            let args: Vec<String> = parents.iter().map(|q| format!("s{}", q.0)).collect();
+            let app = if args.is_empty() {
+                format!("adsmt_s{}", step.id.0)
+            } else {
+                format!("adsmt_s{} {}", step.id.0, args.join(" "))
+            };
+            writeln!(out, "theorem {name} : {concl_lean} := {app}").unwrap();
         }
-        StepBody::Theory {
-            name: theory_name,
-            witness,
-            parents,
-        } => {
-            writeln!(
-                out,
-                "-- theory `{theory_name}` step; witness summary: {}",
-                witness_summary(witness),
-            )
-            .unwrap();
-            if !parents.is_empty() {
-                write!(out, "-- parents:").unwrap();
-                for p in parents {
-                    write!(out, " s{}", p.0).unwrap();
-                }
-                out.push('\n');
-            }
-            // A CAS delegation step carries an ADVISORY step-by-step provenance
-            // (e.g. a MathHook explanation) inside its serialized `CasProof`. Surface
-            // it as a COMMENT only — the step itself is the trusted-oracle `axiom`
-            // below (re-checkable offline via `CasProof::recheck`), so the comment
-            // carries zero proof force.
-            if let TheoryWitness::Cas { proof_json, .. } = witness
-                && let Some(prov) = crate::prover_emit::common::cas_provenance(proof_json)
-            {
-                writeln!(out, "-- CAS provenance (advisory): {}", escape_for_comment(&prov))
-                    .unwrap();
-            }
-            writeln!(out, "axiom {name} : {concl_lean}").unwrap();
-        }
-        StepBody::Instance { relation, .. } => {
-            writeln!(
-                out,
-                "-- type-class instance for `{relation}`",
-            )
-            .unwrap();
-            writeln!(out, "axiom {name} : {concl_lean}").unwrap();
-        }
-        StepBody::Assumed { formula, explain } => {
-            let explain_str = explain.as_deref().unwrap_or("");
-            writeln!(
-                out,
-                "-- abductive marker: {}",
-                escape_for_comment(explain_str),
-            )
-            .unwrap();
-            writeln!(
-                out,
-                "theorem {name} : {} := sorry",
-                render_term(formula),
-            )
-            .unwrap();
+        StepBody::Instance { .. } | StepBody::Assumed { .. } => {
+            writeln!(out, "theorem {name} : {concl_lean} := adsmt_s{}", step.id.0).unwrap();
         }
     }
 }
-
 fn collect_free_vars(cert: &Certificate) -> Vec<(String, String)> {
     let mut seen: Vec<(String, String)> = Vec::new();
     for step in &cert.steps {
@@ -411,7 +396,15 @@ fn render_term(t: &Term) -> String {
 
     match t.kind() {
         TermInner::Var(v) => v.name.clone(),
-        TermInner::Const(c) => c.name.clone(),
+        TermInner::Const(c) => match c.name.as_str() {
+            // adsmt-core names the boolean constants `true` / `false`
+            // (adsmt-core/src/term.rs:461,466). Those are *values of a
+            // boolean type* in every target here, not propositions, so
+            // emitting them verbatim produces source that does not compile.
+            "true" => "True".to_owned(),
+            "false" => "False".to_owned(),
+            other => other.to_owned(),
+        },
         TermInner::App(f, x) => {
             let f_s = render_term(f);
             let x_s = render_term(x);
@@ -437,9 +430,15 @@ fn render_type(ty: &adsmt_core::Type) -> String {
     if let Some((dom, cod)) = ty.dest_fun() {
         return format!("({} → {})", render_type(&dom), render_type(&cod));
     }
-    // The Display impl already prints the leaf form (`Bool`, `Int`, etc.)
-    // identically to what Lean4 expects for built-in sorts.
-    ty.to_string()
+    // NOT identical to Lean's spelling for every leaf sort: adsmt's `Bool` is
+    // the sort of propositions (`prover_emit::common` classifies it as
+    // `ClassifiedType::Prop`), whereas Lean's `Bool` is a two-element
+    // datatype. Emitting it verbatim yields `axiom p : Bool` followed by
+    // `axiom s0 : p`, which does not typecheck — `p` must be a `Prop`.
+    match ty.to_string().as_str() {
+        "Bool" => "Prop".to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 fn strip_app_head(t: &Term) -> Option<(String, Vec<Term>)> {
@@ -537,8 +536,9 @@ mod tests {
             s.contains("-- CAS provenance (advisory): MathHook factorization — step 1"),
             "expected the advisory provenance comment; got:\n{s}"
         );
-        // The step is still a trusted-oracle axiom, NOT a tactic proof.
-        assert!(s.contains(&format!("axiom s{} :", sid.0)));
+        // The step is still a trusted oracle, NOT a tactic proof — now
+        // under its `adsmt_` name so the trust source is greppable.
+        assert!(s.contains(&format!("axiom adsmt_s{} :", sid.0)), "{s}");
         assert!(!s.contains(":= by"), "a Cas step must not become a tactic proof");
     }
 
@@ -554,15 +554,19 @@ mod tests {
     }
 
     #[test]
-    fn assume_emits_axiom_with_term_statement() {
+    fn assume_becomes_a_section_variable() {
         let mut b = crate::canonical::CertBuilder::default();
         let h: ProofHandle = r::assume(&mut b, p()).unwrap();
         let cert = b.snapshot(h.step());
         let s = emit_lean(&cert);
-        assert!(s.contains("axiom p : Bool"));
-        assert!(s.contains(&format!("axiom s{} : p", h.step().0)));
-        // `result` theorem references the assume step.
-        assert!(s.contains("theorem result : p :="));
+        // adsmt's `Bool` is the sort of propositions; Lean's `Bool` is a
+        // two-element datatype, so `axiom s0 : p` would not typecheck.
+        assert!(s.contains("axiom p : Prop"), "{s}");
+        assert!(s.contains(&format!("variable (s{} : p)", h.step().0)), "{s}");
+        assert!(!s.contains(&format!("axiom s{} :", h.step().0)), "{s}");
+        // `result` references the assume step; closing the section
+        // generalises it to `p → p`.
+        assert!(s.contains("theorem result : p :="), "{s}");
     }
 
     #[test]
@@ -578,13 +582,17 @@ mod tests {
     }
 
     #[test]
-    fn assumed_marker_emits_sorry_with_explain_comment() {
+    fn assumed_marker_becomes_a_named_oracle() {
         let mut b = crate::canonical::CertBuilder::default();
         let h = r::assumed(&mut b, p(), Some("needs Functor MyType".into())).unwrap();
         let cert = b.snapshot(h.step());
         let s = emit_lean(&cert);
-        assert!(s.contains("abductive marker: needs Functor MyType"));
-        assert!(s.contains("theorem s0 : p := sorry"));
+        assert!(s.contains("abductive marker: needs Functor MyType"), "{s}");
+        // A NAMED oracle axiom instead of `sorry`, so the trust source is
+        // visible instead of hidden from `#print axioms`.
+        assert!(s.contains("axiom adsmt_s0 : p"), "{s}");
+        assert!(s.contains("theorem s0 : p := adsmt_s0"), "{s}");
+        assert!(!s.contains("sorry"), "{s}");
     }
 
     #[test]
@@ -594,11 +602,14 @@ mod tests {
         let h = r::assume(&mut b, np).unwrap();
         let cert = b.snapshot(h.step());
         let s = emit_lean(&cert);
-        assert!(s.contains("axiom s0 : (¬ p)"));
+        // A section variable, not an axiom: closing the section
+        // generalises `result` over it instead of asserting it.
+        assert!(s.contains("variable (s0 : (¬ p))"), "{s}");
+        assert!(!s.contains("axiom s0 :"), "{s}");
     }
 
     #[test]
-    fn theory_step_axiomatizes_with_witness_summary() {
+    fn theory_step_becomes_an_implication_oracle() {
         // Build a tiny cert ending in a Theory step whose witness
         // is `Opaque` for simplicity.
         use crate::canonical::{Sequent, StepBody};
@@ -620,9 +631,13 @@ mod tests {
         );
         let cert = b.snapshot(theory_step);
         let s = emit_lean(&cert);
-        assert!(s.contains("-- theory `EUF`"));
-        assert!(s.contains("Opaque(smoke)"));
-        assert!(s.contains(&format!("axiom s{} : p", theory_step.0)));
+        // The oracle is PREMISES -> CONCLUSION; a bare conclusion could be
+        // `False`, which would make the namespace inconsistent.
+        assert!(s.contains("-- theory `EUF`"), "{s}");
+        assert!(s.contains("Opaque(smoke)"), "{s}");
+        assert!(s.contains(&format!("axiom adsmt_s{} :", theory_step.0)), "{s}");
+        assert!(!s.contains(&format!("axiom s{} :", theory_step.0)), "{s}");
+        assert!(s.contains(" → "), "oracle is not an implication:\n{s}");
     }
 
     // === Classical-axiom-import emission tests ===
