@@ -146,6 +146,14 @@ pub fn try_emit_lean(cert: &Certificate) -> Result<String, MissingImports> {
         out.push('\n');
     }
 
+    for sym in unmapped_constants(cert) {
+        writeln!(
+            out,
+            "-- UNMAPPED SYMBOL: `{sym}` is emitted verbatim and may not \
+parse in Lean."
+        )
+        .unwrap();
+    }
     out.push_str("namespace AdsmtCert\n\n");
 
     // Free-variable axioms: gather every variable that appears in
@@ -195,6 +203,14 @@ pub fn try_emit_lean(cert: &Certificate) -> Result<String, MissingImports> {
 /// every step, and the `theorem result` close.
 fn render_body(cert: &Certificate) -> String {
     let mut out = String::new();
+    for sym in unmapped_constants(cert) {
+        writeln!(
+            out,
+            "-- UNMAPPED SYMBOL: `{sym}` is emitted verbatim and may not \
+parse in Lean."
+        )
+        .unwrap();
+    }
     out.push_str("namespace AdsmtCert\n\n");
     let vars = collect_free_vars(cert);
     if !vars.is_empty() {
@@ -384,6 +400,27 @@ fn render_term(t: &Term) -> String {
     // Recognize common boolean connectives by their head constant.
     if let Some((head, args)) = strip_app_head(t) {
         match (head.as_str(), args.len()) {
+            ("<", 2) => {
+                return format!("({} < {})", render_term(&args[0]), render_term(&args[1]))
+            }
+            ("<=", 2) => {
+                return format!("({} ≤ {})", render_term(&args[0]), render_term(&args[1]))
+            }
+            (">", 2) => {
+                return format!("({} > {})", render_term(&args[0]), render_term(&args[1]))
+            }
+            (">=", 2) => {
+                return format!("({} ≥ {})", render_term(&args[0]), render_term(&args[1]))
+            }
+            ("+", 2) => {
+                return format!("({} + {})", render_term(&args[0]), render_term(&args[1]))
+            }
+            ("-", 2) => {
+                return format!("({} - {})", render_term(&args[0]), render_term(&args[1]))
+            }
+            ("*", 2) => {
+                return format!("({} * {})", render_term(&args[0]), render_term(&args[1]))
+            }
             ("not", 1) => return format!("(¬ {})", render_term(&args[0])),
             ("and", 2) => {
                 return format!("({} ∧ {})", render_term(&args[0]), render_term(&args[1]))
@@ -515,6 +552,47 @@ mod tests {
 
     fn p() -> Term {
         Term::var("p", Type::bool_())
+    }
+
+    #[test]
+    fn arithmetic_renders_infix_and_unmapped_symbols_are_surfaced() {
+        // `> x 5` once reached the target as prefix application and failed
+        // to parse — silently. Comparisons now render infix, and anything
+        // still unmapped is announced in the artifact instead of being
+        // discovered downstream.
+        use adsmt_core::{Kind, Type};
+        let int_ = Type::const_("Int", Kind::Type);
+        let x = Term::var("x", int_.clone());
+        let five = Term::const_("5", int_.clone());
+        let gt_ty = Type::fun(
+            int_.clone(),
+            Type::fun(int_.clone(), Type::bool_()).unwrap(),
+        )
+        .unwrap();
+        let gt = Term::const_(">", gt_ty);
+        let app = Term::app(Term::app(gt, x).unwrap(), five).unwrap();
+        let mut b = crate::canonical::CertBuilder::default();
+        let h = r::assume(&mut b, app).unwrap();
+        let cert = b.snapshot(h.step());
+        let s = emit_lean(&cert);
+        assert!(s.contains("(x > 5)"), "comparison is not infix:\n{s}");
+        assert!(!s.contains("UNMAPPED"), "mapped symbol reported as unmapped:\n{s}");
+        assert!(unmapped_constants(&cert).is_empty(), "{:?}", unmapped_constants(&cert));
+    }
+
+    #[test]
+    fn an_unknown_constant_is_not_passed_over_in_silence() {
+        use adsmt_core::Type;
+        let f = Term::const_(
+            "mystery_op",
+            Type::fun(Type::bool_(), Type::bool_()).unwrap(),
+        );
+        let app = Term::app(f, Term::var("p", Type::bool_())).unwrap();
+        let mut b = crate::canonical::CertBuilder::default();
+        let h = r::assume(&mut b, app).unwrap();
+        let cert = b.snapshot(h.step());
+        assert!(unmapped_constants(&cert).contains(&"mystery_op".to_owned()));
+        assert!(emit_lean(&cert).contains("UNMAPPED SYMBOL: `mystery_op`"));
     }
 
     #[test]
@@ -759,4 +837,43 @@ pub fn lean_lakefile() -> String {
     "name = \"adsmt_cert\"\ndefaultTargets = [\"AdsmtCert\"]\n\n\
      [[lean_lib]]\nname = \"AdsmtCert\"\n"
         .to_owned()
+}
+
+/// Constants the emitter knows how to render. Anything else is an
+/// UNMAPPED symbol: adsmt's name is passed through verbatim, which is
+/// how `> x 5` once reached Isabelle as prefix application and failed to
+/// parse. Callers can ask for the list to surface the gap instead of
+/// discovering it downstream.
+pub fn unmapped_constants(cert: &Certificate) -> Vec<String> {
+    const KNOWN: &[&str] = &[
+        "true", "false", "not", "and", "or", "implies", "=>", "iff", "=",
+        "<", "<=", ">", ">=", "+", "-", "*",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    fn walk(t: &Term, known: &[&str], out: &mut Vec<String>) {
+        match t.kind() {
+            TermInner::Const(c) => {
+                let n = c.name.as_str();
+                // Numeric literals render as themselves in every target.
+                let numeric = !n.is_empty()
+                    && n.chars().all(|ch| ch.is_ascii_digit() || ch == '-');
+                if !numeric && !known.contains(&n) && !out.iter().any(|x| x == n) {
+                    out.push(n.to_owned());
+                }
+            }
+            TermInner::App(f, x) => {
+                walk(&f, known, out);
+                walk(&x, known, out);
+            }
+            TermInner::Lam(_, b) => walk(&b, known, out),
+            _ => {}
+        }
+    }
+    for step in &cert.steps {
+        for h in &step.result.hyps {
+            walk(h, KNOWN, &mut out);
+        }
+        walk(&step.result.concl, KNOWN, &mut out);
+    }
+    out
 }
