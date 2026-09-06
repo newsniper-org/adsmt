@@ -333,6 +333,7 @@ name = "adsmt-lukb-driver"
 version = "1.0.0-rc.42.1"
 dependencies = [
  "adsmt-cas",
+ "adsmt-cert",
  "adsmt-core",
  "adsmt-delegate",
  "adsmt-engine",
@@ -448,6 +449,7 @@ dependencies = [
 name = "adsmtc"
 version = "1.0.0-rc.42.1"
 dependencies = [
+ "adsmt-emit-contract",
  "adsmt-ir-lukb",
  "adsmt-lukb-driver",
 ]
@@ -456,6 +458,7 @@ dependencies = [
 name = "adsmtr"
 version = "1.0.0-rc.42.1"
 dependencies = [
+ "adsmt-emit-contract",
  "adsmt-ir-asp",
  "adsmt-ir-lukb",
  "adsmt-lukb-driver",

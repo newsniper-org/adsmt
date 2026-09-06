@@ -29,10 +29,24 @@ fn main() -> ExitCode {
     let mut mode = LuKbOutputMode::Z3Compatible;
     let mut paradigm = Paradigm::LuKb;
     let mut file: Option<String> = None;
+    // Certificate emission, same shape as `adsmtc`: a lu-kb program is a
+    // CONJUNCTION of obligations solved separately, so one file per
+    // discharged goal rather than one per program.
+    let mut emit_cert_dir: Option<String> = None;
+    let mut wire = adsmt_emit_contract::Wire::Cbor;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--asp" => paradigm = Paradigm::Asp,
+            "--emit-cert-dir" => emit_cert_dir = args.next(),
+            "--emit-cert-format" => match args.next().as_deref() {
+                Some("json") => wire = adsmt_emit_contract::Wire::Json,
+                Some("cbor") | None => {}
+                Some(other) => {
+                    eprintln!("adsmtr: unknown --emit-cert-format `{other}`");
+                    return ExitCode::from(3);
+                }
+            },
             "--output-mode" => {
                 if args.next().as_deref() == Some("full") {
                     mode = LuKbOutputMode::Full;
@@ -43,7 +57,8 @@ fn main() -> ExitCode {
             "-h" | "--help" => {
                 eprintln!(
                     "adsmtr — lu-kb-successor runtime + REPL\n\
-                     usage: adsmtr [--asp] [--output-mode z3|full] [FILE]\n\
+                     usage: adsmtr [--asp] [--output-mode z3|full] \
+[--emit-cert-dir DIR] [--emit-cert-format cbor|json] [FILE]\n\
                      no FILE ⇒ REPL (`:check` `:reset` `:asp` `:lukb` `:full` `:z3` `:quit`)."
                 );
                 return ExitCode::from(0);
@@ -64,7 +79,9 @@ fn main() -> ExitCode {
                 return ExitCode::from(3);
             }
         };
-        let verdict = solve_and_render(&src, paradigm, mode);
+        let verdict = solve_and_render_with(
+            &src, paradigm, mode, emit_cert_dir.as_deref(), wire,
+        );
         println!("{}", verdict.text);
         return ExitCode::from(verdict.exit);
     }
@@ -75,7 +92,9 @@ fn main() -> ExitCode {
     if !stdin.is_terminal() {
         let mut src = String::new();
         let _ = stdin.lock().read_to_string(&mut src);
-        let verdict = solve_and_render(&src, paradigm, mode);
+        let verdict = solve_and_render_with(
+            &src, paradigm, mode, emit_cert_dir.as_deref(), wire,
+        );
         println!("{}", verdict.text);
         return ExitCode::from(verdict.exit);
     }
@@ -116,9 +135,52 @@ fn repl(mut paradigm: Paradigm, mut mode: LuKbOutputMode) -> ExitCode {
 }
 
 fn solve_and_render(src: &str, paradigm: Paradigm, mode: LuKbOutputMode) -> Rendered {
+    solve_and_render_with(src, paradigm, mode, None, adsmt_emit_contract::Wire::Cbor)
+}
+
+/// Write one certificate per discharged goal. An IO failure is reported
+/// and does NOT change the verdict — the solve already happened, and a
+/// missing artifact must not read as a different answer.
+fn write_certificates(
+    dir: &str,
+    wire: adsmt_emit_contract::Wire,
+    certs: &[adsmt_lukb_driver::GoalCertificate],
+) {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("adsmtr: cannot create {dir}: {e}");
+        return;
+    }
+    let ext = match wire {
+        adsmt_emit_contract::Wire::Cbor => "cbor",
+        adsmt_emit_contract::Wire::Json => "json",
+    };
+    for gc in certs {
+        let path = format!("{dir}/{}.cert.{ext}", gc.goal_index);
+        let bytes = adsmt_emit_contract::encode(&gc.certificate, wire);
+        if let Err(e) = std::fs::write(&path, &bytes) {
+            eprintln!("adsmtr: cannot write {path}: {e}");
+        }
+    }
+    eprintln!("adsmtr: wrote {} certificate(s) to {dir}", certs.len());
+}
+
+fn solve_and_render_with(
+    src: &str,
+    paradigm: Paradigm,
+    mode: LuKbOutputMode,
+    emit_cert_dir: Option<&str>,
+    wire: adsmt_emit_contract::Wire,
+) -> Rendered {
     match paradigm {
         Paradigm::LuKb => {
-            let v = adsmt_lukb_driver::solve_with_mode(src, mode);
+            let v = match emit_cert_dir {
+                None => adsmt_lukb_driver::solve_with_mode(src, mode),
+                Some(dir) => {
+                    let outcome = adsmt_lukb_driver::solve_with_certificates(src, mode);
+                    write_certificates(dir, wire, &outcome.certificates);
+                    outcome.verdict
+                }
+            };
             Rendered {
                 text: v.render(mode),
                 exit: match v.collapse() {

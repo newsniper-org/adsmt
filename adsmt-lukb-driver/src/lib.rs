@@ -25,12 +25,60 @@ use adsmt_engine::{EngineLawProver, SatResult, Solver};
 use adsmt_ir_lukb::{Confidence, LuKbOutputMode, UnifiedVerdict, elaborate_with_prover};
 use adsmt_ir_lower::lower_with_triggers;
 
+
+/// One goal obligation's proof certificate.
+///
+/// A lu-kb program is a CONJUNCTION of obligations, each solved
+/// separately, so there is no single certificate for the program — each
+/// discharged goal has its own.
+#[derive(Clone, Debug)]
+pub struct GoalCertificate {
+    /// Index of the goal in the program's `goal` declarations.
+    pub goal_index: usize,
+    pub certificate: adsmt_cert::Certificate,
+}
+
+/// A solve, plus the certificates the discharged obligations produced.
+///
+/// The engine has always produced these; the driver destructured
+/// `SatResult::Unsat { .. }` and dropped them, which is why the lu-kb
+/// path had no certificate outlet and `adsmtc`/`adsmtr` had nothing to
+/// hand the ITP emitters.
+#[derive(Clone, Debug)]
+pub struct SolveOutcome {
+    pub verdict: UnifiedVerdict,
+    /// One per goal discharged NATIVELY with a certificate. A goal
+    /// resolved by delegation carries no native certificate, and an
+    /// undischarged goal has nothing to certify — so this may be
+    /// shorter than the program's goal list, and `goal_index` says
+    /// which ones are present.
+    pub certificates: Vec<GoalCertificate>,
+}
+
 /// Solve a lu-kb-successor program `src`, returning its [`UnifiedVerdict`].
 ///
 /// `mode` is carried for the renderer (`UnifiedVerdict::render(mode)`); it does
 /// not change the verdict, only how a caller prints it.
 #[must_use]
-pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
+pub fn solve_with_mode(src: &str, mode: LuKbOutputMode) -> UnifiedVerdict {
+    solve_collecting(src, mode, false).verdict
+}
+
+/// [`solve_with_mode`], keeping the proof certificates of the goals that
+/// were discharged natively.
+///
+/// Certificates cost the engine nothing extra here — it already builds
+/// them — but assembling the declaration context does, so it is opt-in.
+#[must_use]
+pub fn solve_with_certificates(src: &str, mode: LuKbOutputMode) -> SolveOutcome {
+    solve_collecting(src, mode, true)
+}
+
+fn solve_collecting(
+    src: &str,
+    _mode: LuKbOutputMode,
+    want_certs: bool,
+) -> SolveOutcome {
     // The driver reaches the engine, so datatype `Eq` instances are admitted
     // LAWFULLY (F3): `EngineLawProver` discharges the equivalence +
     // decidability laws per `data` declaration (EUF, milliseconds).
@@ -41,7 +89,10 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
             if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
                 eprintln!("[lukb-dbg] elaborate failed: {e}");
             }
-            return UnifiedVerdict::smt(Confidence::Unknown);
+            return SolveOutcome {
+                verdict: UnifiedVerdict::smt(Confidence::Unknown),
+                certificates: Vec::new(),
+            };
         }
     };
     // Lower hypotheses + goals to engine HOL (#325). All-or-nothing: an
@@ -60,7 +111,10 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
                     b.err().map(|e| e.to_string())
                 );
             }
-            return UnifiedVerdict::smt(Confidence::Unknown);
+            return SolveOutcome {
+                verdict: UnifiedVerdict::smt(Confidence::Unknown),
+                certificates: Vec::new(),
+            };
         }
     };
 
@@ -122,8 +176,17 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
         m
     };
 
+    // The declaration context every certificate carries (constraint (1)
+    // rule 1). Assembled ONCE: it describes the program, not a goal.
+    let signature = if want_certs {
+        lukb_signature(&hyps, &goals)
+    } else {
+        adsmt_cert::canonical::Signature::default()
+    };
+    let mut certificates: Vec<GoalCertificate> = Vec::new();
+
     let mut overall = Confidence::DefiniteUnsat; // vacuously all-valid
-    for g in &goals.goals {
+    for (goal_index, g) in goals.goals.iter().enumerate() {
         solver.push();
         for h in &hyps.goals {
             solver.assert(h.clone());
@@ -139,7 +202,19 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
             Ok(_) => {
                 solver.assert_goal_negation(g.clone());
                 match solver.check_sat() {
-                    SatResult::Unsat { .. } => Confidence::DefiniteUnsat, // goal valid
+                    SatResult::Unsat { certificate, .. } => {
+                        // (this crate is edition 2021 — no let chains)
+                        if want_certs {
+                            if let Some(mut c) = certificate.clone() {
+                                c.signature = signature.clone();
+                                certificates.push(GoalCertificate {
+                                    goal_index,
+                                    certificate: c,
+                                });
+                            }
+                        }
+                        Confidence::DefiniteUnsat // goal valid
+                    }
                     native => {
                         // Native abstained (`Unknown`) or found a — possibly false —
                         // `Sat`. Fall back to the shared delegation stack, exactly as
@@ -166,7 +241,86 @@ pub fn solve_with_mode(src: &str, _mode: LuKbOutputMode) -> UnifiedVerdict {
         solver.pop(1);
         overall = combine_obligation(overall, goal_verdict);
     }
-    UnifiedVerdict::smt(overall)
+    SolveOutcome { verdict: UnifiedVerdict::smt(overall), certificates }
+}
+
+/// The declaration context of a lowered lu-kb program.
+///
+/// Constraint (1) rule 1, on the lu-kb path: the datatypes come straight
+/// from the lowering (they are already `DatatypeDecl`s), and the sorts
+/// and function signatures are read off the lowered terms' free
+/// variables — which is all the HOL layer retains of the surface's
+/// declarations. Entries are sorted so the same program yields the same
+/// certificate.
+fn lukb_signature(
+    hyps: &adsmt_ir_lower::Lowered,
+    goals: &adsmt_ir_lower::Lowered,
+) -> adsmt_cert::canonical::Signature {
+    use adsmt_cert::canonical::{DatatypeDecl, FunDecl, Signature, SortDecl};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut sig = Signature::default();
+    let mut seen_dt: BTreeSet<String> = BTreeSet::new();
+    for d in hyps.datatypes.iter().chain(goals.datatypes.iter()) {
+        if !seen_dt.insert(d.sort_name.clone()) {
+            continue;
+        }
+        sig.datatypes.push(DatatypeDecl {
+            sort_name: d.sort_name.clone(),
+            constructors: d.constructors.clone(),
+            arities: d.arities.clone(),
+            selectors: d.selectors.clone(),
+            field_sorts: d.field_sorts.clone(),
+            params: d.params.clone(),
+            is_finite: d.is_finite,
+        });
+    }
+
+    // Free variables give the function/constant signatures. A curried
+    // HOL type is split back into (params, result) so the declaration
+    // reads the way it was written rather than as one arrow chain.
+    let mut funs: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
+    let mut sorts: BTreeSet<String> = BTreeSet::new();
+    for t in hyps.goals.iter().chain(goals.goals.iter()) {
+        for v in t.free_vars() {
+            let (params, result) = split_fun_type(&v.ty);
+            for p in &params {
+                sorts.insert(p.clone());
+            }
+            sorts.insert(result.clone());
+            funs.entry(v.name.clone()).or_insert((params, result));
+        }
+    }
+    for name in sorts {
+        let builtin = matches!(name.as_str(), "Bool" | "Int" | "Real");
+        // A datatype declares its own sort; listing it again would make
+        // a consumer emit an opaque type shadowing the inductive.
+        if sig.datatypes.iter().any(|d| d.sort_name == name) {
+            continue;
+        }
+        sig.sorts.push(SortDecl { name, arity: 0, builtin });
+    }
+    for (name, (params, result)) in funs {
+        sig.funs.push(FunDecl {
+            name,
+            params,
+            param_names: Vec::new(),
+            result,
+            body: None,
+        });
+    }
+    sig
+}
+
+/// `Int → Int → Bool` -> `(["Int", "Int"], "Bool")`.
+fn split_fun_type(ty: &adsmt_core::Type) -> (Vec<String>, String) {
+    let mut params = Vec::new();
+    let mut cur = ty.clone();
+    while let Some((dom, cod)) = cur.dest_fun() {
+        params.push(dom.to_string());
+        cur = cod;
+    }
+    (params, cur.to_string())
 }
 
 /// The z3-compatible default ([`solve_with_mode`] with [`LuKbOutputMode::Z3Compatible`]).
@@ -272,6 +426,55 @@ mod tests {
 
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The lu-kb path had NO certificate outlet: the driver destructured
+    /// `SatResult::Unsat { .. }` and dropped the certificate the engine
+    /// had already built, so `adsmtc`/`adsmtr` had nothing to hand the
+    /// ITP emitters.
+    #[test]
+    fn a_discharged_goal_yields_a_certificate() {
+        let src = "fn f(x: Int, y: Int): Bool\n\
+                   axiom: f(1, 2)\n\
+                   axiom: not f(1, 2)\n\
+                   goal: false\n";
+        let out = solve_with_certificates(src, LuKbOutputMode::Z3Compatible);
+        assert_eq!(out.certificates.len(), 1, "one goal, discharged");
+        assert_eq!(out.certificates[0].goal_index, 0);
+        // The certificate must stand on its own: re-checkable offline.
+        let rep = out.certificates[0].certificate.recheck().expect("re-check");
+        assert!(rep.structural_steps > 0);
+    }
+
+    /// Constraint (1) rule 1 on the lu-kb path: the certificate carries
+    /// the declaration context, so a consumer does not have to
+    /// reconstruct it by scanning free variables.
+    #[test]
+    fn the_certificate_carries_the_declaration_context() {
+        let src = "fn f(x: Int, y: Int): Bool\n\
+                   axiom: f(1, 2)\n\
+                   axiom: not f(1, 2)\n\
+                   goal: false\n";
+        let out = solve_with_certificates(src, LuKbOutputMode::Z3Compatible);
+        let sig = &out.certificates[0].certificate.signature;
+        let f = sig.funs.iter().find(|d| d.name == "f").expect("`f` declared");
+        assert_eq!(f.params, vec!["Int".to_string(), "Int".to_string()]);
+        assert_eq!(f.result, "Bool");
+    }
+
+    /// Collecting certificates must not change the verdict — it is an
+    /// extra output, not a different solve.
+    #[test]
+    fn collecting_certificates_does_not_change_the_verdict() {
+        for src in [
+            "fn f(x: Int): Bool\naxiom: f(1)\naxiom: not f(1)\ngoal: false\n",
+            "const `a`: Int\naxiom: `a` = 1\ngoal: `a` = 2\n",
+            "goal: false\n",
+        ] {
+            let plain = solve_with_mode(src, LuKbOutputMode::Z3Compatible);
+            let with = solve_with_certificates(src, LuKbOutputMode::Z3Compatible);
+            assert_eq!(plain.collapse(), with.verdict.collapse(), "{src}");
+        }
     }
 
     #[test]

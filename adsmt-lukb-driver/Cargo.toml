@@ -11,6 +11,11 @@ adsmt-ir-lukb = { path = "../adsmt-ir-lukb" }
 adsmt-ir-lower = { path = "../adsmt-ir-lower" }
 adsmt-engine = { path = "../adsmt-engine" }
 adsmt-core = { path = "../adsmt-core" }
+# The proof certificate the engine already produces on `unsat`. Before this
+# the driver destructured `SatResult::Unsat { .. }` and threw it away, so the
+# lu-kb path had NO certificate outlet at all — `adsmtc`/`adsmtr` could not
+# hand anything to the ITP emitters.
+adsmt-cert = { path = "../adsmt-cert" }
 # Shared delegation stack (optional) — on a native `Unknown` (or a possibly-false
 # native `Sat`) the driver falls back to OxiZ (`oxiz`) and/or the admit-re-checked
 # CAS backends (`cas`), the SAME delegation `lu-smt` has. Off by default; adsmtc /

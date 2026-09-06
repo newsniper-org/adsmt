@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 adsmt-lukb-driver = { path = "../adsmt-lukb-driver" }
+# The certificate wire (CBOR/JSON) the adsmt-emit emitters read.
+adsmt-emit-contract = { path = "../adsmt-emit/adsmt-emit-contract" }
 adsmt-ir-lukb = { path = "../adsmt-ir-lukb" }
 adsmt-ir-asp = { path = "../adsmt-ir-asp" }
 

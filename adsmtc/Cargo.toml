@@ -10,6 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 adsmt-lukb-driver = { path = "../adsmt-lukb-driver" }
+# The certificate wire (CBOR/JSON) the adsmt-emit emitters read, shared
+# with `lu-smt` so both front-ends write the same bytes.
+adsmt-emit-contract = { path = "../adsmt-emit/adsmt-emit-contract" }
 adsmt-ir-lukb = { path = "../adsmt-ir-lukb" }
 
 [features]
