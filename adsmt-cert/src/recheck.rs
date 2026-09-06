@@ -442,8 +442,15 @@ fn check_farkas(
     // bound in the combination makes the sum strict.
     let mut strict = false;
     for (b, &m) in w.bounds.iter().zip(&w.farkas) {
-        if m < 0 {
-            return Err(bad(format!("multiplier {m} is negative")));
+        // An INEQUALITY needs a nonnegative multiplier — a negative one
+        // flips it and proves nothing. An EQUALITY is two inequalities
+        // at once, so its multiplier is unconstrained; requiring it
+        // nonnegative would reject valid certificates that use an
+        // equality in the `≥` direction.
+        if m < 0 && !matches!(b.op, BoundOp::Eq) {
+            return Err(bad(format!(
+                "multiplier {m} is negative on a non-equality bound"
+            )));
         }
         if m == 0 {
             continue;
@@ -465,11 +472,6 @@ fn check_farkas(
             *coeffs.entry(v.clone()).or_default() += sign * (*c as i128) * (m as i128);
         }
         rhs += sign * (b.rhs as i128) * (m as i128);
-        // An `=` bound also contributes its reverse direction, which is
-        // what lets equalities appear in a Farkas certificate at all.
-        if matches!(b.op, BoundOp::Eq) {
-            continue;
-        }
     }
     if let Some((v, c)) = coeffs.iter().find(|(_, c)| **c != 0) {
         return Err(bad(format!(

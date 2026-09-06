@@ -73,6 +73,20 @@ struct TwoVar {
     sign: i128,
     op: &'static str, // "<=" | "<" | ">=" | ">"
     k: i128,
+    /// Which ASSERTED entries this one is a nonnegative combination of,
+    /// as indices into `two_vars` — an index repeated `n` times means a
+    /// multiplier of `n`. An asserted entry's provenance is itself.
+    ///
+    /// Fourier–Motzkin elimination adds two constraints together, so
+    /// concatenating the parents' provenance IS the Farkas combination.
+    /// Without it the theory could say a cycle was infeasible but not
+    /// which assertions made it so.
+    ///
+    /// `Arc<[usize]>` because `fm_cross_eliminate` clones the whole
+    /// `two_vars` vector once per pass: a `Vec` here would make every
+    /// pass copy every provenance, while an `Arc` clone is a pointer
+    /// bump.
+    origin: std::sync::Arc<[usize]>,
 }
 
 pub struct LinArith {
@@ -429,6 +443,61 @@ impl LinArith {
     /// 2. **Eager self-loop conflict**: as soon as a self-loop entry
     ///    (`x == y` with `1 + sign == 0`) becomes infeasible, return
     ///    the witness immediately. No need to finish the closure.
+
+    /// Push an ASSERTED two-var constraint, stamping its provenance as
+    /// itself. Every `two_vars` entry then answers "which assertions am
+    /// I a combination of?" — derived entries by concatenation, asserted
+    /// ones by pointing at themselves.
+    fn push_asserted_two_var(&mut self, mut tv: TwoVar) {
+        let idx = self.two_vars.len();
+        tv.origin = std::sync::Arc::from(vec![idx]);
+        self.two_vars.push(tv);
+    }
+
+
+    /// Turn a derived entry's provenance into a Farkas witness.
+    ///
+    /// The provenance is a multiset of ASSERTED `two_vars` indices, so
+    /// an index's multiplicity IS its Farkas multiplier — Fourier–Motzkin
+    /// only ever adds constraints with coefficient 1. Each asserted
+    /// entry expands from the virtual variable `x + sign·y` back into
+    /// per-variable coefficients.
+    ///
+    /// Returns `None` if the provenance is empty (nothing to attribute)
+    /// or a coefficient does not fit the witness's `i64`, so the caller
+    /// falls back rather than emitting wrapped numbers.
+    fn farkas_from_origin(&self, origin: &[usize]) -> Option<LinArithWitness> {
+        use std::collections::BTreeMap;
+        if origin.is_empty() {
+            return None;
+        }
+        let mut mult: BTreeMap<usize, i64> = BTreeMap::new();
+        for &i in origin {
+            *mult.entry(i).or_insert(0) += 1;
+        }
+        let mut bounds = Vec::with_capacity(mult.len());
+        let mut farkas = Vec::with_capacity(mult.len());
+        for (idx, m) in mult {
+            let tv = self.two_vars.get(idx)?;
+            let op = match tv.op {
+                "<=" => BoundOp::Le,
+                "<" => BoundOp::Lt,
+                ">=" => BoundOp::Ge,
+                ">" => BoundOp::Gt,
+                _ => return None,
+            };
+            let sign = i64::try_from(tv.sign).ok()?;
+            let k = i64::try_from(tv.k).ok()?;
+            bounds.push(LinearBound {
+                coeffs: vec![(tv.x.clone(), 1), (tv.y.clone(), sign)],
+                op,
+                rhs: k,
+            });
+            farkas.push(m);
+        }
+        Some(LinArithWitness { bounds, farkas })
+    }
+
     fn fm_cross_eliminate(&mut self) -> Option<TheoryWitness> {
         const MAX_PASSES: usize = 16;
         for _ in 0..MAX_PASSES {
@@ -461,21 +530,32 @@ impl LinArith {
                             && existing_dominates(t.op, t.k, new_op, new_k)
                     });
                     if redundant { continue; }
+                    // FM adds `a` and `b` with multipliers [1, 1], so the
+                    // combined provenance is their concatenation.
+                    let mut origin: Vec<usize> =
+                        Vec::with_capacity(a.origin.len() + b.origin.len());
+                    origin.extend_from_slice(&a.origin);
+                    origin.extend_from_slice(&b.origin);
                     let entry = TwoVar {
                         x: new_x.clone(),
                         y: new_y.clone(),
                         sign: new_sign,
                         op: new_op,
                         k: new_k,
+                        origin: std::sync::Arc::from(origin),
                     };
                     // Eager conflict on self-loop infeasibility.
                     if entry.x == entry.y && 1 + entry.sign == 0
                         && self_loop_infeasible(entry.op, entry.k)
                     {
+                        if let Some(w) = self.farkas_from_origin(&entry.origin) {
+                            return Some(TheoryWitness::LinArith(w));
+                        }
                         return Some(TheoryWitness::Opaque {
                             kind: self.name_.into(),
                             notes: format!(
-                                "FM chain conflict: derived `0 {} {}` from cycle through {}",
+                                "FM chain conflict: derived `0 {} {}` from cycle through {} \
+(no structural witness: provenance unavailable or a coefficient exceeds i64)",
                                 entry.op, entry.k, entry.x
                             ),
                         });
@@ -491,10 +571,14 @@ impl LinArith {
         // entry (rare, but covers ¬-driven negative-polarity asserts).
         for tv in &self.two_vars {
             if tv.x == tv.y && 1 + tv.sign == 0 && self_loop_infeasible(tv.op, tv.k) {
+                if let Some(w) = self.farkas_from_origin(&tv.origin) {
+                    return Some(TheoryWitness::LinArith(w));
+                }
                 return Some(TheoryWitness::Opaque {
                     kind: self.name_.into(),
                     notes: format!(
-                        "FM chain conflict: derived `0 {} {}` from cycle through {}",
+                        "FM chain conflict: derived `0 {} {}` from cycle through {} \
+(no structural witness: provenance unavailable or a coefficient exceeds i64)",
                         tv.op, tv.k, tv.x
                     ),
                 });
@@ -577,11 +661,38 @@ impl LinArith {
             if let (Some((lo, lstrict)), Some((up, ustrict))) = (lower, upper)
                 && (lo > up || (lo == up && (*lstrict || *ustrict)))
             {
+                // The virtual variable is `x + sign·y`, so expanding it
+                // back into per-variable coefficients turns the two
+                // bounds into an ordinary Farkas pair with multipliers
+                // [1, 1] — the same shape as the single-variable case,
+                // just over two columns.
+                let fits = |v: i128| i64::try_from(v).ok();
+                if let (Some(lo64), Some(up64), Some(sg)) =
+                    (fits(*lo), fits(*up), fits(*sign))
+                {
+                    let coeffs = vec![(x.clone(), 1i64), (y.clone(), sg)];
+                    return Some(TheoryWitness::LinArith(LinArithWitness {
+                        bounds: vec![
+                            LinearBound {
+                                coeffs: coeffs.clone(),
+                                op: if *lstrict { BoundOp::Gt } else { BoundOp::Ge },
+                                rhs: lo64,
+                            },
+                            LinearBound {
+                                coeffs,
+                                op: if *ustrict { BoundOp::Lt } else { BoundOp::Le },
+                                rhs: up64,
+                            },
+                        ],
+                        farkas: vec![1, 1],
+                    }));
+                }
                 let pair = if *sign < 0 { format!("{x} - {y}") } else { format!("{x} + {y}") };
                 return Some(TheoryWitness::Opaque {
                     kind: self.name_.into(),
                     notes: format!(
-                        "two-var bounds infeasible on ({pair}): lower ({lo}, strict={lstrict}) vs upper ({up}, strict={ustrict})"
+                        "two-var bounds infeasible on ({pair}): lower ({lo}, strict={lstrict}) \
+vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds i64)"
                     ),
                 });
             }
@@ -1031,9 +1142,9 @@ fn existing_dominates(
 fn norm_two_var(x: String, y: String, sign: i128, op: &'static str, k: i128) -> TwoVar {
     if sign == -1 && matches!(op, ">=" | ">") {
         let mop = if op == ">=" { "<=" } else { "<" };
-        TwoVar { x: y, y: x, sign: -1, op: mop, k: -k }
+        TwoVar { x: y, y: x, sign: -1, op: mop, k: -k, origin: std::sync::Arc::from(&[][..]) }
     } else {
-        TwoVar { x, y, sign, op, k }
+        TwoVar { x, y, sign, op, k, origin: std::sync::Arc::from(&[][..]) }
     }
 }
 
@@ -1143,8 +1254,8 @@ impl Theory for LinArith {
                 return AssertResult::Accepted;
             }
             if let (TermInner::Var(vx), TermInner::Var(vy)) = (a.kind(), b.kind()) {
-                self.two_vars.push(norm_two_var(vx.name.clone(), vy.name.clone(), -1, "<=", 0));
-                self.two_vars.push(norm_two_var(vx.name.clone(), vy.name.clone(), -1, ">=", 0));
+                self.push_asserted_two_var(norm_two_var(vx.name.clone(), vy.name.clone(), -1, "<=", 0));
+                self.push_asserted_two_var(norm_two_var(vx.name.clone(), vy.name.clone(), -1, ">=", 0));
                 return AssertResult::Accepted;
             }
             // `x = y ± k` (var = var ± literal): an OFFSET two-var equality
@@ -1160,8 +1271,8 @@ impl Theory for LinArith {
             });
             if let Some((vx, vy, k)) = offset {
                 // x = y + k  ⟺  x − y = k.
-                self.two_vars.push(norm_two_var(vx.clone(), vy.clone(), -1, "<=", k));
-                self.two_vars.push(norm_two_var(vx, vy, -1, ">=", k));
+                self.push_asserted_two_var(norm_two_var(vx.clone(), vy.clone(), -1, "<=", k));
+                self.push_asserted_two_var(norm_two_var(vx, vy, -1, ">=", k));
                 return AssertResult::Accepted;
             }
             // #348 — general linear-equality normalization for a COMPOUND
@@ -1345,7 +1456,7 @@ impl Theory for LinArith {
             } else {
                 match op { "<=" => ">", "<" => ">=", ">=" => "<", ">" => "<=", _ => return AssertResult::Ignored }
             };
-            self.two_vars.push(norm_two_var(x, y, sign, final_op, k));
+            self.push_asserted_two_var(norm_two_var(x, y, sign, final_op, k));
             return AssertResult::Accepted;
         }
         if !lit.polarity {
@@ -1999,6 +2110,29 @@ mod tests {
         let sum = Term::app(Term::app(plus, x).unwrap(), y).unwrap();
         let k_lit = Term::const_(&format!("int:{k}"), int_ty());
         Term::app(Term::app(le, sum).unwrap(), k_lit).unwrap()
+    }
+
+
+    /// The FM chain conflict carries a FARKAS witness: elimination adds
+    /// constraints with coefficient 1, so the derived entry's provenance
+    /// IS the combination. Before this the theory could say a cycle was
+    /// infeasible but not which assertions made it so.
+    #[test]
+    fn an_fm_chain_conflict_carries_its_farkas_combination() {
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(diff_le_term("x", "y", 0)).unwrap());
+        t.assert(Literal::positive(diff_le_term("y", "z", 0)).unwrap());
+        t.assert(Literal::positive(diff_le_term("z", "x", -1)).unwrap());
+        let CheckResult::Unsat { witness } = t.check() else {
+            panic!("FM must refute the cycle");
+        };
+        let TheoryWitness::LinArith(w) = witness else {
+            panic!("expected a Farkas witness, got {witness:?}");
+        };
+        assert_eq!(w.bounds.len(), w.farkas.len());
+        assert!(!w.bounds.is_empty());
+        // Every multiplier is nonnegative — FM only ever adds.
+        assert!(w.farkas.iter().all(|m| *m >= 0), "{:?}", w.farkas);
     }
 
     #[test]
