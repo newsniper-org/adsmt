@@ -44,6 +44,33 @@ const CORPUS: &[(&str, &str, &str)] = &[
         "const x: Int\ngoal g: x > 0, x < 0 |- x = 42\n",
         "(declare-const x Int)(assert (> x 0))(assert (< x 0))(assert (not (= x 42)))(check-sat)",
     ),
+    // ② — a `Nat`/`WNat` constant that appears ONLY in the goal. Its
+    // positivity is a HYPOTHESIS; it used to be appended to `Lowered::goals`,
+    // where the driver ran it as an independent obligation and the
+    // countermodel `n = 0` refuted it, making the whole program `sat`
+    // (verus-fork P0, `A-nat-nonneg.lukb`). The oracle spells the positivity
+    // out as the assumption it is.
+    (
+        "goal-only Nat: positivity is assumed, not proved",
+        "const n: Nat\ngoal g: 0 <= n\n",
+        "(declare-const n Int)(assert (>= n 1))\
+         (assert (not (<= 0 n)))(check-sat)",
+    ),
+    (
+        "goal-only WNat: positivity is assumed, not proved",
+        "const n: WNat\ngoal g: 0 <= n\n",
+        "(declare-const n Int)(assert (>= n 0))\
+         (assert (not (<= 0 n)))(check-sat)",
+    ),
+    (
+        // The companion direction: assuming positivity must not over-constrain
+        // into a spurious `unsat`. `n : Nat` gives `n ≥ 1`, and `n = 1`
+        // refutes `n ≥ 2`.
+        "goal-only Nat: positivity does not over-constrain",
+        "const n: Nat\ngoal g: n >= 2\n",
+        "(declare-const n Int)(assert (>= n 1))\
+         (assert (not (>= n 2)))(check-sat)",
+    ),
     (
         "eq-not-entailed invalid",
         "const x: Int\nconst y: Int\ngoal g: x >= y |- x = y\n",

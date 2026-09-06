@@ -33,7 +33,10 @@ fn verdict(env: &Env, goals: &[Term]) -> SatResult {
     for d in lowered.datatypes {
         assert!(s.declare_datatype(d), "engine accepts the datatype declaration");
     }
-    for g in lowered.goals {
+    // `extra_hyps` are ASSUMPTIONS, so a caller must assert them alongside —
+    // the same merge the lu-kb driver does. (They used to arrive inside
+    // `goals`, which is what made a goal-only `Nat` constant a false `sat`.)
+    for g in lowered.goals.into_iter().chain(lowered.extra_hyps) {
         s.assert(g);
     }
     s.check_sat()
@@ -57,7 +60,8 @@ fn forall_nat_gets_an_implication_guard() {
     let goal = Term::pi(nat(), Term::app(Term::cnst("p"), Term::bound(0)));
 
     let l = lower(&env, &[goal]).expect("lowers");
-    assert_eq!(l.goals.len(), 1, "no free Nat consts → no extra hypothesis");
+    assert_eq!(l.goals.len(), 1);
+    assert!(l.extra_hyps.is_empty(), "no free Nat consts → no extra hypothesis");
     let (v, body) = l.goals[0].dest_forall().expect("a ∀");
     assert_eq!(v.ty, int_ty(), "the Nat binder collapsed to Int");
     let (hyp, _concl) = body.dest_imp().expect("∀ guard is an implication");
@@ -96,11 +100,15 @@ fn nat2int_is_identity_and_free_const_gets_positivity() {
     );
 
     let l = lower(&env, &[goal]).expect("lowers");
-    assert_eq!(l.goals.len(), 2, "lowered goal + the free Nat const's positivity");
+    // The positivity is a HYPOTHESIS. It must NOT be a second goal — the
+    // driver runs each goal as its own obligation, so `c >= 1` sitting there
+    // became a thing to prove and `c = 0` refuted it (verus-fork P0).
+    assert_eq!(l.goals.len(), 1, "the lowered goal, and only it");
+    assert_eq!(l.extra_hyps.len(), 1, "the free Nat const's positivity");
     let main = format!("{:?}", l.goals[0]);
     assert!(!main.contains("nat2int"), "nat2int erased to the identity: {main}");
     assert!(main.contains("\"q\"") && main.contains("\"c\""), "q applied to the bare c: {main}");
-    let hyp = format!("{:?}", l.goals[1]);
+    let hyp = format!("{:?}", l.extra_hyps[0]);
     assert!(
         hyp.contains("\">=\"") && hyp.contains("\"1\"") && hyp.contains("\"c\""),
         "positivity `c >= 1`: {hyp}"
@@ -171,7 +179,8 @@ fn positivity_hypothesis_is_deduplicated() {
     let goal = Term::apps(Term::cnst("r"), [Term::cnst("c"), Term::cnst("c")]);
 
     let l = lower(&env, &[goal]).expect("lowers");
-    assert_eq!(l.goals.len(), 2, "one goal + a single positivity hypothesis for c");
+    assert_eq!(l.goals.len(), 1, "one goal");
+    assert_eq!(l.extra_hyps.len(), 1, "a single positivity hypothesis for c");
 }
 
 // ── #338: positivity actually DECIDES in the solving path ────────────────

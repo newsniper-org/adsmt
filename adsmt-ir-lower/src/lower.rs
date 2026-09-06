@@ -61,6 +61,20 @@ pub struct Lowered {
     pub datatypes: Vec<DatatypeDecl>,
     /// Each goal, a closed adsmt-core term of sort `Bool`.
     pub goals: Vec<CTerm>,
+    /// Facts the lowering had to ADD to keep itself honest — today, the
+    /// positivity of every free `Nat`/`WNat` constant, which the collapse to
+    /// `Int` would otherwise forget.
+    ///
+    /// **These are hypotheses, not goals**, and the distinction is not
+    /// cosmetic: the caller runs each member of [`goals`](Self::goals) as a
+    /// separate proof obligation, so a positivity that landed there became an
+    /// independent thing to PROVE — refuted by the countermodel `n = 0`, which
+    /// made the whole program `sat`. It only ever surfaced when the `Nat`
+    /// constant appeared in a goal and nowhere else, because that is the only
+    /// case where the goal-side lowering is the first to meet it.
+    ///
+    /// A caller must assert these alongside its hypotheses.
+    pub extra_hyps: Vec<CTerm>,
     /// Lowered `:pattern` trigger annotations, keyed by the OUTERMOST lowered
     /// HOL `forall` term (a subterm of some goal — hash-consed, so the
     /// renderer's recursion recognizes it by `==`). Advisory metadata: absent
@@ -130,10 +144,15 @@ pub fn lower_with_triggers(
         // be top-level, not per-construction-site.
         out.push(fold_bool_lits(&t));
     }
-    // Nat/WNat refinement-collapse: append the positivity of every free
-    // Nat/WNat constant lowered above (a true fact — asserting it is sound and
-    // is what keeps the sort-collapse honest; see the design doc §4 invariant A⟺B).
-    out.extend(lw.extra_hyps.borrow_mut().drain(..));
+    // Nat/WNat refinement-collapse: the positivity of every free Nat/WNat
+    // constant lowered above (a true fact — asserting it is sound and is what
+    // keeps the sort-collapse honest; see the design doc §4 invariant A⟺B).
+    //
+    // It goes in its OWN field. This used to be `out.extend(…)` — and `out` is
+    // `Lowered::goals`, so on the goal-side lowering the positivity became a
+    // separate obligation to prove rather than a fact to assume. See
+    // [`Lowered::extra_hyps`].
+    let extra_hyps: Vec<CTerm> = lw.extra_hyps.borrow_mut().drain(..).collect();
     // Re-key the trigger annotations through the SAME whole-formula literal
     // fold the goals get: `fold_bool_lits` is a pure post-order rewrite, so
     // wherever a quantifier survives in a folded goal, the surviving subterm
@@ -151,7 +170,7 @@ pub fn lower_with_triggers(
             (fold_bool_lits(&k), LoweredTriggers { arity: v.arity, groups })
         })
         .collect();
-    Ok(Lowered { datatypes, goals: out, triggers })
+    Ok(Lowered { datatypes, goals: out, extra_hyps, triggers })
 }
 
 /// One de Bruijn binder, paired across the two representations: the kernel

@@ -155,6 +155,19 @@ caught #340/#341.
    `exists` arm `∧`) + free-Nat/WNat-constant positivity hypotheses
    (`extra_hyps`, deduped). 5 direct-kernel tests assert the produced shape
    matches the pre-verified `relativize`; `adsmt-ir-lower` green, clippy-clean.
+
+   **Correction (2026-09-06).** `extra_hyps` was *appended to
+   `Lowered::goals`*, and a caller that runs each goal as a separate
+   obligation — which the lu-kb driver does, by the verus convention — then
+   ran the positivity as a thing to PROVE. `n ≥ 1` is refuted by the
+   countermodel `n = 0`, so `const n: Nat / goal: 0 <= n` came back
+   `definite-sat`. It surfaced only when the constant appeared in a goal and
+   nowhere else, because that is the only case where the goal-side lowering is
+   the first to meet it; hypothesis-side occurrences were always fine.
+   Invariant A⟺B below says the positivity must be ASSERTED — the defect is
+   that "asserted" and "made a goal" are not the same thing for a per-goal
+   caller. `Lowered::extra_hyps` is now its own field and the driver merges it
+   into the assumption set. (verus-fork P0, `A-nat-nonneg.lukb`.)
 4. Wire the `Reduces` instance data into `adsmt-class` (one source of truth) —
    **pending.**
 5. The end-to-end kernel-term→render→z3 differential (§6) — **pending**, gated on

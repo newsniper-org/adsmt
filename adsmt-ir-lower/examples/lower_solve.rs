@@ -41,7 +41,10 @@ fn solve(src: &str) -> &'static str {
             return "unknown";
         }
     }
-    for g in lowered.goals {
+    // `extra_hyps` are assumptions the lowering had to add (free `Nat`/`WNat`
+    // positivity). Everything here is asserted anyway, so chaining them is
+    // exactly what this did before they had their own field.
+    for g in lowered.goals.into_iter().chain(lowered.extra_hyps) {
         s.assert(g);
     }
     match s.check_sat() {

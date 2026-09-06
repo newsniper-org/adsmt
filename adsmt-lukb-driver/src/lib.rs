@@ -185,10 +185,23 @@ fn solve_collecting(
     };
     let mut certificates: Vec<GoalCertificate> = Vec::new();
 
+    // The assumption set: the program's hypotheses, plus whatever the lowering
+    // had to add to stay honest. `extra_hyps` from the GOAL-side call belongs
+    // here too — it is the positivity of a `Nat`/`WNat` constant, a fact to
+    // assume, and it used to arrive inside `goals.goals`, where the loop below
+    // ran it as an independent obligation and `n = 0` refuted it.
+    let assumptions: Vec<Term> = hyps
+        .goals
+        .iter()
+        .chain(hyps.extra_hyps.iter())
+        .chain(goals.extra_hyps.iter())
+        .cloned()
+        .collect();
+
     let mut overall = Confidence::DefiniteUnsat; // vacuously all-valid
     for (goal_index, g) in goals.goals.iter().enumerate() {
         solver.push();
-        for h in &hyps.goals {
+        for h in &assumptions {
             solver.assert(h.clone());
         }
         // `assert_goal_negation` rather than `assert(mk_not(g))`: it does
@@ -227,7 +240,7 @@ fn solve_collecting(
                         };
                         #[cfg(any(feature = "oxiz", feature = "cas"))]
                         {
-                            delegate_resolve(&hyps.goals, g, &datatypes, &patterns, native_conf)
+                            delegate_resolve(&assumptions, g, &datatypes, &patterns, native_conf)
                         }
                         #[cfg(not(any(feature = "oxiz", feature = "cas")))]
                         {
@@ -281,7 +294,13 @@ fn lukb_signature(
     // reads the way it was written rather than as one arrow chain.
     let mut funs: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
     let mut sorts: BTreeSet<String> = BTreeSet::new();
-    for t in hyps.goals.iter().chain(goals.goals.iter()) {
+    for t in hyps
+        .goals
+        .iter()
+        .chain(hyps.extra_hyps.iter())
+        .chain(goals.goals.iter())
+        .chain(goals.extra_hyps.iter())
+    {
         for v in t.free_vars() {
             let (params, result) = split_fun_type(&v.ty);
             for p in &params {
