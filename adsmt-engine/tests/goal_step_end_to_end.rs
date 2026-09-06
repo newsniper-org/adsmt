@@ -74,3 +74,37 @@ fn a_session_that_names_no_goal_leaves_the_mark_empty() {
     assert_eq!(cert.goal_step, None);
     assert_eq!(cert.validate_goal_step().expect("valid"), None);
 }
+
+fn add(a: Term, b: Term) -> Term {
+    let f = Term::const_(
+        "+",
+        Type::fun(int_ty(), Type::fun(int_ty(), int_ty()).unwrap()).unwrap(),
+    );
+    Term::app(Term::app(f, a).unwrap(), b).unwrap()
+}
+
+/// A comparison whose variables cancel is a closed question, and the shape
+/// parsers were leaving it open — `n + 1 > n` came back `unknown`. Now the
+/// general linear-comparison reduction decides it, and the refutation must
+/// carry a witness `Certificate::recheck` can REPLAY: the ground bound is its
+/// own one-element Farkas combination, so there is no excuse for an opaque
+/// note here.
+#[test]
+fn a_cancelling_comparison_closes_with_a_replayable_witness() {
+    let mut s = Solver::new();
+    let n = Term::var("n", int_ty());
+    let goal = cmp(">", add(n.clone(), int_lit(1)), n);
+    s.assert_goal_negation(goal);
+
+    let SatResult::Unsat { certificate, .. } = s.check_sat() else {
+        panic!("`n + 1 > n` is valid, so its negation must refute");
+    };
+    let cert = certificate.expect("unsat carries a certificate");
+    let report = cert.recheck().expect("the certificate must re-check");
+    assert_eq!(
+        report.unverified_witnesses(),
+        0,
+        "the ground bound is replayable, so nothing may be taken on faith: {report:?}"
+    );
+    assert!(report.verified_witnesses() >= 1, "{report:?}");
+}

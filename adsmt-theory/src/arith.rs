@@ -1005,6 +1005,129 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
         }
     }
 
+    /// General linear-comparison reduction — the inequality counterpart of
+    /// #348's equality reduction, and the same idea: stop matching SHAPES and
+    /// reduce to the normal form.
+    ///
+    /// The parsers above match shapes (`x op k`, `x + sign·y op k`). An atom
+    /// that says the same thing in a shape none of them names falls past all
+    /// of them and is dropped. Measured on the SMT-LIB path, that included
+    /// every *variable-free* comparison — `1 > 0`, `2 > 1`, `0 >= 0` all came
+    /// back `unknown` — and `n + 1 > n`, where the variables cancel and only
+    /// `1 > 0` is left. (`n >= n` closed, because it happens to hit the
+    /// self-loop case.) Those are the shapes one would otherwise be tempted to
+    /// hard-code as a table of known tautologies; the normal form derives them
+    /// instead, so `n + 2 > n + 1` needs no entry of its own.
+    ///
+    /// Reduce `a − b` to `Σ cᵢ·xᵢ + c`, so the atom means `Σ cᵢ·xᵢ + c op 0`:
+    ///
+    /// - **0 variables** → `c op 0` is a closed question: decide it.
+    /// - **1 variable** → `c₁·x op −c`, a bound on `x`. The division must
+    ///   round the way that keeps the bound IMPLIED: under LIA `2x < 3` is
+    ///   `x ≤ 1`, and under LRA a non-divisible bound is not representable in
+    ///   the `i128` store at all — `x ≤ 1.5` is *not* `x ≤ 1`, and recording
+    ///   the tighter one would fabricate conflicts — so it is dropped with the
+    ///   incompleteness backstop armed.
+    /// - **≥2 variables** → left to the two-var pool exactly as before.
+    ///
+    /// Returns `None` when this does not claim the atom, so every caller keeps
+    /// its previous behaviour untouched; it runs only where the shape parsers
+    /// have already declined.
+    fn assert_general_comparison(&mut self, lit: &Literal) -> Option<AssertResult> {
+        let (op, a, b) = dest_comparison(&lit.term)?;
+        let op = if lit.polarity { op } else { negate_cmp(op)? };
+        let (ma, ca) = Self::linearize(&a)?;
+        let (mb, cb) = Self::linearize(&b)?;
+        let c = ca.checked_sub(cb)?;
+        let mut diff = ma;
+        for (k, v) in mb {
+            let e = diff.entry(k).or_insert(0);
+            *e = e.checked_sub(v)?;
+        }
+        diff.retain(|_, v| *v != 0);
+        match diff.len() {
+            0 => {
+                let holds = match op {
+                    "<=" => c <= 0,
+                    "<" => c < 0,
+                    ">=" => c >= 0,
+                    ">" => c > 0,
+                    _ => return None,
+                };
+                if holds {
+                    // A ground tautology constrains nothing, but it IS fully
+                    // captured — `Accepted`, not `Ignored`.
+                    return Some(AssertResult::Accepted);
+                }
+                // `c op 0` is false, so the atom alone is the contradiction.
+                // Spell it as the one-element Farkas combination it is —
+                // `Σ (nothing) op −c` with multiplier 1 — rather than an
+                // opaque note, so `Certificate::recheck` can replay it.
+                let witness = match i64::try_from(-c) {
+                    Ok(rhs) => TheoryWitness::LinArith(LinArithWitness {
+                        bounds: vec![LinearBound {
+                            coeffs: Vec::new(),
+                            op: match op {
+                                "<=" => BoundOp::Le,
+                                "<" => BoundOp::Lt,
+                                ">=" => BoundOp::Ge,
+                                ">" => BoundOp::Gt,
+                                _ => return None,
+                            },
+                            rhs,
+                        }],
+                        farkas: vec![1],
+                    }),
+                    // Outside `i64` the witness would carry wrapped numbers.
+                    Err(_) => TheoryWitness::Opaque {
+                        kind: self.name_.into(),
+                        notes: format!(
+                            "linear comparison reduces to the false ground bound {c} {op} 0"
+                        ),
+                    },
+                };
+                self.conflict = Some(witness.clone());
+                Some(AssertResult::Conflict { witness })
+            }
+            1 => {
+                let (var, &coeff) = diff.iter().next().expect("len == 1");
+                let var = var.clone();
+                // `coeff·x + c op 0`  ⇒  `coeff·x op −c`, then divide by
+                // `coeff` — flipping the relation when it is negative.
+                let m = c.checked_neg()?;
+                let (op, d, m) = if coeff < 0 {
+                    (flip_cmp(op)?, coeff.checked_neg()?, m.checked_neg()?)
+                } else {
+                    (op, coeff, m)
+                };
+                let (rec_op, rec_k) = if self.name_ == "LIA" {
+                    match op {
+                        "<=" => ("<=", floor_div(m, d)?),
+                        "<" => ("<=", ceil_div(m, d)?.checked_sub(1)?),
+                        ">=" => (">=", ceil_div(m, d)?),
+                        ">" => (">=", floor_div(m, d)?.checked_add(1)?),
+                        _ => return None,
+                    }
+                } else if m % d == 0 {
+                    (op, m / d)
+                } else {
+                    // LRA, fractional: see the doc comment. Dropping it is
+                    // sound only with the backstop armed.
+                    self.note_incomplete(|| {
+                        format!("LRA {d}·{var} {op} {m}: fractional bound not representable")
+                    });
+                    return Some(AssertResult::Ignored);
+                };
+                if let Some(w) = self.record_bound(var, rec_op, rec_k) {
+                    self.conflict = Some(w.clone());
+                    return Some(AssertResult::Conflict { witness: w });
+                }
+                Some(AssertResult::Accepted)
+            }
+            _ => None,
+        }
+    }
+
     /// Combine an incoming bound with the existing one for `var`.
     /// Returns Some(conflict_witness) if the combined bounds become
     /// infeasible.
@@ -1151,6 +1274,58 @@ fn int_op(name: &str, ty: &adsmt_core::Type) -> Term {
 /// negated-goal mark, whose lookup is an exact term comparison.
 fn int_num(k: i128, ty: &adsmt_core::Type) -> Option<Term> {
     Some(Term::const_(&format!("int:{k}"), ty.clone()))
+}
+
+/// Destructure a comparison atom into its operator and two operands,
+/// collapsing the spelling aliases the shape parsers accept.
+fn dest_comparison(t: &Term) -> Option<(&'static str, Term, Term)> {
+    let TermInner::App(outer, b) = t.kind() else { return None };
+    let TermInner::App(head, a) = outer.kind() else { return None };
+    let TermInner::Const(c) = head.kind() else { return None };
+    let op = match c.name.as_str() {
+        "<=" | "le" => "<=",
+        "<" | "lt" => "<",
+        ">=" | "ge" => ">=",
+        ">" | "gt" => ">",
+        _ => return None,
+    };
+    Some((op, a.clone(), b.clone()))
+}
+
+/// The complementary relation — what `¬(a op b)` asserts. A negated
+/// comparison is a single bound, unlike a negated equality (a disjunction).
+fn negate_cmp(op: &str) -> Option<&'static str> {
+    Some(match op {
+        "<=" => ">",
+        "<" => ">=",
+        ">=" => "<",
+        ">" => "<=",
+        _ => return None,
+    })
+}
+
+/// The relation after multiplying both sides by a negative number.
+fn flip_cmp(op: &str) -> Option<&'static str> {
+    Some(match op {
+        "<=" => ">=",
+        "<" => ">",
+        ">=" => "<=",
+        ">" => "<",
+        _ => return None,
+    })
+}
+
+/// `⌊m / d⌋` and `⌈m / d⌉`. Rust's `/` truncates toward zero, which is
+/// neither, and the difference is the whole point here: rounding an integer
+/// bound the wrong way either loses a solution or invents a conflict.
+fn floor_div(m: i128, d: i128) -> Option<i128> {
+    let q = m.checked_div(d)?;
+    if m % d != 0 && ((m < 0) != (d < 0)) { q.checked_sub(1) } else { Some(q) }
+}
+
+fn ceil_div(m: i128, d: i128) -> Option<i128> {
+    let q = m.checked_div(d)?;
+    if m % d != 0 && ((m < 0) == (d < 0)) { q.checked_add(1) } else { Some(q) }
 }
 
 /// Does an existing `(op, k)` constraint dominate (i.e. imply) the candidate
@@ -1574,6 +1749,12 @@ impl Theory for LinArith {
                 // while opening the `Unsat` direction.
                 return AssertResult::Ignored;
             }
+            // Before dropping it: the shape parsers match shapes, so an atom
+            // that says a representable thing in an unnamed shape is still
+            // ours. Reduce to the normal form and see.
+            if let Some(r) = self.assert_general_comparison(&lit) {
+                return r;
+            }
             // A negated multi-variable comparison the 1-var/2-var parsers
             // didn't claim (e.g. `(not (<= (+ x y z) 5))`) is dropped — arm
             // the backstop (#351) so `check` can't fabricate a Sat.
@@ -1599,6 +1780,10 @@ impl Theory for LinArith {
                 return AssertResult::Conflict { witness: w };
             }
             return AssertResult::Ignored;
+        }
+        // Same as the negated branch above — normal form before dropping.
+        if let Some(r) = self.assert_general_comparison(&lit) {
+            return r;
         }
         // A multi-variable comparison (`x + y + z ≤ 5`) the 1-var/2-var parsers
         // couldn't represent — arm the backstop (#351). Non-arithmetic atoms
@@ -2241,6 +2426,154 @@ mod tests {
         );
         // A term already canonical is unchanged.
         assert_eq!(super::canonical_linear(&n), Some(n.clone()));
+    }
+
+    /// Build `a op b` for a comparison operator.
+    fn cmp_term(op: &str, a: Term, b: Term) -> Term {
+        let pred = Type::fun(int_ty(), Type::bool_())
+            .and_then(|f| Type::fun(int_ty(), f))
+            .unwrap();
+        Term::app(Term::app(Term::const_(op, pred), a).unwrap(), b).unwrap()
+    }
+
+    fn ivar(n: &str) -> Term { Term::var(n, int_ty()) }
+    fn ilit(k: i128) -> Term { Term::const_(&format!("int:{k}"), int_ty()) }
+    fn iadd(a: Term, b: Term) -> Term {
+        Term::app(Term::app(super::int_op("+", &int_ty()), a).unwrap(), b).unwrap()
+    }
+    fn imul(a: Term, b: Term) -> Term {
+        Term::app(Term::app(super::int_op("*", &int_ty()), a).unwrap(), b).unwrap()
+    }
+
+    /// A comparison whose variables cancel is a closed question, and the
+    /// shape parsers were leaving it open: measured, `1 > 0` and `n + 1 > n`
+    /// both came back `unknown` on the SMT-LIB path.
+    #[test]
+    fn a_ground_comparison_is_decided_not_dropped() {
+        // True ones are accepted and constrain nothing.
+        for (op, a, b) in [
+            (">", ilit(1), ilit(0)),
+            (">=", ilit(0), ilit(0)),
+            (">", iadd(ivar("n"), ilit(1)), ivar("n")),
+            (">", iadd(ivar("n"), ilit(2)), iadd(ivar("n"), ilit(1))),
+            (">=", imul(ilit(2), ivar("n")), iadd(ivar("n"), ivar("n"))),
+        ] {
+            let mut t = LinArith::lia();
+            let r = t.assert(Literal::positive(cmp_term(op, a, b)).unwrap());
+            assert!(matches!(r, AssertResult::Accepted), "{op}: {r:?}");
+        }
+        // False ones conflict on the spot.
+        for (op, a, b) in [
+            (">", ilit(0), ilit(1)),
+            (">", ivar("n"), iadd(ivar("n"), ilit(1))),
+            ("<", iadd(ivar("n"), ilit(1)), ivar("n")),
+        ] {
+            let mut t = LinArith::lia();
+            let r = t.assert(Literal::positive(cmp_term(op, a, b)).unwrap());
+            assert!(matches!(r, AssertResult::Conflict { .. }), "{op}: {r:?}");
+        }
+    }
+
+    /// The conflict must carry a Farkas combination `Certificate::recheck`
+    /// can replay, not an opaque note — the ground bound IS its own
+    /// one-element combination.
+    #[test]
+    fn a_false_ground_comparison_carries_a_replayable_witness() {
+        let mut t = LinArith::lia();
+        let r = t.assert(Literal::positive(cmp_term(">", ilit(0), ilit(1))).unwrap());
+        let AssertResult::Conflict { witness } = r else {
+            panic!("`0 > 1` must conflict, got {r:?}");
+        };
+        let TheoryWitness::LinArith(w) = witness else {
+            panic!("expected a Farkas witness, got {witness:?}");
+        };
+        assert_eq!(w.bounds.len(), 1);
+        assert_eq!(w.farkas, vec![1]);
+        assert!(w.bounds[0].coeffs.is_empty(), "a ground bound has no variables");
+    }
+
+    /// A negated comparison is the complementary one — a single bound,
+    /// unlike a negated equality.
+    #[test]
+    fn a_negated_comparison_flips_rather_than_splitting() {
+        // ¬(n + 1 > n)  is  n + 1 <= n  ⇒  1 <= 0, false.
+        let mut t = LinArith::lia();
+        let atom = cmp_term(">", iadd(ivar("n"), ilit(1)), ivar("n"));
+        let r = t.assert(Literal::negative(atom).unwrap());
+        assert!(matches!(r, AssertResult::Conflict { .. }), "{r:?}");
+        // ¬(n > n + 1)  is  n <= n + 1  ⇒  -1 <= 0, true.
+        let mut t = LinArith::lia();
+        let atom = cmp_term(">", ivar("n"), iadd(ivar("n"), ilit(1)));
+        let r = t.assert(Literal::negative(atom).unwrap());
+        assert!(matches!(r, AssertResult::Accepted), "{r:?}");
+    }
+
+    /// Dividing by the coefficient has to round the way that keeps the bound
+    /// IMPLIED. `2x < 3` is `x ≤ 1` under LIA — rounding to `x ≤ 2` would
+    /// lose nothing but rounding `2x > 3` to `x ≥ 1` would admit `x = 1`,
+    /// which violates it.
+    #[test]
+    fn a_one_variable_comparison_rounds_toward_the_integers() {
+        // 2x < 3 ⇒ x ≤ 1: consistent with x = 1, contradictory with x ≥ 2.
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(cmp_term("<", imul(ilit(2), ivar("x")), ilit(3))).unwrap());
+        assert!(matches!(
+            t.assert(Literal::positive(cmp_term(">=", ivar("x"), ilit(2))).unwrap()),
+            AssertResult::Conflict { .. }
+        ));
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(cmp_term("<", imul(ilit(2), ivar("x")), ilit(3))).unwrap());
+        assert!(!matches!(
+            t.assert(Literal::positive(cmp_term(">=", ivar("x"), ilit(1))).unwrap()),
+            AssertResult::Conflict { .. }
+        ));
+        // 2x > 3 ⇒ x ≥ 2: contradictory with x ≤ 1, consistent with x ≤ 2.
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(cmp_term(">", imul(ilit(2), ivar("x")), ilit(3))).unwrap());
+        assert!(matches!(
+            t.assert(Literal::positive(cmp_term("<=", ivar("x"), ilit(1))).unwrap()),
+            AssertResult::Conflict { .. }
+        ));
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(cmp_term(">", imul(ilit(2), ivar("x")), ilit(3))).unwrap());
+        assert!(!matches!(
+            t.assert(Literal::positive(cmp_term("<=", ivar("x"), ilit(2))).unwrap()),
+            AssertResult::Conflict { .. }
+        ));
+        // Negative coefficients flip the relation: -2x < 3 ⇒ x ≥ -1.
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(cmp_term("<", imul(ilit(-2), ivar("x")), ilit(3))).unwrap());
+        assert!(matches!(
+            t.assert(Literal::positive(cmp_term("<=", ivar("x"), ilit(-2))).unwrap()),
+            AssertResult::Conflict { .. }
+        ));
+    }
+
+    /// LRA cannot represent a fractional bound in the `i128` store, and
+    /// rounding it would FABRICATE conflicts — `x ≤ 1.5` is not `x ≤ 1`.
+    /// Dropping it is only sound with the incompleteness backstop armed.
+    #[test]
+    fn lra_declines_a_fractional_bound_rather_than_rounding_it() {
+        let mut t = LinArith::lra();
+        let r = t.assert(Literal::positive(cmp_term("<=", imul(ilit(2), ivar("x")), ilit(3))).unwrap());
+        assert!(matches!(r, AssertResult::Ignored), "{r:?}");
+        // x = 2 violates x ≤ 1.5, so a rounded-down bound would have made
+        // this a conflict. It must not be one.
+        assert!(!matches!(
+            t.assert(Literal::positive(cmp_term(">=", ivar("x"), ilit(2))).unwrap()),
+            AssertResult::Conflict { .. }
+        ));
+    }
+
+    /// A two-variable comparison stays with the existing pool — the new
+    /// reduction only runs where the shape parsers have already declined.
+    #[test]
+    fn a_multi_variable_comparison_is_left_to_the_existing_pool() {
+        let mut t = LinArith::lia();
+        let atom = cmp_term(">=", ivar("n"), ivar("m"));
+        let r = t.assert(Literal::positive(atom).unwrap());
+        assert!(matches!(r, AssertResult::Accepted), "{r:?}");
+        assert!(matches!(t.check(), CheckResult::Sat { .. }), "n >= m is satisfiable");
     }
 
     /// A shape this does not understand must be left alone rather than
