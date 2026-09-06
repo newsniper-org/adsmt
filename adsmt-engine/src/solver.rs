@@ -1675,13 +1675,19 @@ impl Solver {
     /// to guessing. Ground goals, which is what the lu-kb driver and
     /// the Verus obligation path produce, do get marked.
     pub fn assert_goal_negation(&mut self, goal: Term) {
-        self.goal_negation = Some(goal.clone());
+        // Remember the goal in the SAME shape the assert will store it in.
+        // `assert_with_polarity` canonicalises (selectors, then linear
+        // arithmetic), so remembering the raw term here would leave
+        // `goal_step` looking for an assumption that no longer exists under
+        // that spelling — the mark would silently go missing.
+        self.goal_negation = Some(Self::normalize_arith(&self.normalize_selectors(&goal)));
         self.assert_with_polarity(goal, false);
     }
 
     /// [`Self::assert_goal_negation`] with a source position.
     pub fn assert_goal_negation_at(&mut self, goal: Term, loc: adsmt_cert::SourceLoc) {
-        self.goal_negation = Some(goal.clone());
+        // Same canonicalisation as `assert_goal_negation` — see there.
+        self.goal_negation = Some(Self::normalize_arith(&self.normalize_selectors(&goal)));
         self.assert_with_polarity_at(goal, false, Some(loc));
     }
 
@@ -1747,6 +1753,47 @@ impl Solver {
         }
     }
 
+    /// Rewrite every linear-arithmetic sub-term to its canonical
+    /// `Σ cᵢ·xᵢ + c` form.
+    ///
+    /// Why this is needed at all: a *disequality* `¬(a = b)` is a disjunction
+    /// of strict bounds that a single bound store cannot represent, so
+    /// `LinArith::assert` leaves it `Ignored` and UF takes it. UF compares
+    /// terms STRUCTURALLY, and `n + 0` is not structurally `n` — so nothing in
+    /// the engine knew `n + 0 = n`, and its negation looked satisfiable.
+    /// Measured before this: a bare `goal: n + 0 = n` with no hypotheses came
+    /// back **`sat`**, and so did `n - n = 0`, `0 + n = n`, `n * 1 = n`.
+    /// `n = n` and `n + 1 = n + 1` were fine — both sides already syntactically
+    /// equal, which is exactly the tell.
+    ///
+    /// Canonicalising fixes it at the source rather than by adding reasoning:
+    /// once `n + 0` and `n` intern to the SAME hash-consed term, UF sees one
+    /// term and the disequality is an immediate conflict.
+    ///
+    /// Applied to every sub-term, so a canonical shape nested inside an
+    /// uninterpreted application (`f (n + 0)`) is normalised too — that is
+    /// what makes congruence see `f (n + 0)` and `f n` as one term.
+    fn normalize_arith(t: &Term) -> Term {
+        // Whole term first: if it linearises, that IS the answer and there is
+        // nothing below worth walking.
+        if let Some(c) = adsmt_theory::arith::canonical_linear(t) {
+            return c;
+        }
+        match t.kind() {
+            TermInner::App(f, x) => {
+                let nf = Self::normalize_arith(f);
+                let nx = Self::normalize_arith(x);
+                match Term::app(nf, nx) {
+                    Ok(a) => a,
+                    // Rebuilding cannot change typing, but never trade a
+                    // well-formed term for a panic.
+                    Err(_) => t.clone(),
+                }
+            }
+            _ => t.clone(),
+        }
+    }
+
     pub fn assert_with_polarity_at(
         &mut self,
         t: Term,
@@ -1754,6 +1801,7 @@ impl Solver {
         loc: Option<adsmt_cert::SourceLoc>,
     ) {
         let t = self.normalize_selectors(&t);
+        let t = Self::normalize_arith(&t);
         let (final_term, final_polarity) =
             if adsmt_quant::skolemize::contains_quantifier(&t) {
                 let oriented = if polarity {

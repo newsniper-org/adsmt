@@ -1,0 +1,3 @@
+const n: Int
+assume h: n + 0 = n
+goal: n = n

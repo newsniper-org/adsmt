@@ -1,0 +1,6 @@
+data Dir = North | East | South | West
+fn turn_right(d: Dir): Dir = match d { North => East, East => South, South => West, West => North }
+fn dx(d: Dir): Int = match d { North => 0, East => 1, South => 0, West => 0 - 1 }
+fn dy(d: Dir): Int = match d { North => 1, East => 0, South => 0 - 1, West => 0 }
+const d: Dir
+goal: dx(turn_right(d)) = dy(d)

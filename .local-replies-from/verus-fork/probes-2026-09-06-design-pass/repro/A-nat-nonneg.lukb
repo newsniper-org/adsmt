@@ -1,0 +1,2 @@
+const n: Nat
+goal: 0 <= n

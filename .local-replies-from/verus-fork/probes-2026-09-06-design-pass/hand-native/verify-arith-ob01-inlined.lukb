@@ -1,0 +1,5 @@
+const x: Int
+const y: Int
+axiom: x > 0
+axiom: y > 0
+goal: x + y > 0

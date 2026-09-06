@@ -1,0 +1,4 @@
+data Dir = North | East | South | West
+fn turn_right(d: Dir): Dir = match d { North => East, East => South, South => West, West => North }
+const d: Dir
+goal: turn_right(turn_right(turn_right(turn_right(d)))) = d

@@ -1,0 +1,4 @@
+const n: Int
+const z: Int
+assume h: z = n + 1
+goal: z > n

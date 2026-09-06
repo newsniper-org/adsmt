@@ -1,0 +1,6 @@
+fn p_req(x: Int, y: Int): Bool = x > 0 and y > 0
+fn p_ens(x: Int, y: Int): Bool = x + y > 0
+const x: Int
+const y: Int
+axiom: p_req(x, y)
+goal: p_ens(x, y)

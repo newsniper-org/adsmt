@@ -1,0 +1,2 @@
+fn sum_to(n: Nat): Nat = if n = 0 then 0 else n + sum_to(n - 1)
+goal: sum_to(0) = 0

@@ -960,7 +960,7 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
     /// linear-equality normalization (the simple `(var,lit)`/`(var,var±k)` shapes
     /// are claimed earlier; a compound equality with variable cancellation such
     /// as `(= 4 (- j j))` used to fall through to UF and merge opaquely).
-    fn linearize(t: &Term) -> Option<(BTreeMap<String, i128>, i128)> {
+    pub fn linearize(t: &Term) -> Option<(BTreeMap<String, i128>, i128)> {
         if let Some(k) = Self::int_lit(t) {
             return Some((BTreeMap::new(), k));
         }
@@ -1078,6 +1078,79 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
         }
         None
     }
+}
+
+/// Rewrite a linear-arithmetic term into a canonical `Σ cᵢ·xᵢ + c` shape.
+///
+/// # Why this exists
+///
+/// A *disequality* `¬(a = b)` is a disjunction of strict bounds that a single
+/// bound store cannot represent, so [`LinArith::assert`] leaves it `Ignored`
+/// and UF's disequality reasoning takes it (see the comment there). UF compares
+/// terms STRUCTURALLY — and `n + 0` is not structurally `n`. So nobody knew
+/// that `n + 0 = n`, and its negation looked satisfiable: measured, a bare
+/// `goal: n + 0 = n` with no hypotheses came back **`sat`**, as did
+/// `n - n = 0`, `0 + n = n` and `n * 1 = n`. `n = n` and `n + 1 = n + 1` were
+/// fine, which is the tell: both sides were already syntactically equal.
+///
+/// Canonicalising closes that gap at the source. Once `n + 0` and `n` intern
+/// to the SAME hash-consed term, UF sees one term and the disequality is an
+/// immediate conflict — no new reasoning, just a shape both theories agree on.
+///
+/// This is the identity-table idea done as a normal form rather than a pattern
+/// list: `x+0`, `0+x`, `x*1`, `x-x` and any nesting of them fall out of one
+/// rule instead of needing an entry each.
+///
+/// Returns `None` for anything not linear (variable·variable, `div`/`mod`, a
+/// function application, an `i128` overflow) — the caller then leaves the term
+/// exactly as it was, so a shape this does not understand is never altered.
+pub fn canonical_linear(t: &Term) -> Option<Term> {
+    let (coeffs, konst) = LinArith::linearize(t)?;
+    let ty = t.type_of();
+    // Rebuild in a fixed order: `BTreeMap` gives the variables by name, and the
+    // constant goes last. Two terms with the same linear form therefore rebuild
+    // to the identical tree, which is what makes hash-consing collapse them.
+    let mut out: Option<Term> = None;
+    for (name, c) in coeffs {
+        if c == 0 {
+            continue;
+        }
+        let v = Term::var(&name, ty.clone());
+        let scaled = if c == 1 {
+            v
+        } else {
+            Term::app(Term::app(int_op("*", &ty), int_num(c, &ty)?).ok()?, v).ok()?
+        };
+        out = Some(match out {
+            None => scaled,
+            Some(acc) => Term::app(Term::app(int_op("+", &ty), acc).ok()?, scaled).ok()?,
+        });
+    }
+    Some(match out {
+        // A term with no variables is its constant.
+        None => int_num(konst, &ty)?,
+        Some(acc) if konst == 0 => acc,
+        Some(acc) => Term::app(Term::app(int_op("+", &ty), acc).ok()?, int_num(konst, &ty)?).ok()?,
+    })
+}
+
+/// The binary arithmetic operator `name`, typed for `ty`.
+fn int_op(name: &str, ty: &adsmt_core::Type) -> Term {
+    let bin = adsmt_core::Type::fun(ty.clone(), ty.clone())
+        .and_then(|f| adsmt_core::Type::fun(ty.clone(), f));
+    Term::const_(name, bin.expect("arith operator type"))
+}
+
+/// The integer literal `k` as the engine spells it.
+///
+/// The canonical spelling is `int:k` — that is what `LinArith::int_lit`
+/// strips, and what producers emit. A bare `k` also PARSES, so writing that
+/// here still round-trips through `linearize`, but it interns to a DIFFERENT
+/// hash-consed term than the `int:k` the rest of the pipeline uses, and the
+/// two then compare unequal. That is not hypothetical: it broke the
+/// negated-goal mark, whose lookup is an exact term comparison.
+fn int_num(k: i128, ty: &adsmt_core::Type) -> Option<Term> {
+    Some(Term::const_(&format!("int:{k}"), ty.clone()))
 }
 
 /// Does an existing `(op, k)` constraint dominate (i.e. imply) the candidate
@@ -2133,6 +2206,59 @@ mod tests {
         assert!(!w.bounds.is_empty());
         // Every multiplier is nonnegative — FM only ever adds.
         assert!(w.farkas.iter().all(|m| *m >= 0), "{:?}", w.farkas);
+    }
+
+
+    /// The identities that produced a false `sat`. `n + 0` must become
+    /// literally `n` — same hash-consed term — so UF's structural comparison
+    /// sees one term and the disequality is an immediate conflict.
+    #[test]
+    fn canonical_linear_collapses_the_arithmetic_identities() {
+        let n = Term::var("n", int_ty());
+        // The canonical spelling of an integer literal is `int:k`.
+        let zero = Term::const_("int:0", int_ty());
+        let one = Term::const_("int:1", int_ty());
+        let add = |a: Term, b: Term| {
+            Term::app(Term::app(super::int_op("+", &int_ty()), a).unwrap(), b).unwrap()
+        };
+        let sub = |a: Term, b: Term| {
+            Term::app(Term::app(super::int_op("-", &int_ty()), a).unwrap(), b).unwrap()
+        };
+        let mul = |a: Term, b: Term| {
+            Term::app(Term::app(super::int_op("*", &int_ty()), a).unwrap(), b).unwrap()
+        };
+
+        // x + 0 = x, 0 + x = x, x * 1 = x
+        assert_eq!(super::canonical_linear(&add(n.clone(), zero.clone())), Some(n.clone()));
+        assert_eq!(super::canonical_linear(&add(zero.clone(), n.clone())), Some(n.clone()));
+        assert_eq!(super::canonical_linear(&mul(n.clone(), one.clone())), Some(n.clone()));
+        // x - x = 0
+        assert_eq!(super::canonical_linear(&sub(n.clone(), n.clone())), Some(zero.clone()));
+        // Nesting falls out of the same rule — no extra table entry.
+        assert_eq!(
+            super::canonical_linear(&add(add(n.clone(), zero.clone()), zero.clone())),
+            Some(n.clone())
+        );
+        // A term already canonical is unchanged.
+        assert_eq!(super::canonical_linear(&n), Some(n.clone()));
+    }
+
+    /// A shape this does not understand must be left alone rather than
+    /// rewritten into something else.
+    #[test]
+    fn canonical_linear_declines_non_linear_shapes() {
+        let n = Term::var("n", int_ty());
+        let m = Term::var("m", int_ty());
+        // variable · variable is not linear
+        let nm = Term::app(
+            Term::app(super::int_op("*", &int_ty()), n.clone()).unwrap(),
+            m.clone(),
+        )
+        .unwrap();
+        assert_eq!(super::canonical_linear(&nm), None);
+        // an uninterpreted application is not linear
+        let f = Term::var("f", Type::fun(int_ty(), int_ty()).unwrap());
+        assert_eq!(super::canonical_linear(&Term::app(f, n).unwrap()), None);
     }
 
     #[test]
