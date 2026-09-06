@@ -1276,6 +1276,56 @@ fn int_num(k: i128, ty: &adsmt_core::Type) -> Option<Term> {
     Some(Term::const_(&format!("int:{k}"), ty.clone()))
 }
 
+/// The arithmetic sort an atom is over, when it is one.
+///
+/// `Some("Real")` if EITHER operand is Real — a Real touches the whole atom,
+/// and a Real must never be handed to the integer reasoning.
+fn atom_arith_sort(t: &Term) -> Option<&'static str> {
+    let TermInner::App(outer, b) = t.kind() else { return None };
+    let TermInner::App(head, a) = outer.kind() else { return None };
+    let TermInner::Const(c) = head.kind() else { return None };
+    if !matches!(
+        c.name.as_str(),
+        "<=" | "<" | ">=" | ">" | "=" | "le" | "lt" | "ge" | "gt" | "eq"
+    ) {
+        return None;
+    }
+    let (ta, tb) = (a.type_of().to_string(), b.type_of().to_string());
+    if ta == "Real" || tb == "Real" {
+        Some("Real")
+    } else if ta == "Int" || tb == "Int" {
+        Some("Int")
+    } else {
+        None
+    }
+}
+
+/// Does `t` contain an arithmetic-sorted numeral this theory cannot represent?
+///
+/// The bound store is `i128`, so a *decimal* literal (`0.5`, and now also
+/// `1.0` — SMT-LIB sorts decimals Real, and the parser stopped mislabelling
+/// them Int) does not linearize. Dropping such an atom is sound only with the
+/// incompleteness backstop armed: `(and (<= v 0.5) (>= v 1.5))` has both
+/// conjuncts dropped, and without the backstop `check` would report a
+/// confident `Sat` for an unsatisfiable formula — the
+/// "a fallback that drops constraints must never report sat/unsat" class.
+///
+/// The test is tight because an arithmetic-sorted BARE `Const` can only be a
+/// numeral: operators are `Const`s at FUNCTION type, declared constants arrive
+/// as `Var`s, and constructors carry their datatype's sort.
+fn has_unrepresentable_numeral(t: &Term) -> bool {
+    match t.kind() {
+        TermInner::Const(c) => {
+            let ty = t.type_of();
+            let arith = matches!(ty.to_string().as_str(), "Int" | "Real");
+            arith
+                && c.name.strip_prefix("int:").unwrap_or(&c.name).parse::<i128>().is_err()
+        }
+        TermInner::App(f, x) => has_unrepresentable_numeral(f) || has_unrepresentable_numeral(x),
+        _ => false,
+    }
+}
+
 /// Destructure a comparison atom into its operator and two operands,
 /// collapsing the spelling aliases the shape parsers accept.
 fn dest_comparison(t: &Term) -> Option<(&'static str, Term, Term)> {
@@ -1467,12 +1517,52 @@ fn tighter_upper(a: BoundValue, b: BoundValue) -> BoundValue {
 impl Theory for LinArith {
     fn name(&self) -> &'static str { self.name_ }
 
+    /// Its OWN sort — `LinArith::lia()` takes Int, `LinArith::lra()` takes Real.
+    ///
+    /// Both instances are registered, and both used to claim both sorts, so
+    /// every arithmetic atom went to both. That is where the false `unsat`s
+    /// came from: the integer reasoning is not sound on reals (`2·v = 1` has
+    /// no *integer* solution; `record_bound` rewrites `v > 0` to `v >= 1`).
+    ///
+    /// Fixing it HERE rather than by declining inside `assert` matters. The
+    /// polite combination reads `handles_sort` to decide what to route, and it
+    /// treats a specialized theory that returns `Ignored` for a non-equality
+    /// atom over its own sort as a DROPPED theory meaning — it arms the
+    /// `uninterpreted` backstop and the whole check degrades to `Unknown`.
+    /// Declining in `assert` therefore turned every arithmetic atom into
+    /// evidence of a lost meaning: measured, confident `sat` fell 466 → 90 on
+    /// a 2000-query differential and three corpus rows went `unsat`/`sat` →
+    /// `unknown`. Narrowing the declared sort instead means the atom is never
+    /// routed to the wrong theory in the first place, so nothing is dropped
+    /// and nothing arms.
     fn handles_sort(&self, ty: &Type) -> bool {
-        let n = ty.to_string();
-        n == "Int" || n == "Real"
+        ty.to_string() == if self.name_ == "LIA" { "Int" } else { "Real" }
     }
 
     fn assert(&mut self, lit: Literal) -> AssertResult {
+        // BOTH `LinArith::lia()` and `LinArith::lra()` are registered, and
+        // nothing used to keep them apart: every arithmetic atom went to both,
+        // so LIA claimed atoms over `Real`. That is not merely redundant — the
+        // integer reasoning is UNSOUND on reals. `2·v = 1` has no *integer*
+        // solution, so LIA raised a conflict for a formula whose real solution
+        // is `v = 0.5`; and `record_bound`'s integer tightening rewrites
+        // `v > 0` to `v >= 1`, which no real has to satisfy, so `0 < v < 1`
+        // closed as well. Both are false `unsat` — the dangerous direction.
+        //
+        // It was near-unreachable while any Real atom carrying a literal was a
+        // parse-time type error. Making those parse (SMT-LIB § 3.6 numeral vs
+        // decimal sorts + `Reals_Ints` overloading) exposed it at once: a
+        // randomized Real differential found the false `unsat` on its first
+        // pass, which is why the parser fix could not land on its own.
+        //
+        // `Ignored` here is ROUTING, not dropping — the sibling theory owns the
+        // atom — so the incompleteness backstop must NOT arm.
+        if let Some(sort) = atom_arith_sort(&lit.term) {
+            let mine = if self.name_ == "LIA" { "Int" } else { "Real" };
+            if sort != mine {
+                return AssertResult::Ignored;
+            }
+        }
         // rc.32.x — a *positive* equality over the arithmetic sort is a
         // conjunction of bounds: `x = k ⇔ x ≤ k ∧ x ≥ k`,
         // `x = y ⇔ x − y ≤ 0 ∧ x − y ≥ 0`. Accepting it (rather than
@@ -1648,6 +1738,10 @@ impl Theory for LinArith {
                 self.note_incomplete(|| {
                     format!("arithmetic equality `{}` not representable", lit.term)
                 });
+            } else if has_unrepresentable_numeral(&lit.term) {
+                self.note_incomplete(|| {
+                    format!("equality `{}` carries a numeral the bound store cannot hold", lit.term)
+                });
             }
             return AssertResult::Ignored;
         }
@@ -1693,6 +1787,10 @@ impl Theory for LinArith {
             if Self::is_multivar_arith(&lit.term) {
                 self.note_incomplete(|| {
                     format!("multi-variable linear disequality `{}` not representable", lit.term)
+                });
+            } else if has_unrepresentable_numeral(&lit.term) {
+                self.note_incomplete(|| {
+                    format!("disequality `{}` carries a numeral the bound store cannot hold", lit.term)
                 });
             }
             return AssertResult::Ignored;
@@ -1762,6 +1860,10 @@ impl Theory for LinArith {
                 self.note_incomplete(|| {
                     format!("multi-variable linear comparison `{}` not representable", lit.term)
                 });
+            } else if has_unrepresentable_numeral(&lit.term) {
+                self.note_incomplete(|| {
+                    format!("comparison `{}` carries a numeral the bound store cannot hold", lit.term)
+                });
             }
             return AssertResult::Ignored;
         }
@@ -1791,6 +1893,10 @@ impl Theory for LinArith {
         if Self::is_multivar_arith(&lit.term) {
             self.note_incomplete(|| {
                 format!("multi-variable linear comparison `{}` not representable", lit.term)
+            });
+        } else if has_unrepresentable_numeral(&lit.term) {
+            self.note_incomplete(|| {
+                format!("comparison `{}` carries a numeral the bound store cannot hold", lit.term)
             });
         }
         AssertResult::Ignored
@@ -2574,6 +2680,59 @@ mod tests {
         let r = t.assert(Literal::positive(atom).unwrap());
         assert!(matches!(r, AssertResult::Accepted), "{r:?}");
         assert!(matches!(t.check(), CheckResult::Sat { .. }), "n >= m is satisfiable");
+    }
+
+    /// The integer reasoning must never touch a Real. Both `LinArith`
+    /// instances are registered, and both used to declare BOTH sorts, so every
+    /// arithmetic atom went to both — and integer reasoning on reals is a
+    /// false `unsat`: `2·v = 1` has the real solution `v = 0.5`.
+    #[test]
+    fn lia_and_lra_declare_only_their_own_sort() {
+        let int = int_ty();
+        let real = Type::const_("Real", Kind::Type);
+        assert!(LinArith::lia().handles_sort(&int));
+        assert!(!LinArith::lia().handles_sort(&real), "LIA must not claim Real");
+        assert!(LinArith::lra().handles_sort(&real));
+        assert!(!LinArith::lra().handles_sort(&int), "LRA must not claim Int");
+    }
+
+    /// `2·x = 1` is unsat over the integers and SAT over the reals. The
+    /// divisibility rule is what makes the difference, so it must fire for LIA
+    /// and stay silent for LRA.
+    #[test]
+    fn the_divisibility_rule_is_integer_only() {
+        let two_x = imul(ilit(2), ivar("x"));
+        let mut t = LinArith::lia();
+        assert!(
+            matches!(t.assert(Literal::positive(Term::mk_eq(two_x.clone(), ilit(1)).unwrap()).unwrap()),
+                     AssertResult::Conflict { .. }),
+            "2x = 1 has no integer solution"
+        );
+        let mut t = LinArith::lra();
+        assert!(
+            !matches!(t.assert(Literal::positive(Term::mk_eq(two_x, ilit(1)).unwrap()).unwrap()),
+                      AssertResult::Conflict { .. }),
+            "2x = 1 IS solvable over the reals (x = 0.5)"
+        );
+    }
+
+    /// `record_bound` rewrites `x > k` to `x >= k+1` — true of integers, false
+    /// of reals. `0 < x < 1` must close under LIA and NOT under LRA.
+    #[test]
+    fn strict_bound_tightening_is_integer_only() {
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(cmp_term(">", ivar("x"), ilit(0))).unwrap());
+        assert!(
+            matches!(t.assert(Literal::positive(cmp_term("<", ivar("x"), ilit(1))).unwrap()),
+                     AssertResult::Conflict { .. })
+                || matches!(t.check(), CheckResult::Unsat { .. }),
+            "no integer lies strictly between 0 and 1"
+        );
+        let mut t = LinArith::lra();
+        t.assert(Literal::positive(cmp_term(">", ivar("x"), ilit(0))).unwrap());
+        let r = t.assert(Literal::positive(cmp_term("<", ivar("x"), ilit(1))).unwrap());
+        assert!(!matches!(r, AssertResult::Conflict { .. }), "0.5 lies between 0 and 1");
+        assert!(!matches!(t.check(), CheckResult::Unsat { .. }), "and `check` must agree");
     }
 
     /// A shape this does not understand must be left alone rather than

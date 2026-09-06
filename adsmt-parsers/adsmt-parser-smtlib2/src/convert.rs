@@ -128,12 +128,89 @@ pub fn convert_expr(e: &SExpr, table: &SymbolTable) -> Result<Term, ConvertError
                     .map_err(|_| ConvertError::Malformed(format!("bad binary BV literal {n}")))?;
                 return Ok(Term::bv_lit(value, bin.len() as u32));
             }
-            // Bare integer literal at sort Int. The engine treats it
-            // as an opaque Int constant (engine-side arithmetic
-            // decides equality between literals).
-            Ok(Term::const_(n, Type::const_("Int", adsmt_core::Kind::Type)))
+            // SMT-LIB v2 § 3.6: a *numeral* (`5`) has sort Int, a *decimal*
+            // (`5.0`) has sort Real. Sorting both as Int made every Real
+            // comparison a type error — the operator takes its sort from an
+            // operand, so `(<= v 0.0)` reported "expected Real, found Int"
+            // about a literal that IS Real.
+            let ty = if is_decimal(n) { real_ty() } else { int_ty() };
+            Ok(Term::const_(n, ty))
         }
         other => Err(ConvertError::Malformed(format!("expected expression, got literal {other}"))),
+    }
+}
+
+fn int_ty() -> Type {
+    Type::const_("Int", adsmt_core::Kind::Type)
+}
+
+fn real_ty() -> Type {
+    Type::const_("Real", adsmt_core::Kind::Type)
+}
+
+/// Is this numeric token a *decimal* (SMT-LIB v2 § 3.6), i.e. Real-sorted?
+/// Bit-vector literals are peeled before this is reached.
+fn is_decimal(n: &str) -> bool {
+    n.contains('.')
+}
+
+/// Rebuild a *purely numeric* Int-sorted term at Real, or `None` if it is not
+/// purely numeric.
+///
+/// "Purely numeric" = numeral leaves joined by arithmetic operators, so the
+/// sort is a labelling rather than a fact about the term and re-labelling it
+/// invents nothing: the integers embed in the reals and the operator symbols
+/// are the same. `(- -2 0)` qualifies; `(- n 0)` with `n : Int` does NOT — that
+/// one needs a real `to_real` coercion, and guessing it here would change what
+/// the query says.
+fn resort_numeric_to_real(t: &Term) -> Option<Term> {
+    use adsmt_core::TermInner;
+    match t.kind() {
+        TermInner::Const(c) => {
+            let numeric =
+                c.name.parse::<i128>().is_ok() || (is_decimal(&c.name) && c.name.parse::<f64>().is_ok());
+            numeric.then(|| Term::const_(&c.name, real_ty()))
+        }
+        TermInner::App(f, x) => {
+            // `(op a b)` — the head is the curried operator carrying the sort.
+            let TermInner::App(head, a) = f.kind() else { return None };
+            let TermInner::Const(op) = head.kind() else { return None };
+            if !matches!(op.name.as_str(), "+" | "-" | "*" | "/" ) {
+                return None;
+            }
+            let (ra, rb) = (resort_numeric_to_real(a)?, resort_numeric_to_real(x)?);
+            let real = real_ty();
+            let op_ty = Type::fun(real.clone(), Type::fun(real.clone(), real).ok()?).ok()?;
+            let partial = Term::app(Term::const_(&op.name, op_ty), ra).ok()?;
+            Term::app(partial, rb).ok()
+        }
+        _ => None,
+    }
+}
+
+/// Bring a mixed Int/Real operand list to one sort.
+///
+/// SMT-LIB's `Reals_Ints` overloads the arithmetic operators, and every
+/// reference solver accepts an integer numeral where a Real is expected —
+/// `(<= 0 v)` with `v : Real` is `sat` in both z3 and cvc5. Our operators take
+/// their sort from an operand, so a mixed pair was a hard type error and the
+/// query produced NO verdict line at all.
+///
+/// Only *literals* move: a numeral is the same number at either sort, so
+/// re-labelling it is not a coercion. A Real-sorted variable meeting an
+/// Int-sorted one is left alone — that needs a real `to_real`, and inventing
+/// one here would change what the query says.
+fn unify_arith_sorts(operands: &mut [Term]) {
+    let real = real_ty();
+    if !operands.iter().any(|t| t.type_of() == real) {
+        return;
+    }
+    for t in operands.iter_mut() {
+        if t.type_of() != real
+            && let Some(promoted) = resort_numeric_to_real(t)
+        {
+            *t = promoted;
+        }
     }
 }
 
@@ -199,8 +276,9 @@ fn convert_list(items: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertErr
             if args.len() != 2 {
                 return Err(ConvertError::Malformed("(=) with more than 2 args not yet supported".into()));
             }
-            let a = convert_expr(&args[0], table)?;
-            let b = convert_expr(&args[1], table)?;
+            let mut ops = [convert_expr(&args[0], table)?, convert_expr(&args[1], table)?];
+            unify_arith_sorts(&mut ops);
+            let [a, b] = ops;
             Term::mk_eq(a, b).map_err(|e| ConvertError::Malformed(e.to_string()))
         }
         "forall" => convert_quantifier("forall", args, table),
@@ -308,12 +386,17 @@ fn convert_arith_binop(
     if args.len() == 1 {
         return convert_expr(&args[0], table);
     }
-    let mut iter = args.iter();
-    let mut acc = convert_expr(iter.next().expect("non-empty"), table)?;
-    // SMT-LIB v2 § 3.6 — `+`/`-`/`*`/`div`/`mod` are
-    // sort-polymorphic between Int and Real.  Resolve the operand
-    // type from the first argument and reuse it for the curried
-    // application.
+    // SMT-LIB v2 § 3.6 — `+`/`-`/`*`/`div`/`mod` are sort-polymorphic between
+    // Int and Real. Convert EVERY operand first, then unify: taking the sort
+    // off the first argument alone made `(+ 1 v)` (`v : Real`) a type error
+    // purely because of operand order.
+    let mut ops = Vec::with_capacity(args.len());
+    for a in args {
+        ops.push(convert_expr(a, table)?);
+    }
+    unify_arith_sorts(&mut ops);
+    let mut iter = ops.into_iter();
+    let mut acc = iter.next().expect("non-empty");
     let elem_ty = acc.type_of();
     let op_ty = Type::fun(
         elem_ty.clone(),
@@ -321,8 +404,7 @@ fn convert_arith_binop(
             .map_err(|e| ConvertError::Malformed(format!("{e:?}")))?,
     )
     .map_err(|e| ConvertError::Malformed(format!("{e:?}")))?;
-    for a in iter {
-        let rhs = convert_expr(a, table)?;
+    for rhs in iter {
         let head = Term::const_(op, op_ty.clone());
         let partial =
             Term::app(head, acc).map_err(|e| ConvertError::Malformed(e.to_string()))?;
@@ -343,12 +425,12 @@ fn convert_arith_compare(
     if args.len() != 2 {
         return Err(ConvertError::Arity { op: op.into(), expected: 2, got: args.len() });
     }
-    let a = convert_expr(&args[0], table)?;
-    let b = convert_expr(&args[1], table)?;
-    // Sort-polymorphic comparison: take the operand type off the
-    // left side and reuse it for both arguments and the operator's
-    // signature.  The Int / Real choice routes to the right
-    // arith-theory solver downstream.
+    let mut ops = [convert_expr(&args[0], table)?, convert_expr(&args[1], table)?];
+    // Sort-polymorphic comparison. Unify the two operands first — taking the
+    // sort off the left alone made `(<= 0 v)` (`v : Real`) a type error, which
+    // z3 and cvc5 both answer `sat`.
+    unify_arith_sorts(&mut ops);
+    let [a, b] = ops;
     let elem_ty = a.type_of();
     let op_ty = Type::fun(
         elem_ty.clone(),
@@ -937,6 +1019,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.type_of(), Term::bv_sort(8));
+    }
+
+    fn real_table(names: &[&str]) -> SymbolTable {
+        let mut t = SymbolTable::new();
+        for n in names {
+            t.declare(*n, Type::const_("Real", adsmt_core::Kind::Type));
+        }
+        t
+    }
+
+    /// SMT-LIB v2 § 3.6: a numeral is Int, a DECIMAL is Real. Sorting decimals
+    /// as Int made `(<= v 0.0)` report "expected Real, found Int" about a
+    /// literal that is Real.
+    #[test]
+    fn a_decimal_literal_is_real_sorted() {
+        let t = convert_expr(&parse_sexpr("0.5").unwrap(), &SymbolTable::new()).unwrap();
+        assert_eq!(t.type_of(), Type::const_("Real", adsmt_core::Kind::Type));
+        let t = convert_expr(&parse_sexpr("5").unwrap(), &SymbolTable::new()).unwrap();
+        assert_eq!(t.type_of(), Type::const_("Int", adsmt_core::Kind::Type));
+    }
+
+    /// `Reals_Ints` overloads the operators, and z3/cvc5 both accept an
+    /// integer numeral where a Real is expected. Taking the operator's sort
+    /// off the LEFT operand alone made that a hard type error — and the whole
+    /// query then produced NO verdict line, so it vanished from a ledger
+    /// rather than showing up as a failure.
+    #[test]
+    fn an_integer_numeral_is_accepted_in_a_real_context() {
+        let table = real_table(&["v"]);
+        for src in ["(<= 0 v)", "(<= v 0)", "(= v 1)", "(> (* -3 v) 0)", "(+ 1 v)"] {
+            let t = convert_expr(&parse_sexpr(src).unwrap(), &table)
+                .unwrap_or_else(|e| panic!("{src} must convert: {e}"));
+            let _ = t;
+        }
+    }
+
+    /// A whole Int-sorted *numeral tree* in a Real context is re-sorted too —
+    /// `(- -2 0)` is a number, not a term about integers.
+    #[test]
+    fn a_purely_numeric_int_subtree_is_promoted() {
+        let table = real_table(&["v"]);
+        assert!(convert_expr(&parse_sexpr("(< (- v (- -2 0)) 1.5)").unwrap(), &table).is_ok());
+    }
+
+    /// But a subtree mentioning an INT VARIABLE is not: that needs a real
+    /// `to_real` coercion, and inventing one would change what the query says.
+    #[test]
+    fn an_int_variable_in_a_real_context_is_not_silently_coerced() {
+        let mut table = real_table(&["v"]);
+        table.declare("n", Type::const_("Int", adsmt_core::Kind::Type));
+        assert!(convert_expr(&parse_sexpr("(< v n)").unwrap(), &table).is_err());
     }
 
     #[test]
