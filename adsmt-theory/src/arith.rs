@@ -41,7 +41,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
+use adsmt_cert::witness::{
+    BoundOp, LinArithWitness, LinearBound, PoliteWitness, TheoryWitness,
+};
 use adsmt_core::{Term, TermInner, Type};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
@@ -926,10 +928,39 @@ impl LinArith {
             let infeasible = lo > up
                 || (lo == up && (lstrict || ustrict));
             if infeasible {
+                // A STRUCTURAL Farkas witness, not a prose note: the two
+                // bounds combine with multipliers [1, 1] to `0 ≤ up - lo`
+                // (strict if either is), which is false exactly when the
+                // bounds are infeasible. A consumer can re-sum it instead
+                // of trusting the theory's word — `LinArithWitness` had
+                // zero producers before this.
+                //
+                // `i128` bounds are narrowed to the witness's `i64`; a
+                // bound outside that range falls back to the note rather
+                // than emitting a combination with wrapped coefficients.
+                let fits = |v: i128| i64::try_from(v).ok();
+                if let (Some(lo64), Some(up64)) = (fits(lo), fits(up)) {
+                    return Some(TheoryWitness::LinArith(LinArithWitness {
+                        bounds: vec![
+                            LinearBound {
+                                coeffs: vec![(var.clone(), 1)],
+                                op: if lstrict { BoundOp::Gt } else { BoundOp::Ge },
+                                rhs: lo64,
+                            },
+                            LinearBound {
+                                coeffs: vec![(var.clone(), 1)],
+                                op: if ustrict { BoundOp::Lt } else { BoundOp::Le },
+                                rhs: up64,
+                            },
+                        ],
+                        farkas: vec![1, 1],
+                    }));
+                }
                 return Some(TheoryWitness::Opaque {
                     kind: self.name_.into(),
                     notes: format!(
-                        "bounds infeasible on {var}: lower ({lo}, strict={lstrict}) vs upper ({up}, strict={ustrict})"
+                        "bounds infeasible on {var}: lower ({lo}, strict={lstrict}) vs upper \
+({up}, strict={ustrict}) (no structural witness: a bound exceeds i64)"
                     ),
                 });
             }

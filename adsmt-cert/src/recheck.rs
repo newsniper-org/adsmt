@@ -156,13 +156,19 @@ impl Certificate {
             let parent = |p: StepId| -> &Sequent { &self.steps[p.0 as usize].result };
 
             match &step.body {
-                StepBody::Theory { name, witness, .. } => {
+                StepBody::Theory { name, witness, parents } => {
                     // A witness that CAN be replayed is replayed. This
                     // is the difference between a certificate that
                     // carries evidence and one that merely mentions it.
+                    let premises: Vec<&Term> = parents
+                        .iter()
+                        .filter_map(|p| self.steps.get(p.0 as usize))
+                        .map(|s| &s.result.concl)
+                        .chain(step.result.hyps.iter())
+                        .collect();
                     trusted.push((
                         step.id,
-                        match check_witness(id, witness, &step.result)? {
+                        match check_witness(id, witness, &step.result, &premises)? {
                             true => TrustSource::TheoryVerified(name.clone()),
                             false => TrustSource::Theory(name.clone()),
                         },
@@ -204,6 +210,7 @@ fn check_witness(
     id: u32,
     witness: &crate::witness::TheoryWitness,
     result: &Sequent,
+    premises: &[&Term],
 ) -> Result<bool, RecheckError> {
     use crate::witness::TheoryWitness as W;
     match witness {
@@ -223,7 +230,14 @@ reaches the empty clause".into(),
             }
         }
         // A congruence chain computes its own conclusion, so it can be
-        // compared against what the step claims.
+        // checked against what the step claims.
+        //
+        // The chain proves an EQUALITY. A step that claims that equality
+        // is justified directly; a CONFLICT step (concluding `false`) is
+        // justified only if the chain's equality is contradicted by one
+        // of the step's premises — that pairing is the whole content of
+        // an EUF conflict, and checking the chain alone would accept a
+        // witness that proves a true equality nobody denied.
         W::Euf(w) => {
             let Some(last) = w.steps.last() else {
                 return Err(RecheckError::WitnessRejected {
@@ -234,17 +248,43 @@ reaches the empty clause".into(),
             };
             let derived = euf_conclusion(id, last)?;
             if derived.alpha_eq(&result.concl) {
-                Ok(true)
-            } else {
-                Err(RecheckError::WitnessRejected {
+                return Ok(true);
+            }
+            if is_false(&result.concl) {
+                // Premises are flattened through `and` first: an
+                // assertion like `(and (not (f a = f b)) …)` denies the
+                // equality just as much as a bare `not`, and a checker
+                // that only looked at the top level would reject a
+                // perfectly good witness. `or` is NOT flattened — only
+                // one disjunct need hold, so a denial inside one proves
+                // nothing.
+                let mut flat: Vec<Term> = Vec::new();
+                for p in premises {
+                    flatten_conjunction(p, &mut flat);
+                }
+                let refuted = flat
+                    .iter()
+                    .any(|p| p.dest_not().is_some_and(|inner| inner.alpha_eq(&derived)));
+                if refuted {
+                    return Ok(true);
+                }
+                return Err(RecheckError::WitnessRejected {
                     step: id,
                     kind: "EUF",
                     why: format!(
-                        "the chain proves `{derived}`, but the step claims `{}`",
-                        result.concl
+                        "the chain proves `{derived}`, but no premise denies it, so \
+`false` does not follow"
                     ),
-                })
+                });
             }
+            Err(RecheckError::WitnessRejected {
+                step: id,
+                kind: "EUF",
+                why: format!(
+                    "the chain proves `{derived}`, but the step claims `{}`",
+                    result.concl
+                ),
+            })
         }
         // Farkas: a nonnegative combination of the bounds must add up to
         // an evidently false one.
@@ -257,11 +297,73 @@ reaches the empty clause".into(),
         // so from here it counts as unreplayed rather than verified.
         // Consumers must run `CasProof::recheck` themselves.
         W::Cas { .. } => Ok(false),
-        W::Opaque { .. }
-        | W::Arrays(_)
-        | W::Datatypes(_)
-        | W::Polite(_) => Ok(false),
+        // A datatype witness names the LAW that was violated and the
+        // constructors involved. That is structured — a consumer reads
+        // the reason mechanically instead of parsing prose — but it is
+        // not a replayable derivation, so it stays UNVERIFIED in the
+        // tally. What can be checked is internal consistency: a witness
+        // that contradicts its own shape is rejected rather than
+        // counted as evidence of anything.
+        W::Datatypes(w) => {
+            use crate::witness::DatatypeReason as R;
+            let bad = |why: String| RecheckError::WitnessRejected {
+                step: id,
+                kind: "datatype",
+                why,
+            };
+            match w.kind {
+                R::Disjointness => {
+                    if w.constructors.len() != 2 {
+                        return Err(bad(format!(
+                            "disjointness names {} constructor(s), not 2",
+                            w.constructors.len()
+                        )));
+                    }
+                    if w.constructors[0] == w.constructors[1] {
+                        return Err(bad(format!(
+                            "disjointness names `{}` twice — two DISTINCT constructors \
+are what makes it a conflict",
+                            w.constructors[0]
+                        )));
+                    }
+                }
+                R::CaseSplit => {
+                    if w.constructors.is_empty() {
+                        return Err(bad(
+                            "an exhaustiveness conflict must name the constructors the \
+value was excluded from".into(),
+                        ));
+                    }
+                }
+                R::Acyclicity | R::Injectivity => {}
+            }
+            Ok(false)
+        }
+        W::Opaque { .. } | W::Arrays(_) | W::Polite(_) => Ok(false),
     }
+}
+
+/// Collect the conjuncts of `t`, recursing through nested `and`s.
+///
+/// Everything a conjunction asserts is asserted, so splitting it is
+/// sound. Only `and` is split.
+fn flatten_conjunction(t: &Term, out: &mut Vec<Term>) {
+    use adsmt_core::TermInner;
+    // `and a b` is `App(App(and, a), b)`.
+    if let TermInner::App(f, b) = t.kind()
+        && let TermInner::App(g, a) = f.kind()
+        && matches!(g.kind(), TermInner::Const(c) if c.name == "and")
+    {
+        flatten_conjunction(a, out);
+        flatten_conjunction(b, out);
+        return;
+    }
+    out.push(t.clone());
+}
+
+/// Is this the boolean constant `false`?
+fn is_false(t: &Term) -> bool {
+    matches!(t.kind(), adsmt_core::TermInner::Const(c) if c.name == "false")
 }
 
 /// The equation an [`crate::witness::EufStep`] chain proves.
@@ -952,4 +1054,74 @@ mod tests {
         assert_eq!(rep.verified_witnesses(), 0);
         assert_eq!(rep.unverified_witnesses(), 1);
     }
+
+    /// A conflict witness proves an EQUALITY; the step concludes
+    /// `false`. That only follows if a premise DENIES the equality, and
+    /// the denial is commonly buried in a conjunction — measured on
+    /// `431-incremental-euf-false-sat.smt2`, whose assertion is
+    /// `(and (not (= …)) …)`. A checker that read only the top level
+    /// rejected a correct witness.
+    #[test]
+    fn a_denial_inside_a_conjunction_still_refutes() {
+        let f = Term::var("f", Type::fun(int_(), int_()).unwrap());
+        let a = Term::var("a", int_());
+        let bb = Term::var("b", int_());
+        let fa = Term::app(f.clone(), a.clone()).unwrap();
+        let fb = Term::app(f.clone(), bb.clone()).unwrap();
+        let eq_fab = Term::mk_eq(fa, fb).unwrap();
+        let denial = Term::mk_not(eq_fab).unwrap();
+        // `(and (not (f a = f b)) p)` — the denial is a conjunct.
+        let buried = Term::mk_and(denial, p()).unwrap();
+
+        let mut b = CertBuilder::default();
+        let h: ProofHandle = r::assume(&mut b, buried).unwrap();
+        let w = EufWitness {
+            steps: vec![EufStep::Congruence {
+                head: f,
+                subs: vec![EufStep::Hypothesis(Term::mk_eq(a, bb).unwrap())],
+            }],
+        };
+        let id = r::theory(
+            &mut b,
+            "EUF",
+            TheoryWitness::Euf(w),
+            vec![h.step()],
+            Vec::new(),
+            Term::const_("false", Type::bool_()),
+        );
+        let rep = b.snapshot(id).recheck().expect("the denial is in the conjunct");
+        assert_eq!(rep.verified_witnesses(), 1);
+    }
+
+    /// The other direction: nothing denies the equality, so `false` does
+    /// NOT follow and the witness must be refused rather than counted.
+    #[test]
+    fn an_undenied_equality_does_not_prove_false() {
+        let f = Term::var("f", Type::fun(int_(), int_()).unwrap());
+        let a = Term::var("a", int_());
+        let bb = Term::var("b", int_());
+        let mut b = CertBuilder::default();
+        let h: ProofHandle = r::assume(&mut b, p()).unwrap();
+        let w = EufWitness {
+            steps: vec![EufStep::Congruence {
+                head: f,
+                subs: vec![EufStep::Hypothesis(Term::mk_eq(a, bb).unwrap())],
+            }],
+        };
+        let id = r::theory(
+            &mut b,
+            "EUF",
+            TheoryWitness::Euf(w),
+            vec![h.step()],
+            Vec::new(),
+            Term::const_("false", Type::bool_()),
+        );
+        match b.snapshot(id).recheck() {
+            Err(RecheckError::WitnessRejected { kind: "EUF", why, .. }) => {
+                assert!(why.contains("no premise denies it"), "{why}");
+            }
+            other => panic!("must be refused, got {other:?}"),
+        }
+    }
+
 }

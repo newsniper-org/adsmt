@@ -23,7 +23,9 @@
 
 use std::collections::HashMap;
 
-use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
+use adsmt_cert::witness::{
+    DatatypeReason, DatatypeWitness, PoliteWitness, TheoryWitness,
+};
 use adsmt_core::{Term, TermInner, Type};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
@@ -347,12 +349,17 @@ impl Datatypes {
                     let next = &succs[idx];
                     match color.get(next).copied().unwrap_or(0) {
                         1 => {
-                            return Some(TheoryWitness::Opaque {
-                                kind: "Datatypes".into(),
-                                notes: "acyclicity violated: a constructor value would \
-                                        equal a proper subterm of itself"
-                                    .into(),
-                            });
+                            // Structured, not prose: a consumer learns
+                            // WHICH datatype law was violated and on
+                            // which term, mechanically. (Structured is
+                            // not the same as re-checkable — the shape
+                            // carries the reason, not a replayable
+                            // derivation.)
+                            return Some(TheoryWitness::Datatypes(DatatypeWitness {
+                                kind: DatatypeReason::Acyclicity,
+                                constructors: Vec::new(),
+                                focused: Some(node.clone()),
+                            }));
                         }
                         0 => {
                             color.insert(next.clone(), 1);
@@ -423,12 +430,11 @@ impl Datatypes {
                 let entry = excluded.entry(rep).or_insert_with(|| (sort.clone(), ExSet::new()));
                 entry.1.insert(ctor);
                 if decl.constructors.iter().all(|c| entry.1.contains(c)) {
-                    return Some(TheoryWitness::Opaque {
-                        kind: "Datatypes".into(),
-                        notes: format!(
-                            "exhaustiveness violated: a {sort} value is excluded from every constructor"
-                        ),
-                    });
+                    return Some(TheoryWitness::Datatypes(DatatypeWitness {
+                        kind: DatatypeReason::CaseSplit,
+                        constructors: decl.constructors.clone(),
+                        focused: Some(x.clone()),
+                    }));
                 }
             }
         }
@@ -815,12 +821,11 @@ impl Theory for Datatypes {
             if let (Some((s1, n1)), Some((s2, n2))) = (ctor_a, ctor_b)
                 && s1 == s2 && n1 != n2 {
                     if lit.polarity {
-                        let w = TheoryWitness::Opaque {
-                            kind: "Datatypes".into(),
-                            notes: format!(
-                                "distinct constructors of {s1} asserted equal: {n1} = {n2}"
-                            ),
-                        };
+                        let w = TheoryWitness::Datatypes(DatatypeWitness {
+                            kind: DatatypeReason::Disjointness,
+                            constructors: vec![n1.clone(), n2.clone()],
+                            focused: Some(lit.term.clone()),
+                        });
                         self.conflict = Some(w.clone());
                         return AssertResult::Conflict { witness: w };
                     }

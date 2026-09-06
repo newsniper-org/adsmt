@@ -11,11 +11,125 @@
 
 use std::collections::{HashMap, HashSet};
 
-use adsmt_cert::witness::{PoliteWitness, TheoryWitness};
+use adsmt_cert::witness::{EufStep, EufWitness, PoliteWitness, TheoryWitness};
 use adsmt_core::{Term, TermInner, Type};
 use indexmap::{IndexMap, IndexSet};
 
 use crate::trait_::{AssertResult, CheckResult, Literal, Theory};
+
+
+/// Why two terms were merged — the evidence a congruence-closure proof
+/// is built from.
+#[derive(Clone, Debug)]
+enum MergeReason {
+    /// An asserted equality `a = b`.
+    Hypothesis(Term, Term),
+    /// Two applications with congruent components: `f x` and `g y`
+    /// where `f ~ g` and `x ~ y`.
+    Congruence { left: Term, right: Term },
+}
+
+/// A proof forest over the merges, kept ALONGSIDE the union-find rather
+/// than inside it.
+///
+/// The union-find path-compresses, which is what makes it fast and also
+/// what destroys the evidence: after compression a node's parent is its
+/// class root, not the term it was actually merged with. The forest
+/// keeps the merge edges themselves, so `explain(a, b)` can recover WHY
+/// `a` and `b` ended up in one class — which is exactly what an
+/// [`EufWitness`] needs and what the theory previously threw away,
+/// emitting `TheoryWitness::Opaque` with a prose note instead.
+#[derive(Default)]
+struct ProofForest {
+    /// `t -> (parent, why t was merged with parent)`. NEVER
+    /// path-compressed.
+    edge: HashMap<Term, (Term, MergeReason)>,
+}
+
+impl ProofForest {
+    fn clear(&mut self) {
+        self.edge.clear();
+    }
+
+    /// Reverse the edges from `t` up to its root, making `t` the root.
+    fn reroot(&mut self, t: &Term) {
+        let mut cur = t.clone();
+        let mut carried: Option<(Term, MergeReason)> = None;
+        loop {
+            let next = self.edge.remove(&cur);
+            if let Some((parent, reason)) = carried.take() {
+                self.edge.insert(cur.clone(), (parent, reason));
+            }
+            match next {
+                Some((parent, reason)) => {
+                    carried = Some((cur.clone(), reason));
+                    cur = parent;
+                }
+                None => break,
+            }
+        }
+        if let Some((parent, reason)) = carried {
+            self.edge.insert(cur, (parent, reason));
+        }
+    }
+
+    /// Record that `a` and `b` are now equal, for `reason`.
+    fn merge(&mut self, a: &Term, b: &Term, reason: MergeReason) {
+        self.reroot(a);
+        self.edge.insert(a.clone(), (b.clone(), reason));
+    }
+
+    /// `t`'s chain to its forest root, as `(from, to, reason)` steps.
+    fn path_to_root(&self, t: &Term) -> Vec<(Term, Term, MergeReason)> {
+        let mut out = Vec::new();
+        let mut cur = t.clone();
+        // The forest is acyclic by construction (`merge` reroots first),
+        // but bound the walk anyway: a malformed forest must not hang.
+        for _ in 0..self.edge.len() + 1 {
+            match self.edge.get(&cur) {
+                Some((parent, reason)) => {
+                    out.push((cur.clone(), parent.clone(), reason.clone()));
+                    cur = parent.clone();
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// The merge steps connecting `a` to `b`, or `None` if the forest
+    /// does not connect them.
+    ///
+    /// Both walk to the shared root; the common suffix cancels, leaving
+    /// `a → meet` followed by `meet → b` (the latter reversed).
+    fn explain(&self, a: &Term, b: &Term) -> Option<Vec<(Term, Term, MergeReason)>> {
+        if a == b {
+            return Some(Vec::new());
+        }
+        let pa = self.path_to_root(a);
+        let pb = self.path_to_root(b);
+        let root_a = pa.last().map(|(_, to, _)| to.clone()).unwrap_or_else(|| a.clone());
+        let root_b = pb.last().map(|(_, to, _)| to.clone()).unwrap_or_else(|| b.clone());
+        if root_a != root_b {
+            return None;
+        }
+        // Drop the shared tail.
+        let mut common = 0;
+        while common < pa.len()
+            && common < pb.len()
+            && pa[pa.len() - 1 - common].0 == pb[pb.len() - 1 - common].0
+        {
+            common += 1;
+        }
+        let mut out: Vec<(Term, Term, MergeReason)> =
+            pa[..pa.len() - common].to_vec();
+        for (from, to, reason) in pb[..pb.len() - common].iter().rev() {
+            // Traversed backwards: `to → from`.
+            out.push((to.clone(), from.clone(), reason.clone()));
+        }
+        Some(out)
+    }
+}
 
 #[derive(Default)]
 pub struct Uf {
@@ -32,6 +146,9 @@ pub struct Uf {
     neg_atoms: IndexSet<Term>,
     /// Union-find parent map. Rebuilt at each `check`.
     parent: HashMap<Term, Term>,
+    /// The merge evidence, kept alongside `parent` because the
+    /// union-find path-compresses and would otherwise erase it.
+    forest: ProofForest,
     /// rc.23 (e''.1.a) — congruence universe.  Was
     /// `Vec<Term>` with `register()`'s
     /// `iter().any(kt.alpha_eq(t))` linear-scan dedup
@@ -92,6 +209,9 @@ impl Uf {
 
     fn invalidate_cache(&mut self) {
         self.parent.clear();
+        // The forest explains `parent`; leaving it behind would let a
+        // stale merge chain answer an `explain` about a rebuilt class.
+        self.forest.clear();
         self.known.clear();
         self.conflict = None;
         self.timed_out = false;
@@ -136,11 +256,15 @@ impl Uf {
         }
     }
 
-    fn union(&mut self, a: &Term, b: &Term) {
+    fn union(&mut self, a: &Term, b: &Term, reason: MergeReason) {
         let ra = self.find(a);
         let rb = self.find(b);
         if ra != rb {
             self.parent.insert(ra, rb);
+            // Record the merge between the ORIGINAL terms, not their
+            // roots: the roots are an artifact of union order, while
+            // `a`/`b` are what the evidence actually relates.
+            self.forest.merge(a, b, reason);
         }
     }
 
@@ -150,6 +274,9 @@ impl Uf {
 
     /// Run congruence-closure to fixpoint over current eqs.
     fn close(&mut self) {
+        // The forest is rebuilt with `parent`, so it never outlives the
+        // union-find state it explains.
+        self.forest.clear();
         // Register every relevant term first.
         let eqs = self.asserted_eqs.clone();
         let diseqs = self.asserted_diseqs.clone();
@@ -176,7 +303,7 @@ impl Uf {
         }
         // Seed union-find with asserted equalities.
         for (a, b) in &eqs {
-            self.union(a, b);
+            self.union(a, b, MergeReason::Hypothesis(a.clone(), b.clone()));
         }
         // rc.25 (T0''') — how often the closure fixpoint queries
         // the wall clock.  `Instant::now` is cheap but not free;
@@ -241,7 +368,14 @@ impl Uf {
                         // signature — merge their classes if not
                         // already merged.
                         if self.find(&prev) != self.find(t) {
-                            self.union(&prev, t);
+                            self.union(
+                                &prev,
+                                t,
+                                MergeReason::Congruence {
+                                    left: prev.clone(),
+                                    right: t.clone(),
+                                },
+                            );
                             changed = true;
                         }
                     }
@@ -254,16 +388,100 @@ impl Uf {
         }
     }
 
+
+    /// Turn the forest's explanation of `a = b` into an [`EufWitness`].
+    ///
+    /// Returns `None` when the chain contains a congruence this witness
+    /// shape cannot express — see [`Self::congruence_step`]. A `None`
+    /// falls back to the prose `Opaque` witness rather than emitting a
+    /// structure that says something the theory did not prove.
+    fn euf_witness(&mut self, a: &Term, b: &Term) -> Option<EufWitness> {
+        let steps = self.forest.explain(a, b)?;
+        let mut chain: Option<EufStep> = None;
+        for (from, to, reason) in steps {
+            let step = match reason {
+                MergeReason::Hypothesis(x, y) => {
+                    let eq = Term::mk_eq(x.clone(), y.clone()).ok()?;
+                    let h = EufStep::Hypothesis(eq);
+                    // The forest edge may be traversed against the
+                    // direction the equality was asserted in.
+                    if from == x && to == y { h } else { EufStep::Symmetric(Box::new(h)) }
+                }
+                MergeReason::Congruence { left, right } => {
+                    let c = self.congruence_step(&left, &right)?;
+                    if from == left && to == right {
+                        c
+                    } else {
+                        EufStep::Symmetric(Box::new(c))
+                    }
+                }
+            };
+            chain = Some(match chain {
+                None => step,
+                Some(prev) => EufStep::Transitive(Box::new(prev), Box::new(step)),
+            });
+        }
+        Some(EufWitness { steps: vec![chain.unwrap_or_else(|| EufStep::Reflexivity(a.clone()))] })
+    }
+
+    /// `f(s1..sn) = f(t1..tn)` from `si ~ ti`, as an [`EufStep`].
+    ///
+    /// Terms are CURRIED here (`g b a` is `App(App(g, b), a)`), so the
+    /// spine has to be peeled all the way down: looking one layer deep
+    /// would see the heads `App(g, b)` and `App(g, a)` and conclude —
+    /// wrongly — that this congruence relates different functions.
+    ///
+    /// [`EufStep::Congruence`] carries ONE head shared by both sides. A
+    /// congruence whose spine heads genuinely differ (`f ~ g` for
+    /// distinct `f`, `g` — reachable in the higher-order fragment) is a
+    /// real derivation this shape cannot state, so it returns `None` and
+    /// the caller falls back rather than emitting a witness that proves
+    /// something else.
+    fn congruence_step(&mut self, left: &Term, right: &Term) -> Option<EufStep> {
+        let (lhead, largs) = Self::spine(left);
+        let (rhead, rargs) = Self::spine(right);
+        if lhead != rhead || largs.len() != rargs.len() || largs.is_empty() {
+            return None;
+        }
+        let mut subs = Vec::with_capacity(largs.len());
+        for (l, r) in largs.iter().zip(&rargs) {
+            // The arguments are congruent — that is why the signature
+            // pass merged these — so the forest must explain each pair.
+            let w = self.euf_witness(l, r)?;
+            subs.push(w.steps.into_iter().next()?);
+        }
+        Some(EufStep::Congruence { head: lhead, subs })
+    }
+
+    /// `App(App(g, b), a)` -> `(g, [b, a])`.
+    fn spine(t: &Term) -> (Term, Vec<Term>) {
+        let mut args = Vec::new();
+        let mut cur = t.clone();
+        while let TermInner::App(f, x) = cur.kind() {
+            args.push(x.clone());
+            cur = f.clone();
+        }
+        args.reverse();
+        (cur, args)
+    }
+
     /// After closure, check whether any asserted disequality is
     /// violated.
     fn detect_diseq_conflict(&mut self) -> Option<TheoryWitness> {
         let diseqs = self.asserted_diseqs.clone();
         for (a, b) in &diseqs {
             if self.same_class(a, b) {
+                // The structural witness when the chain can carry it:
+                // a consumer can then re-derive `a = b` with the kernel
+                // rules instead of trusting the theory's word for it.
+                if let Some(w) = self.euf_witness(a, b) {
+                    return Some(TheoryWitness::Euf(w));
+                }
                 return Some(TheoryWitness::Opaque {
                     kind: "UF".into(),
                     notes: format!(
-                        "congruence closure forces {a} = {b}, but disequality was asserted"
+                        "congruence closure forces {a} = {b}, but disequality was asserted \
+(no structural witness: the chain uses a congruence over distinct heads)"
                     ),
                 });
             }
@@ -290,10 +508,15 @@ impl Uf {
         for n in &neg {
             let root = self.find(n);
             if let Some(p) = class_pos.get(&root) {
+                let (p, n) = (p.clone(), n.clone());
+                if let Some(w) = self.euf_witness(&p, &n) {
+                    return Some(TheoryWitness::Euf(w));
+                }
                 return Some(TheoryWitness::Opaque {
                     kind: "UF".into(),
                     notes: format!(
-                        "congruence forces {p} = {n}, but they were asserted with opposite polarities"
+                        "congruence forces {p} = {n}, but they were asserted with opposite \
+polarities (no structural witness: the chain uses a congruence over distinct heads)"
                     ),
                 });
             }
@@ -520,6 +743,81 @@ mod tests {
     /// `f : Int -> Int`
     fn f_term() -> Term {
         Term::const_("f", Type::fun(int_(), int_()).unwrap())
+    }
+
+
+    /// The congruence-closure conflict now carries STRUCTURAL evidence
+    /// rather than a prose note. Before the proof forest, every EUF
+    /// conflict came out as `TheoryWitness::Opaque` — `EufWitness` had
+    /// zero producers anywhere in the workspace, so a consumer could
+    /// only take the theory's word for it.
+    #[test]
+    fn a_congruence_conflict_carries_a_structural_witness() {
+        let mut uf = Uf::new();
+        let fa = Term::app(f_term(), a()).unwrap();
+        let fb = Term::app(f_term(), b()).unwrap();
+        // `a = b` and `f a ≠ f b`.
+        let eq_ab = Term::mk_eq(a(), b()).unwrap();
+        let eq_fab = Term::mk_eq(fa.clone(), fb.clone()).unwrap();
+        uf.assert(Literal::positive(eq_ab).unwrap());
+        uf.assert(Literal::negative(eq_fab).unwrap());
+        let CheckResult::Unsat { witness } = uf.check() else {
+            panic!("congruence must force the conflict");
+        };
+        let TheoryWitness::Euf(w) = witness else {
+            panic!("expected a structural EUF witness, got {witness:?}");
+        };
+        // The chain is `f a = f b` by congruence from the hypothesis.
+        assert_eq!(w.steps.len(), 1);
+        let EufStep::Congruence { head, subs } = &w.steps[0] else {
+            panic!("expected a congruence step, got {:?}", w.steps[0]);
+        };
+        assert_eq!(head, &f_term());
+        assert_eq!(subs.len(), 1);
+        assert!(matches!(subs[0], EufStep::Hypothesis(_)), "{:?}", subs[0]);
+    }
+
+    /// A chain of asserted equalities is a TRANSITIVE witness, not one
+    /// opaque assertion.
+    #[test]
+    fn a_transitive_chain_carries_its_steps() {
+        let mut uf = Uf::new();
+        uf.assert(Literal::positive(Term::mk_eq(a(), b()).unwrap()).unwrap());
+        uf.assert(Literal::positive(Term::mk_eq(b(), c()).unwrap()).unwrap());
+        uf.assert(Literal::negative(Term::mk_eq(a(), c()).unwrap()).unwrap());
+        let CheckResult::Unsat { witness } = uf.check() else {
+            panic!("a = b = c contradicts a ≠ c");
+        };
+        let TheoryWitness::Euf(w) = witness else {
+            panic!("expected a structural EUF witness, got {witness:?}");
+        };
+        assert!(
+            matches!(w.steps[0], EufStep::Transitive(..)),
+            "expected a transitive chain, got {:?}",
+            w.steps[0]
+        );
+    }
+
+    /// The forest explains a pair whichever direction the equality was
+    /// asserted in; the reversed edge becomes a `Symmetric` step rather
+    /// than a silently mis-stated `Hypothesis`.
+    #[test]
+    fn a_reversed_edge_becomes_a_symmetric_step() {
+        let mut uf = Uf::new();
+        // Assert `b = a`, then deny `a = b`.
+        uf.assert(Literal::positive(Term::mk_eq(b(), a()).unwrap()).unwrap());
+        uf.assert(Literal::negative(Term::mk_eq(a(), b()).unwrap()).unwrap());
+        let CheckResult::Unsat { witness } = uf.check() else {
+            panic!("must conflict");
+        };
+        let TheoryWitness::Euf(w) = witness else {
+            panic!("expected a structural EUF witness, got {witness:?}");
+        };
+        assert!(
+            matches!(w.steps[0], EufStep::Symmetric(_) | EufStep::Hypothesis(_)),
+            "{:?}",
+            w.steps[0]
+        );
     }
 
     #[test]
