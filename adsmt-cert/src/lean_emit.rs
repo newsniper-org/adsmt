@@ -9,15 +9,17 @@
 //! - Free term variables of type `Bool` → `axiom <name> : Bool`
 //! - [`StepBody::Assume`] / hypothesis-shaped steps → `axiom s<i> : φ`
 //! - [`StepBody::Refl`] carrying a term `t` → `theorem s<i> : t = t := rfl`
-//! - [`StepBody::Assumed`] (abductive marker) →
-//!   `theorem s<i> : φ := sorry  -- abductive: <explain>` so Lean's
-//!   `smt_abduce` tactic (planned v0.16+) can target the holes
-//! - [`StepBody::Theory`] (SAT/EUF/etc.) → axiomatized for now; the
-//!   witness is included as a structured comment so a future
-//!   reflective checker can reconstruct it
-//! - Compound rules (`Trans`, `EqMp`, `Deduct`, ...) emit `:= sorry`
-//!   with the *correct* statement type, so Lean's kernel still type-
-//!   checks the declaration and a tactic can fill in the proof later
+//! - [`StepBody::Assumed`] (a USER-SUPPLIED assumption) → a NAMED
+//!   oracle axiom `adsmt_assumed_s<i>`, never `sorry`: the name is what
+//!   makes it a second, visibly distinct trust source under
+//!   `#print axioms` (constraint (3)(C) rule 1)
+//! - [`StepBody::Theory`] (SAT/EUF/etc.) → the oracle axiom
+//!   `adsmt_s<i>`, stated as *premises → conclusion*; the witness rides
+//!   along as a structured comment and is re-checkable offline via
+//!   [`crate::recheck`]
+//! - Compound rules (`Trans`, `MkComb`, `EqMp`, `Deduct`, ...) emit
+//!   REAL proof terms (`Eq.trans`, `congr`, `.mp`, ...), so nothing in
+//!   the output is a hole
 //!
 //! This is the first concrete step of the heavyweight
 //! Lean-reflection path (option (b) in the v0.15 audit). A
@@ -27,11 +29,13 @@
 //! LFSC reconstruction note in `adsmt-engine/oxiz_proof_emit.rs`
 //! and targets the v0.17 cycle.
 
+use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use adsmt_core::{Term, TermInner};
 
 use crate::canonical::{Certificate, Step, StepBody};
+use crate::sexpr_render;
 use crate::witness::TheoryWitness;
 
 /// Emit a self-contained Lean4 source string representing `cert`.
@@ -154,42 +158,47 @@ parse in Lean."
         )
         .unwrap();
     }
+    for req in cert.signature.required_imports("lean") {
+        writeln!(out, "import {req}").unwrap();
+    }
+    out.push_str(&crate::recheck::trust_summary(cert, "--"));
+    out.push('\n');
     out.push_str("namespace AdsmtCert\n\n");
 
-    // Free-variable axioms: gather every variable that appears in
-    // any step's sequent and declare it once.
+    // The declaration context the certificate carries (constraint (1)
+    // rule 1), then whatever free variables it does NOT cover.
+    let declared = emit_declarations(cert, &mut out);
     let vars = collect_free_vars(cert);
-    if !vars.is_empty() {
-        for (name, ty_lean) in &vars {
-            writeln!(out, "axiom {name} : {ty_lean}").unwrap();
+    let mut any_var = false;
+    for (name, ty_lean) in &vars {
+        if declared.contains(name) {
+            continue;
         }
+        writeln!(out, "axiom {name} : {ty_lean}").unwrap();
+        any_var = true;
+    }
+    if any_var {
         out.push('\n');
     }
 
     emit_oracles(cert, &mut out);
-    out.push_str("section\n\n");
-
+    let hyps = hypotheses(cert);
     for step in &cert.steps {
-        emit_step(step, &mut out);
+        emit_step(step, &mut out, &hyps);
     }
 
     if let Some(seq) = cert.final_sequent() {
-        // Inside the section this is the bare conclusion; closing the
-        // section generalises it over the `variable` hypotheses.
-        writeln!(
-            out,
-            "\ntheorem result : {} := s{}",
-            render_term(&seq.concl),
-            cert.conclusion.0
-        )
-        .unwrap();
+        emit_result(&mut out, cert, &seq.concl, &hyps);
     }
-    out.push_str("\nend\n");
     out.push_str("\nend AdsmtCert\n");
     // Lean's equivalent of `Thm_Deps.all_oracles`: it reports exactly the
     // axioms `result` depends on, so the trust surface is countable from
     // the artifact rather than taken on faith.
-    out.push_str("\n-- Trust surface: this must list only the `adsmt_s*` oracles.\n");
+    out.push_str(
+        "\n-- Trust surface: `adsmt_s*` oracles, plus the axioms the DECLARATION\n\
+-- context introduces (uninterpreted sorts/functions and datatype\n\
+-- selectors). Nothing else may appear.\n",
+    );
     out.push_str("#print axioms AdsmtCert.result\n");
     Ok(out)
 }
@@ -212,32 +221,48 @@ parse in Lean."
         .unwrap();
     }
     out.push_str("namespace AdsmtCert\n\n");
-    let vars = collect_free_vars(cert);
-    if !vars.is_empty() {
-        for (name, ty_lean) in &vars {
+    let declared = emit_declarations(cert, &mut out);
+    for (name, ty_lean) in &collect_free_vars(cert) {
+        if !declared.contains(name) {
             writeln!(out, "axiom {name} : {ty_lean}").unwrap();
         }
-        out.push('\n');
     }
+    out.push('\n');
     emit_oracles(cert, &mut out);
-    out.push_str("section\n\n");
+    let hyps = hypotheses(cert);
     for step in &cert.steps {
-        emit_step(step, &mut out);
+        emit_step(step, &mut out, &hyps);
     }
     if let Some(seq) = cert.final_sequent() {
-        // Inside the section this is the bare conclusion; closing the
-        // section generalises it over the `variable` hypotheses.
-        writeln!(
-            out,
-            "\ntheorem result : {} := s{}",
-            render_term(&seq.concl),
-            cert.conclusion.0
-        )
-        .unwrap();
+        emit_result(&mut out, cert, &seq.concl, &hyps);
     }
-    out.push_str("\nend\n");
     out.push_str("\nend AdsmtCert\n");
     out
+}
+
+
+/// `theorem result`, generalised over the hypotheses.
+///
+/// The statement is `h1 → … → hn → concl`, never the bare conclusion.
+/// That distinction is the whole point of the section pattern: an
+/// inconsistent set of hypotheses then makes `result` a TRUE statement
+/// about those hypotheses rather than a proof of `False` in the ambient
+/// theory, so the emitted file cannot be used to prove anything else.
+fn emit_result(
+    out: &mut String,
+    cert: &Certificate,
+    concl: &Term,
+    hyps: &[(String, String)],
+) {
+    let binders: String = hyps.iter().map(|(n, p)| format!(" ({n} : {p})")).collect();
+    let args: String = hyps.iter().map(|(n, _)| format!(" {n}")).collect();
+    writeln!(
+        out,
+        "\ntheorem result{binders} : {} := {}",
+        render_term(concl),
+        step_ref(cert.conclusion.0, hyps, &args)
+    )
+    .unwrap();
 }
 
 /// Conclusion of `id`, if that step exists.
@@ -256,10 +281,25 @@ fn lean_arrow(prems: &[String], concl: &str) -> String {
 /// `axiom s2 : False` is false, while `axiom adsmt_s2 : p → ¬p → False`
 /// is true and merely records the theory solver's decision, so the
 /// namespace stays consistent however contradictory the hypotheses are.
+
+/// The oracle axiom's name for a step.
+///
+/// A USER-SUPPLIED assumption gets a visibly different name from a
+/// theory decision. Constraint (3)(C) rule 1: the assumption must appear
+/// as a distinct trust source, and `#print axioms` lists axioms by name
+/// — so if both were `adsmt_s<i>` a reader could not tell "the SAT
+/// solver decided this" from "the user asked us to assume this".
+fn oracle_name(step: &Step) -> String {
+    match &step.body {
+        StepBody::Assumed { .. } => format!("adsmt_assumed_s{}", step.id.0),
+        _ => format!("adsmt_s{}", step.id.0),
+    }
+}
+
 fn emit_oracles(cert: &Certificate, out: &mut String) {
     let mut any = false;
     for step in &cert.steps {
-        let name = format!("adsmt_s{}", step.id.0);
+        let name = oracle_name(step);
         match &step.body {
             StepBody::Theory { name: theory_name, witness, parents } => {
                 let prems: Vec<String> =
@@ -290,7 +330,18 @@ fn emit_oracles(cert: &Certificate, out: &mut String) {
                     )
                     .unwrap();
                 }
-                writeln!(out, "axiom {name} : {prop}").unwrap();
+                // Constraint (3)(B): a user tactic REPLACES the oracle.
+                // Harmless to soundness and fail-first — Lean still
+                // checks it, and a tactic that does not close the goal
+                // breaks the build instead of being believed. When it
+                // succeeds the step stops being a trust source at all.
+                match cert.signature.tactic_for(step.id, Some(theory_name), "lean") {
+                    Some(tac) => {
+                        writeln!(out, "-- user tactic hint (replaces the oracle)").unwrap();
+                        writeln!(out, "theorem {name} : {prop} := by {tac}").unwrap();
+                    }
+                    None => writeln!(out, "axiom {name} : {prop}").unwrap(),
+                }
                 any = true;
             }
             StepBody::Instance { relation, .. } => {
@@ -299,7 +350,7 @@ fn emit_oracles(cert: &Certificate, out: &mut String) {
                 any = true;
             }
             StepBody::Assumed { formula, explain } => {
-                writeln!(out, "-- abductive marker: {}",
+                writeln!(out, "-- USER-SUPPLIED ASSUMPTION (not proved): {}",
                          escape_for_comment(explain.as_deref().unwrap_or(""))).unwrap();
                 writeln!(out, "axiom {name} : {}", render_term(formula)).unwrap();
                 any = true;
@@ -315,52 +366,320 @@ fn emit_oracles(cert: &Certificate, out: &mut String) {
 /// `Assume` becomes a `variable`, not an `axiom`: Lean discharges section
 /// variables when the section closes, so `result` generalises to
 /// `h1 → ... → hn → concl` and the namespace never asserts the hypotheses.
-fn emit_step(step: &Step, out: &mut String) {
+/// The hypothesis steps, as `(name, proposition)`.
+///
+/// These are what the section pattern generalises over: an `Assume` is a
+/// hypothesis of the theorem, never an axiom, so `result` comes out as
+/// `h1 → … → hn → concl` and the file stays consistent no matter how
+/// contradictory the hypotheses are.
+fn hypotheses(cert: &Certificate) -> Vec<(String, String)> {
+    cert.steps
+        .iter()
+        .filter_map(|st| match &st.body {
+            StepBody::Assume(t) => Some((format!("s{}", st.id.0), render_term(t))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Reference step `id` from inside a hypothesis-parameterised theorem.
+///
+/// A hypothesis is already in scope as a binder; anything else is a
+/// theorem that takes the same binders, so it must be applied to them.
+/// Lean does NOT insert `section variable`s into a term that only
+/// mentions them in its proof — which is why the binders are explicit
+/// here rather than left to `variable`.
+fn step_ref(id: u32, hyps: &[(String, String)], args: &str) -> String {
+    let name = format!("s{id}");
+    if hyps.iter().any(|(h, _)| *h == name) || args.is_empty() {
+        name
+    } else {
+        format!("({name}{args})")
+    }
+}
+
+fn emit_step(step: &Step, out: &mut String, hyps: &[(String, String)]) {
     let name = format!("s{}", step.id.0);
     let concl_lean = render_term(&step.result.concl);
+    let binders: String =
+        hyps.iter().map(|(n, p)| format!(" ({n} : {p})")).collect();
+    let args: String = hyps.iter().map(|(n, _)| format!(" {n}")).collect();
+    let sref = |id: u32| step_ref(id, hyps, &args);
 
     match &step.body {
-        StepBody::Assume(t) => {
-            writeln!(out, "variable ({name} : {})", render_term(t)).unwrap();
+        StepBody::Assume(_) => {
+            // Emitted as a binder on every other theorem instead.
         }
         StepBody::Refl(t) => {
             let t_lean = render_term(t);
-            writeln!(out, "theorem {name} : {t_lean} = {t_lean} := rfl").unwrap();
+            writeln!(out, "theorem {name}{binders} : {t_lean} = {t_lean} := rfl").unwrap();
         }
         StepBody::Trans { lhs, rhs } => {
-            writeln!(out, "theorem {name} : {concl_lean} := Eq.trans s{} s{}", lhs.0, rhs.0).unwrap();
+            writeln!(out, "theorem {name}{binders} : {concl_lean} := Eq.trans {} {}",
+                     sref(lhs.0), sref(rhs.0)).unwrap();
+        }
+        StepBody::MkComb { fun_eq, arg_eq } => {
+            // `congr : f = g → x = y → f x = g y` is Lean's own
+            // statement of this rule, so the step is a REAL proof, not
+            // an oracle.
+            writeln!(out, "theorem {name}{binders} : {concl_lean} := congr {} {}",
+                     sref(fun_eq.0), sref(arg_eq.0)).unwrap();
         }
         StepBody::EqMp { iff, p } => {
-            writeln!(out, "theorem {name} : {concl_lean} := (s{}).mp s{}", iff.0, p.0).unwrap();
+            writeln!(out, "theorem {name}{binders} : {concl_lean} := ({}).mp {}",
+                     sref(iff.0), sref(p.0)).unwrap();
         }
         StepBody::Deduct { a, b } => {
-            writeln!(out, "theorem {name} : {concl_lean} := fun _h_s{} => s{}", a.0, b.0).unwrap();
+            writeln!(out, "theorem {name}{binders} : {concl_lean} := fun _h_s{} => {}",
+                     a.0, sref(b.0)).unwrap();
         }
         StepBody::Beta { redex } => {
-            writeln!(out, "theorem {name} : {concl_lean} := rfl -- β-reduce: {}",
+            writeln!(out, "theorem {name}{binders} : {concl_lean} := rfl -- β-reduce: {}",
                      escape_for_comment(&render_term(redex))).unwrap();
         }
         StepBody::Abs { var, eq } => {
-            writeln!(out, "theorem {name} : {concl_lean} := funext (fun {} => s{})",
-                     var.name, eq.0).unwrap();
+            writeln!(out, "theorem {name}{binders} : {concl_lean} := funext (fun {} => {})",
+                     var.name, sref(eq.0)).unwrap();
         }
         StepBody::Inst { thm, .. } | StepBody::InstType { thm, .. } => {
-            writeln!(out, "theorem {name} : {concl_lean} := s{}", thm.0).unwrap();
+            writeln!(out, "theorem {name}{binders} : {concl_lean} := {}", sref(thm.0)).unwrap();
         }
         StepBody::Theory { parents, .. } => {
-            let args: Vec<String> = parents.iter().map(|q| format!("s{}", q.0)).collect();
-            let app = if args.is_empty() {
+            let pargs: Vec<String> = parents.iter().map(|q| sref(q.0)).collect();
+            let app = if pargs.is_empty() {
                 format!("adsmt_s{}", step.id.0)
             } else {
-                format!("adsmt_s{} {}", step.id.0, args.join(" "))
+                format!("adsmt_s{} {}", step.id.0, pargs.join(" "))
             };
-            writeln!(out, "theorem {name} : {concl_lean} := {app}").unwrap();
+            writeln!(out, "theorem {name}{binders} : {concl_lean} := {app}").unwrap();
         }
         StepBody::Instance { .. } | StepBody::Assumed { .. } => {
-            writeln!(out, "theorem {name} : {concl_lean} := adsmt_s{}", step.id.0).unwrap();
+            writeln!(out, "theorem {name}{binders} : {concl_lean} := {}",
+                     oracle_name(step)).unwrap();
         }
     }
 }
+
+/// Emit the certificate's declaration context — sorts, datatypes,
+/// function signatures — and return every name it declared.
+///
+/// Constraint (1) rule 1. Before this existed the emitters reconstructed
+/// declarations by scanning free variables, which cannot recover a sort
+/// no term mentions, a constructor's arity, a selector name, or the
+/// `declare-fun` vs `define-fun` distinction. The returned name set lets
+/// the free-variable scan skip what is already declared here.
+fn emit_declarations(cert: &Certificate, out: &mut String) -> BTreeSet<String> {
+    let sig = &cert.signature;
+    let render_sort_name = |s: &str| mapped_sort_name(sig, s);
+    let mut declared = BTreeSet::new();
+    if sig.is_empty() {
+        return declared;
+    }
+
+    // Sorts. An SMT-LIB sort is non-empty by definition, and that is not
+    // a property `axiom S : Type` carries in Lean — hence the companion
+    // `Nonempty` axiom, without which a faithful translation would be
+    // strictly weaker than the input.
+    // A sort with a datatype declaration is declared BY that datatype;
+    // declaring it as an opaque type too would shadow the inductive.
+    let user_sorts: Vec<_> = sig
+        .sorts
+        .iter()
+        .filter(|s| {
+            // A MAPPED sort already exists in the target (that is what
+            // the mapping says), so re-declaring it would shadow the
+            // real one with an opaque axiom.
+            !s.builtin
+                && !sig.datatypes.iter().any(|d| d.sort_name == s.name)
+                && sig.mapped_name(&s.name, "lean") == s.name
+        })
+        .collect();
+    if !user_sorts.is_empty() {
+        out.push_str("-- Uninterpreted sorts (non-empty, per SMT-LIB)\n");
+        for s in &user_sorts {
+            let arrows = "Type → ".repeat(s.arity as usize);
+            writeln!(out, "axiom {} : {arrows}Type", s.name).unwrap();
+            if s.arity == 0 {
+                writeln!(out, "axiom {}_nonempty : Nonempty {}", s.name, s.name).unwrap();
+            }
+            declared.insert(s.name.clone());
+        }
+        out.push('\n');
+    }
+
+    // Datatypes become real `inductive` declarations, not axioms: the
+    // constructors' injectivity and distinctness then come from Lean's
+    // kernel instead of being asserted, so they cost nothing in trust.
+    for d in &sig.datatypes {
+        let params: String =
+            d.params.iter().map(|p| format!(" ({p} : Type)")).collect();
+        writeln!(out, "inductive {}{params} where", d.sort_name).unwrap();
+        for (i, ctor) in d.constructors.iter().enumerate() {
+            let arity = d.arities.get(i).copied().unwrap_or(0) as usize;
+            let fields = d.field_sorts.get(i);
+            match fields {
+                Some(fs) if fs.len() == arity => {
+                    let mut ty = String::new();
+                    for f in fs {
+                        write!(ty, "{} → ", render_sort_name(f)).unwrap();
+                    }
+                    writeln!(out, "  | {ctor} : {ty}{}", d.sort_name).unwrap();
+                }
+                _ if arity == 0 => {
+                    writeln!(out, "  | {ctor} : {}", d.sort_name).unwrap();
+                }
+                // Arity without field sorts: we know `ctor` takes n
+                // arguments but not of what. Emitting a guess would be
+                // the silent mistranslation rule (1)(2) forbids.
+                _ => {
+                    writeln!(
+                        out,
+                        "  -- INCOMPLETE: `{ctor}` takes {arity} argument(s) whose sorts \
+the certificate did not carry",
+                    )
+                    .unwrap();
+                    writeln!(out, "  | {ctor} : {}", d.sort_name).unwrap();
+                }
+            }
+            declared.insert(ctor.clone());
+        }
+        // Lean scopes constructors under the type's namespace, but the
+        // certificate's terms name them bare (`cons x y`), so open it.
+        writeln!(out, "open {}", d.sort_name).unwrap();
+        declared.insert(d.sort_name.clone());
+
+        // Selectors are partial in SMT-LIB (`hd nil` is unconstrained),
+        // so they are axioms with a characteristic equation rather than
+        // total definitions — which is what the input actually said.
+        for (i, sels) in d.selectors.iter().enumerate() {
+            let Some(ctor) = d.constructors.get(i) else { continue };
+            let Some(fs) = d.field_sorts.get(i) else { continue };
+            if fs.len() != sels.len() {
+                continue;
+            }
+            for (j, sel) in sels.iter().enumerate() {
+                writeln!(
+                    out,
+                    "axiom {sel} : {} → {}",
+                    d.sort_name,
+                    render_sort_name(&fs[j])
+                )
+                .unwrap();
+                let binders: String = fs
+                    .iter()
+                    .enumerate()
+                    .map(|(k, f)| format!(" (x{k} : {})", render_sort_name(f)))
+                    .collect();
+                let args: String =
+                    (0..fs.len()).map(|k| format!(" x{k}")).collect();
+                writeln!(
+                    out,
+                    "axiom {sel}_{ctor} : ∀{binders}, {sel} ({ctor}{args}) = x{j}"
+                )
+                .unwrap();
+                declared.insert(sel.clone());
+            }
+        }
+        out.push('\n');
+    }
+
+    // Functions and constants. `define-fun` keeps its definition — a
+    // `def`, not an axiom — so the definitional equation is available to
+    // `simp`/`rfl` instead of being lost.
+    if !sig.funs.is_empty() {
+        for f in &sig.funs {
+            if sig.mapped_name(&f.name, "lean") != f.name {
+                // Mapped to something the target already provides.
+                declared.insert(f.name.clone());
+                continue;
+            }
+            let ty = fun_type_in(sig, &f.params, &f.result);
+            match &f.body {
+                Some(body) => {
+                    let mut unmapped = BTreeSet::new();
+                    match sexpr_render::parse(body) {
+                        Some(sx) => {
+                            let rendered =
+                                sexpr_render::render(&sx, &sexpr_render::LEAN, &mut unmapped);
+                            for u in &unmapped {
+                                writeln!(
+                                    out,
+                                    "-- UNMAPPED OPERATOR in `{}`: `{u}`",
+                                    f.name
+                                )
+                                .unwrap();
+                            }
+                            let binders: String = f
+                                .param_names
+                                .iter()
+                                .zip(&f.params)
+                                .map(|(n, s)| format!(" ({n} : {})", render_sort_name(s)))
+                                .collect();
+                            writeln!(
+                                out,
+                                "def {}{binders} : {} := {rendered}",
+                                f.name,
+                                render_sort_name(&f.result)
+                            )
+                            .unwrap();
+                        }
+                        None => {
+                            // Unparseable body: say so and fall back to an
+                            // uninterpreted constant, which is weaker but
+                            // not wrong.
+                            writeln!(
+                                out,
+                                "-- UNPARSEABLE define-fun body for `{}`; emitted as \
+uninterpreted",
+                                f.name
+                            )
+                            .unwrap();
+                            writeln!(out, "axiom {} : {ty}", f.name).unwrap();
+                        }
+                    }
+                }
+                None => writeln!(out, "axiom {} : {ty}", f.name).unwrap(),
+            }
+            declared.insert(f.name.clone());
+        }
+        out.push('\n');
+    }
+    declared
+}
+
+/// `["Int", "Int"]`, `"Bool"` -> `Int → Int → Prop`, honouring mappings.
+fn fun_type_in(
+    sig: &crate::canonical::Signature,
+    params: &[String],
+    result: &str,
+) -> String {
+    let mut ty = String::new();
+    for p in params {
+        write!(ty, "{} → ", mapped_sort_name(sig, p)).unwrap();
+    }
+    ty.push_str(&mapped_sort_name(sig, result));
+    ty
+}
+
+/// A sort NAME as written in the declaration context. `Bool` is adsmt's
+/// sort of propositions, so it maps to `Prop` — the same reasoning as in
+/// [`render_type`], which sees a `Type` rather than a name.
+fn render_sort_name(s: &str) -> String {
+    match s {
+        "Bool" => "Prop".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// Same, but honouring the certificate's user-supplied mappings
+/// (constraint (3)(A)): "adsmt's sort `Coin` is CryptHOL's `bool spmf`"
+/// is meaning the emitter cannot infer, and it is checkable — the
+/// emitted theory either typechecks or it does not.
+fn mapped_sort_name(sig: &crate::canonical::Signature, s: &str) -> String {
+    let mapped = sig.mapped_name(s, "lean");
+    if mapped == s { render_sort_name(s) } else { mapped.to_owned() }
+}
+
 fn collect_free_vars(cert: &Certificate) -> Vec<(String, String)> {
     let mut seen: Vec<(String, String)> = Vec::new();
     for step in &cert.steps {
@@ -479,8 +798,19 @@ fn render_term(t: &Term) -> String {
 
 /// Render an adsmt [`Type`] as Lean4 syntax.
 fn render_type(ty: &adsmt_core::Type) -> String {
+    use adsmt_core::Type as T;
     if let Some((dom, cod)) = ty.dest_fun() {
         return format!("({} → {})", render_type(&dom), render_type(&cod));
+    }
+    // A higher-kinded application (`Seq Int`) must be taken apart, not
+    // rendered through `to_string()`: the leaf mapping below (`Bool` →
+    // `Prop`) would never reach the ARGUMENT, so `Seq Bool` would come
+    // out mentioning a `Bool` that means something else in Lean. That is
+    // the silent-fallback habit constraint (1) rule 2 bans.
+    if let T::App(f, a) = ty {
+        let arg = render_type(a);
+        let wrapped = if matches!(&**a, T::App(..)) { format!("({arg})") } else { arg };
+        return format!("{} {wrapped}", render_type(f));
     }
     // NOT identical to Lean's spelling for every leaf sort: adsmt's `Bool` is
     // the sort of propositions (`prover_emit::common` classifies it as
@@ -663,8 +993,206 @@ mod tests {
         assert_eq!(cas_provenance("not json at all"), None); // malformed ⇒ None (never panics)
     }
 
+
+    /// A certificate whose declaration context exercises every shape:
+    /// an uninterpreted sort, a datatype with a nullary and a
+    /// argument-bearing constructor plus selectors, an uninterpreted
+    /// function, and a defined function.
+    fn cert_with_declarations() -> Certificate {
+        use crate::canonical::{DatatypeDecl, FunDecl};
+        let mut b = crate::canonical::CertBuilder::default();
+        b.declare_sort("Color", 0);
+        b.declare_datatype(DatatypeDecl {
+            sort_name: "Lst".into(),
+            constructors: vec!["nil".into(), "cons".into()],
+            arities: vec![0, 2],
+            selectors: vec![vec![], vec!["hd".into(), "tl".into()]],
+            field_sorts: vec![vec![], vec!["Int".into(), "Lst".into()]],
+            params: vec![],
+            is_finite: false,
+        });
+        b.declare_fun("f", vec!["Int".into()], "Bool", None);
+        b.signature_mut().funs.push(FunDecl {
+            name: "g".into(),
+            params: vec!["Int".into()],
+            param_names: vec!["x".into()],
+            result: "Int".into(),
+            body: Some("(+ x 1)".into()),
+        });
+        let h: ProofHandle = r::assume(&mut b, p()).unwrap();
+        b.snapshot(h.step())
+    }
+
+    /// Acceptance criterion, constraint (1) rule 3: every sort and every
+    /// datatype of the input must appear in the output AS A DECLARATION.
+    ///
+    /// The measured loss this closes: `typedecl`/`datatype` were absent
+    /// from the output entirely, because the emitter reconstructed
+    /// declarations by scanning free variables and a sort no term
+    /// mentions is invisible to that scan.
     #[test]
-    fn assume_becomes_a_section_variable() {
+    fn every_declared_sort_and_datatype_reaches_the_output() {
+        let cert = cert_with_declarations();
+        let s = emit_lean(&cert);
+        for sort in cert.signature.sorts.iter().filter(|s| !s.builtin) {
+            let declared = s.contains(&format!("axiom {} : Type", sort.name))
+                || s.contains(&format!("inductive {}", sort.name));
+            assert!(declared, "sort `{}` missing from output:\n{s}", sort.name);
+        }
+        for d in &cert.signature.datatypes {
+            assert!(s.contains(&format!("inductive {}", d.sort_name)), "{s}");
+            for c in &d.constructors {
+                assert!(s.contains(&format!("| {c} :")), "ctor `{c}` missing:\n{s}");
+            }
+        }
+    }
+
+    #[test]
+    fn declarations_carry_arity_selectors_and_definitions() {
+        let s = emit_lean(&cert_with_declarations());
+        // Constructor arity AND field sorts — neither recoverable from
+        // terms alone.
+        assert!(s.contains("| cons : Int → Lst → Lst"), "{s}");
+        assert!(s.contains("| nil : Lst"), "{s}");
+        // Selectors are partial in SMT-LIB, so an axiom plus its
+        // characteristic equation rather than a total definition.
+        assert!(s.contains("axiom hd : Lst → Int"), "{s}");
+        assert!(s.contains("hd (cons x0 x1) = x0"), "{s}");
+        // `declare-fun` vs `define-fun`: the first is uninterpreted, the
+        // second keeps its definition.
+        assert!(s.contains("axiom f : Int → Prop"), "{s}");
+        assert!(s.contains("def g (x : Int) : Int := (x + 1)"), "{s}");
+        // A sort the datatype declares must not ALSO be an opaque axiom.
+        assert!(!s.contains("axiom Lst : Type"), "{s}");
+    }
+
+
+    /// Constraint (3)(A): a user mapping folds the sort into the
+    /// target's own type instead of declaring an opaque axiom for it.
+    /// Measured with Lean 4.29.1: with the mapping, `result` compiles
+    /// against `Bool`; without it, `Coin` would be an `axiom … : Type`.
+    #[test]
+    fn a_target_mapping_replaces_the_declaration() {
+        use crate::canonical::TargetMapping;
+        let mut b = crate::canonical::CertBuilder::default();
+        b.declare_sort("Coin", 0);
+        b.declare_fun("flip", vec!["Coin".into()], "Bool", None);
+        b.add_mapping(TargetMapping {
+            from: "Coin".into(),
+            target: Some("lean".into()),
+            to: "Bool".into(),
+            requires: None,
+        });
+        let h: ProofHandle = r::assume(&mut b, p()).unwrap();
+        let s = emit_lean(&b.snapshot(h.step()));
+        assert!(!s.contains("axiom Coin : Type"), "{s}");
+        assert!(s.contains("axiom flip : Bool → Prop"), "{s}");
+    }
+
+    #[test]
+    fn a_mapping_for_another_backend_does_not_apply() {
+        use crate::canonical::TargetMapping;
+        let mut b = crate::canonical::CertBuilder::default();
+        b.declare_sort("Coin", 0);
+        b.add_mapping(TargetMapping {
+            from: "Coin".into(),
+            target: Some("isabelle".into()),
+            to: "bool".into(),
+            requires: None,
+        });
+        let h: ProofHandle = r::assume(&mut b, p()).unwrap();
+        let s = emit_lean(&b.snapshot(h.step()));
+        assert!(s.contains("axiom Coin : Type"), "{s}");
+    }
+
+    /// Constraint (3)(B): a tactic hint replaces the oracle, so the step
+    /// stops being a trust source. Measured with Lean 4.29.1: with the
+    /// hint, `#print axioms` reports "does not depend on any axioms";
+    /// a hint that does not close the goal fails the build.
+    #[test]
+    fn a_tactic_hint_replaces_the_oracle_axiom() {
+        use crate::canonical::TacticHint;
+        use crate::witness::TheoryWitness;
+        let mut b = crate::canonical::CertBuilder::default();
+        b.signature_mut().tactics.push(TacticHint {
+            step: None,
+            theory: Some("LinArith".into()),
+            target: Some("lean".into()),
+            tactic: "trivial".into(),
+        });
+        let id = r::theory(
+            &mut b,
+            "LinArith",
+            TheoryWitness::Opaque { kind: "LIA".into(), notes: String::new() },
+            Vec::new(),
+            Vec::new(),
+            adsmt_core::Term::const_("true", adsmt_core::Type::bool_()),
+        );
+        let s = emit_lean(&b.snapshot(id));
+        assert!(s.contains("theorem adsmt_s0 : True := by trivial"), "{s}");
+        assert!(!s.contains("axiom adsmt_s0"), "{s}");
+    }
+
+    #[test]
+    fn a_hint_for_another_backend_leaves_the_oracle_in_place() {
+        use crate::canonical::TacticHint;
+        use crate::witness::TheoryWitness;
+        let mut b = crate::canonical::CertBuilder::default();
+        b.signature_mut().tactics.push(TacticHint {
+            step: None,
+            theory: Some("LinArith".into()),
+            target: Some("isabelle".into()),
+            tactic: "simp".into(),
+        });
+        let id = r::theory(
+            &mut b,
+            "LinArith",
+            TheoryWitness::Opaque { kind: "LIA".into(), notes: String::new() },
+            Vec::new(),
+            Vec::new(),
+            adsmt_core::Term::const_("true", adsmt_core::Type::bool_()),
+        );
+        let s = emit_lean(&b.snapshot(id));
+        assert!(s.contains("axiom adsmt_s0 : True"), "{s}");
+    }
+
+    #[test]
+    fn a_step_specific_hint_beats_a_theory_wide_one() {
+        use crate::canonical::{StepId, TacticHint};
+        let mut sig = crate::canonical::Signature::default();
+        sig.tactics.push(TacticHint {
+            step: None,
+            theory: Some("LinArith".into()),
+            target: Some("lean".into()),
+            tactic: "wide".into(),
+        });
+        sig.tactics.push(TacticHint {
+            step: Some(StepId(0)),
+            theory: None,
+            target: Some("lean".into()),
+            tactic: "narrow".into(),
+        });
+        assert_eq!(
+            sig.tactic_for(StepId(0), Some("LinArith"), "lean"),
+            Some("narrow")
+        );
+    }
+
+
+    /// A higher-kinded type must be taken APART, not passed through
+    /// `to_string()`. The leaf mapping (`Bool` → `Prop`) does not reach
+    /// inside a `Type::App` otherwise, so `Seq Bool` would name a `Bool`
+    /// that means something else in Lean.
+    #[test]
+    fn a_higher_kinded_type_is_rendered_structurally() {
+        use adsmt_core::Kind;
+        let seq = Type::const_("Seq", Kind::arrow(Kind::Type, Kind::Type));
+        let applied = Type::app(seq, Type::bool_()).unwrap();
+        assert_eq!(render_type(&applied), "Seq Prop");
+    }
+
+    #[test]
+    fn assume_becomes_a_hypothesis_binder_not_an_axiom() {
         let mut b = crate::canonical::CertBuilder::default();
         let h: ProofHandle = r::assume(&mut b, p()).unwrap();
         let cert = b.snapshot(h.step());
@@ -672,11 +1200,13 @@ mod tests {
         // adsmt's `Bool` is the sort of propositions; Lean's `Bool` is a
         // two-element datatype, so `axiom s0 : p` would not typecheck.
         assert!(s.contains("axiom p : Prop"), "{s}");
-        assert!(s.contains(&format!("variable (s{} : p)", h.step().0)), "{s}");
+        // A binder on `result`, not a `variable` and not an axiom. Lean
+        // does NOT insert a section `variable` into a term that mentions
+        // it only in the proof, so the binders are explicit — measured
+        // against Lean 4.29.1, where the `variable` form failed with
+        // "Unknown identifier `s0`".
+        assert!(s.contains(&format!("theorem result (s{} : p) : p :=", h.step().0)), "{s}");
         assert!(!s.contains(&format!("axiom s{} :", h.step().0)), "{s}");
-        // `result` references the assume step; closing the section
-        // generalises it to `p → p`.
-        assert!(s.contains("theorem result : p :="), "{s}");
     }
 
     #[test]
@@ -697,12 +1227,19 @@ mod tests {
         let h = r::assumed(&mut b, p(), Some("needs Functor MyType".into())).unwrap();
         let cert = b.snapshot(h.step());
         let s = emit_lean(&cert);
-        assert!(s.contains("abductive marker: needs Functor MyType"), "{s}");
+        assert!(s.contains("USER-SUPPLIED ASSUMPTION (not proved): needs Functor MyType"), "{s}");
         // A NAMED oracle axiom instead of `sorry`, so the trust source is
-        // visible instead of hidden from `#print axioms`.
-        assert!(s.contains("axiom adsmt_s0 : p"), "{s}");
-        assert!(s.contains("theorem s0 : p := adsmt_s0"), "{s}");
+        // visible instead of hidden from `#print axioms` — and named
+        // `adsmt_assumed_*`, so a reader can tell a user assumption from
+        // a theory decision (constraint (3)(C) rule 1). Measured against
+        // Lean 4.29.1: `#print axioms` lists it as
+        // `AdsmtCert.adsmt_assumed_s0`.
+        assert!(s.contains("axiom adsmt_assumed_s0 : p"), "{s}");
+        assert!(s.contains("theorem s0 : p := adsmt_assumed_s0"), "{s}");
         assert!(!s.contains("sorry"), "{s}");
+        // And the header states the tally, so the file says what it
+        // rests on without running Lean.
+        assert!(s.contains("1 USER-SUPPLIED assumption(s)"), "{s}");
     }
 
     #[test]
@@ -712,9 +1249,9 @@ mod tests {
         let h = r::assume(&mut b, np).unwrap();
         let cert = b.snapshot(h.step());
         let s = emit_lean(&cert);
-        // A section variable, not an axiom: closing the section
-        // generalises `result` over it instead of asserting it.
-        assert!(s.contains("variable (s0 : (¬ p))"), "{s}");
+        // A hypothesis binder, not an axiom: `result` is generalised
+        // over it instead of asserting it.
+        assert!(s.contains("theorem result (s0 : (¬ p))"), "{s}");
         assert!(!s.contains("axiom s0 :"), "{s}");
     }
 

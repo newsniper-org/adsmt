@@ -22,23 +22,31 @@
 //!    If we later need *boolean computation* (e.g. BV ground eval),
 //!    cert must distinguish that at the type-level with a new sort.
 //!
-//! 2. **Theory steps are axiomatized.** Each
-//!    [`StepBody::Theory`] becomes
-//!    an axiom whose statement is the step's sequent conclusion. The
-//!    witness summary is included as a structured comment so a future
-//!    reflective checker can recover it. Same in Lean and Rocq.
+//! 2. **Theory steps are axiomatized, as premises → conclusion.** Each
+//!    [`StepBody::Theory`] becomes an oracle axiom whose statement is
+//!    `p1 → … → pn → concl`, never the bare conclusion: a bare `False`
+//!    would be a FALSE statement, while the implication is true and
+//!    merely records the theory solver's decision, so the emitted theory
+//!    stays consistent however contradictory the hypotheses are. The
+//!    witness summary rides along as a structured comment and is
+//!    re-checkable offline via [`crate::recheck`]. Same in Lean and Rocq.
 //!
-//! 3. **Abductive markers become explicit holes.**
-//!    [`StepBody::Assumed`]
-//!    emits a `sorry` / `Admitted.` declaration so the prover sees
-//!    a typed hole, with the human explain string carried as a
-//!    comment for tactic-side consumption.
+//!    A user-supplied tactic hint (constraint (3)(B)) REPLACES the
+//!    oracle with a real proof; on success the step stops being a trust
+//!    source at all.
+//!
+//! 3. **User assumptions are named oracles, never `sorry`.**
+//!    [`StepBody::Assumed`] emits `adsmt_assumed_s<i>` — a NAMED oracle
+//!    distinct from the solver's own, so `Thm_Deps.all_oracles` /
+//!    `#print axioms` / `Print Assumptions` report it as a SECOND trust
+//!    source (constraint (3)(C) rule 1). A `sorry` would hide it: it
+//!    would claim trust that the accounting never shows.
 //!
 //! 4. **Compound kernel rules emit real proof terms.** Since the
-//!    v0.19 K-full upgrade, `Trans`/`EqMp`/`Deduct`/`Abs`/`Beta`/
-//!    `Inst`/`InstType` lower to the prover's native combinators
-//!    (`Eq.trans`, `.mp`, `fun _h => …`, `funext`, `rfl`, identity
-//!    reuse). The kernel's type checks *and* the proof body is
+//!    v0.19 K-full upgrade, `Trans`/`MkComb`/`EqMp`/`Deduct`/`Abs`/
+//!    `Beta`/`Inst`/`InstType` lower to the prover's native combinators
+//!    (`Eq.trans`, `congr`, `.mp`, `fun _h => …`, `funext`, `rfl`,
+//!    identity reuse). The kernel's type checks *and* the proof body is
 //!    machine-checkable end-to-end.
 //!
 //! 5. **Free variables become axioms / parameters of `Prop`.**
@@ -215,6 +223,7 @@ pub fn direct_required_for_body(body: &StepBody) -> ClassicalSet {
         StepBody::Assume(_)
         | StepBody::Refl(_)
         | StepBody::Trans { .. }
+        | StepBody::MkComb { .. }
         | StepBody::EqMp { .. }
         | StepBody::Beta { .. }
         | StepBody::Abs { .. }
@@ -261,12 +270,13 @@ pub fn populate_direct_required(cert: &mut Certificate) {
 /// Return the list of parent [`StepId`](crate::canonical::StepId)s a step references.
 ///
 /// Eight `StepBody` variants carry parent references:
-/// `Trans / EqMp / Deduct / Abs / Inst / InstType / Theory /
-/// Instance` (per the policy doc § "Parent classical-ness
+/// `Trans / MkComb / EqMp / Deduct / Abs / Inst / InstType /
+/// Theory` (per the policy doc § "Parent classical-ness
 /// inheritance"). Other variants return an empty Vec.
 pub fn parent_step_ids(body: &StepBody) -> Vec<crate::canonical::StepId> {
     match body {
         StepBody::Trans { lhs, rhs } => vec![*lhs, *rhs],
+        StepBody::MkComb { fun_eq, arg_eq } => vec![*fun_eq, *arg_eq],
         StepBody::EqMp { iff, p } => vec![*iff, *p],
         StepBody::Deduct { a, b } => vec![*a, *b],
         StepBody::Abs { eq, .. } => vec![*eq],

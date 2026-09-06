@@ -2482,6 +2482,11 @@ struct SymbolRegistry {
     /// `declare-sort NAME ARITY` entries. `Bool`, `Int`, `Real` are
     /// pre-installed so user scripts can refer to them directly.
     sorts: HashMap<String, u32>,
+    /// `declare-datatype(s)` declarations, in declaration order. Kept
+    /// so the certificate can carry the declaration context
+    /// (constraint (1) rule 1): constructor arities and selector names
+    /// cannot be recovered by scanning terms.
+    datatypes: Vec<adsmt_cert::canonical::DatatypeDecl>,
     /// `declare-fun` / `define-fun` signatures. Body is recorded
     /// for `define-fun` so future passes can inline; the v1.0 CLI
     /// keeps the body verbatim and lets `convert_expr` see the
@@ -2514,6 +2519,7 @@ impl SymbolRegistry {
         Self {
             sorts,
             funs: HashMap::new(),
+            datatypes: Vec::new(),
         }
     }
 }
@@ -2711,6 +2717,14 @@ impl Driver {
             }
             Command::DeclareConst { name, sort } => match self.resolve_sort(&sort) {
                 Ok(ty) => {
+                    // A constant is a nullary function: it belongs in the
+                    // declaration context just as much as `f` does, and a
+                    // consumer that only saw terms would miss any constant
+                    // the proof never mentions.
+                    self.registry.funs.insert(
+                        name.clone(),
+                        FunSig { params: Vec::new(), result: sort.clone(), body: None },
+                    );
                     self.symbols.declare(name, ty);
                     DispatchResult::Continue
                 }
@@ -3059,8 +3073,12 @@ impl Driver {
         let status = match &r {
             SatResult::Sat { .. } => LastStatus::Sat,
             SatResult::Unsat { certificate, .. } => {
+                let certificate = certificate.clone().map(|mut c| {
+                    self.attach_signature(&mut c);
+                    c
+                });
                 self.last_cert = certificate.clone();
-                if let Some(cert) = certificate {
+                if let Some(cert) = &certificate {
                     self.write_emit_cert(cert);
                 }
                 LastStatus::Unsat
@@ -3249,6 +3267,19 @@ impl Driver {
             .with_selectors(selectors_per_ctor)
             .with_field_sorts(field_sorts_per_ctor)
             .with_params(group.params.clone());
+            // Record it for the certificate too (constraint (1) rule 1).
+            // The engine gets the theory-side decl; the certificate needs
+            // the DECLARATION — constructor arities and selector names,
+            // neither of which can be recovered from the terms.
+            self.registry.datatypes.push(adsmt_cert::canonical::DatatypeDecl {
+                sort_name: decl.sort_name.clone(),
+                constructors: decl.constructors.clone(),
+                arities: decl.arities.clone(),
+                selectors: decl.selectors.clone(),
+                field_sorts: decl.field_sorts.clone(),
+                params: decl.params.clone(),
+                is_finite: decl.is_finite,
+            });
             self.solver.declare_datatype(decl);
         }
         Ok(())
@@ -3307,10 +3338,68 @@ impl Driver {
         }
     }
 
+
+    /// Fill in the certificate's declaration context from what the CLI
+    /// already knows (constraint (1) rule 1).
+    ///
+    /// Everything here was recorded at `declare-*` time and then thrown
+    /// away at certificate time, which forced every consumer to
+    /// reconstruct declarations by scanning free variables — a
+    /// reconstruction that cannot recover constructor arities, selector
+    /// names, the `declare-fun` vs `define-fun` distinction, or a sort no
+    /// term happens to mention.
+    ///
+    /// Entries are sorted by name so the same input yields the same
+    /// certificate: the registries are hash maps, and iteration order
+    /// would otherwise leak into the artifact.
+    fn attach_signature(&self, cert: &mut adsmt_cert::Certificate) {
+        use adsmt_cert::canonical::{FunDecl, Signature, SortDecl};
+        let mut sig = Signature::default();
+
+        let mut sorts: Vec<(&String, &u32)> = self.registry.sorts.iter().collect();
+        sorts.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, arity) in sorts {
+            let builtin = matches!(name.as_str(), "Bool" | "Int" | "Real");
+            sig.sorts.push(SortDecl { name: name.clone(), arity: *arity, builtin });
+        }
+
+        let mut funs: Vec<(&String, &FunSig)> = self.registry.funs.iter().collect();
+        funs.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, f) in funs {
+            // `declare-fun` params are bare sorts; `define-fun` params are
+            // `(name sort)` pairs. Split them so a consumer always reads
+            // `params` as sorts, whichever command produced the entry.
+            let (mut params, mut param_names) = (Vec::new(), Vec::new());
+            for p in &f.params {
+                match p {
+                    SExpr::List(items) if items.len() == 2 => {
+                        param_names.push(items[0].to_string());
+                        params.push(items[1].to_string());
+                    }
+                    other => params.push(other.to_string()),
+                }
+            }
+            sig.funs.push(FunDecl {
+                name: name.clone(),
+                params,
+                param_names,
+                result: f.result.to_string(),
+                body: f.body.as_ref().map(|b| b.to_string()),
+            });
+        }
+
+        sig.datatypes = self.registry.datatypes.clone();
+        cert.signature = sig;
+    }
+
     /// Emit (under `--emit-cert*`) and cache a delegated-unsat certificate so an
     /// interleaved `(get-proof)` / `(get-model)` stays consistent with the printed
     /// `unsat` line.
     fn install_delegated_cert(&mut self, cert: Option<adsmt_cert::Certificate>) {
+        let cert = cert.map(|mut c| {
+            self.attach_signature(&mut c);
+            c
+        });
         if let Some(c) = &cert {
             self.write_emit_cert(c);
         }

@@ -78,6 +78,25 @@ pub mod recorder {
         Ok(ProofHandle { thm, step })
     }
 
+    /// MK_COMB: `⊢ f = g`, `⊢ x = y` gives `⊢ f x = g y`.
+    ///
+    /// The kernel's congruence rule. Recording a congruence step through
+    /// this rather than as a theory oracle is what makes it a real proof
+    /// in the emitted output — `congr` in Lean, `f_equal` in Rocq,
+    /// `arg_cong`/`cong` in Isabelle — instead of a trusted assertion.
+    pub fn mk_comb(
+        b: &mut CertBuilder,
+        fun_eq: &ProofHandle,
+        arg_eq: &ProofHandle,
+    ) -> KernelResult<ProofHandle> {
+        let thm = kr::mk_comb(&fun_eq.thm, &arg_eq.thm)?;
+        let step = b.add(
+            StepBody::MkComb { fun_eq: fun_eq.step, arg_eq: arg_eq.step },
+            Sequent::from(&thm),
+        );
+        Ok(ProofHandle { thm, step })
+    }
+
     pub fn abs(
         b: &mut CertBuilder,
         v: Var,
@@ -190,11 +209,14 @@ pub mod recorder {
 
     /// Record an abductive assumption.
     ///
-    /// No kernel rule is invoked — the `Assumed` step is a marker that
-    /// the resulting "proof" relies on `formula` being supplied by the
-    /// consumer (e.g. as a Lean `sorry`). The returned `ProofHandle`
-    /// wraps the *would-be* theorem `formula ⊢ formula` so subsequent
-    /// rules can consume it as if it had been proven.
+    /// No kernel rule is invoked — the `Assumed` step records that the
+    /// resulting "proof" rests on `formula` being GRANTED rather than
+    /// derived. The emitters render it as a named oracle
+    /// (`adsmt_assumed_s<i>`), never a `sorry`, so it shows up as a
+    /// distinct trust source rather than hiding (constraint (3)(C) rule
+    /// 1). The returned `ProofHandle` wraps the *would-be* theorem
+    /// `formula ⊢ formula` so subsequent rules can consume it as if it
+    /// had been proven.
     pub fn assumed(
         b: &mut CertBuilder,
         formula: Term,

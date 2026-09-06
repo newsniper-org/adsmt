@@ -54,6 +54,32 @@ pub fn trans(a: &Theorem, b: &Theorem) -> KernelResult<Theorem> {
     Ok(Theorem::new(hyps, concl))
 }
 
+/// MK_COMB: `Δ ⊢ f = g,  Γ ⊢ x = y  ⟹  Δ ∪ Γ ⊢ f x = g y`.
+///
+/// The congruence rule of the HOL kernel, and the one rule of the ten
+/// this kernel was missing. Without it a congruence step — the shape
+/// every EUF conflict is built from — has no structural form and can
+/// only be recorded as an opaque theory oracle.
+///
+/// Well-typedness is enforced by [`Term::app`]: `f` must have a function
+/// type whose domain is `x`'s type. A mismatch surfaces as the same
+/// error an ill-typed application would.
+pub fn mk_comb(fun_thm: &Theorem, arg_thm: &Theorem) -> KernelResult<Theorem> {
+    let (f, g) = fun_thm
+        .concl()
+        .dest_eq()
+        .ok_or_else(|| KernelError::NotEquation(fun_thm.concl().to_string()))?;
+    let (x, y) = arg_thm
+        .concl()
+        .dest_eq()
+        .ok_or_else(|| KernelError::NotEquation(arg_thm.concl().to_string()))?;
+    let lhs = Term::app(f, x)?;
+    let rhs = Term::app(g, y)?;
+    let hyps = union_hyps(fun_thm.hyps(), arg_thm.hyps());
+    let concl = Term::mk_eq(lhs, rhs)?;
+    Ok(Theorem::new(hyps, concl))
+}
+
 /// ABS: `Δ ⊢ s = t  ⟹  Δ ⊢ (λv. s) = (λv. t)`, provided `v` is not free in Δ.
 pub fn abs(v: Var, thm: &Theorem) -> KernelResult<Theorem> {
     let v_arc = Arc::new(v.clone());

@@ -276,6 +276,10 @@ pub enum StepBody {
     Assume(Term),
     Refl(Term),
     Trans { lhs: StepId, rhs: StepId },
+    /// MK_COMB: `⊢ f = g`, `⊢ x = y` gives `⊢ f x = g y`. The kernel's
+    /// congruence rule — the shape every EUF step is built from, which
+    /// without this rule could only be recorded as an opaque oracle.
+    MkComb { fun_eq: StepId, arg_eq: StepId },
     Abs { var: Var, eq: StepId },
     Beta { redex: Term },
     EqMp { iff: StepId, p: StepId },
@@ -309,6 +313,7 @@ pub enum StepKindTag {
     Assume,
     Refl,
     Trans,
+    MkComb,
     Abs,
     Beta,
     EqMp,
@@ -327,6 +332,7 @@ impl StepKindTag {
             StepBody::Assume(_) => StepKindTag::Assume,
             StepBody::Refl(_) => StepKindTag::Refl,
             StepBody::Trans { .. } => StepKindTag::Trans,
+            StepBody::MkComb { .. } => StepKindTag::MkComb,
             StepBody::Abs { .. } => StepKindTag::Abs,
             StepBody::Beta { .. } => StepKindTag::Beta,
             StepBody::EqMp { .. } => StepKindTag::EqMp,
@@ -521,9 +527,260 @@ impl Default for MidBlock {
 /// `StepPattern`. Pattern matching is closed-enum: `Theory /
 /// Kind / IdRange / And / Or / Not`. Convenience helpers
 /// (`StepPattern::xor`, `at_most_one`, `exactly_one`) desugar
+
+// ===================================================================
+// Declaration context (constraint (1) rule 1)
+// ===================================================================
+
+/// A sort the input declared, with its arity.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SortDecl {
+    pub name: String,
+    pub arity: u32,
+    /// True for a sort the logic supplies (`Int`, `Bool`, `Real`) rather
+    /// than one the input declared. A consumer must NOT emit a fresh type
+    /// for these — they map onto the target prover's own types — but it
+    /// still needs to see them, because a mapping table is keyed by name
+    /// and an unmapped builtin is as much a hole as an unmapped user sort.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub builtin: bool,
+}
+
+/// A function/constant signature the input declared.
+///
+/// Sorts are carried as rendered names rather than as `Type`, because
+/// what a consumer needs is the DECLARATION as written — `(declare-fun f
+/// (Int Int) Bool)` — and reconstructing that from the curried `Type`
+/// loses the arity grouping.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FunDecl {
+    pub name: String,
+    /// Parameter SORTS, always — `(declare-fun f (Int Int) Bool)` gives
+    /// `["Int", "Int"]`. A zero-length `params` is a constant.
+    pub params: Vec<String>,
+    pub result: String,
+    /// Parameter NAMES, present only for `define-fun`, where the body
+    /// below refers to them. Aligned with `params`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_names: Vec<String>,
+    /// `define-fun` bodies are recorded as source text; `None` for
+    /// `declare-fun`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+}
+
+/// A datatype declaration: constructors with their arities and
+/// per-constructor selector names.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DatatypeDecl {
+    pub sort_name: String,
+    pub constructors: Vec<String>,
+    pub arities: Vec<u32>,
+    /// `selectors[i]` aligns with `constructors[i]`; inner vec is empty
+    /// for a nullary constructor.
+    #[serde(default)]
+    pub selectors: Vec<Vec<String>>,
+    /// `field_sorts[i][j]` is the sort of constructor `i`'s field `j`,
+    /// aligned with `selectors`. Without this a consumer knows `cons` has
+    /// two fields named `hd`/`tl` but not that they are `Int` and `Lst` —
+    /// which is exactly what a target-prover datatype declaration needs.
+    /// Empty when a producer didn't thread it.
+    #[serde(default)]
+    pub field_sorts: Vec<Vec<String>>,
+    /// Type parameters of a parametric datatype (`(Seq T)` → `["T"]`).
+    #[serde(default)]
+    pub params: Vec<String>,
+    #[serde(default)]
+    pub is_finite: bool,
+}
+
+/// A user-supplied tactic to discharge a step, instead of the oracle
+/// the emitter would otherwise use (constraint (3) branch (B)).
+///
+/// This is the `#[inline]` of the three annotation kinds: it is
+/// **harmless to soundness and fails first**. The target prover still
+/// checks the proof — if the tactic does not close the goal, the build
+/// fails and nothing is silently believed. What it CANNOT do is make a
+/// false statement true, which is why it needs no trust accounting the
+/// way a user assumption does.
+///
+/// A hint that fires REMOVES a trust source: the step is proved rather
+/// than asserted, so it stops contributing an oracle axiom.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TacticHint {
+    /// Apply to exactly this step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<StepId>,
+    /// Apply to every theory step of this theory (`"LinArith"` →
+    /// `linarith`). Ignored when `step` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theory: Option<String>,
+    /// Target prover this hint is written for (`lean`, `rocq`,
+    /// `isabelle`); `None` means every backend, which is rarely right
+    /// since tactic languages differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The tactic text, in the target's own syntax. Emitted verbatim.
+    pub tactic: String,
+}
+
+/// A user-supplied mapping from an adsmt name to a target-prover name
+/// (constraint (3) branch (A)).
+///
+/// This is the SAFE branch of "user annotation": it carries meaning the
+/// emitter cannot infer — "adsmt's sort `Coin` is CryptHOL's `bool spmf`"
+/// — and it is checkable, because the emitted theory either typechecks
+/// or it does not. It is not a proof-force construct.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TargetMapping {
+    /// The adsmt-side name (sort, constant, or function).
+    pub from: String,
+    /// Target prover this mapping applies to (`lean`, `rocq`,
+    /// `isabelle`); `None` means every backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The name to emit instead.
+    pub to: String,
+    /// Optional module/import the target name needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires: Option<String>,
+}
+
+/// The declaration context a certificate carries alongside its steps.
+///
+/// # Why this is not optional information
+///
+/// A step's terms mention `f`, `Coin`, `Cons` — but a certificate that
+/// carries only terms leaves the consumer to *reconstruct* the
+/// declarations by scanning free variables. That reconstruction cannot
+/// recover what was never in a term: a sort with no inhabitant mentioned,
+/// a datatype's constructor arities, a selector name, the distinction
+/// between `declare-fun` and `define-fun`.
+///
+/// The producing engine already knows all of it. This type is where that
+/// knowledge stops being discarded.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Signature {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sorts: Vec<SortDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub funs: Vec<FunDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub datatypes: Vec<DatatypeDecl>,
+    /// Constraint (3)(A): user-supplied name mappings. Rides the same
+    /// plumbing because it answers the same question — what does this
+    /// name mean in the target?
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mappings: Vec<TargetMapping>,
+    /// Constraint (3)(B): user-supplied tactics that replace an oracle
+    /// for a step. Fail-first — a hint that does not close the goal
+    /// breaks the build rather than being silently believed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tactics: Vec<TacticHint>,
+}
+
+impl Signature {
+    pub fn is_empty(&self) -> bool {
+        self.sorts.is_empty()
+            && self.funs.is_empty()
+            && self.datatypes.is_empty()
+            && self.mappings.is_empty()
+            && self.tactics.is_empty()
+    }
+
+    /// The name to emit for `name` in `target`, honouring any
+    /// user-supplied mapping (constraint (3)(A)).
+    ///
+    /// A backend-specific mapping wins over a backend-agnostic one, so a
+    /// certificate can carry both a general default and a per-prover
+    /// override.
+    pub fn mapped_name<'a>(&'a self, name: &'a str, target: &str) -> &'a str {
+        let mut fallback = None;
+        for m in &self.mappings {
+            if m.from != name {
+                continue;
+            }
+            match m.target.as_deref() {
+                Some(t) if t == target => return &m.to,
+                None => fallback = Some(m.to.as_str()),
+                _ => {}
+            }
+        }
+        fallback.unwrap_or(name)
+    }
+
+    /// Modules the mappings say the target needs, for `target`.
+    pub fn required_imports(&self, target: &str) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for m in &self.mappings {
+            if m.target.as_deref().is_some_and(|t| t != target) {
+                continue;
+            }
+            if let Some(req) = &m.requires
+                && !out.contains(&req.as_str())
+            {
+                out.push(req);
+            }
+        }
+        out
+    }
+
+    /// The tactic to use for a step, if the user supplied one.
+    ///
+    /// A step-specific hint wins over a theory-wide one, and a
+    /// backend-specific hint over a backend-agnostic one — tactic
+    /// languages differ, so an agnostic hint is a last resort.
+    pub fn tactic_for(
+        &self,
+        step: StepId,
+        theory: Option<&str>,
+        target: &str,
+    ) -> Option<&str> {
+        let applies_to_target = |h: &TacticHint| match h.target.as_deref() {
+            Some(t) => t == target,
+            None => true,
+        };
+        let rank = |h: &TacticHint| -> u8 {
+            let specific_step = h.step == Some(step);
+            let specific_target = h.target.is_some();
+            match (specific_step, specific_target) {
+                (true, true) => 3,
+                (true, false) => 2,
+                (false, true) => 1,
+                (false, false) => 0,
+            }
+        };
+        self.tactics
+            .iter()
+            .filter(|h| applies_to_target(h))
+            .filter(|h| match (h.step, &h.theory) {
+                (Some(s), _) => s == step,
+                (None, Some(t)) => theory == Some(t.as_str()),
+                (None, None) => false,
+            })
+            .max_by_key(|h| rank(h))
+            .map(|h| h.tactic.as_str())
+    }
+
+    /// The target-specific name for `name`, if a mapping applies.
+    pub fn mapped(&self, name: &str, target: &str) -> Option<&str> {
+        self.mappings
+            .iter()
+            .find(|m| {
+                m.from == name
+                    && m.target.as_deref().is_none_or(|t| t == target)
+            })
+            .map(|m| m.to.as_str())
+    }
+}
+
 /// via standard boolean equivalences.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Certificate {
+    /// The declaration context the terms live in (constraint (1) rule
+    /// 1). Default-empty so older certificates deserialise unchanged.
+    #[serde(default, skip_serializing_if = "Signature::is_empty")]
+    pub signature: Signature,
     pub steps: Vec<Step>,
     pub conclusion: StepId,
     /// Optional mid-block scope tree. Per D1.A-1 = (optional +
@@ -677,9 +934,68 @@ pub struct CertBuilder {
     /// The negated-goal `Assume` step, if this build is goal-directed.
     /// See [`Certificate::goal_step`].
     pub(crate) goal_step: Option<StepId>,
+    /// Declaration context (constraint (1) rule 1). The producer fills
+    /// this from what it already knows; leaving it empty means the
+    /// consumer has to guess the declarations back out of the terms,
+    /// which cannot recover arities, selectors, or unmentioned sorts.
+    pub(crate) signature: Signature,
 }
 
 impl CertBuilder {
+    /// Attach the declaration context. Replaces any previous value.
+    pub fn set_signature(&mut self, sig: Signature) {
+        self.signature = sig;
+    }
+
+    /// The declaration context accumulated so far.
+    pub fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    /// The declaration context, mutably — for producers that build a
+    /// [`FunDecl`] directly (a `define-fun`, which carries parameter
+    /// names and a body that [`Self::declare_fun`] does not take).
+    pub fn signature_mut(&mut self) -> &mut Signature {
+        &mut self.signature
+    }
+
+    /// Record one declared sort.
+    pub fn declare_sort(&mut self, name: impl Into<String>, arity: u32) {
+        self.signature.sorts.push(SortDecl { name: name.into(), arity, builtin: false });
+    }
+
+    /// Record a sort the logic supplies rather than one the input declared.
+    pub fn declare_builtin_sort(&mut self, name: impl Into<String>, arity: u32) {
+        self.signature.sorts.push(SortDecl { name: name.into(), arity, builtin: true });
+    }
+
+    /// Record one declared function/constant signature.
+    pub fn declare_fun(
+        &mut self,
+        name: impl Into<String>,
+        params: Vec<String>,
+        result: impl Into<String>,
+        body: Option<String>,
+    ) {
+        self.signature.funs.push(FunDecl {
+            name: name.into(),
+            params,
+            param_names: Vec::new(),
+            result: result.into(),
+            body,
+        });
+    }
+
+    /// Record one datatype declaration.
+    pub fn declare_datatype(&mut self, decl: DatatypeDecl) {
+        self.signature.datatypes.push(decl);
+    }
+
+    /// Record a user-supplied target mapping (constraint (3)(A)).
+    pub fn add_mapping(&mut self, m: TargetMapping) {
+        self.signature.mappings.push(m);
+    }
+
     /// Set the `direct_required_classical` for a previously added
     /// step. Replaces any existing value. Idempotent across
     /// repeated calls with the same set.
@@ -799,6 +1115,7 @@ impl CertBuilder {
 
     pub fn finalize(self, conclusion: StepId) -> Certificate {
         Certificate {
+            signature: Signature::default(),
             steps: self.steps,
             conclusion,
             mid_blocks: self.mid_blocks,
@@ -813,6 +1130,7 @@ impl CertBuilder {
     /// while keeping the builder alive across incremental calls.
     pub fn snapshot(&self, conclusion: StepId) -> Certificate {
         Certificate {
+            signature: self.signature.clone(),
             steps: self.steps.clone(),
             conclusion,
             mid_blocks: self.mid_blocks.clone(),

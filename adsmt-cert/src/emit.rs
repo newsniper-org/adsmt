@@ -67,6 +67,9 @@ fn emit_body(body: &StepBody, out: &mut String) {
         StepBody::Trans { lhs, rhs } => {
             write!(out, "(trans {} {})", id_token(*lhs), id_token(*rhs)).unwrap();
         }
+        StepBody::MkComb { fun_eq, arg_eq } => {
+            write!(out, "(mk_comb {} {})", id_token(*fun_eq), id_token(*arg_eq)).unwrap();
+        }
         StepBody::Abs { var, eq } => {
             out.push_str("(abs ");
             emit_var(var, out);

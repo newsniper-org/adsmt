@@ -24,7 +24,9 @@ pub mod emit;
 pub mod lean_emit;
 pub mod oxiz_drat_bridge;
 pub mod prover_emit;
+pub mod recheck;
 pub mod recorder;
+pub mod sexpr_render;
 pub mod witness;
 
 pub use canonical::{

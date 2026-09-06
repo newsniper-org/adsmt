@@ -165,12 +165,58 @@ Isabelle은 Pure 위에 여러 대상 논리(HOL, ZF, FOL, CTT, HOLCF, …)가 �
 1. `goal_step` — **완료**(2026-09-01, AD1 `1508684`).
 2. **선언 문맥**을 인증서에 싣기 — 구속 ①의 규칙 1. P0 수정의 선행조건이며,
    구속 ③의 **(A) 매핑 주석**이 얹히는 자리이기도 하다(같은 배관).
+   **완료**(2026-09-05).
 3. `render_type` / `render_term` 정확화 + **실패 우선** — 구속 ①의 규칙 2.
+   **완료**(2026-09-04, 중위 산술 + 미매핑 심볼 보고).
 4. emit 재작성(전제 보존 lemma + 등록 oracle 1개) + **ROOT/session 방출** —
    구속 ②의 규칙 1. 대상은 `HOL` / `HOL`+`GST`, 각각 `CryptHOL` 선택 가능.
+   **완료**(2026-09-04).
 5. **(B) 전술 힌트** — 대상별 전술 집합의 덮어쓰기. 4가 끝나면 자연스럽게 붙는다.
-6. `MK_COMB`, `Certificate::recheck`, 구조적 witness.
+   **완료**(2026-09-05).
+6. `MK_COMB`, `Certificate::recheck`, 구조적 witness. **완료**(2026-09-05).
 7. **(C) 사용자 가정** — 신뢰 회계(oracle 계수 + 재검사 훅)가 선 뒤에만.
+   **완료**(2026-09-05).
+
+### 2026-09-05 완료분의 실측 (Lean 4.29.1 / Rocq(coqc) / Isabelle2026-RC0)
+
+세 산출물을 **실제 wasm 이미터 경로**로 뽑아 각 ITP로 컴파일해 확인했다.
+
+| | Lean | Rocq | Isabelle |
+|---|---|---|---|
+| 소트·데이터타입이 선언으로 도달 | 2/2, 1/1 | 2/2, 1/1 | 2/2, 1/1 |
+| `axiomatization` / `sorry` | 0 / 0 | 0 / 0 | 0 / 0 |
+| 신뢰 출처가 이름으로 구분 | `adsmt_assumed_s0` | `adsmt_assumed_s0` | `ORACLE_COUNT=2` |
+| 전술 힌트 성공 시 신뢰 표면 | 공리 0 | `Closed under the global context` | build green |
+| 전술 힌트 실패 시 | `Tactic 'rfl' failed` | `No such assumption.` | `Failed to apply initial proof method` |
+
+같은 작업에서 **실제 결함 다섯 건**이 드러나 함께 고쳤다.
+
+1. **Lean의 `variable`이 작동하지 않았다.** Lean 4는 증명 본문에서만 참조되는
+   section variable을 자동 삽입하지 않아 `Unknown identifier s0`으로 실패한다.
+   그전까지 Isabelle만 실제 빌드했기 때문에 드러날 자리가 없었다. 가설을
+   명시 인자로 바꿔 해결.
+2. **Rocq이 `Int`를 그대로 방출했다** — Rocq에 없는 식별자다. `Z`/`R` 매핑과
+   `ZArith` 조건부 import로 수정.
+3. **`declare-const`가 선언 문맥에서 누락됐다.** 상수는 항에 나타나지 않으면
+   완전히 사라졌다.
+4. **`\<^cterm>`이 `bool` 명제를 oracle에 넘기지 못한다.** 기존 결론은
+   `φ ⟹ ψ` 형태라 이미 `prop`이어서 통과했고, 사용자 가정처럼 bare `bool`이
+   오자 `Oracle's result must have type prop`으로 터졌다 — 구속 ②의 규칙 3이
+   말한 `Trueprop` 경계다. `\<^cprop>`로 수정.
+5. **`Type::App`이 세 이미터 모두에서 조용한 폴백으로 샜다.** `to_string()`으로
+   흘려보내 Isabelle에는 전치형(`Seq int`, Isabelle의 타입 적용은 **후치**)이,
+   Rocq에는 `Seq Int`가 나갔고, Lean에서도 인자에 leaf 매핑이 닿지 않았다.
+   `Type::App`을 구조적으로 분해하도록 수정.
+
+### 남은 잔여 (실측)
+
+- **`EufWitness` 생산자가 0건.** 구조는 커널 규칙(`Reflexivity`/`Congruence`/
+  `Transitive`/`Symmetric`)과 정확히 대응하도록 설계돼 있으나 엔진 어디에서도
+  채우지 않는다. 실제로 생산되는 witness는 `Opaque` 32, `Drat` 5, `Polite`·
+  `Cas` 각 1. `Certificate::recheck`에 검사기는 붙였으므로 생산자가 생기면
+  즉시 발화한다.
+- **`DratProof::verify`(RUP 검사기)가 있었는데 아무도 부르지 않았다.** 인증서가
+  증거를 나르면서 확인하지 않는 상태였다. 이제 `recheck`가 부른다.
 
 인수 기준은 verus-fork §8에 세 항목을 더한 것으로 한다: **구속 ①의 규칙 3**
 (소트·데이터타입이 선언으로 출력에 나타날 것), **구속 ②의 규칙 1**(HOL 부모

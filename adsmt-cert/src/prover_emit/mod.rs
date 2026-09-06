@@ -6,7 +6,8 @@
 //! surface language. The mappings differ syntactically but agree
 //! semantically; [`common`] is the single anchor for those shared
 //! semantic decisions (atoms are propositions, theory steps are
-//! axiomatized, abductive markers become explicit holes, …).
+//! axiomatized as premises → conclusion, user assumptions are NAMED
+//! oracles rather than holes, …).
 //!
 //! Per-prover backends live either:
 //! - in-tree, as adsmt-cert modules (currently `lean_emit`), or

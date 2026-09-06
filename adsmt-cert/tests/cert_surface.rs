@@ -17,8 +17,12 @@ use adsmt_cert::prover_emit::lfsc_parse::{
 };
 use adsmt_core::Term;
 
+// 2026-09-05: `MkComb` added — the HOL kernel's congruence rule, the
+// one of the ten this kernel was missing. A congruence step (the shape
+// every EUF conflict is built from) previously had no structural form
+// and could only be recorded as an opaque theory oracle.
 const FROZEN_STEPBODY: &[&str] = &[
-    "Assume", "Refl", "Trans", "Abs", "Beta", "EqMp",
+    "Assume", "Refl", "Trans", "MkComb", "Abs", "Beta", "EqMp",
     "Deduct", "Inst", "InstType", "Theory", "Instance", "Assumed",
 ];
 
@@ -28,7 +32,7 @@ const FROZEN_STEPPATTERN: &[&str] = &[
 
 #[test]
 fn stepbody_variant_count_is_frozen() {
-    assert_eq!(FROZEN_STEPBODY.len(), 12);
+    assert_eq!(FROZEN_STEPBODY.len(), 13);
 }
 
 #[test]
@@ -41,6 +45,7 @@ fn body_variant_name(b: &StepBody) -> &'static str {
         StepBody::Assume(_) => "Assume",
         StepBody::Refl(_) => "Refl",
         StepBody::Trans { .. } => "Trans",
+        StepBody::MkComb { .. } => "MkComb",
         StepBody::Abs { .. } => "Abs",
         StepBody::Beta { .. } => "Beta",
         StepBody::EqMp { .. } => "EqMp",
@@ -102,6 +107,9 @@ fn per_itp_emit_signatures_compile() {
         // Added 2026-09-01 — which `Assume` is the negated goal. `None`
         // here because this surface-freeze cert has no steps at all.
         goal_step: None,
+        // Added 2026-09-05 — the declaration context (constraint (1)
+        // rule 1). Empty here: this cert declares nothing.
+        signature: Default::default(),
     };
     let _: String = emit_lean(&cert);
     let _: Result<String, _> = try_emit_lean(&cert);
