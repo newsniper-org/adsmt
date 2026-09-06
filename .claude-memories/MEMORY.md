@@ -31,7 +31,7 @@
 - [Abductive SMT-LIB surface (rc.35)](abductive_smtlib_surface.md) — `(declare-abducible)`/`(abduce)`/cvc5 `(get-abduct)` expose the Abductive verdict
 - [OxiLean ↔ Lean4 syntax investigation](oxilean_syntax_investigation.md) — single `prover_emit::lean` covers both ITPs
 - [prover_emit output policy](prover_emit_policy.md) — Lean=reference; Rocq+Isabelle mirror exactly; Ltac2-only for Rocq
-- [adsmt-contrib out-of-tree workspace](adsmt_contrib_repo.md) — ~/adsmt-contrib hosts emit-rocq+emit-isabelle; resync needed on breaking core/cert changes
+- [adsmt-contrib out-of-tree workspace](adsmt_contrib_repo.md) — OURS to fix, never a "who owns this" question; resync needed on breaking core/cert changes
 - [LSP roadmap + vscode-extension split](lsp_roadmap.md) — option 4: stabilize → LSP+split → v1.0 RC bump
 - [faces-in-workspace](faces_in_workspace.md) — 5 adsmt-ir* faces absorbed into AD1 as flat members (2026-06-27); canonical source=AD1
 - [CIC→HOL lowering (#325)](cic_hol_lowering.md) — adsmt-ir-lower; arith+Bool-Match+term-ite+#403 selector dispatch LANDED
@@ -39,6 +39,7 @@
 - [Unsoundness/vacuity linter](asp_linter_design.md) — advisory observer, no verdict write-path; vacuity=Info/soft default; MVP scoped
 - [Stable sign-off requires explicit user approval](feedback_stable_signoff_user_approval.md) — never autonomously bump rc→stable
 - [Pre-stable feature freeze](pre_stable_feature_freeze.md) — DELAYED; typed-ASP face is v1.0.0 feature, NOT frozen (override 2026-06-25)
+- [A/B는 산출물부터 검증](feedback_ab_verify_the_artifact.md) — 측정 전 각 바이너리 md5 출력; 킬스위치는 효과 확인 후에만 신뢰 (#430에서 4회 연속 오진)
 - [Empirical adversarial review](feedback_empirical_adversarial_review.md) — verify-agents must EXECUTE+measure, not paper-reason; caught real stack-overflow/2^n regressions
 - [요약 수치는 스크립트 집계](feedback_scripted_tallies.md) — 카운트는 스크립트로 산출; 가드 걸린 스윕은 유휴 머신 단독 실행
 - [adsmtc 빌드 타겟](feedback_adsmtc_build_target.md) — adsmtc는 `cargo build -p adsmtc`(adsmt-lukb-driver 경유)로만 생성됨, -p adsmt-cli 아님
@@ -80,7 +81,11 @@
 - [Typed CIC IR (adsmt-ir)](typed_cic_ir.md) — language-agnostic kernel; hash-consing+conversion-memo landed; M3-6 datatype face landed; standing rule: re-check M2.8+ deferrals each slice
 - [OxiZ distinct/const-fold FALSE_SAT (#315)](oxiz_distinct_constfold_falsesat.md) — FIXED; residual integer-feasibility false-sat tracked separately (#289)
 - [AOT/JIT application map](aotjit_application_map.md) — 2026-07-19 재분석이 구 19-항목 랭킹 대체: OxiZ 코퍼스는 ~99.9% 탐색(전제 역전), 신랭킹 D1 위임층 2-계층 메모→V1 인스턴스화-트레이스 replay; 항-뱅크/CDCL replay/codegen 사망; z3 갭은 캐시 불가(엔진 알고리즘만)
-- [엔진 알고리즘 캠페인](engine_algorithmics_campaign.md) — 1차분 종결: D1+E1+S+E2a landed(oxiz dd2714f, 원장 155→158 플립 0), E2b 측정-킬(hops<1), R 보류; Trail·additive는 opt-in(재투자-홍수/사이드-트레이드); 후속 풀 = 작업-바운드 방출, find-호출량 캐싱, V1 replay, #426/#427, Dt-as-App
+- [OxiZ v0.3.2 노트 배터리](oxiz_v032_notes_battery.md) — 12/12 z3 일치(#432+#433 CLOSED, 게이트 3연속 171 행-동일); 잔여 #434 = 절-배정 경유 level-0 등식 소실(pop-scrub 8번째 용의)
+- [엔진 알고리즘 캠페인](engine_algorithmics_campaign.md) — 1차분 종결(D1+E1+S+E2a+R, 원장 158 상호정본) + #428 CLOSED(oxiz b191c71, clause-id-recycle 4번째 재발 + 검증중 발견한 더 심각한 eq-trichotomy false-SAT 동시 수정, 원장 159 회귀0-vs-manifest, 행-단위 churn 정직 공개); 후속 풀 = 작업-바운드 방출, find-호출량 캐싱, V1 replay, #426/#427, Dt-as-App
 - [MaxSAT 통합 분석](maxsat_integration_analysis.md) — oxiz-opt(16.6k LoC RC2/MaxRes/OMT/SMT-LIB)이 이미 있으나 optional-미배선+3 red 테스트(pmres/sortmax wrong-answer, 국소수정); adsmt 표면 전무; ENABLED-BY: ASP weak-constraints=lex MaxSMT, weighted-abduction=weighted-partial-MaxSAT(설계-확정, 백엔드 없음); 병렬 트랙 P0(수정+default결정)→P1(CLI+differential)→P2(adsmt+ASP)→P3(abduction); 잘못된 최적값=soundness-class
 - [Challenges must use adsmt](feedback_challenges_must_use_adsmt.md) — attack "도전과제" lists with adsmt as verifier+attacker, write up as Typst article in .reports/
 - [pop-scrub cache bug class](feedback_pop_scrub_cache_bug_class.md) — recurred 3x same session (binary_graph, clause-id-recycle, dt_var_constructors): audit any assert-time-populated cache for trail-undo on pop()
+- [Isabelle 로컬 설치는 패치본](isabelle_local_install.md) — /opt/isabelle은 업스트림 아님; 소스+패치는 ~/packaging-isabelle/isabelle/, 시스템 Scala3.8.4+JDK26 사용(`scala`/`scalac` 이름은 없음)
+- [isabelle-gst 2026-RC0 포트](isabelle_gst_port.md) — 포트+예제+AFP 준비 완료(문서 238쪽/오류 0); 남은 블로커는 LICENSE 부재 = 저작권자 결정, 이메일 초안 in-repo; 함정 3종
+- [isabelle-doc-framework](isabelle_doc_framework.md) — isast(unist 방언) 도구모음, 로컬 전용(원격 미정); Stage 2 완료 82/82, PIDE/markup은 소스 복사본이 아님

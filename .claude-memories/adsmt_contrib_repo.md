@@ -1,14 +1,38 @@
 ---
 name: adsmt-contrib out-of-tree workspace pointer
-description: Location, layout, and dependency wiring of the out-of-tree adsmt-emit-rocq + adsmt-emit-isabelle workspace at ~/adsmt-contrib. At rc.28 (1.0.0-rc.28, 15/15 + 11/11 green) it had silently rotted against adsmt-core's rc.10 Term enum→struct reshape and needed a render_term migration to `t.kind()`/`TermInner::*` — gitignored Cargo.lock means nothing forces a rebuild, so re-build + re-sync to the reference lean_emit whenever adsmt lands a breaking core/cert change.
+description: The out-of-tree adsmt-emit-rocq + adsmt-emit-isabelle workspace at ~/adsmt-contrib — OURS to fix, never a "who owns this" question. Layout, dependency wiring, and the lockstep-rot hazard (gitignored Cargo.lock means nothing forces a rebuild against a breaking adsmt-core/cert change).
 type: reference
 originSessionId: 32a1dc0d-7730-4862-8df4-6958199ce84f
+modified: 2026-09-01T03:30:57.663Z
 ---
 # adsmt-contrib (out-of-tree backends)
 
 **Path**: `~/adsmt-contrib/` (a separate git repo, not a
 submodule of adsmt). Initial commit `b8c80ef` landed
 2026-05-29 (KST).
+
+## ⚠️ OURS. Never ask who should fix it. (2026-09-01)
+
+`adsmt-contrib` is **our own repository** — out-of-tree is a
+build-layout fact, not an ownership boundary. When a defect lands
+in `adsmt-emit-isabelle` / `adsmt-emit-rocq`, we fix it, full
+stop. Do not offer a downstream (verus-fork, Y4, …) the choice of
+"who takes this"; that question is noise and the user has had to
+correct it.
+
+The reason it is not even a close call: `adsmt-cert` defines the
+certificate structure and the contrib backends CONSUME it. Split
+the two across owners and every cert-shape change becomes a
+round-trip. The lockstep-rot hazard below is the same fact seen
+from the other side.
+
+Concrete instance that prompted this: verus-fork's 2026-09-01 P0
+(`adsmt-emit-isabelle` emits `axiomatization where` for each
+`Assume`, so a refutation's jointly-unsatisfiable hypothesis set
+becomes global axioms → the theory is inconsistent → `theorem
+result` passes vacuously AND no acceptance test written against it
+can fail). They correctly reported it and asked which side should
+rewrite the emitter. There was nothing to decide.
 
 ## Members
 
