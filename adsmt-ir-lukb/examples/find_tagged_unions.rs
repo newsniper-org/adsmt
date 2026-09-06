@@ -16,7 +16,7 @@ fn main() {
         for it in &m.items {
             if let Item::Sort(s) = it {
                 let inj: Vec<&str> = m.items.iter().filter_map(|i| match i {
-                    Item::Fn { name, params, ret, body: None }
+                    Item::Fn { name, params, ret, body: None, rec: false }
                         if *ret == Type::Name(s.clone()) && params.len() == 1 => Some(name.as_str()),
                     _ => None,
                 }).collect();

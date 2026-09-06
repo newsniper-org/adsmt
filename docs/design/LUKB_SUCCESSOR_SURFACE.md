@@ -309,6 +309,7 @@ Quantifiers / `if` / `let-in` / `==>` / `<==>` are the new heads.
 
 ```
 item ::= <existing lu-kb items>            # rule / fact / constraint / fn / enum / data / …
+       | "rec"? "fn" name "(" params ")" ":" T ("=" term)?   # `rec` ⇒ the body may call `name` (§11)
        | "axiom"  name? ":" INDENT term+ DEDENT
        | "assume" name? ":" INDENT term+ DEDENT
        | "goal"   name? ":" INDENT obligation DEDENT
@@ -818,6 +819,121 @@ The single `lu-smt` binary splits into three, sharing one library core:
 
 This resolves the earlier "where does ASP Full-mode go" question: NOT bolted onto
 `lu-smt`, but native to `adsmtr` (interactive) and `adsmtc` (batch/compile).
+
+## 11. Recursion — the `rec` modifier (DECIDED 2026-09-06, first slice LANDED)
+
+### The rule
+
+```
+admit(rec f)  ⟸  structural(f)  ∨  proves_termination(f)
+```
+
+A **logical OR**: structurally decreasing, *or* — failing that — a proof that
+the recursion terminates. Either suffices; both is harmless. The user writes
+one thing (`rec`); which branch admitted it is the system's business, not a
+mode the user picks. Lean 4 works this way (a recursive `def` tries structural
+first, then well-founded with `termination_by`/`decreasing_by`).
+
+`proves_termination` means *"terminates in finitely many steps, argued any way
+at all"* — decreasing, increasing, whatever. It deliberately does NOT force the
+user to name a decreasing measure the way a `decreases` clause does.
+
+### Why a modifier at all
+
+Recursion is admitted ONLY under `rec`. Without it, a self-reference is an
+error that NAMES the missing modifier. Before this the elaborator reported
+`unknown function symbol f` — true, since `f` is genuinely not in `env` while
+its own body is being read, but it described the symptom and not the cause.
+
+### The branches, and what each costs
+
+| branch | user writes | system does | proof? |
+|---|---|---|---|
+| **structural** | nothing beyond `rec` | `guard::guard_ok` reads the body and **decides** | **none** |
+| non-structural | a termination argument | reduces it to `Acc` | yes |
+
+**The structural branch has no proof in it**, and that is the point.
+`adsmt-ir/src/guard.rs` `guard_ok` takes no proof term — it is a decision
+procedure that checks every recursive call passes a strict structural subterm
+in the decreasing position. Nobody proves anything; the kernel decides alone.
+That is exactly why CIC has structural recursion as a primitive: to accept the
+common case cheaply. So `len`, `add`, `map` cost nothing but the keyword.
+
+**Guard failure is not divergence.** `guard_ok` is deliberately conservative
+and rejects terminating functions it cannot see through — `f(n - 1)` over
+`Int`, two arguments decreasing alternately, a measure that does not follow the
+term structure. The second branch exists for precisely that gap, and the error
+message must say so or a user reads a completeness limit as a verdict about
+their program.
+
+### Why not the alternatives
+
+- **Structural only** — the first branch alone. It *is* what landed first, and
+  it extends to the rule above without rework.
+- **Unrestricted + axiomatise the definition** (`f(x) = body` as an axiom,
+  which is what SMT practice and Verus/Dafny fuel do) — **rejected.** It adds a
+  non-recheckable trust source, in direct tension with the certificate trust
+  accounting (`Certificate::recheck`'s `TrustSource`). And it is not needed on
+  the surface: `axiom` already expresses it explicitly, where it is *visible*
+  as an assumption.
+- **A mandatory `decreases` clause** — subsumed by the second branch, minus the
+  obligation to name the measure.
+
+The rule adds **no trust source**: the definition is admitted only when the
+kernel accepts it, and otherwise the definition is refused. Fail-first.
+
+### What LANDED (2026-09-06)
+
+The **structural branch**, complete:
+
+- `rec` is a lexer keyword and an `Item::Fn { rec }` flag; `rec fn f(…) = body`
+  parses, prints, and round-trips. Measured across 486 `.lukb` files: **zero**
+  bare `rec` tokens, so promoting it to a keyword broke nothing (corpus
+  re-run: 246 files, 0 verdict changes, 0 parse failures).
+- A recursive body elaborates to the kernel `fix`. `f : ty` is pushed as the
+  OUTERMOST context entry, matching `Fix`'s contract that `body` is read with
+  the recursive function at `Bound(0)`, outside the parameter λs.
+- **The decreasing argument is inferred.** The surface does not name it; every
+  value parameter is tried and the KERNEL decides — `infer` on a `Fix` runs
+  both the inductive-domain check and `guard_ok`, so a candidate that
+  type-checks is one the guard accepted. (`'p` binders lead the Π chain, so
+  value parameter `j` is argument `pred_count + j`.)
+- `rec` on a non-recursive body is a harmless annotation (plain definition);
+  `rec` on a bare signature is an error.
+
+Not in this slice, and each is stated as a limit rather than left to be
+discovered:
+
+- **The termination-proof branch.** A guard failure says the branch is
+  unimplemented.
+- **Anonymous recursion.** The user's proposal covered anonymous functions too,
+  and the kernel agrees — `Fix` has no name, self-reference is `Bound(0)`, so a
+  named and an anonymous recursive function are the SAME term. But the surface
+  `Term` has no lambda at all today (no `Lam` variant; a bare function symbol
+  used as a value is an explicit error), so anonymous recursion waits on the
+  surface gaining anonymous functions, which is its own slice.
+- **Mutual recursion.** `declare_mutual`/`MutElim` exist for *types*, but there
+  is no mutual `fix` group, and `guard.rs` explicitly rejects a `fix` recursing
+  through a mutual eliminator. Two routes: encode a mutual group as a single
+  `fix` over a sum type (no kernel change), or add a mutual fix group (guard
+  must be redefined group-wide). Undecided.
+
+### What the corpus actually needs (measured 2026-09-06)
+
+Verus's AIR path does **not** emit recursive definitions. It emits an opaque
+fuel-indexed function plus axioms:
+
+```
+fn `m!rec%eval.?`(x0: Poly, x1: Fuel): Int
+axiom: forall e, fuel. `m!rec%eval.?`(e, succ(fuel)) = <one unfolding>
+axiom: fuel_bool(…) ==> forall e. `m!eval.?`(e) = `m!rec%eval.?`(e, succ(…))
+```
+
+So `rec` is not what unblocks the generated corpus — that path was never going
+to use it. It is for **hand-written** native lu-kb, where recursive definitions
+do appear (`fuel-rec-1-ob03.lukb`). Recording this because the note that opened
+this question listed "how does AIR lower recursion?" as unmeasured; it is now
+measured, and the answer moves `rec`'s priority.
 
 [`adsmt-ir`]: ../../adsmt-ir
 [`adsmt_emit_system`]: ../../../.claude/projects/-home-ybi-AD1/memory/adsmt_emit_system.md

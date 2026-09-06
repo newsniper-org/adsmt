@@ -1430,3 +1430,102 @@ fn data_eq_lawful_admission_gates_on_the_prover() {
     }
     elaborate_with_prover(src, &Always).expect("an accepting prover admits");
 }
+
+// ── `rec` — the recursion modifier (③) ───────────────────────────────────
+//
+// Recursion is admitted ONLY under `rec`, and only on the structural branch:
+// `admit(rec f) ⟸ structural(f) ∨ proves_termination(f)`, second disjunct not
+// implemented. See `docs/design/LUKB_SUCCESSOR_SURFACE.md` §11.
+
+const PEANO: &str = "data Peano = zero | succ(pred: Peano)\n";
+
+/// A structurally-decreasing `rec fn` elaborates to the kernel `fix` — which
+/// means the kernel's `guard_ok` accepted it, since `infer` runs the guard.
+#[test]
+fn rec_fn_admits_structural_recursion() {
+    let src = format!(
+        "{PEANO}rec fn len(p: Peano): Int = match p {{ zero => 0, succ(k) => 1 + len(k) }}\n\
+         goal: len(zero) = 0\n"
+    );
+    all_props(&src, 0, 1);
+}
+
+/// The decreasing argument is NOT written down — every value parameter is
+/// tried and the kernel decides. Here it is the SECOND one.
+#[test]
+fn rec_fn_infers_which_argument_decreases() {
+    let src = format!(
+        "{PEANO}rec fn addr(a: Peano, b: Peano): Peano = \
+         match b {{ zero => a, succ(k) => succ(addr(a, k)) }}\n\
+         goal: addr(zero, zero) = zero\n"
+    );
+    all_props(&src, 0, 1);
+}
+
+/// A self-reference WITHOUT `rec` is rejected as a self-reference. Before this
+/// it surfaced as `unknown function symbol` — true (the name is not in `env`
+/// yet) but useless: it named the symptom, not the missing modifier.
+#[test]
+fn a_recursive_body_without_rec_names_the_missing_modifier() {
+    let src = format!(
+        "{PEANO}fn len(p: Peano): Int = match p {{ zero => 0, succ(k) => 1 + len(k) }}\n\
+         goal: len(zero) = 0\n"
+    );
+    let msg = match elaborate(&src) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("recursion without `rec` must be rejected"),
+    };
+    assert!(msg.contains("rec"), "the error must name the modifier: {msg}");
+    assert!(
+        !msg.contains("unknown function symbol"),
+        "and must NOT report it as a missing symbol: {msg}"
+    );
+}
+
+/// Recursion the guard cannot see through is rejected — and the message must
+/// say the termination-proof branch is unimplemented, not imply divergence.
+/// `Int` is not an inductive type, so `f(n - 1)` has no structural measure.
+#[test]
+fn non_structural_recursion_is_rejected_as_unimplemented_not_as_divergence() {
+    let src = "rec fn f(n: Int): Int = if n = 0 then 0 else f(n - 1)\ngoal: f(0) = 0\n";
+    let msg = match elaborate(src) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("the guard must reject non-structural recursion"),
+    };
+    assert!(msg.contains("structurally decreasing"), "{msg}");
+    assert!(msg.contains("not implemented yet"), "{msg}");
+}
+
+/// `rec` on a body that does not recurse is a harmless annotation: there is
+/// nothing to guard, so it stays a plain definition (and `Int` — which could
+/// never carry a `fix` — is fine here).
+#[test]
+fn rec_without_an_actual_self_reference_is_a_plain_definition() {
+    all_props("fn g(n: Int): Int\nrec fn h(n: Int): Int = g(n)\ngoal: h(0) = g(0)\n", 0, 1);
+}
+
+/// `rec` marks a recursive DEFINITION; a bare signature has nothing to recurse
+/// into, so silently ignoring the modifier would be a lie.
+#[test]
+fn rec_on_a_signature_is_rejected() {
+    match elaborate("rec fn f(n: Int): Int\ngoal: f(0) = f(0)\n") {
+        Err(e) => assert!(e.to_string().contains("no body"), "{e}"),
+        Ok(_) => panic!("`rec` on a signature must be rejected"),
+    }
+}
+
+/// `rec` survives the print → parse round-trip (it is part of the item, not a
+/// comment), and a plain `fn` does not acquire it.
+#[test]
+fn rec_round_trips_through_the_printer() {
+    let src = format!(
+        "{PEANO}rec fn len(p: Peano): Int = match p {{ zero => 0, succ(k) => 1 + len(k) }}\n\
+         fn plain(n: Int): Int = n\n\
+         goal: len(zero) = 0\n"
+    );
+    let m = parse(&src).expect("parses");
+    let printed = print_module(&m);
+    assert!(printed.contains("rec fn len"), "{printed}");
+    assert!(printed.contains("\nfn plain"), "plain `fn` stays plain: {printed}");
+    assert_eq!(parse(&printed).expect("re-parses"), m);
+}

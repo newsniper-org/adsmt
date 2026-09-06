@@ -77,7 +77,15 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::Colon)?;
                 Ok(Item::Const(name, self.type_()?))
             }
-            Some(Tok::Fn) => {
+            Some(Tok::Fn) | Some(Tok::Rec) => {
+                // `rec` is a PREFIX on `fn`, not an item of its own.
+                let rec = self.eat(&Tok::Rec);
+                if rec && !matches!(self.peek(), Some(Tok::Fn)) {
+                    return Err(parse_err(
+                        self.at(),
+                        format!("`rec` modifies `fn`, found `{:?}`", self.peek()),
+                    ));
+                }
                 self.advance();
                 let name = self.ident()?;
                 self.expect(&Tok::LParen)?;
@@ -93,7 +101,7 @@ impl<'a> Parser<'a> {
                 let ret = self.type_()?;
                 // an optional `= body` makes it a (non-recursive) definition.
                 let body = if self.eat(&Tok::Eq) { Some(self.term()?) } else { None };
-                Ok(Item::Fn { name, params, ret, body })
+                Ok(Item::Fn { name, params, ret, body, rec })
             }
             Some(Tok::Data) => {
                 self.advance();

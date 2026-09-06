@@ -19,17 +19,28 @@ pub enum Item {
     /// it is an opaque (`open`) **signature** postulated as `f : T1 -> … -> U`
     /// (`Bool` → `Prop`); with a `= body` it is a **non-recursive definition**
     /// (`define`, `Modality::Def`) — `f := λ(params). body`, δ-unfolded at the
-    /// solver lowering. (A *recursive* body — one mentioning `f` — needs the
-    /// kernel `fix`; a later slice.) Each parameter group `names: ty` shares a
-    /// type.
-    Fn { name: String, params: Vec<(Vec<String>, Type)>, ret: Type, body: Option<Term> },
+    /// solver lowering. Each parameter group `names: ty` shares a type.
+    ///
+    /// A body that mentions `name` is RECURSIVE and requires the `rec`
+    /// modifier; it elaborates to the kernel `fix`, whose structural-decrease
+    /// guard decides it (no proof obligation — see
+    /// `docs/design/LUKB_SUCCESSOR_SURFACE.md`).
+    Fn {
+        name: String,
+        params: Vec<(Vec<String>, Type)>,
+        ret: Type,
+        body: Option<Term>,
+        /// `rec fn` — the body may call `name`. Required for recursion: without
+        /// it a self-reference is REJECTED by name, not silently missing.
+        rec: bool,
+    },
     /// `data Nat = zero | succ(Nat)` / `data List = nil | cons(head: Int, tail:
     /// List)` — a non-parametric inductive **datatype**, elaborated to a kernel
     /// `declare_inductive`. Each constructor carries its field list; a field may
     /// name its selector (`head: Int`) or be positional (`Int`) — the selector
     /// names are surface sugar (round-tripped; the kernel + solver lowering
-    /// synthesize positional selectors). Constructors are usable as terms; case
-    /// analysis (`match`) is a later surface slice.
+    /// synthesize positional selectors). Constructors are usable as terms, and
+    /// case analysis is [`Term::Match`].
     Data { name: String, ctors: Vec<Ctor> },
     /// `axiom [name]: φ` — a trusted hypothesis (∈ H).
     Axiom(Option<String>, Term),

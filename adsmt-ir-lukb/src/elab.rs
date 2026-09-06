@@ -339,8 +339,8 @@ impl<'p> Elab<'p> {
                     postulate(&mut self.env, x, kty)?;
                 }
             }
-            Item::Fn { name, params, ret, body } => {
-                self.elab_fn(name, params, ret, body)?;
+            Item::Fn { name, params, ret, body, rec } => {
+                self.elab_fn(name, params, ret, body, *rec)?;
             }
             Item::Data { name, ctors } => {
                 // a non-parametric inductive datatype → `declare_inductive`. A
@@ -426,12 +426,57 @@ impl<'p> Elab<'p> {
     /// a **trusted axiom** (the user asserts the contract). At a use site the
     /// caller instantiates `'p := q` and discharges the now-monomorphic
     /// precondition — the dictionary-passing of the pre-verified §5.2.
+    /// Wrap `lam` in the kernel `fix`, choosing the decreasing argument.
+    ///
+    /// The surface does not say WHICH parameter decreases, so every value
+    /// parameter is tried and the KERNEL decides: `infer` on a `Fix` runs both
+    /// the "is this argument's type inductive" check and `guard::guard_ok`, so
+    /// a candidate that type-checks is one the guard accepted. First hit wins.
+    /// (`'p` binders lead `ty`, so value parameter `j` is argument
+    /// `pred_count + j`.)
+    ///
+    /// Failure is the **(d-2) branch not being implemented**, not a claim that
+    /// the function diverges — `guard_ok` is deliberately conservative and
+    /// rejects terminating functions it cannot see through (`f(n - 1)` on an
+    /// `Int`, two arguments decreasing alternately, a measure that does not
+    /// follow the term structure). The message has to say that, or a user
+    /// reads a completeness limit as a soundness verdict.
+    fn build_fix(
+        &self,
+        name: &str,
+        ty: &K,
+        lam: K,
+        pred_count: usize,
+        value_count: usize,
+    ) -> Result<K, FaceError> {
+        let mut first_err: Option<String> = None;
+        for j in 0..value_count {
+            let cand = K::fix(pred_count + j, ty.clone(), lam.clone());
+            match infer(&self.env, &Ctx::new(), &cand) {
+                Ok(_) => return Ok(cand),
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(e.to_string());
+                    }
+                }
+            }
+        }
+        let why = first_err.unwrap_or_else(|| "it abstracts no argument".to_string());
+        Err(unsupported(format!(
+            "`rec fn {name}`: no parameter is structurally decreasing, so the \
+             kernel's `fix` guard rejected it ({why}). The guard is conservative \
+             — a terminating function can fail it — but the branch that admits \
+             those on a termination proof is not implemented yet"
+        )))
+    }
+
     fn elab_fn(
         &mut self,
         name: &str,
         params: &[(Vec<String>, Type)],
         ret: &Type,
         body: &Option<S>,
+        rec: bool,
     ) -> Result<(), FaceError> {
         // 0. pre-declare any GF(p)/IntModulo(m)/GFPower(p,n) sort in a parameter or
         //    return type (validating the parameters) before the immutable elab_type.
@@ -494,10 +539,35 @@ impl<'p> Elab<'p> {
         // 5. define (with a body) or postulate (a signature).
         match body {
             None => {
+                if rec {
+                    return Err(unsupported(format!(
+                        "`rec fn {name}` has no body — `rec` marks a recursive \
+                         DEFINITION, and a signature has nothing to recurse into"
+                    )));
+                }
                 postulate(&mut self.env, name, ty.clone())?;
             }
             Some(b) => {
+                // Does the body call `name`? That is what makes it recursive,
+                // and recursion is admitted only under `rec` — so an
+                // unmarked self-reference is reported AS a self-reference
+                // rather than surfacing as `unknown function symbol` (which
+                // is what the caller saw before: `name` is genuinely not in
+                // `env` yet at this point).
+                let self_ref = mentions_surface(b, name);
+                if self_ref && !rec {
+                    return Err(unsupported(format!(
+                        "`{name}` calls itself; a recursive definition requires \
+                         the `rec` modifier (write `rec fn {name}(…)`)"
+                    )));
+                }
+                // The recursive function itself is the OUTERMOST context entry
+                // when there is one: `Fix` reads `body` with `f : ty` at
+                // `Bound(0)`, i.e. bound outside the parameter λs.
                 let mut ctx: Vec<(String, K)> = Vec::new();
+                if self_ref {
+                    ctx.push((name.to_string(), ty.clone()));
+                }
                 for (pn, ps) in pred_names.iter().zip(&pred_sorts) {
                     ctx.push((pn.clone(), ps.clone()));
                 }
@@ -512,7 +582,14 @@ impl<'p> Elab<'p> {
                 for s in pred_sorts.iter().rev() {
                     lam = K::lam(s.clone(), lam);
                 }
-                define(&mut self.env, name, ty.clone(), lam)?;
+                let value = if self_ref {
+                    self.build_fix(name, &ty, lam, pred_sorts.len(), vsorts.len())?
+                } else {
+                    // `rec` on a body that does not recurse is a harmless
+                    // annotation — nothing to guard, so it stays a plain def.
+                    lam
+                };
+                define(&mut self.env, name, ty.clone(), value)?;
             }
         }
 
@@ -1932,6 +2009,67 @@ fn arith_binop(env: &Env, op: BinOp, s: &K) -> Option<&'static str> {
 /// shadowing in `let`/quantifiers; a binder's `range`/`constraint` sub-terms are
 /// in the *enclosing* scope (substituted regardless), its `refinement` predicate
 /// and body are in the binder's scope (substituted only when not shadowed).
+/// Does `name` occur FREE in the surface term `t`?
+///
+/// Used to decide whether a `fn` body is recursive. The shadowing rules mirror
+/// [`subst_surface`] exactly — the two must agree, or a body could be called
+/// recursive here and have its self-reference substituted away there.
+fn mentions_surface(t: &S, name: &str) -> bool {
+    let go = |x: &S| mentions_surface(x, name);
+    match t {
+        S::Var(n) => n == name,
+        S::IntLit(_) | S::RealLit(_) | S::Bool(_) => false,
+        S::Not(a) | S::Neg(a) => go(a),
+        S::Bin(_, a, b) | S::SolveBy(a, b) => go(a) || go(b),
+        // A call's HEAD is the recursive occurrence we are looking for.
+        S::Call(f, args) => f == name || args.iter().any(&go),
+        S::If(c, a, b) => go(c) || go(a) || go(b),
+        S::Let(x, e, body) => go(e) || (x != name && go(body)),
+        S::Match(scrut, arms) => {
+            go(scrut)
+                || arms.iter().any(|arm| {
+                    let shadow = match &arm.pattern {
+                        Pattern::Bind(n) => n == name,
+                        Pattern::Ctor(_, pargs) => {
+                            pargs.iter().any(|p| matches!(p, PatArg::Bind(n) if n == name))
+                        }
+                        Pattern::Wild
+                        | Pattern::Bool(_)
+                        | Pattern::IntLit(_)
+                        | Pattern::RealLit(_) => false,
+                    };
+                    if shadow {
+                        return false;
+                    }
+                    arm.guard.as_ref().is_some_and(&go) || go(&arm.body)
+                })
+        }
+        S::Forall(bs, body, trigs) | S::Exists(bs, body, trigs) => {
+            let shadow = bs.iter().any(|b| b.names.iter().any(|n| n == name));
+            binders_mention(bs, name, shadow)
+                || (!shadow && (go(body) || trigs.iter().flatten().any(&go)))
+        }
+    }
+}
+
+/// The sub-terms hanging off a binder group, with the same scoping
+/// [`subst_binders`] uses: range bounds and a constraint rhs are in the
+/// ENCLOSING scope, the refinement predicate is in the binder's own.
+fn binders_mention(bs: &[Binder], name: &str, shadow: bool) -> bool {
+    bs.iter().any(|b| {
+        b.range.as_ref().is_some_and(|(lo, hi)| {
+            mentions_surface(lo, name) || mentions_surface(hi, name)
+        }) || b
+            .constraint
+            .as_ref()
+            .is_some_and(|(_, rhs)| mentions_surface(rhs, name))
+            || (!shadow && b.refinement.as_ref().is_some_and(|p| mentions_surface(p, name)))
+            || b.image.as_ref().is_some_and(|(e, c)| {
+                mentions_surface(e, name) || mentions_surface(c, name)
+            })
+    })
+}
+
 fn subst_surface(t: &S, from: &str, to: &S) -> S {
     let go = |x: &S| subst_surface(x, from, to);
     match t {

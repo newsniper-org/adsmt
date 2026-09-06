@@ -103,7 +103,7 @@ pub fn find_tagged_unions(m: &Module) -> Vec<TaggedUnion> {
         // Injections into `s`: a one-argument `fn` returning `s`.
         let mut injections: Vec<(String, Type)> = Vec::new();
         for it in &m.items {
-            if let Item::Fn { name, params, ret, body: None } = it
+            if let Item::Fn { name, params, ret, body: None, rec: _ } = it
                 && *ret == Type::Name(s.clone())
                 && let Some(t) = single_param(params)
                 && t != Type::Name(s.clone())
@@ -121,7 +121,7 @@ pub fn find_tagged_unions(m: &Module) -> Vec<TaggedUnion> {
         let mut ctors = Vec::new();
         for (inj, payload) in &injections {
             let Some(proj) = m.items.iter().find_map(|it| match it {
-                Item::Fn { name, params, ret, body: None }
+                Item::Fn { name, params, ret, body: None, rec: false }
                     if ret == payload
                         && single_param(params) == Some(Type::Name(s.clone())) =>
                 {

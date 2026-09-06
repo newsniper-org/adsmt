@@ -13,6 +13,10 @@ pub enum Tok {
     Sort,
     Const,
     Fn,
+    /// `rec` — the recursion modifier on `fn`. Recursion is admitted ONLY
+    /// under it, so a self-reference without it is a diagnosable mistake
+    /// rather than an unknown symbol.
+    Rec,
     Data,
     Axiom,
     Assume,
@@ -73,6 +77,7 @@ fn keyword(s: &str) -> Option<Tok> {
         "sort" => Tok::Sort,
         "const" => Tok::Const,
         "fn" => Tok::Fn,
+        "rec" => Tok::Rec,
         "data" => Tok::Data,
         "axiom" => Tok::Axiom,
         "assume" => Tok::Assume,

@@ -57,7 +57,10 @@ fn print_item(out: &mut String, it: &Item) {
             out.push_str(": ");
             print_type(out, ty);
         }
-        Item::Fn { name, params, ret, body } => {
+        Item::Fn { name, params, ret, body, rec } => {
+            if *rec {
+                out.push_str("rec ");
+            }
             out.push_str("fn ");
             id(out, name);
             out.push('(');
