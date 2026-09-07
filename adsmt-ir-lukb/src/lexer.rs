@@ -41,6 +41,7 @@ pub enum Tok {
     Else,
     // case analysis `match e { pat => body, … }`
     Match,
+    Decreases,
     // identifiers + numerals
     Ident(String),
     Int(String),
@@ -70,6 +71,8 @@ pub enum Tok {
     RParen,    // )
     LBrace,    // {
     RBrace,    // }
+    LBracket,  // [
+    RBracket,  // ]
 }
 
 fn keyword(s: &str) -> Option<Tok> {
@@ -98,6 +101,7 @@ fn keyword(s: &str) -> Option<Tok> {
         "then" => Tok::Then,
         "else" => Tok::Else,
         "match" => Tok::Match,
+        "decreases" => Tok::Decreases,
         _ => return None,
     })
 }
@@ -273,6 +277,8 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, usize)>, FaceError> {
             ')' => Some(Tok::RParen),
             '{' => Some(Tok::LBrace),
             '}' => Some(Tok::RBrace),
+            '[' => Some(Tok::LBracket),
+            ']' => Some(Tok::RBracket),
             _ => None,
         };
         if let Some(t) = single {

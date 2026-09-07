@@ -296,11 +296,10 @@ fn match_lowers_to_tester_selector_encoding() {
     assert!(s.contains("succ!sel0 x = zero"), "succ branch reads the field via the selector: {s}");
 }
 
-/// A **data-valued** match (`match x with zero => zero | succ n => n : Nat`) has
-/// no first-order image — `lower` abstains (whole query → Unknown), exactly as a
-/// non-Bool `ite` does.
+/// A **data-valued** match (`match x with zero => zero | succ n => n : Nat`)
+/// embedded in an atom skeleton now lowers via tester/selector ite chain.
 #[test]
-fn data_valued_match_abstains() {
+fn data_valued_match_lowers_and_solves() {
     let env = nat_env();
     let dm = Term::mtch(
         "Nat",
@@ -309,7 +308,7 @@ fn data_valued_match_abstains() {
         Term::cnst("x"),
     );
     let goals = [eq_nat(dm, zero())]; // embed in a Bool goal to exercise the whole-query path
-    assert!(lower(&env, &goals).is_err(), "a data-valued match must abstain");
+    assert!(lower(&env, &goals).is_ok(), "a data-valued match in an atom skeleton lowers successfully");
 }
 
 // ── datatype `match` VERDICT (the #325 chokepoint, now decided) ──────────

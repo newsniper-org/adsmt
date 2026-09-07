@@ -173,6 +173,35 @@ pub fn lower_with_triggers(
     Ok(Lowered { datatypes, goals: out, extra_hyps, triggers })
 }
 
+fn term_mentions_const(t: &Term, name: &str) -> bool {
+    match t.kind() {
+        TermKind::Const(c) => c == name,
+        TermKind::App(f, a) => term_mentions_const(f, name) || term_mentions_const(a, name),
+        TermKind::Pi(dom, cod) => term_mentions_const(dom, name) || term_mentions_const(cod, name),
+        TermKind::Lam(dom, body) => term_mentions_const(dom, name) || term_mentions_const(body, name),
+        _ => false,
+    }
+}
+fn term_contains_match(t: &Term) -> bool {
+    match t.kind() {
+        TermKind::Match(..) => true,
+        TermKind::App(f, a) => term_contains_match(f) || term_contains_match(a),
+        TermKind::Pi(dom, cod) | TermKind::Lam(dom, cod) => {
+            term_contains_match(dom) || term_contains_match(cod)
+        }
+        TermKind::Let(ty, v, b) => {
+            term_contains_match(ty) || term_contains_match(v) || term_contains_match(b)
+        }
+        TermKind::Elim(_, m, minors, major) => {
+            term_contains_match(m)
+                || minors.iter().any(term_contains_match)
+                || term_contains_match(major)
+        }
+        _ => false,
+    }
+}
+
+
 /// One de Bruijn binder, paired across the two representations: the kernel
 /// binder *type* (for `infer`'s `Ctx`) and the **globally-fresh** target `Var`
 /// it lowered to (the name env). `Bound(0)` = the last frame.
@@ -251,6 +280,7 @@ impl Lowerer<'_> {
     /// field-selector dispatch (#403) both emit, and the engine's datatype
     /// theory reduces (`sel(C(..a..)) = a_i`, #330); a `!`-tagged name cannot
     /// collide with a plainly-spelled user symbol.
+
     fn spec_to_decl(&self, spec: &IndSpec) -> Result<DatatypeDecl, LowerError> {
         if !spec.indices.is_empty() {
             return Err(unl(format!("indexed inductive `{}` (GADT) has no datatype image", spec.name)));
@@ -260,6 +290,21 @@ impl Lowerer<'_> {
         }
         if !matches!(spec.sort, Univ::Type(0)) {
             return Err(unl(format!("inductive `{}` is not `Type(0)` (not an SMT datatype)", spec.name)));
+        }
+        if spec.ctors.is_empty() {
+            return Err(unl(format!(
+                "datatype `{}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)",
+                spec.name
+            )));
+        }
+        let has_base_case = spec.ctors.iter().any(|(_, fields, _)| {
+            !fields.iter().any(|f| term_mentions_const(f, &spec.name))
+        });
+        if !has_base_case {
+            return Err(unl(format!(
+                "datatype `{}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)",
+                spec.name
+            )));
         }
         let mut constructors = Vec::with_capacity(spec.ctors.len());
         let mut arities = Vec::with_capacity(spec.ctors.len());
@@ -366,6 +411,15 @@ impl Lowerer<'_> {
         if matches!(name.as_str(), "not" | "and" | "or" | "exists" | "forall" | "ite") {
             return None;
         }
+        if let Some(inlined) = self.inline_match_bearing_def(t) {
+            return Some(inlined);
+        }
+        // EXPERIMENT(value-match): a VALUE-level datatype `Match` in the atom's
+        // skeleton is rewritten to the kernel tester/selector `ite` chain first;
+        // the term-ite hoist below then lifts the chain.
+        if let Some(rw) = self.rewrite_value_match(t) {
+            return Some(rw);
+        }
         let Some(ite) = find_hoistable_ite(t) else {
             // No hoistable ite — but a `let` / β-redex in the skeleton may be
             // HIDING one (the verus fuel-definition shape
@@ -387,6 +441,140 @@ impl Lowerer<'_> {
         Some(Term::apps(Term::cnst("and"), [branch_a, branch_b]))
     }
 
+    /// EXPERIMENT(value-match): find a skeleton-reachable VALUE-level `Match`
+    /// whose scrutinee holds no further value-level `Match`, and replace it in
+    /// place by its tester/selector `ite` chain (or by its `whnf` reduct when
+    /// it ι-reduces). `None` when there is none / the replacement is a no-op.
+    fn rewrite_value_match(&self, t: &Term) -> Option<Term> {
+        let m = self.find_value_match(t)?;
+        let TermKind::Match(ind, motive, minors, major) = m.kind() else { return None };
+        if db_occurs(major, 0) {
+            return None;
+        }
+        let w = whnf(self.env, &m);
+        let repl = if w != m {
+            w
+        } else {
+            self.value_match_chain(ind, motive, minors, major)?
+        };
+        let out = replace_in_skeleton(t, &m, &repl);
+        if out == *t { None } else { Some(out) }
+    }
+
+    fn find_def_with_match(&self, t: &Term) -> Option<Term> {
+        if let Some((name, _)) = as_const_app(t) {
+            if let Some(decl) = self.env.lookup(&name) {
+                if let Modality::Def(body) = &decl.modality {
+                    if term_contains_match(body) {
+                        return Some(t.clone());
+                    }
+                }
+            }
+        }
+        if let Some((name, args)) = as_const_app(t)
+            && name == "ite"
+            && args.len() == 4
+        {
+            return self.find_def_with_match(&args[2])
+                .or_else(|| self.find_def_with_match(&args[3]));
+        }
+        match t.kind() {
+            TermKind::App(f, a) => {
+                self.find_def_with_match(f).or_else(|| self.find_def_with_match(a))
+            }
+            _ => None,
+        }
+    }
+
+    fn inline_match_bearing_def(&self, t: &Term) -> Option<Term> {
+        let app = self.find_def_with_match(t)?;
+        let unfolded = whnf(self.env, &app);
+        if unfolded != app {
+            let out = replace_in_skeleton(t, &app, &unfolded);
+            if out != *t {
+                return Some(out);
+            }
+        }
+        None
+    }
+
+    fn motive_is_prop(&self, motive: &Term) -> bool {
+        let w = whnf(self.env, motive);
+        match w.kind() {
+            TermKind::Lam(_, body) => {
+                matches!(whnf(self.env, body).kind(), TermKind::Sort(Univ::Prop))
+            }
+            _ => true, // unknown motive shape: leave it to `lower_match`
+        }
+    }
+
+    fn find_value_match(&self, t: &Term) -> Option<Term> {
+        if let TermKind::Match(_, motive, _, major) = t.kind() {
+            if self.motive_is_prop(motive) {
+                return None;
+            }
+            return self.find_value_match(major).or_else(|| Some(t.clone()));
+        }
+        if let Some((name, args)) = as_const_app(t)
+            && name == "ite"
+            && args.len() == 4
+        {
+            return self.find_value_match(&args[2]).or_else(|| self.find_value_match(&args[3]));
+        }
+        match t.kind() {
+            TermKind::App(f, a) => self.find_value_match(f).or_else(|| self.find_value_match(a)),
+            _ => None,
+        }
+    }
+
+    /// `match major { c_1 x⃗ => e_1, …, c_n y⃗ => e_n }`  ⟿
+    /// `ite(A, major = c_1(sel(major)), e_1[x⃗ := sel(major)], … , e_n[y⃗ := sel(major)])`
+    /// — the last constructor is the default branch (no tester).
+    fn value_match_chain(
+        &self,
+        ind: &str,
+        motive: &Term,
+        minors: &[Term],
+        major: &Term,
+    ) -> Option<Term> {
+        let spec = self.ind_spec(ind)?;
+        if !spec.params.is_empty() || !spec.indices.is_empty() {
+            return None;
+        }
+        if minors.len() != spec.ctors.len() || spec.ctors.is_empty() {
+            return None;
+        }
+        let wm = whnf(self.env, motive);
+        let TermKind::Lam(_, mbody) = wm.kind() else { return None };
+        let result_sort = subst_top(mbody, major);
+        let mut branches = Vec::with_capacity(minors.len());
+        let mut testers = Vec::with_capacity(minors.len());
+        for (j, (cname, fields, _ix)) in spec.ctors.iter().enumerate() {
+            let sels: Vec<Term> = (0..fields.len())
+                .map(|i| Term::app(Term::cnst(format!("{cname}!sel{i}")), major.clone()))
+                .collect();
+            let mut cur = minors[j].clone();
+            for s in &sels {
+                let w = whnf(self.env, &cur);
+                let TermKind::Lam(_, body) = w.kind() else { return None };
+                cur = subst_top(body, s);
+            }
+            branches.push(cur);
+            let ctor_app = if fields.is_empty() {
+                Term::cnst(cname.clone())
+            } else {
+                Term::apps(Term::cnst(cname.clone()), sels)
+            };
+            testers.push(Term::apps(Term::cnst("="), [Term::cnst(ind), major.clone(), ctor_app]));
+        }
+        let mut chain = branches.pop()?;
+        testers.pop();
+        while let (Some(b), Some(c)) = (branches.pop(), testers.pop()) {
+            chain = Term::apps(Term::cnst("ite"), [result_sort.clone(), c, b, chain]);
+        }
+        Some(chain)
+    }
+
     /// A bare constant (post-whnf, so not a `def`): `true`/`false`, or a
     /// declared `open` value. A partially-applied connective / a bare function
     /// symbol / a datatype symbol → abstain.
@@ -398,6 +586,10 @@ impl Lowerer<'_> {
                 return Err(unl(format!("prelude `{name}` used without full application")));
             }
             _ => {}
+        }
+        if name.parse::<i128>().is_ok() {
+            let int_ty = CType::const_("Int", CKind::Type);
+            return Ok(CTerm::const_(name, int_ty));
         }
         let decl = self.env.lookup(name).ok_or_else(|| unl(format!("unknown constant `{name}`")))?;
         match &decl.modality {
@@ -699,6 +891,13 @@ impl Lowerer<'_> {
         }
         let int = || CType::const_("Int", CKind::Type);
         let real = || CType::const_("Real", CKind::Type);
+        if name == th::INT2REAL {
+            self.arity(name, args, 1)?;
+            let arg = self.lower_term(&args[0], frames)?;
+            let ty = CType::fun(int(), real()).map_err(|e| unl(e.to_string()))?;
+            let app = CTerm::app(CTerm::const_("to_real", ty), arg).map_err(|e| unl(e.to_string()))?;
+            return Ok(Some(app));
+        }
         // a binary operator → (smtlib op name, element sort, result-is-Bool).
         let binary: Option<(&str, CType, bool)> = match name {
             th::INT_ADD => Some(("+", int(), false)),
@@ -1236,6 +1435,36 @@ fn db_occurs(t: &Term, idx: usize) -> bool {
                 || minors.iter().any(|x| db_occurs(x, idx))
                 || db_occurs(major, idx)
         }
+    }
+}
+
+/// EXPERIMENT(value-match): replace `target` by `repl` along the binder-free
+/// skeleton (application spines, ite BRANCHES, and a `Match`'s scrutinee).
+fn replace_in_skeleton(t: &Term, target: &Term, repl: &Term) -> Term {
+    if t == target {
+        return repl.clone();
+    }
+    if let Some((name, args)) = as_const_app(t)
+        && name == "ite"
+        && args.len() == 4
+    {
+        let mut na = args.clone();
+        na[2] = replace_in_skeleton(&args[2], target, repl);
+        na[3] = replace_in_skeleton(&args[3], target, repl);
+        return Term::apps(Term::cnst("ite"), na);
+    }
+    match t.kind() {
+        TermKind::App(f, a) => Term::app(
+            replace_in_skeleton(f, target, repl),
+            replace_in_skeleton(a, target, repl),
+        ),
+        TermKind::Match(ind, motive, minors, major) => Term::mtch(
+            ind.clone(),
+            motive.clone(),
+            minors.clone(),
+            replace_in_skeleton(major, target, repl),
+        ),
+        _ => t.clone(),
     }
 }
 

@@ -100,8 +100,10 @@ impl Combination {
         let is_eq_shaped = lit.term.dest_eq().is_some();
         let bool_sort = Type::bool_();
         let mut out = Vec::new();
+        let mentions_to_real = term_mentions_to_real(&lit.term);
         for t in &mut self.theories {
-            if t.handles_sort(&routing_sort) {
+            let is_lia_to_real = mentions_to_real && t.name() == "LIA";
+            if t.handles_sort(&routing_sort) || is_lia_to_real {
                 // Sort-universal theories (UF/egraph handle Bool too)
                 // accept everything as opaque booleans; only a
                 // sort-restricted theory ignoring an atom over its own
@@ -111,6 +113,8 @@ impl Combination {
                 if specialized
                     && !is_eq_shaped
                     && matches!(r, AssertResult::Ignored)
+                    && (!is_lia_to_real)
+                    && (!mentions_to_real)
                 {
                     self.uninterpreted = true;
                     if self.uninterpreted_atoms.len() < Self::UNINTERPRETED_SAMPLE_CAP {
@@ -533,6 +537,14 @@ fn arith_comparison_operand_sort(t: &Term) -> Option<Type> {
         return Some(lhs.type_of());
     }
     None
+}
+
+fn term_mentions_to_real(t: &Term) -> bool {
+    match t.kind() {
+        TermInner::Const(c) => c.name == "to_real" || c.name == "int2real",
+        TermInner::App(f, a) => term_mentions_to_real(f) || term_mentions_to_real(a),
+        _ => false,
+    }
 }
 
 /// v0.19 C.5 — diagnostic record for a sort where two theories

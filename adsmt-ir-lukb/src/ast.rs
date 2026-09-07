@@ -33,15 +33,15 @@ pub enum Item {
         /// `rec fn` — the body may call `name`. Required for recursion: without
         /// it a self-reference is REJECTED by name, not silently missing.
         rec: bool,
+        decreases: Option<Term>,
+        mutual: Vec<(String, Vec<(Vec<String>, Type)>, Type, Option<Term>, Option<Term>)>,
     },
-    /// `data Nat = zero | succ(Nat)` / `data List = nil | cons(head: Int, tail:
-    /// List)` — a non-parametric inductive **datatype**, elaborated to a kernel
-    /// `declare_inductive`. Each constructor carries its field list; a field may
-    /// name its selector (`head: Int`) or be positional (`Int`) — the selector
-    /// names are surface sugar (round-tripped; the kernel + solver lowering
-    /// synthesize positional selectors). Constructors are usable as terms, and
-    /// case analysis is [`Term::Match`].
-    Data { name: String, ctors: Vec<Ctor> },
+    /// `data Nat = zero | succ(Nat)` / mutual `data Tree = ... and Forest = ...`
+    Data {
+        name: String,
+        ctors: Vec<Ctor>,
+        mutual: Vec<(String, Vec<Ctor>)>,
+    },
     /// `axiom [name]: φ` — a trusted hypothesis (∈ H).
     Axiom(Option<String>, Term),
     /// `assume [name]: φ` — a VC path condition (∈ H).
@@ -132,6 +132,16 @@ pub enum Term {
     Bin(BinOp, Box<Term>, Box<Term>),
     /// Application `f(a, …)`.
     Call(String, Vec<Term>),
+    /// Higher-order application `e(a, …)`.
+    App(Box<Term>, Vec<Term>),
+    /// Anonymous function expression `(rec)? fn [name] (params): Ret = body`.
+    Lam {
+        name: Option<String>,
+        params: Vec<(Vec<String>, Type)>,
+        ret: Type,
+        body: Box<Term>,
+        rec: bool,
+    },
     /// `forall <binders> . body <triggers>`. Each trigger is a multi-pattern
     /// (`trigger f(x)` → `[f(x)]`; `trigger { p1, p2 }` → `[p1, p2]`); a
     /// quantifier may carry several. Triggers are MBQI matching control — a

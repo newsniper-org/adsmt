@@ -57,7 +57,7 @@ fn print_item(out: &mut String, it: &Item) {
             out.push_str(": ");
             print_type(out, ty);
         }
-        Item::Fn { name, params, ret, body, rec } => {
+        Item::Fn { name, params, ret, body, rec, decreases, mutual } => {
             if *rec {
                 out.push_str("rec ");
             }
@@ -74,12 +74,41 @@ fn print_item(out: &mut String, it: &Item) {
             }
             out.push_str("): ");
             print_type(out, ret);
+            if let Some(dec) = decreases {
+                out.push_str(" decreases [");
+                print_term(out, dec, 0);
+                out.push(']');
+            }
             if let Some(b) = body {
                 out.push_str(" = ");
                 print_term(out, b, 0);
             }
+            for (mname, mparams, mret, mdecreases, mbody) in mutual {
+                out.push_str(" and fn ");
+                id(out, mname);
+                out.push('(');
+                for (i, (names, ty)) in mparams.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    ids(out, names);
+                    out.push_str(": ");
+                    print_type(out, ty);
+                }
+                out.push_str("): ");
+                print_type(out, mret);
+                if let Some(dec) = mdecreases {
+                    out.push_str(" decreases [");
+                    print_term(out, dec, 0);
+                    out.push(']');
+                }
+                if let Some(b) = mbody {
+                    out.push_str(" = ");
+                    print_term(out, b, 0);
+                }
+            }
         }
-        Item::Data { name, ctors } => {
+        Item::Data { name, ctors, mutual } => {
             out.push_str("data ");
             id(out, name);
             out.push_str(" = ");
@@ -101,6 +130,31 @@ fn print_item(out: &mut String, it: &Item) {
                         print_type(out, ty);
                     }
                     out.push(')');
+                }
+            }
+            for (mname, mctors) in mutual {
+                out.push_str(" and ");
+                id(out, mname);
+                out.push_str(" = ");
+                for (i, (cname, fields)) in mctors.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(" | ");
+                    }
+                    id(out, cname);
+                    if !fields.is_empty() {
+                        out.push('(');
+                        for (j, (sel, ty)) in fields.iter().enumerate() {
+                            if j > 0 {
+                                out.push_str(", ");
+                            }
+                            if let Some(s) = sel {
+                                id(out, s);
+                                out.push_str(": ");
+                            }
+                            print_type(out, ty);
+                        }
+                        out.push(')');
+                    }
                 }
             }
         }
@@ -275,6 +329,46 @@ fn print_term(out: &mut String, t: &Term, ctx: u8) {
                 print_term(o, &arm.body, 0);
             }
             o.push_str(" }");
+        }),
+        Term::App(f, args) => {
+            print_term(out, f, 10);
+            out.push('(');
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                print_term(out, a, 0);
+            }
+            out.push(')');
+        }
+        Term::Lam { name, params, ret, body, rec } => paren_if(out, ctx > 0, |o| {
+            if *rec {
+                o.push_str("rec ");
+            }
+            o.push_str("fn ");
+            if let Some(n) = name {
+                id(o, n);
+            }
+            o.push('(');
+            let mut first = true;
+            for (names, ty) in params {
+                if !first {
+                    o.push_str(", ");
+                }
+                first = false;
+                for (j, n) in names.iter().enumerate() {
+                    if j > 0 {
+                        o.push(' ');
+                    }
+                    id(o, n);
+                }
+                o.push_str(": ");
+                print_type(o, ty);
+            }
+            o.push_str("): ");
+            print_type(o, ret);
+            o.push_str(" = ");
+            print_term(o, body, 0);
         }),
     }
 }

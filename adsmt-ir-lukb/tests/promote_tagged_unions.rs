@@ -44,7 +44,7 @@ fn promotion_rewrites_the_module() {
     let (m2, us) = promote_tagged_unions(&m);
     assert_eq!(us.len(), 1);
     assert!(
-        m2.items.iter().any(|i| matches!(i, Item::Data { name, ctors } if name == "Poly" && ctors.len() == 2)),
+        m2.items.iter().any(|i| matches!(i, Item::Data { name, ctors, .. } if name == "Poly" && ctors.len() == 2)),
         "the sort became a datatype"
     );
     assert!(!m2.items.iter().any(|i| matches!(i, Item::Sort(s) if s == "Poly")));

@@ -99,19 +99,70 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::RParen)?;
                 self.expect(&Tok::Colon)?;
                 let ret = self.type_()?;
+                let decreases = if self.eat(&Tok::Decreases) {
+                    self.expect(&Tok::LBracket)?;
+                    let dec = self.term()?;
+                    self.expect(&Tok::RBracket)?;
+                    Some(dec)
+                } else {
+                    None
+                };
                 // an optional `= body` makes it a (non-recursive) definition.
                 let body = if self.eat(&Tok::Eq) { Some(self.term()?) } else { None };
-                Ok(Item::Fn { name, params, ret, body, rec })
+                let mut mutual = Vec::new();
+                while self.eat(&Tok::And) {
+                    self.eat(&Tok::Fn);
+                    let mname = self.ident()?;
+                    self.expect(&Tok::LParen)?;
+                    let mut mparams = Vec::new();
+                    if !matches!(self.peek(), Some(Tok::RParen)) {
+                        mparams.push(self.param_group()?);
+                        while self.eat(&Tok::Comma) {
+                            mparams.push(self.param_group()?);
+                        }
+                    }
+                    self.expect(&Tok::RParen)?;
+                    self.expect(&Tok::Colon)?;
+                    let mret = self.type_()?;
+                    let mdecreases = if self.eat(&Tok::Decreases) {
+                        self.expect(&Tok::LBracket)?;
+                        let dec = self.term()?;
+                        self.expect(&Tok::RBracket)?;
+                        Some(dec)
+                    } else {
+                        None
+                    };
+                    let mbody = if self.eat(&Tok::Eq) { Some(self.term()?) } else { None };
+                    mutual.push((mname, mparams, mret, mdecreases, mbody));
+                }
+                Ok(Item::Fn { name, params, ret, body, rec, decreases, mutual })
             }
             Some(Tok::Data) => {
                 self.advance();
                 let name = self.ident()?;
-                self.expect(&Tok::Eq)?;
-                let mut ctors = vec![self.ctor()?];
-                while self.eat(&Tok::Pipe) {
-                    ctors.push(self.ctor()?);
+                let mut ctors = Vec::new();
+                if self.eat(&Tok::Eq) {
+                    if matches!(self.peek(), Some(Tok::Ident(_))) {
+                        ctors.push(self.ctor()?);
+                        while self.eat(&Tok::Pipe) {
+                            ctors.push(self.ctor()?);
+                        }
+                    }
                 }
-                Ok(Item::Data { name, ctors })
+                let mut mutual = Vec::new();
+                while self.eat(&Tok::And) {
+                    let mname = self.ident()?;
+                    self.expect(&Tok::Eq)?;
+                    let mut mctors = Vec::new();
+                    if matches!(self.peek(), Some(Tok::Ident(_))) {
+                        mctors.push(self.ctor()?);
+                        while self.eat(&Tok::Pipe) {
+                            mctors.push(self.ctor()?);
+                        }
+                    }
+                    mutual.push((mname, mctors));
+                }
+                Ok(Item::Data { name, ctors, mutual })
             }
             Some(Tok::Axiom) => {
                 self.advance();
@@ -533,7 +584,16 @@ impl<'a> Parser<'a> {
     }
     fn and(&mut self) -> Result<Term, FaceError> {
         let mut lhs = self.cmp()?;
-        while self.eat(&Tok::And) {
+        while matches!(self.peek(), Some(Tok::And)) {
+            if matches!(self.toks.get(self.pos + 1), Some((Tok::Fn | Tok::Rec, _))) {
+                break;
+            }
+            if matches!(self.toks.get(self.pos + 1), Some((Tok::Ident(_), _)))
+                && matches!(self.toks.get(self.pos + 2), Some((Tok::Eq, _)))
+            {
+                break;
+            }
+            self.advance();
             lhs = Term::Bin(BinOp::And, Box::new(lhs), Box::new(self.cmp()?));
         }
         Ok(lhs)
@@ -665,6 +725,19 @@ impl<'a> Parser<'a> {
                 let l = self.term()?;
                 Ok(Term::SolveBy(Box::new(g), Box::new(l)))
             }
+            Some(Tok::Fn) => {
+                self.advance();
+                self.lambda_expr(false)
+            }
+            Some(Tok::Rec) => {
+                if matches!(self.toks.get(self.pos + 1), Some((Tok::Fn, _))) {
+                    self.advance();
+                    self.advance();
+                    self.lambda_expr(true)
+                } else {
+                    self.app()
+                }
+            }
             _ => self.app(),
         }
     }
@@ -691,14 +764,44 @@ impl<'a> Parser<'a> {
             Some(Tok::True) => Ok(Term::Bool(true)),
             Some(Tok::False) => Ok(Term::Bool(false)),
             Some(Tok::LParen) => {
-                let t = self.term()?;
+                let mut t = self.term()?;
                 self.expect(&Tok::RParen)?;
+                while self.eat(&Tok::LParen) {
+                    let mut args = Vec::new();
+                    if !matches!(self.peek(), Some(Tok::RParen)) {
+                        args.push(self.term()?);
+                        while self.eat(&Tok::Comma) {
+                            args.push(self.term()?);
+                        }
+                    }
+                    self.expect(&Tok::RParen)?;
+                    t = Term::App(Box::new(t), args);
+                }
                 Ok(t)
             }
             other => Err(parse_err(self.at(), format!("expected an atom, found `{other:?}`"))),
         }
     }
+
+    fn lambda_expr(&mut self, rec: bool) -> Result<Term, FaceError> {
+        let name = self.opt_name()?;
+        self.expect(&Tok::LParen)?;
+        let mut params = Vec::new();
+        if !matches!(self.peek(), Some(Tok::RParen)) {
+            params.push(self.param_group()?);
+            while self.eat(&Tok::Comma) {
+                params.push(self.param_group()?);
+            }
+        }
+        self.expect(&Tok::RParen)?;
+        self.expect(&Tok::Colon)?;
+        let ret = self.type_()?;
+        self.expect(&Tok::Eq)?;
+        let body = self.term()?;
+        Ok(Term::Lam { name, params, ret, body: Box::new(body), rec })
+    }
 }
+
 
 /// Left-fold a non-empty list of terms with `and` (a single term unchanged).
 fn and_chain(mut ts: Vec<Term>) -> Term {

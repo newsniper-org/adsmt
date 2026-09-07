@@ -15,7 +15,7 @@ use adsmt_ir::{
     infer, is_def_eq, peel_pis, postulate, record_triggers, shift, subst_top, whnf,
 };
 
-use crate::ast::{Arm, BinOp, Binder, Item, Module, PatArg, Pattern, Term as S, Type};
+use crate::ast::{Arm, BinOp, Binder, Ctor, Item, Module, PatArg, Pattern, Term as S, Type};
 use crate::error::{FaceError, unsupported};
 use crate::parser::parse;
 
@@ -64,6 +64,33 @@ fn elaborate_impl(src: &str, prover: Option<&dyn LawProver>) -> Result<Elaborate
         e.item(item)?;
     }
     Ok(Elaborated { env: e.env, hypotheses: e.hyps, goals: e.goals, triggers: e.triggers })
+}
+
+const RESERVED_BUILTINS: &[&str] = &[
+    "Int", "Real", "Nat", "WNat", "Bool", "Prop", "abs", "div", "mod", "to_real", "pow", "prime", "odd",
+];
+
+fn check_reserved_name(name: &str) -> Result<(), FaceError> {
+    if RESERVED_BUILTINS.contains(&name) {
+        return Err(FaceError::Unsupported(format!(
+            "constant `{name}` is a reserved builtin and cannot be declared or shadowed"
+        )));
+    }
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        return Err(FaceError::Unsupported(format!(
+            "identifier `{name}` cannot start with a digit"
+        )));
+    }
+    Ok(())
+}
+
+fn type_mentions_self(ty: &Type, name: &str) -> bool {
+    match ty {
+        Type::Name(s) => s == name,
+        Type::App(s, args) => s == name || args.iter().any(|a| type_mentions_self(a, name)),
+        Type::Refine { base, .. } => type_mentions_self(base, name),
+        Type::Arrow(dom, cod) => type_mentions_self(dom, name) || type_mentions_self(cod, name),
+    }
 }
 
 struct Elab<'p> {
@@ -132,6 +159,30 @@ impl<'p> Elab<'p> {
         let nop_ty = K::pi(K::type_(0), K::arrow(K::bound(0), K::prop()));
         let nop_body = K::lam(K::type_(0), K::lam(K::bound(0), K::cnst("true")));
         define(&mut env, "nop", nop_ty, nop_body)?;
+        // Acc accessibility predicate for well-founded termination:
+        // Acc : Π(A: Type0). (A → A → Prop) → A → Type0
+        let acc_ty = K::pi(
+            K::type_(0),
+            K::pi(
+                K::arrow(K::bound(0), K::arrow(K::bound(0), K::prop())),
+                K::pi(K::bound(1), K::type_(0)),
+            ),
+        );
+        postulate(&mut env, "Acc", acc_ty)?;
+        let mk_acc_ty = K::pi(
+            K::type_(0),
+            K::pi(
+                K::arrow(K::bound(0), K::arrow(K::bound(0), K::prop())),
+                K::pi(
+                    K::bound(1),
+                    K::arrow(
+                        K::prop(),
+                        K::apps(K::cnst("Acc"), [K::bound(2), K::bound(1), K::bound(0)]),
+                    ),
+                ),
+            ),
+        );
+        postulate(&mut env, "acc", mk_acc_ty)?;
         // the FULL arithmetic prelude (Int/Real/Nat/WNat + ops + injections +
         // pow/odd/prime) — the lu-kb surface uses Nat/WNat/pow/… as built-ins.
         theory::install_arith(&mut env)?;
@@ -312,13 +363,16 @@ impl<'p> Elab<'p> {
         }
     }
 
+
     fn item(&mut self, item: &Item) -> Result<(), FaceError> {
         match item {
             Item::Sort(s) => {
+                check_reserved_name(s)?;
                 postulate(&mut self.env, s, K::type_(0))?;
                 self.grant_eq(s); // owner ruling 2: every declared sort carries Eq
             }
             Item::Const(x, ty) => {
+                check_reserved_name(x)?;
                 self.ensure_ring_sorts(ty)?; // pre-declare any GF(p)/IntModulo/GFPower sort
                 // a refinement-typed constant `const c: {v: T | φ}` postulates
                 // `c : T` PLUS the trusted fact `φ[v := c]` as a top-level
@@ -339,57 +393,136 @@ impl<'p> Elab<'p> {
                     postulate(&mut self.env, x, kty)?;
                 }
             }
-            Item::Fn { name, params, ret, body, rec } => {
-                self.elab_fn(name, params, ret, body, *rec)?;
-            }
-            Item::Data { name, ctors } => {
-                // a non-parametric inductive datatype → `declare_inductive`. A
-                // field type may reference THIS datatype (recursive) — it is not
-                // in `env` yet, so the self-reference resolves to `cnst(name)`.
-                let mut kctors: Vec<(String, Vec<K>)> = Vec::with_capacity(ctors.len());
-                // named fields, for the selector admission below (#403):
-                // `(surface field name, ctor, field index, elaborated field type)`.
-                let mut named_fields: Vec<(String, String, usize, K)> = Vec::new();
-                for (cname, fields) in ctors {
-                    let mut ftypes = Vec::with_capacity(fields.len());
-                    for (i, (selname, fty)) in fields.iter().enumerate() {
-                        self.ensure_ring_sorts(fty)?; // pre-declare GF(p)/… field sorts
-                        let kty = self.elab_field_type(fty, name)?;
-                        if let Some(sn) = selname {
-                            named_fields.push((sn.clone(), cname.clone(), i, kty.clone()));
-                        }
-                        ftypes.push(kty);
+            Item::Fn { name, params, ret, body, rec, decreases, mutual } => {
+                check_reserved_name(name)?;
+                if mutual.is_empty() {
+                    self.elab_fn(name, params, ret, body, *rec, decreases.as_ref())?;
+                } else {
+                    let mut group = vec![(name.clone(), params.clone(), ret.clone(), body.clone(), *rec, decreases.clone())];
+                    for (mname, mparams, mret, mdec, mbody) in mutual {
+                        group.push((mname.clone(), mparams.clone(), mret.clone(), mbody.clone(), *rec, mdec.clone()));
                     }
-                    kctors.push((cname.clone(), ftypes));
+                    self.elab_mutual_fn(&group)?;
                 }
-                declare_inductive(&mut self.env, name, Vec::new(), Univ::Type(0), kctors)?;
-                // the datatype's Eq grant (F3): LAWFUL when a prover is
-                // injected (see `grant_eq_data`), structural in the pure
-                // face — the `is-{ctor}` testers ride this instance.
-                self.grant_eq_data(name)?;
-                // #403: field-selector admission. Each NAMED field postulates
-                // the CANONICAL positional selector `{ctor}!sel{i} : D → fieldTy`
-                // (so kernel `infer` types its applications; the #325 lowering
-                // recognizes the name and the engine's `DatatypeDecl` already
-                // declares it — see `spec_to_decl`) and registers the surface
-                // field name so `elab_call` can rewrite a field APPLICATION
-                // `field(x)` onto the canonical head. A second declaration of
-                // the same field name poisons the entry (ambiguous — refuse to
-                // guess which constructor's field was meant).
-                for (field, cname, i, kty) in named_fields {
-                    let canonical = format!("{cname}!sel{i}");
-                    if self.env.lookup(&canonical).is_none() {
-                        postulate(&mut self.env, &canonical, K::arrow(K::cnst(name), kty))?;
+            }
+            Item::Data { name, ctors, mutual } => {
+                if mutual.is_empty() {
+                    check_reserved_name(name)?;
+                    if ctors.is_empty() {
+                        return Err(FaceError::Unsupported(format!(
+                            "datatype `{name}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)"
+                        )));
                     }
-                    match self.selector_fields.entry(field) {
-                        Entry::Vacant(v) => {
-                            v.insert(Some((name.clone(), canonical)));
+                    let has_base_case = ctors.iter().any(|(_, fields)| {
+                        !fields.iter().any(|(_, fty)| type_mentions_self(fty, name))
+                    });
+                    if !has_base_case {
+                        return Err(FaceError::Unsupported(format!(
+                            "datatype `{name}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)"
+                        )));
+                    }
+                    for (cname, fields) in ctors {
+                        check_reserved_name(cname)?;
+                        for (selname, _) in fields {
+                            if let Some(sn) = selname {
+                                check_reserved_name(sn)?;
+                            }
                         }
-                        // duplicate targets are impossible (a ctor name is
-                        // kernel-unique and a ctor's fields are positional), so
-                        // any occupied hit IS a cross-constructor ambiguity.
-                        Entry::Occupied(mut o) => {
-                            o.insert(None);
+                    }
+                    let mut kctors: Vec<(String, Vec<K>)> = Vec::with_capacity(ctors.len());
+                    let mut named_fields: Vec<(String, String, usize, K)> = Vec::new();
+                    for (cname, fields) in ctors {
+                        let mut ftypes = Vec::with_capacity(fields.len());
+                        for (i, (selname, fty)) in fields.iter().enumerate() {
+                            self.ensure_ring_sorts(fty)?;
+                            let kty = self.elab_field_type(fty, name)?;
+                            if let Some(sn) = selname {
+                                named_fields.push((sn.clone(), cname.clone(), i, kty.clone()));
+                            }
+                            ftypes.push(kty);
+                        }
+                        kctors.push((cname.clone(), ftypes));
+                    }
+                    declare_inductive(&mut self.env, name, Vec::new(), Univ::Type(0), kctors)?;
+                    self.grant_eq_data(name)?;
+                    for (field, cname, i, kty) in named_fields {
+                        let canonical = format!("{cname}!sel{i}");
+                        if self.env.lookup(&canonical).is_none() {
+                            postulate(&mut self.env, &canonical, K::arrow(K::cnst(name), kty))?;
+                        }
+                        match self.selector_fields.entry(field) {
+                            Entry::Vacant(v) => {
+                                v.insert(Some((name.clone(), canonical)));
+                            }
+                            Entry::Occupied(mut o) => {
+                                o.insert(None);
+                            }
+                        }
+                    }
+                } else {
+                    let mut all_members: Vec<(&str, &Vec<Ctor>)> = vec![(name.as_str(), ctors)];
+                    for (mname, mctors) in mutual {
+                        all_members.push((mname.as_str(), mctors));
+                    }
+                    let all_names: Vec<&str> = all_members.iter().map(|(n, _)| *n).collect();
+                    for (mname, mctors) in &all_members {
+                        check_reserved_name(mname)?;
+                        if mctors.is_empty() {
+                            return Err(FaceError::Unsupported(format!(
+                                "datatype `{mname}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)"
+                            )));
+                        }
+                        for (cname, fields) in *mctors {
+                            check_reserved_name(cname)?;
+                            for (selname, _) in fields {
+                                if let Some(sn) = selname {
+                                    check_reserved_name(sn)?;
+                                }
+                            }
+                        }
+                    }
+                    let mut mut_members: Vec<adsmt_ir::MutualMember> = Vec::with_capacity(all_members.len());
+                    let mut all_named_fields: Vec<(String, Vec<(String, String, usize, K)>)> = Vec::new();
+                    for (mname, mctors) in &all_members {
+                        let mut kctors: Vec<(String, Vec<K>, Vec<K>)> = Vec::with_capacity(mctors.len());
+                        let mut named_fields: Vec<(String, String, usize, K)> = Vec::new();
+                        for (cname, fields) in *mctors {
+                            let mut ftypes = Vec::with_capacity(fields.len());
+                            for (i, (selname, fty)) in fields.iter().enumerate() {
+                                self.ensure_ring_sorts(fty)?;
+                                let kty = self.elab_mutual_field_type(fty, &all_names)?;
+                                if let Some(sn) = selname {
+                                    named_fields.push((sn.clone(), cname.clone(), i, kty.clone()));
+                                }
+                                ftypes.push(kty);
+                            }
+                            kctors.push((cname.clone(), ftypes, Vec::new()));
+                        }
+                        mut_members.push(adsmt_ir::MutualMember {
+                            name: mname.to_string(),
+                            params: Vec::new(),
+                            indices: Vec::new(),
+                            sort: Univ::Type(0),
+                            ctors: kctors,
+                        });
+                        all_named_fields.push((mname.to_string(), named_fields));
+                    }
+                    adsmt_ir::declare_mutual(&mut self.env, mut_members)?;
+                    for (mname, named_fields) in all_named_fields {
+                        self.grant_eq_data(&mname)?;
+                        for (field, cname, i, kty) in named_fields {
+                            let canonical = format!("{cname}!sel{i}");
+                            if self.env.lookup(&canonical).is_none() {
+                                postulate(&mut self.env, &canonical, K::arrow(K::cnst(&mname), kty))?;
+                            }
+                            match self.selector_fields.entry(field) {
+                                Entry::Vacant(v) => {
+                                    v.insert(Some((mname.clone(), canonical)));
+                                }
+                                Entry::Occupied(mut o) => {
+                                    o.insert(None);
+                                }
+                            }
                         }
                     }
                 }
@@ -477,6 +610,7 @@ impl<'p> Elab<'p> {
         ret: &Type,
         body: &Option<S>,
         rec: bool,
+        decreases: Option<&S>,
     ) -> Result<(), FaceError> {
         // 0. pre-declare any GF(p)/IntModulo(m)/GFPower(p,n) sort in a parameter or
         //    return type (validating the parameters) before the immutable elab_type.
@@ -582,17 +716,25 @@ impl<'p> Elab<'p> {
                 for s in pred_sorts.iter().rev() {
                     lam = K::lam(s.clone(), lam);
                 }
-                let value = if self_ref {
-                    self.build_fix(name, &ty, lam, pred_sorts.len(), vsorts.len())?
+                if self_ref {
+                    if let Some(dec) = decreases {
+                        let kdec = self.elab_term(&mut ctx, dec)?;
+                        let dty = infer(&self.env, &kernel_ctx(&ctx), &kdec)?;
+                        if !as_const_app(&whnf(&self.env, &dty)).is_some_and(|(h, _)| h == "Acc") {
+                            return Err(unsupported(format!(
+                                "`decreases` clause on `{name}` must have sort `Acc`, got `{dty}`"
+                            )));
+                        }
+                        postulate(&mut self.env, name, ty.clone())?;
+                    } else {
+                        let value = self.build_fix(name, &ty, lam, pred_sorts.len(), vsorts.len())?;
+                        define(&mut self.env, name, ty.clone(), value)?;
+                    }
                 } else {
-                    // `rec` on a body that does not recurse is a harmless
-                    // annotation — nothing to guard, so it stays a plain def.
-                    lam
-                };
-                define(&mut self.env, name, ty.clone(), value)?;
+                    define(&mut self.env, name, ty.clone(), lam)?;
+                }
             }
         }
-
         // 6. the contract obligation — only when the RETURN is refined.
         if let Type::Refine { var: rv, pred: rp, .. } = ret {
             // result = g('p…, x…); for a def it δ-unfolds to the body.
@@ -662,6 +804,96 @@ impl<'p> Elab<'p> {
         Ok(kt)
     }
 
+    fn elab_mutual_field_type(&self, ty: &Type, data_names: &[&str]) -> Result<K, FaceError> {
+        match ty {
+            Type::Name(n) if data_names.contains(&n.as_str()) => Ok(K::cnst(n.clone())),
+            _ => self.elab_type(ty),
+        }
+    }
+
+    fn elab_mutual_fn(
+        &mut self,
+        group: &[(String, Vec<(Vec<String>, Type)>, Type, Option<S>, bool, Option<S>)],
+    ) -> Result<(), FaceError> {
+        let all_names: Vec<&str> = group.iter().map(|(n, ..)| n.as_str()).collect();
+        for name in &all_names {
+            check_reserved_name(name)?;
+        }
+
+        // Pass 1: compute signatures and register in env
+        let mut signatures: Vec<(String, K)> = Vec::with_capacity(group.len());
+        for (name, params, ret, ..) in group {
+            let mut vsorts = Vec::new();
+            for (names, ty) in params {
+                let kty = self.elab_type(ty)?;
+                for _ in names {
+                    vsorts.push(kty.clone());
+                }
+            }
+            let kret = self.elab_type(ret)?;
+            let mut ty = kret;
+            for s in vsorts.iter().rev() {
+                ty = K::arrow(s.clone(), ty);
+            }
+            postulate(&mut self.env, name, ty.clone())?;
+            signatures.push((name.clone(), ty));
+        }
+
+        // Pass 2: elaborate bodies
+        for (name, params, ret, body, rec, dec) in group {
+            let Some(b) = body else {
+                continue;
+            };
+            let mentions_group = all_names.iter().any(|gn| mentions_surface(b, gn));
+            if mentions_group && !rec {
+                return Err(unsupported(format!(
+                    "`{name}` calls a mutual function; recursion requires the `rec` modifier"
+                )));
+            }
+            let mut ctx: Vec<(String, K)> = Vec::new();
+            for (names, ty) in params {
+                let kty = self.elab_type(ty)?;
+                for n in names {
+                    ctx.push((n.clone(), kty.clone()));
+                }
+            }
+            let kbody = self.elab_term(&mut ctx, b)?;
+            let kret = self.elab_type(ret)?;
+            let body_ty = infer(&self.env, &kernel_ctx(&ctx), &kbody)?;
+            if !is_def_eq(&self.env, &body_ty, &kret) {
+                return Err(unsupported(format!(
+                    "`{name}` body has sort `{body_ty}`, expected return sort `{kret}`"
+                )));
+            }
+            if let Some(d) = dec {
+                let kdec = self.elab_term(&mut ctx, d)?;
+                let dty = infer(&self.env, &kernel_ctx(&ctx), &kdec)?;
+                if !as_const_app(&whnf(&self.env, &dty)).is_some_and(|(h, _)| h == "Acc") {
+                    return Err(unsupported(format!(
+                        "`decreases` clause on `{name}` must have sort `Acc`, got `{dty}`"
+                    )));
+                }
+            }
+            let mut vsorts = Vec::new();
+            for (names, ty) in params {
+                let kty = self.elab_type(ty)?;
+                for _ in names {
+                    vsorts.push(kty.clone());
+                }
+            }
+            let mut lam = kbody;
+            for s in vsorts.iter().rev() {
+                lam = K::lam(s.clone(), lam);
+            }
+            let (_, ty) = signatures.iter().find(|(n, _)| n == name).unwrap();
+            self.env.declare(name.clone(), adsmt_ir::Decl {
+                ty: ty.clone(),
+                modality: adsmt_ir::Modality::Def(lam),
+            });
+        }
+        Ok(())
+    }
+
     /// A datatype constructor's **field type**, as [`Self::elab_type`] but with
     /// the inductive being declared (`data_name`) allowed as a (recursive)
     /// self-reference even though it is not yet in `env`.
@@ -679,6 +911,7 @@ impl<'p> Elab<'p> {
     /// Must run under `&mut self` BEFORE the immutable `elab_type` looks the sort up.
     fn ensure_ring_sorts(&mut self, ty: &Type) -> Result<(), FaceError> {
         match ty {
+            Type::App(n, _) if n == "Acc" => {}
             Type::App(n, args) => match ring_sort_name(n, args)? {
                 Some(canon) => {
                     if self.env.lookup(&canon).is_none() {
@@ -719,6 +952,19 @@ impl<'p> Elab<'p> {
             // arithmetic): the four operations over such a sort are NOT integer
             // arithmetic — reasoning over them routes to the `adsmt-cas` re-check
             // core (the CAS-delegation follow-on), never an `Int` relativization.
+            Type::App(n, args) if n == "Acc" => {
+                let mut kargs = Vec::new();
+                for a in args {
+                    if let Type::Name(s) = a {
+                        if self.env.lookup(s).is_some() {
+                            kargs.push(K::cnst(s.clone()));
+                            continue;
+                        }
+                    }
+                    kargs.push(self.elab_type(a)?);
+                }
+                return Ok(K::apps(K::cnst("Acc"), kargs));
+            }
             Type::App(n, args) => match ring_sort_name(n, args)? {
                 Some(canon) => match self.env.lookup(&canon) {
                     Some(d) if is_type0(&d.ty) => Ok(K::cnst(canon)),
@@ -841,8 +1087,86 @@ impl<'p> Elab<'p> {
             }
             S::Match(scrut, arms) => self.elab_match(ctx, scrut, arms),
             S::SolveBy(g, l) => self.elab_solve_by(ctx, g, l),
+            S::App(f, args) => {
+                let kf = self.elab_term(ctx, f)?;
+                let kargs: Vec<K> =
+                    args.iter().map(|a| self.elab_term(ctx, a)).collect::<Result<_, _>>()?;
+                let mut cur = kf;
+                for arg in kargs {
+                    let w = whnf(&self.env, &cur);
+                    if let adsmt_ir::TermKind::Lam(_, body) = w.kind() {
+                        cur = subst_top(body, &arg);
+                    } else {
+                        cur = K::app(cur, arg);
+                    }
+                }
+                Ok(cur)
+            }
+            S::Lam { name, params, ret, body, rec } => {
+                self.elab_lambda(ctx, name.as_deref(), params, ret, body, *rec)
+            }
         }
     }
+    fn elab_lambda(
+        &mut self,
+        ctx: &mut Vec<(String, K)>,
+        name: Option<&str>,
+        params: &[(Vec<String>, Type)],
+        ret: &Type,
+        body: &S,
+        rec: bool,
+    ) -> Result<K, FaceError> {
+        let fn_name = name.unwrap_or("!self");
+        let self_ref = mentions_surface(body, fn_name);
+        if self_ref && !rec {
+            return Err(unsupported(format!(
+                "anonymous lambda calls `{fn_name}`; recursion requires the `rec` modifier"
+            )));
+        }
+
+        let mut vnames: Vec<String> = Vec::new();
+        let mut vsorts: Vec<K> = Vec::new();
+        for (names, ty) in params {
+            let kty = self.elab_type(ty)?;
+            for n in names {
+                vnames.push(n.clone());
+                vsorts.push(kty.clone());
+            }
+        }
+        let kret = self.elab_type(ret)?;
+
+        let mut fn_ty = kret.clone();
+        for s in vsorts.iter().rev() {
+            fn_ty = K::arrow(s.clone(), fn_ty);
+        }
+
+        let saved_len = ctx.len();
+        if self_ref {
+            ctx.push((fn_name.to_string(), fn_ty.clone()));
+        }
+        for (n, s) in vnames.iter().zip(&vsorts) {
+            ctx.push((n.clone(), s.clone()));
+        }
+        let mut term = self.elab_term(ctx, body)?;
+        ctx.truncate(saved_len);
+
+        for s in vsorts.iter().rev() {
+            term = K::lam(s.clone(), term);
+        }
+        if self_ref {
+            term = self.build_fix(fn_name, &fn_ty, term, 0, vsorts.len())?;
+        }
+
+        if ctx.is_empty() {
+            let lift_name = self.fresh_name();
+            let lam_ty = infer(&self.env, &Ctx::new(), &term)?;
+            define(&mut self.env, &lift_name, lam_ty, term)?;
+            Ok(K::cnst(lift_name))
+        } else {
+            Ok(term)
+        }
+    }
+
 
     /// Elaborate `solve G by L` (semantics B, the cut): elaborate `G`/`L` to
     /// `Prop`s, emit the **leaf** `∀ctx. L` and the **bridge** `∀ctx. (L ⟹ G)` as
@@ -2049,6 +2373,14 @@ fn mentions_surface(t: &S, name: &str) -> bool {
             binders_mention(bs, name, shadow)
                 || (!shadow && (go(body) || trigs.iter().flatten().any(&go)))
         }
+        S::App(f, args) => go(f) || args.iter().any(&go),
+        S::Lam { name: opt_n, body, .. } => {
+            if opt_n.as_deref() == Some(name) {
+                false
+            } else {
+                go(body)
+            }
+        }
     }
 }
 
@@ -2129,6 +2461,19 @@ fn subst_surface(t: &S, from: &str, to: &S) -> S {
             S::Exists(bs2, Box::new(body2), subst_trigs(trigs, from, to, shadow))
         }
         S::SolveBy(g, l) => S::SolveBy(Box::new(go(g)), Box::new(go(l))),
+        S::App(f, args) => S::App(Box::new(go(f)), args.iter().map(&go).collect()),
+        S::Lam { name, params, ret, body, rec } => {
+            let shadow = name.as_deref() == Some(from)
+                || params.iter().any(|(names, _)| names.iter().any(|n| n == from));
+            let body2 = if shadow { (**body).clone() } else { go(body) };
+            S::Lam {
+                name: name.clone(),
+                params: params.clone(),
+                ret: ret.clone(),
+                body: Box::new(body2),
+                rec: *rec,
+            }
+        }
     }
 }
 
@@ -2292,6 +2637,15 @@ fn collect_ticks(t: &S, acc: &mut Vec<String>) {
         S::SolveBy(g, l) => {
             collect_ticks(g, acc);
             collect_ticks(l, acc);
+        }
+        S::App(f, args) => {
+            collect_ticks(f, acc);
+            for a in args {
+                collect_ticks(a, acc);
+            }
+        }
+        S::Lam { body, .. } => {
+            collect_ticks(body, acc);
         }
         S::IntLit(_) | S::RealLit(_) | S::Bool(_) => {}
     }

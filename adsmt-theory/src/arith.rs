@@ -170,6 +170,35 @@ impl LinArith {
                incomplete: None, iface_names: HashMap::new(), scope_stack: Vec::new() }
     }
 
+    /// An arithmetic atom is about to be dropped. If the reason is that WE
+    /// could not represent it — a numeral outside `i128`, or a constant that
+    /// overflowed while linearising — arm the backstop; a `Sat` built on a
+    /// dropped constraint of ours is the forbidden direction. An atom that is
+    /// simply not linear (a UF application) stays a sound UF literal.
+    fn arm_if_dropped_arith(&mut self, t: &Term, what: &str) {
+        if has_unrepresentable_numeral(t) {
+            self.note_incomplete(|| {
+                format!("{what} `{t}` carries a numeral the bound store cannot hold")
+            });
+        } else if Self::operand_overflow(t) {
+            self.note_incomplete(|| format!("{what} `{t}`: a constant left i128 while linearising"));
+        }
+    }
+
+    /// A derived value left `i128`. The derivation is DROPPED and the
+    /// backstop armed — never wrapped.
+    ///
+    /// Release builds do not check overflow (`Cargo.toml` `[profile.release]`
+    /// sets only `lto`), so `k - sign·y` and `k + 1` silently wrapped, and a
+    /// wrapped constant is a bound nobody asserted. Measured, both directions
+    /// went wrong: `x + y ≤ 1 ∧ y ≥ -(2^127-1) ∧ x ≥ 0` derived `x ≤ i128::MIN`
+    /// and closed as a false `unsat`; `x > i128::MAX ∧ x < 0` tightened to
+    /// `x ≥ i128::MIN` and came back a false `sat`. The verus prelude carries
+    /// `2^127`/`2^128-1` constants, so this is not a synthetic corner.
+    fn note_overflow(&mut self, where_: &str) {
+        self.note_incomplete(|| format!("{where_}: a derived constant left i128"));
+    }
+
     /// Record that an arithmetic constraint was dropped because the
     /// hand-rolled pool can't represent it (see [`incomplete`](Self::incomplete)).
     /// Keeps the *first* reason — that's the constraint closest to the live
@@ -368,53 +397,73 @@ impl LinArith {
                     let strict_op = tv.op;
                     if let Some(y_v) = y_for_x_le {
                         // x <= k - sign*y_v
-                        let bound = tv.k - tv.sign * y_v;
-                        if let Some(w) = self.record_bound(tv.x.clone(), strict_op, bound) {
-                            return Some(w);
+                        match derive_bound(tv.k, tv.sign, y_v) {
+                            Some(bound) => {
+                                if let Some(w) = self.record_bound(tv.x.clone(), strict_op, bound) {
+                                    return Some(w);
+                                }
+                            }
+                            None => self.note_overflow("two-var propagation"),
                         }
                     }
                     if let Some(x_v) = x_for_y_le {
                         // sign*y <= k - x_v ; if sign=+1, y <= k - x_v
                         // if sign=-1, -y <= k - x_v ⇒ y >= x_v - k.
-                        let bound_raw = tv.k - x_v;
-                        let (target_op, target_k) = if tv.sign > 0 {
-                            (strict_op, bound_raw)
-                        } else {
-                            // negate op since we multiply by -1
-                            let neg = match strict_op {
-                                "<=" => ">=",
-                                "<"  => ">",
-                                _    => return None,
-                            };
-                            (neg, -bound_raw)
-                        };
-                        if let Some(w) = self.record_bound(tv.y.clone(), target_op, target_k) {
-                            return Some(w);
+                        let target = tv.k.checked_sub(x_v).and_then(|bound_raw| {
+                            if tv.sign > 0 {
+                                Some((strict_op, bound_raw))
+                            } else {
+                                // negate op since we multiply by -1
+                                let neg = match strict_op {
+                                    "<=" => ">=",
+                                    "<" => ">",
+                                    _ => return None,
+                                };
+                                bound_raw.checked_neg().map(|k| (neg, k))
+                            }
+                        });
+                        match target {
+                            Some((target_op, target_k)) => {
+                                if let Some(w) = self.record_bound(tv.y.clone(), target_op, target_k) {
+                                    return Some(w);
+                                }
+                            }
+                            None => self.note_overflow("two-var propagation"),
                         }
                     }
                 }
                 ">=" | ">" => {
                     let strict_op = tv.op;
                     if let Some(y_v) = y_for_x_ge {
-                        let bound = tv.k - tv.sign * y_v;
-                        if let Some(w) = self.record_bound(tv.x.clone(), strict_op, bound) {
-                            return Some(w);
+                        match derive_bound(tv.k, tv.sign, y_v) {
+                            Some(bound) => {
+                                if let Some(w) = self.record_bound(tv.x.clone(), strict_op, bound) {
+                                    return Some(w);
+                                }
+                            }
+                            None => self.note_overflow("two-var propagation"),
                         }
                     }
                     if let Some(x_v) = x_for_y_ge {
-                        let bound_raw = tv.k - x_v;
-                        let (target_op, target_k) = if tv.sign > 0 {
-                            (strict_op, bound_raw)
-                        } else {
-                            let neg = match strict_op {
-                                ">=" => "<=",
-                                ">"  => "<",
-                                _    => return None,
-                            };
-                            (neg, -bound_raw)
-                        };
-                        if let Some(w) = self.record_bound(tv.y.clone(), target_op, target_k) {
-                            return Some(w);
+                        let target = tv.k.checked_sub(x_v).and_then(|bound_raw| {
+                            if tv.sign > 0 {
+                                Some((strict_op, bound_raw))
+                            } else {
+                                let neg = match strict_op {
+                                    ">=" => "<=",
+                                    ">" => "<",
+                                    _ => return None,
+                                };
+                                bound_raw.checked_neg().map(|k| (neg, k))
+                            }
+                        });
+                        match target {
+                            Some((target_op, target_k)) => {
+                                if let Some(w) = self.record_bound(tv.y.clone(), target_op, target_k) {
+                                    return Some(w);
+                                }
+                            }
+                            None => self.note_overflow("two-var propagation"),
                         }
                     }
                 }
@@ -449,6 +498,12 @@ impl LinArith {
     /// I a combination of?" — derived entries by concatenation, asserted
     /// ones by pointing at themselves.
     fn push_asserted_two_var(&mut self, mut tv: TwoVar) {
+        // `pair_bound_groups` must negate `k` to canonicalise a mirrored
+        // pair, and `-i128::MIN` does not exist — such an entry can never
+        // take part in a conflict check, so `check` must not claim Sat.
+        if tv.k == i128::MIN {
+            self.note_overflow("two-var constant at i128::MIN");
+        }
         let idx = self.two_vars.len();
         tv.origin = std::sync::Arc::from(vec![idx]);
         self.two_vars.push(tv);
@@ -519,7 +574,13 @@ impl LinArith {
                     let new_x = a.x.clone();
                     let new_y = b.y.clone();
                     let new_sign = b.sign;
-                    let new_k = a.k + b.k;
+                    // The sum of two asserted constants can leave `i128`; a
+                    // wrapped `k` is a bound nobody asserted. Skip the
+                    // derivation and arm the backstop instead.
+                    let Some(new_k) = a.k.checked_add(b.k) else {
+                        self.note_overflow("Fourier–Motzkin");
+                        continue;
+                    };
                     let new_op = if a.op == "<" || b.op == "<" { "<" } else { "<=" };
                     // Tightness: skip unless strictly tighter than
                     // any existing entry for the same shape. For `<=`
@@ -717,7 +778,12 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
                 let flipped = match tv.op {
                     "<=" => ">=", "<" => ">", ">=" => "<=", ">" => "<", o => o,
                 };
-                (tv.y.clone(), tv.x.clone(), flipped, -tv.k)
+                // `-i128::MIN` does not exist. Such an entry cannot join a
+                // group; it was already flagged incomplete when pushed
+                // (`push_asserted_two_var`), so dropping it here loses a
+                // conflict at most — never fabricates one.
+                let Some(nk) = tv.k.checked_neg() else { continue };
+                (tv.y.clone(), tv.x.clone(), flipped, nk)
             } else if tv.sign == 1 && tv.x > tv.y {
                 (tv.y.clone(), tv.x.clone(), tv.op, tv.k)
             } else {
@@ -730,7 +796,7 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
                     *upper = Some(upper.map_or(new, |old| tighter_upper(old, new)));
                 }
                 "<" => {
-                    let new = if is_lia { (k - 1, false) } else { (k, true) };
+                    let new = strict_upper(is_lia, k);
                     *upper = Some(upper.map_or(new, |old| tighter_upper(old, new)));
                 }
                 ">=" => {
@@ -738,7 +804,7 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
                     *lower = Some(lower.map_or(new, |old| tighter_lower(old, new)));
                 }
                 ">" => {
-                    let new = if is_lia { (k + 1, false) } else { (k, true) };
+                    let new = strict_lower(is_lia, k);
                     *lower = Some(lower.map_or(new, |old| tighter_lower(old, new)));
                 }
                 _ => {}
@@ -961,47 +1027,85 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
     /// are claimed earlier; a compound equality with variable cancellation such
     /// as `(= 4 (- j j))` used to fall through to UF and merge opaquely).
     pub fn linearize(t: &Term) -> Option<(BTreeMap<String, i128>, i128)> {
+        Self::linearize_status(t).ok().flatten()
+    }
+
+    /// [`linearize`](Self::linearize), but telling OVERFLOW apart from
+    /// "not linear".
+    ///
+    /// The two are not the same thing to a caller that is about to drop an
+    /// atom. "Not linear" means another theory owns it (`(f x) = 5` is UF's,
+    /// and congruence can match a constant) — dropping it here is safe. An
+    /// overflow means the atom IS ours and we could not represent it, and
+    /// dropping it without arming the backstop is a false `sat` waiting to
+    /// happen. Measured: `(= MAX (* 2 MIN))` — the product leaves `i128`,
+    /// `linearize` said `None`, the atom fell to UF as two unrelated
+    /// constants, and the engine answered `sat` to an unsatisfiable formula.
+    ///
+    /// `Ok(None)` = not linear; `Err(())` = linear shape, constant overflow.
+    #[allow(clippy::result_unit_err)]
+    pub fn linearize_status(t: &Term) -> Result<Option<(BTreeMap<String, i128>, i128)>, ()> {
         if let Some(k) = Self::int_lit(t) {
-            return Some((BTreeMap::new(), k));
+            return Ok(Some((BTreeMap::new(), k)));
         }
         if let TermInner::Var(v) = t.kind() {
             let mut m = BTreeMap::new();
             m.insert(v.name.clone(), 1);
-            return Some((m, 0));
+            return Ok(Some((m, 0)));
         }
-        let TermInner::App(outer, b) = t.kind() else { return None };
-        let TermInner::App(head, a) = outer.kind() else { return None };
-        let TermInner::Const(c) = head.kind() else { return None };
+        let TermInner::App(outer, b) = t.kind() else { return Ok(None) };
+        let TermInner::App(head, a) = outer.kind() else { return Ok(None) };
+        let TermInner::Const(c) = head.kind() else { return Ok(None) };
         match c.name.as_str() {
             "+" | "-" => {
-                let (mut ma, ca) = Self::linearize(a)?;
-                let (mb, cb) = Self::linearize(b)?;
+                let Some((mut ma, ca)) = Self::linearize_status(a)? else { return Ok(None) };
+                let Some((mb, cb)) = Self::linearize_status(b)? else { return Ok(None) };
                 let neg = c.name == "-";
                 for (k, v) in mb {
                     let e = ma.entry(k).or_insert(0);
-                    *e = if neg { e.checked_sub(v)? } else { e.checked_add(v)? };
+                    *e = if neg { e.checked_sub(v).ok_or(())? } else { e.checked_add(v).ok_or(())? };
                 }
-                let cc = if neg { ca.checked_sub(cb)? } else { ca.checked_add(cb)? };
-                Some((ma, cc))
+                let cc = if neg { ca.checked_sub(cb).ok_or(())? } else { ca.checked_add(cb).ok_or(())? };
+                Ok(Some((ma, cc)))
             }
             "*" => {
                 // Linear only when at least one factor is a pure constant.
-                let la = Self::linearize(a)?;
-                let lb = Self::linearize(b)?;
+                let Some(la) = Self::linearize_status(a)? else { return Ok(None) };
+                let Some(lb) = Self::linearize_status(b)? else { return Ok(None) };
                 let (coeffs, c0, s) = if la.0.is_empty() {
                     (lb.0, lb.1, la.1)
                 } else if lb.0.is_empty() {
                     (la.0, la.1, lb.1)
                 } else {
-                    return None;
+                    return Ok(None);
                 };
                 let mut m = BTreeMap::new();
                 for (k, v) in coeffs {
-                    m.insert(k, v.checked_mul(s)?);
+                    m.insert(k, v.checked_mul(s).ok_or(())?);
                 }
-                Some((m, c0.checked_mul(s)?))
+                Ok(Some((m, c0.checked_mul(s).ok_or(())?)))
             }
-            _ => None,
+            _ => Ok(None),
+        }
+    }
+
+    /// Did this (in)equality overflow anywhere on OUR side of the fence —
+    /// linearising either operand, or forming the difference `a − b` that
+    /// every reduction here starts from?
+    ///
+    /// The difference matters: `(= 1 MIN)` linearises both sides fine and
+    /// overflows only in `1 − MIN`. Measured as a false `sat` when only the
+    /// operands were checked.
+    fn operand_overflow(t: &Term) -> bool {
+        let TermInner::App(outer, b) = t.kind() else { return false };
+        let TermInner::App(_, a) = outer.kind() else { return false };
+        match (Self::linearize_status(a), Self::linearize_status(b)) {
+            (Err(()), _) | (_, Err(())) => true,
+            (Ok(Some((ma, ca))), Ok(Some((mb, cb)))) => {
+                ca.checked_sub(cb).is_none()
+                    || mb.iter().any(|(k, v)| ma.get(k).copied().unwrap_or(0).checked_sub(*v).is_none())
+            }
+            _ => false,
         }
     }
 
@@ -1144,7 +1248,7 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
                 b.upper = Some(b.upper.map_or(new, |old| tighter_upper(old, new)));
             }
             "<" => {
-                let new = if is_lia { (k - 1, false) } else { (k, true) };
+                let new = strict_upper(is_lia, k);
                 b.upper = Some(b.upper.map_or(new, |old| tighter_upper(old, new)));
             }
             ">=" => {
@@ -1152,7 +1256,7 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
                 b.lower = Some(b.lower.map_or(new, |old| tighter_lower(old, new)));
             }
             ">" => {
-                let new = if is_lia { (k + 1, false) } else { (k, true) };
+                let new = strict_lower(is_lia, k);
                 b.lower = Some(b.lower.map_or(new, |old| tighter_lower(old, new)));
             }
             _ => {}
@@ -1200,6 +1304,88 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
             }
         }
         None
+    }
+
+    pub(crate) fn try_assert_to_real_comparison(&mut self, lit: &Literal) -> Option<AssertResult> {
+        let (raw_op, a, b) = dest_comparison(&lit.term)?;
+        let op = if lit.polarity { raw_op } else { negate_cmp(raw_op)? };
+
+        let (var, op, (p, q)) = if let (Some(v), Some(r)) = (dest_to_real(&a), parse_real_lit(&b)) {
+            (v, op, r)
+        } else if let (Some(r), Some(v)) = (parse_real_lit(&a), dest_to_real(&b)) {
+            let flipped = flip_cmp(op)?;
+            (v, flipped, r)
+        } else {
+            return None;
+        };
+
+        let floor = p.div_euclid(q);
+        let is_int = (p % q) == 0;
+        let ceil = if is_int { floor } else { floor + 1 };
+
+        let (int_op, k) = match op {
+            "<=" => ("<=", floor),
+            "<" => {
+                if is_int {
+                    ("<=", floor - 1)
+                } else {
+                    ("<=", floor)
+                }
+            }
+            ">=" => (">=", ceil),
+            ">" => {
+                if is_int {
+                    (">=", ceil + 1)
+                } else {
+                    (">=", ceil)
+                }
+            }
+            _ => return None,
+        };
+
+        if let Some(w) = self.record_bound(var, int_op, k) {
+            self.conflict = Some(w.clone());
+            Some(AssertResult::Conflict { witness: w })
+        } else {
+            Some(AssertResult::Accepted)
+        }
+    }
+
+    pub(crate) fn try_assert_to_real_eq(&mut self, lit: &Literal) -> Option<AssertResult> {
+        let (a, b) = lit.term.dest_eq()?;
+        let (var, (p, q)) = if let (Some(v), Some(r)) = (dest_to_real(&a), parse_real_lit(&b)) {
+            (v, r)
+        } else if let (Some(r), Some(v)) = (parse_real_lit(&a), dest_to_real(&b)) {
+            (v, r)
+        } else {
+            return None;
+        };
+        let is_int = (p % q) == 0;
+        if !is_int {
+            if lit.polarity {
+                let w = TheoryWitness::Opaque {
+                    kind: "LIA".into(),
+                    notes: format!("integer variable {var} cannot equal non-integer real {p}/{q}"),
+                };
+                self.conflict = Some(w.clone());
+                return Some(AssertResult::Conflict { witness: w });
+            } else {
+                return Some(AssertResult::Accepted);
+            }
+        }
+        let k = p / q;
+        if lit.polarity {
+            for op in ["<=", ">="] {
+                if let Some(w) = self.record_bound(var.clone(), op, k) {
+                    self.conflict = Some(w.clone());
+                    return Some(AssertResult::Conflict { witness: w });
+                }
+            }
+            Some(AssertResult::Accepted)
+        } else {
+            self.diseqs.push((var, k));
+            Some(AssertResult::Accepted)
+        }
     }
 }
 
@@ -1313,6 +1499,46 @@ fn atom_arith_sort(t: &Term) -> Option<&'static str> {
 /// The test is tight because an arithmetic-sorted BARE `Const` can only be a
 /// numeral: operators are `Const`s at FUNCTION type, declared constants arrive
 /// as `Var`s, and constructors carry their datatype's sort.
+fn dest_to_real(t: &Term) -> Option<String> {
+    if let TermInner::App(f, x) = t.kind() {
+        if let TermInner::Const(c) = f.kind() {
+            if c.name == "to_real" || c.name == "int2real" {
+                if let TermInner::Var(v) = x.kind() {
+                    return Some(v.name.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_real_lit(t: &Term) -> Option<(i128, i128)> {
+    if let TermInner::Const(c) = t.kind() {
+        let s = c.name.strip_prefix("real:").unwrap_or(&c.name);
+        let (is_neg, s) = if let Some(rest) = s.strip_prefix('-') {
+            (true, rest)
+        } else {
+            (false, s)
+        };
+        if let Some((int_part, frac_part)) = s.split_once('.') {
+            let num_str = format!("{int_part}{frac_part}");
+            let mut num: i128 = num_str.parse().ok()?;
+            if is_neg {
+                num = -num;
+            }
+            let pow = frac_part.len() as u32;
+            let den = 10i128.checked_pow(pow)?;
+            return Some((num, den));
+        } else if let Ok(mut num) = s.parse::<i128>() {
+            if is_neg {
+                num = -num;
+            }
+            return Some((num, 1));
+        }
+    }
+    None
+}
+
 fn has_unrepresentable_numeral(t: &Term) -> bool {
     match t.kind() {
         TermInner::Const(c) => {
@@ -1320,6 +1546,7 @@ fn has_unrepresentable_numeral(t: &Term) -> bool {
             let arith = matches!(ty.to_string().as_str(), "Int" | "Real");
             arith
                 && c.name.strip_prefix("int:").unwrap_or(&c.name).parse::<i128>().is_err()
+                && parse_real_lit(t).is_none()
         }
         TermInner::App(f, x) => has_unrepresentable_numeral(f) || has_unrepresentable_numeral(x),
         _ => false,
@@ -1363,6 +1590,35 @@ fn flip_cmp(op: &str) -> Option<&'static str> {
         ">" => "<",
         _ => return None,
     })
+}
+
+/// `k - sign·y`, or `None` if it leaves `i128`.
+fn derive_bound(k: i128, sign: i128, y: i128) -> Option<i128> {
+    k.checked_sub(sign.checked_mul(y)?)
+}
+
+/// The stored form of a strict upper bound `x < k`.
+///
+/// Under LIA the integer tightening `x < k ⇔ x ≤ k-1` is preferred (it lets
+/// `0 < x < 1` close). When `k-1` does not exist (`k = i128::MIN`) the bound
+/// is kept STRICT at `k` instead of wrapping — `(k, true)` is exactly what
+/// LRA stores, it is a faithful representation, and the feasibility check
+/// handles strictness. Never a wrapped number.
+fn strict_upper(is_lia: bool, k: i128) -> BoundValue {
+    match (is_lia, k.checked_sub(1)) {
+        (true, Some(k1)) => (k1, false),
+        _ => (k, true),
+    }
+}
+
+/// The stored form of a strict lower bound `x > k`; see [`strict_upper`].
+/// `x > i128::MAX` stays `(MAX, strict)` and still refutes `x < 0` — the
+/// wrapped `x ≥ i128::MIN` it used to become refuted nothing.
+fn strict_lower(is_lia: bool, k: i128) -> BoundValue {
+    match (is_lia, k.checked_add(1)) {
+        (true, Some(k1)) => (k1, false),
+        _ => (k, true),
+    }
 }
 
 /// `⌊m / d⌋` and `⌈m / d⌉`. Rust's `/` truncates toward zero, which is
@@ -1557,6 +1813,14 @@ impl Theory for LinArith {
         //
         // `Ignored` here is ROUTING, not dropping — the sibling theory owns the
         // atom — so the incompleteness backstop must NOT arm.
+        if self.name_ == "LIA" {
+            if let Some(res) = self.try_assert_to_real_eq(&lit) {
+                return res;
+            }
+            if let Some(res) = self.try_assert_to_real_comparison(&lit) {
+                return res;
+            }
+        }
         if let Some(sort) = atom_arith_sort(&lit.term) {
             let mine = if self.name_ == "LIA" { "Int" } else { "Real" };
             if sort != mine {
@@ -1625,6 +1889,10 @@ impl Theory for LinArith {
             // leave to UF / the two-var FM, exactly as before — sound, just
             // incomplete.) The reduction is exact, so this only ever DERIVES a
             // genuine `unsat`, never fabricates one.
+            // `ca - cb` (and the per-variable subtractions below) can leave
+            // `i128` for the verus prelude's `2^127`-scale constants; then the
+            // reduction cannot be trusted and the atom must not be dropped
+            // silently — see `dropped_arith_atom` at the fall-through.
             if let (Some((ma, ca)), Some((mb, cb))) =
                 (Self::linearize(&a), Self::linearize(&b))
                 && let Some(c) = ca.checked_sub(cb)
@@ -1738,10 +2006,8 @@ impl Theory for LinArith {
                 self.note_incomplete(|| {
                     format!("arithmetic equality `{}` not representable", lit.term)
                 });
-            } else if has_unrepresentable_numeral(&lit.term) {
-                self.note_incomplete(|| {
-                    format!("equality `{}` carries a numeral the bound store cannot hold", lit.term)
-                });
+            } else {
+                self.arm_if_dropped_arith(&lit.term, "equality");
             }
             return AssertResult::Ignored;
         }
@@ -1779,6 +2045,64 @@ impl Theory for LinArith {
                 self.var_diseqs.push((lo, hi));
                 return AssertResult::Accepted;
             }
+            // A COMPOUND disequality with at most one variable is still ours:
+            // reduce `a - b` to `Σ cᵢ·xᵢ + c` exactly as the equality path does.
+            //   0 variables → `c ≠ 0` is a closed question.
+            //   1 variable  → `c₁·x ≠ -c`, i.e. `x ≠ -c/c₁` — the same
+            //                 `diseqs` entry the bare `v ≠ k` shape records,
+            //                 so the LIA singleton rule can refute it.
+            // Measured before this: `v0 = 1 ∧ ¬(0 = v0 + -1)` came back `sat` —
+            // the disequality fell to UF, which cannot evaluate `v0 + -1`,
+            // while LinArith, which knew `v0 = 1`, never saw it.
+            if let (Some((ma, ca)), Some((mb, cb))) =
+                (Self::linearize(&a), Self::linearize(&b))
+                && let Some(c) = ca.checked_sub(cb)
+            {
+                let mut diff = ma;
+                let mut overflow = false;
+                for (k, v) in mb {
+                    let e = diff.entry(k).or_insert(0);
+                    match e.checked_sub(v) {
+                        Some(r) => *e = r,
+                        None => overflow = true,
+                    }
+                }
+                diff.retain(|_, v| *v != 0);
+                if !overflow {
+                    match diff.len() {
+                        0 => {
+                            if c != 0 {
+                                return AssertResult::Accepted; // `c ≠ 0` holds
+                            }
+                            let w = TheoryWitness::Opaque {
+                                kind: self.name_.into(),
+                                notes: "disequality reduces to the false ground fact 0 ≠ 0".into(),
+                            };
+                            self.conflict = Some(w.clone());
+                            return AssertResult::Conflict { witness: w };
+                        }
+                        1 => {
+                            let (var, &coeff) = diff.iter().next().expect("len == 1");
+                            let var = var.clone();
+                            if let Some(neg_c) = c.checked_neg() {
+                                if neg_c % coeff != 0 {
+                                    if self.name_ == "LIA" {
+                                        // no integer ever equals the excluded value
+                                        return AssertResult::Accepted;
+                                    }
+                                    self.note_incomplete(|| {
+                                        format!("LRA disequality `{}`: fractional excluded value", lit.term)
+                                    });
+                                    return AssertResult::Ignored;
+                                }
+                                self.diseqs.push((var, neg_c / coeff));
+                                return AssertResult::Accepted;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             // A *compound* disequality (`x + y ≠ z`) is dropped to UF, which can
             // only refute it by congruence (it can't evaluate the arithmetic),
             // so a model violating it could slip through as a confident Sat.
@@ -1788,10 +2112,8 @@ impl Theory for LinArith {
                 self.note_incomplete(|| {
                     format!("multi-variable linear disequality `{}` not representable", lit.term)
                 });
-            } else if has_unrepresentable_numeral(&lit.term) {
-                self.note_incomplete(|| {
-                    format!("disequality `{}` carries a numeral the bound store cannot hold", lit.term)
-                });
+            } else {
+                self.arm_if_dropped_arith(&lit.term, "disequality");
             }
             return AssertResult::Ignored;
         }
@@ -1860,10 +2182,8 @@ impl Theory for LinArith {
                 self.note_incomplete(|| {
                     format!("multi-variable linear comparison `{}` not representable", lit.term)
                 });
-            } else if has_unrepresentable_numeral(&lit.term) {
-                self.note_incomplete(|| {
-                    format!("comparison `{}` carries a numeral the bound store cannot hold", lit.term)
-                });
+            } else {
+                self.arm_if_dropped_arith(&lit.term, "comparison");
             }
             return AssertResult::Ignored;
         }
@@ -1894,10 +2214,8 @@ impl Theory for LinArith {
             self.note_incomplete(|| {
                 format!("multi-variable linear comparison `{}` not representable", lit.term)
             });
-        } else if has_unrepresentable_numeral(&lit.term) {
-            self.note_incomplete(|| {
-                format!("comparison `{}` carries a numeral the bound store cannot hold", lit.term)
-            });
+        } else {
+            self.arm_if_dropped_arith(&lit.term, "comparison");
         }
         AssertResult::Ignored
     }
@@ -2733,6 +3051,58 @@ mod tests {
         let r = t.assert(Literal::positive(cmp_term("<", ivar("x"), ilit(1))).unwrap());
         assert!(!matches!(r, AssertResult::Conflict { .. }), "0.5 lies between 0 and 1");
         assert!(!matches!(t.check(), CheckResult::Unsat { .. }), "and `check` must agree");
+    }
+
+    /// `x > i128::MAX ∧ x < 0` is unsat. The integer tightening used to
+    /// compute `MAX + 1`, which wrapped to `i128::MIN`, storing `x ≥ MIN` —
+    /// a bound that refutes nothing — and the engine reported a false `sat`
+    /// (masked until c693f9d only because LRA's non-tightening store happened
+    /// to also see the atom). The strict form `(MAX, strict)` refutes it.
+    #[test]
+    fn a_strict_bound_at_the_i128_boundary_does_not_wrap() {
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(cmp_term(">", ivar("x"), ilit(i128::MAX))).unwrap());
+        let r = t.assert(Literal::positive(cmp_term("<", ivar("x"), ilit(0))).unwrap());
+        assert!(
+            matches!(r, AssertResult::Conflict { .. }) || matches!(t.check(), CheckResult::Unsat { .. }),
+            "x > MAX and x < 0 must conflict"
+        );
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(cmp_term("<", ivar("x"), ilit(i128::MIN))).unwrap());
+        let r = t.assert(Literal::positive(cmp_term(">", ivar("x"), ilit(0))).unwrap());
+        assert!(
+            matches!(r, AssertResult::Conflict { .. }) || matches!(t.check(), CheckResult::Unsat { .. }),
+            "x < MIN and x > 0 must conflict"
+        );
+    }
+
+    /// `x + y ≤ 1 ∧ y ≥ -(2^127-1) ∧ x ≥ 0` is SATISFIABLE (x = y = 0). The
+    /// two-var propagation used to derive `x ≤ 1 - (-(2^127-1))`, which
+    /// wrapped to `i128::MIN`, and the false bound closed it as `unsat`. The
+    /// derivation must be dropped, and dropping arms the backstop.
+    #[test]
+    fn an_overflowing_two_var_derivation_is_dropped_not_wrapped() {
+        let mut t = LinArith::lia();
+        t.assert(Literal::positive(cmp_term("<=", iadd(ivar("x"), ivar("y")), ilit(1))).unwrap());
+        t.assert(Literal::positive(cmp_term(">=", ivar("y"), ilit(-(i128::MAX)))).unwrap());
+        let r = t.assert(Literal::positive(cmp_term(">=", ivar("x"), ilit(0))).unwrap());
+        assert!(!matches!(r, AssertResult::Conflict { .. }), "{r:?}");
+        assert!(!matches!(t.check(), CheckResult::Unsat { .. }), "satisfiable: x = y = 0");
+        assert!(t.incomplete.is_some(), "a dropped derivation must arm the backstop");
+    }
+
+    /// The same at the boundary for Fourier–Motzkin: `a.k + b.k` leaving
+    /// `i128` must not produce a bound.
+    #[test]
+    fn an_overflowing_fm_sum_is_dropped_not_wrapped() {
+        let mut t = LinArith::lia();
+        // x - y <= MAX ; y - z <= MAX  ⇒ FM would derive x - z <= 2·MAX (overflow)
+        t.assert(Literal::positive(diff_le_term("x", "y", i128::MAX)).unwrap());
+        t.assert(Literal::positive(diff_le_term("y", "z", i128::MAX)).unwrap());
+        // z - x <= -1 closes a cycle; with a wrapped sum the "cycle" would look infeasible
+        t.assert(Literal::positive(diff_le_term("z", "x", -1)).unwrap());
+        // Satisfiable? x - y ≤ MAX, y - z ≤ MAX, z ≤ x - 1: take z = 0, x = 1, y = 0.
+        assert!(!matches!(t.check(), CheckResult::Unsat { .. }), "satisfiable, must not refute");
     }
 
     /// A shape this does not understand must be left alone rather than

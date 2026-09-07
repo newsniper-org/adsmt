@@ -10,6 +10,14 @@
 
 use crate::env::{Decl, Env, Modality};
 use crate::term::{Term, TermKind, as_const_app, collect_spine, peel_all_pis, shift, subst_top};
+use crate::theory;
+
+fn as_int_literal(t: &Term) -> Option<i128> {
+    match t.kind() {
+        TermKind::Const(s) => s.parse::<i128>().ok(),
+        _ => None,
+    }
+}
 
 /// Weak-head normal form: reduce the **head** under β, ζ, δ, ι (`Elim` /
 /// `Match` on a constructor), and μ (a guarded `Fix` applied with its
@@ -100,6 +108,89 @@ fn whnf_uncached(env: &Env, t: &Term) -> Term {
             TermKind::App(..) => {
                 let (head, args) = collect_spine(&cur);
                 let whead = whnf(env, &head);
+                if let TermKind::Const(name) = whead.kind() {
+                    if name == "ite" && args.len() == 4 {
+                        let c = whnf(env, &args[1]);
+                        if let TermKind::Const(cn) = c.kind() {
+                            if cn == "true" {
+                                cur = args[2].clone();
+                                continue;
+                            } else if cn == "false" {
+                                cur = args[3].clone();
+                                continue;
+                            }
+                        }
+                    }
+                    if name == "=" && args.len() == 3 {
+                        let a = whnf(env, &args[1]);
+                        let b = whnf(env, &args[2]);
+                        if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
+                            cur = Term::cnst(if x == y { "true" } else { "false" });
+                            continue;
+                        }
+                    }
+                    if name == theory::INT_LT && args.len() == 2 {
+                        let a = whnf(env, &args[0]);
+                        let b = whnf(env, &args[1]);
+                        if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
+                            cur = Term::cnst(if x < y { "true" } else { "false" });
+                            continue;
+                        }
+                    }
+                    if name == theory::INT_LE && args.len() == 2 {
+                        let a = whnf(env, &args[0]);
+                        let b = whnf(env, &args[1]);
+                        if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
+                            cur = Term::cnst(if x <= y { "true" } else { "false" });
+                            continue;
+                        }
+                    }
+                    if name == theory::INT_GT && args.len() == 2 {
+                        let a = whnf(env, &args[0]);
+                        let b = whnf(env, &args[1]);
+                        if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
+                            cur = Term::cnst(if x > y { "true" } else { "false" });
+                            continue;
+                        }
+                    }
+                    if name == theory::INT_GE && args.len() == 2 {
+                        let a = whnf(env, &args[0]);
+                        let b = whnf(env, &args[1]);
+                        if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
+                            cur = Term::cnst(if x >= y { "true" } else { "false" });
+                            continue;
+                        }
+                    }
+                    if name == theory::INT_ADD && args.len() == 2 {
+                        let a = whnf(env, &args[0]);
+                        let b = whnf(env, &args[1]);
+                        if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
+                            if let Some(sum) = x.checked_add(y) {
+                                cur = Term::cnst(sum.to_string());
+                                continue;
+                            }
+                        }
+                    }
+                    if name == theory::INT_SUB && args.len() == 2 {
+                        let a = whnf(env, &args[0]);
+                        let b = whnf(env, &args[1]);
+                        if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
+                            if let Some(diff) = x.checked_sub(y) {
+                                cur = Term::cnst(diff.to_string());
+                                continue;
+                            }
+                        }
+                    }
+                    if name == theory::INT_NEG && args.len() == 1 {
+                        let a = whnf(env, &args[0]);
+                        if let Some(x) = as_int_literal(&a) {
+                            if let Some(neg) = x.checked_neg() {
+                                cur = Term::cnst(neg.to_string());
+                                continue;
+                            }
+                        }
+                    }
+                }
                 match whead.kind() {
                     // β: apply the first argument, re-apply the rest
                     TermKind::Lam(_, body) => {

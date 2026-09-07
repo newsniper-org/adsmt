@@ -593,16 +593,15 @@ mod tests {
     }
 
     #[test]
-    fn value_valued_match_is_sound_unknown() {
+    fn value_valued_match_now_lowers_and_solves() {
         let _g = guard();
-        // a VALUE-valued match elaborates + kernel-checks, but the #325 lowering
-        // abstains on a data-valued case split ⇒ the sound Unknown (never a
-        // fabricated verdict).
+        // A value-valued match now lowers successfully to tester/selector ITE chains
+        // and solves directly in the engine (satisfiable with x = zero).
         let v = solve(
             "data N = zero | succ(pred: N)\nconst x: N\n\
              goal g: (match x { zero => zero, succ(n) => n }) = zero\n",
         );
-        assert_eq!(v.collapse(), TriState::Unknown, "got {v:?}");
+        assert_eq!(v.collapse(), TriState::Sat, "got {v:?}");
     }
 
     // A VALID but NONLINEAR goal `x>0 ⟹ x*x>0`. The bare native engine abstains on

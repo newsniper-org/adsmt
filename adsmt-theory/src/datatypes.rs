@@ -287,6 +287,44 @@ impl Datatypes {
         }
     }
 
+    /// Transitive constructor disjointness: if a congruence class contains applications
+    /// of two or more distinct constructors of the SAME sort (e.g. `t = b(x) ∧ t = c(y)`),
+    /// emit a disjointness conflict.
+    fn congruent_disjointness_conflict(&self) -> Option<TheoryWitness> {
+        if self.asserted_eqs.is_empty() {
+            return None;
+        }
+        let mut parent: HashMap<Term, Term> = HashMap::new();
+        for (a, b) in &self.asserted_eqs {
+            Self::uf_union(&mut parent, a, b);
+        }
+        let mut ctors_of: HashMap<Term, Vec<(String, String)>> = HashMap::new();
+        for t in parent.keys() {
+            if let Some((sort_name, cname)) = self.constructor_id(t) {
+                let r = Self::uf_find(&parent, t);
+                ctors_of.entry(r).or_default().push((sort_name, cname));
+            }
+        }
+        for (rep, ctors) in ctors_of {
+            if ctors.len() > 1 {
+                for i in 0..ctors.len() {
+                    for j in (i + 1)..ctors.len() {
+                        let (s1, c1) = &ctors[i];
+                        let (s2, c2) = &ctors[j];
+                        if s1 == s2 && c1 != c2 {
+                            return Some(TheoryWitness::Datatypes(DatatypeWitness {
+                                kind: DatatypeReason::Disjointness,
+                                constructors: vec![c1.clone(), c2.clone()],
+                                focused: Some(rep),
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Occurs-check / **acyclicity**. In a well-founded (inductive)
     /// datatype a constructor value is strictly larger than each of its
     /// arguments, so a value can never equal a proper sub-part of itself.
@@ -853,6 +891,11 @@ impl Theory for Datatypes {
     fn check(&mut self) -> CheckResult {
         if let Some(w) = &self.conflict {
             return CheckResult::Unsat { witness: w.clone() };
+        }
+        // Transitive disjointness: distinct constructors in the same class are unsat.
+        if let Some(w) = self.congruent_disjointness_conflict() {
+            self.conflict = Some(w.clone());
+            return CheckResult::Unsat { witness: w };
         }
         // Occurs-check: a constructor value can't contain itself.
         if let Some(w) = self.acyclicity_conflict() {
