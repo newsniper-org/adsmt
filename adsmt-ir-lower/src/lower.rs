@@ -497,7 +497,24 @@ impl Lowerer<'_> {
     }
 
     fn lower_term_inner(&self, term: &Term, frames: &mut Vec<Frame>) -> Result<CTerm, LowerError> {
+        // The kernel's head reduction is TOTAL, which means it can stop early:
+        // on a δ-cycle (a mutual `fn` group admitted through the raw, unchecked
+        // `declare`) or past its depth backstop. What comes back is then the
+        // term un-reduced, and lowering that would hand the solver an
+        // UNINTERPRETED symbol where a definition's content belonged — the
+        // definition's meaning dropped with nothing recording it. Dropping a
+        // constraint preserves `unsat` and destroys `sat`, so the honest move
+        // is to abstain here rather than to answer over the weaker theory.
+        let cuts_before = adsmt_ir::reduction_cuts();
         let t = whnf(self.env, term);
+        if adsmt_ir::reduction_cuts() != cuts_before {
+            return Err(unl(
+                "the kernel could not reduce a term to head normal form (a \
+                 definition unfolds without making progress, or the reduction \
+                 ran past its depth backstop) — its meaning would be dropped, \
+                 so this goal is not lowered",
+            ));
+        }
         // Term-level `ite` lifting: `adsmt-core` has no term-level conditional, so
         // a term-`ite` `(ite A c a b)` (A a non-Bool sort) nested in an atom's
         // argument is removed by **atom duplication** — rewrite the atom

@@ -74,7 +74,7 @@ pub use inductive::{
     MutualMember, declare_inductive, declare_inductive_indexed, declare_mutual,
     expected_motive_type, match_type, method_type, mut_method_type,
 };
-pub use reduce::{is_def_eq, whnf};
+pub use reduce::{is_def_eq, reduction_cuts, whnf};
 pub use term::{
     Term, TermKind, Univ, as_const_app, build_pi, collect_spine, occurs, peel_pis, shift,
     subst_top,

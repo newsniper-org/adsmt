@@ -65,10 +65,22 @@ fn as_int_literal(t: &Term) -> Option<i128> {
 /// application/eliminator. Arguments are left unreduced (that is what
 /// "weak" means); [`is_def_eq`] recurses into them congruently.
 ///
-/// Termination: `def` bodies are non-recursive (head-δ cannot loop) and
-/// every admitted `Fix` passed the structural-decrease guard
-/// (`guard::guard_ok`), so μ strictly decreases the recursive argument —
-/// whnf terminates on well-typed input.
+/// Termination is enforced, not assumed. The old argument — "`def` bodies are
+/// non-recursive (head-δ cannot loop) and every admitted `Fix` passed
+/// `guard::guard_ok`" — is true of every environment built through the checked
+/// admitters, and `Env::declare` is `pub` and documented as unchecked, so it is
+/// not true of every environment. It was measurably false in this workspace:
+/// the lu-kb face admitted a mutual `fn` group through the raw `declare`, and
+/// `f x = g x`, `g x = f x` made this function spin forever (a flat δ/β cycle,
+/// no stack growth) while `f x = g x + 1` blew the stack at ~3850 frames.
+///
+/// So the loop refuses a δ step that cannot make progress: see
+/// [`ReductionPath`]. A term that reappears on the path is returned STUCK,
+/// which is the honest answer — `f c` above has no weak head normal form, and
+/// no reduction strategy can invent one. Callers see an un-reduced term, which
+/// costs completeness (a conversion may answer "not equal" where a terminating
+/// reduction would have said equal) and never soundness. A depth cap backstops
+/// the stack for a term that is deep without being cyclic.
 ///
 /// **Memoized** (the §8 conversion cache): `whnf` is a pure function of the
 /// env-*state* and `t`, so the result is cached on `env` keyed by the
@@ -80,15 +92,147 @@ pub fn whnf(env: &Env, t: &Term) -> Term {
     if let Some(cached) = env.memo_whnf_get(t) {
         return cached;
     }
+    let depth = ReductionPath::depth();
+    if depth >= MAX_WHNF_DEPTH {
+        // Not a cycle, just deeper than the stack can carry. Same honest
+        // answer, same refusal to cache it.
+        ReductionPath::note_cut();
+        return t.clone();
+    }
+    let cuts_before = ReductionPath::cuts();
+    ReductionPath::set_depth(depth + 1);
     let result = whnf_uncached(env, t);
-    env.memo_whnf_put(t, &result);
+    ReductionPath::set_depth(depth);
+    // A result computed while some reduction below was cut short is NOT the
+    // weak head normal form of `t`; caching it would make the truncation
+    // permanent for the rest of the session, and visible to callers that were
+    // nowhere near the cut.
+    if ReductionPath::cuts() == cuts_before {
+        env.memo_whnf_put(t, &result);
+    }
     result
+}
+
+/// How deep `whnf` may nest before it stops rather than overflow the stack.
+///
+/// The cycle check below is what actually decides termination; this is the
+/// backstop for a term that is *deep* without being cyclic. Measured headroom:
+/// the observed overflow sat at ~3850 nested frames on an 8 MiB stack, so 512
+/// leaves roughly a 7x margin, and the deepest reduction anywhere in the
+/// 246-file corpus is orders of magnitude below it.
+const MAX_WHNF_DEPTH: u32 = 512;
+
+thread_local! {
+    /// Terms whose head reduction is IN PROGRESS on this thread, across every
+    /// nested `whnf` frame. Membership is the cycle test.
+    static PATH: std::cell::RefCell<std::collections::HashSet<Term>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static PATH_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static PATH_CUTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The in-progress reduction path, and the RAII handle that keeps it accurate.
+///
+/// `whnf_uncached` reaches its terminal cases through a dozen early `return`s,
+/// so the pops happen in `Drop` rather than at each exit. Terms are hash-consed:
+/// `Hash` reads a precomputed `u64` and `PartialEq` is `Arc::ptr_eq`, so both
+/// the insert and the lookup are O(1) with no structural traversal.
+///
+/// Identity is the whole TERM, not the constant being unfolded. That
+/// distinction matters: `f (f 1)` legitimately reduces `f` twice on one path
+/// and must not be mistaken for a cycle, while `f c → g c → f c` returns to a
+/// term it is already reducing and genuinely cannot terminate.
+struct ReductionPath {
+    pushed: Vec<Term>,
+}
+
+impl ReductionPath {
+    fn new() -> Self {
+        Self { pushed: Vec::new() }
+    }
+
+    /// Register `t` as being reduced on this path. `false` means it already
+    /// was — the reduction has returned to itself and cannot make progress.
+    fn enter(&mut self, t: &Term) -> bool {
+        let fresh = PATH.with(|p| p.borrow_mut().insert(t.clone()));
+        if fresh {
+            self.pushed.push(t.clone());
+        }
+        fresh
+    }
+
+    fn depth() -> u32 {
+        PATH_DEPTH.with(|c| c.get())
+    }
+
+    fn set_depth(d: u32) {
+        PATH_DEPTH.with(|c| c.set(d));
+    }
+
+    fn cuts() -> u64 {
+        PATH_CUTS.with(|c| c.get())
+    }
+
+    fn note_cut() {
+        PATH_CUTS.with(|c| c.set(c.get().wrapping_add(1)));
+    }
+}
+
+/// How many reductions this thread has CUT SHORT so far — a monotone counter,
+/// meaningful only as a before/after comparison.
+///
+/// A cut leaves a term un-reduced, and a consumer that turns an un-reduced term
+/// into an uninterpreted symbol has silently dropped the definition's meaning.
+/// Dropping meaning preserves `unsat` and destroys `sat`, so such a consumer
+/// must abstain rather than answer. `adsmt-ir-lower` brackets its `whnf` call
+/// with this and refuses to lower a term whose reduction was cut.
+pub fn reduction_cuts() -> u64 {
+    ReductionPath::cuts()
+}
+
+impl Drop for ReductionPath {
+    fn drop(&mut self) {
+        PATH.with(|p| {
+            let mut p = p.borrow_mut();
+            for t in &self.pushed {
+                p.remove(t);
+            }
+        });
+    }
+}
+
+/// Can `t` be the point a reduction cycles back to?
+///
+/// A sort, a de Bruijn index, a λ, a Π and a bare `fix` are already
+/// weak-head-normal: the loop returns on them without stepping, so they can
+/// never recur. Registering them on the path is pure overhead, and this is the
+/// hot case — the corpus reaches a normal form in one or two steps.
+fn may_recur(t: &Term) -> bool {
+    !matches!(
+        t.kind(),
+        TermKind::Sort(_)
+            | TermKind::Bound(_)
+            | TermKind::Lam(_, _)
+            | TermKind::Pi(_, _)
+            | TermKind::Fix { .. }
+    )
 }
 
 /// The uncached weak-head reduction loop behind [`whnf`].
 fn whnf_uncached(env: &Env, t: &Term) -> Term {
+    let mut path = ReductionPath::new();
     let mut cur = t.clone();
+    // The FIRST term is not registered: a cycle needs at least one step, so it
+    // can only be detected on a later iteration (or by a nested frame, which
+    // sees the terms this one registered). Skipping it takes the tracking off
+    // the overwhelmingly common one-step reduction entirely.
+    let mut stepped = false;
     loop {
+        if stepped && may_recur(&cur) && !path.enter(&cur) {
+            ReductionPath::note_cut();
+            return cur.clone();
+        }
+        stepped = true;
         // Each head-reduction arm computes the *next* term to keep reducing
         // (`next`); the terminal arms (no head step possible) early-`return`.
         // The match only borrows `cur` (via `kind()`), so the reassignment
@@ -484,8 +628,17 @@ pub fn is_def_eq(env: &Env, a: &Term, b: &Term) -> bool {
     if let Some(cached) = env.memo_defeq_get(a, b) {
         return cached;
     }
+    let cuts_before = ReductionPath::cuts();
     let result = is_def_eq_uncached(env, a, b);
-    env.memo_defeq_put(a, b, result);
+    // Same rule as the whnf memo: a verdict reached while a reduction below
+    // was cut short is not the verdict a complete reduction would give, so it
+    // must not be frozen into the cache for the rest of the session. (A cut
+    // can only turn `true` into `false` — a term left un-reduced fails to
+    // match one that was reduced — so caching it would make the kernel
+    // PERMANENTLY reject conversions it can decide.)
+    if ReductionPath::cuts() == cuts_before {
+        env.memo_defeq_put(a, b, result);
+    }
     result
 }
 
