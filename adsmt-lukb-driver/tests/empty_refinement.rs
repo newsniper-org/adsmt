@@ -68,3 +68,66 @@ fn a_module_with_no_refinement_is_untouched() {
         TriState::Unsat
     );
 }
+
+// ── the companion case: an empty INDUCTIVE type ─────────────────────────
+//
+// A CIC type with no base case is empty; an SMT sort is non-empty by
+// convention. The two layers therefore disagree about every quantified goal
+// over it, and the note that raised this listed the direction of the
+// disagreement as unmeasured:
+//
+//     goal shape            CIC              SMT (non-empty)
+//     ∀x:Empty. φ           true (vacuous)   depends on φ
+//     ∃x:Empty. φ           false            depends on φ
+//     const x: Empty        cannot exist     assumed to exist
+//
+// Measured, the question is moot: `uninhabited_datatypes` (47d2ab6) refuses to
+// lower the module at all, so no shape produces a verdict for the two
+// semantics to disagree about. These tests pin that — a future change that
+// starts ANSWERING one of these rows has re-opened the disagreement.
+
+fn empty_dt(goal: &str) -> String {
+    format!("data Box = mk(a: Int, next: Box)\nfn p(x: Box): Bool\ngoal: {goal}\n")
+}
+
+#[test]
+fn no_goal_over_an_empty_inductive_gets_a_verdict() {
+    for g in [
+        "forall x: Box. p(x)",
+        "exists x: Box. p(x)",
+        "forall x: Box. not p(x)",
+        "exists x: Box. not p(x)",
+    ] {
+        assert_eq!(
+            verdict(&empty_dt(g)),
+            TriState::Unknown,
+            "an empty inductive must not decide `{g}`"
+        );
+    }
+}
+
+#[test]
+fn declaring_an_inhabitant_of_an_empty_inductive_decides_nothing_either() {
+    // The row that looked most dangerous: `const b: Box` ASSERTS that an
+    // element exists, and from a false premise anything follows.
+    assert_eq!(
+        verdict(
+            "data Box = mk(a: Int, next: Box)\nconst b: Box\nfn p(x: Box): Bool\n\
+             axiom: p(b)\ngoal: not p(b)\n"
+        ),
+        TriState::Unknown
+    );
+}
+
+#[test]
+fn an_inhabited_inductive_is_untouched() {
+    // The narrowness control: adding a base case restores ordinary behaviour.
+    assert_eq!(
+        verdict(
+            "data Box = nil | mk(a: Int, next: Box)\nfn p(x: Box): Bool\n\
+             goal: forall x: Box. p(x)\n"
+        ),
+        TriState::Sat,
+        "an inhabited datatype still answers"
+    );
+}
