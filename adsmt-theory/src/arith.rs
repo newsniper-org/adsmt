@@ -182,6 +182,12 @@ impl LinArith {
             });
         } else if Self::operand_overflow(t) {
             self.note_incomplete(|| format!("{what} `{t}`: a constant left i128 while linearising"));
+        } else if let Some(h) = unimplemented_arith_head(t) {
+            self.note_incomplete(|| {
+                format!("{what} `{t}` applies `{h}`, which no theory here interprets")
+            });
+        } else if has_nonlinear_product(t) {
+            self.note_incomplete(|| format!("{what} `{t}` contains a nonlinear product"));
         }
     }
 
@@ -1053,6 +1059,16 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
             m.insert(v.name.clone(), 1);
             return Ok(Some((m, 0)));
         }
+        // `abs` is UNARY, so it is one `App` deep — peeled before the binary
+        // destructuring below. Ground only, same reason as `div`/`mod`.
+        if let TermInner::App(h, x) = t.kind()
+            && let TermInner::Const(hc) = h.kind()
+            && hc.name == "abs"
+            && let Some((m, k)) = Self::linearize_status(x)?
+            && m.is_empty()
+        {
+            return Ok(Some((BTreeMap::new(), k.checked_abs().ok_or(())?)));
+        }
         let TermInner::App(outer, b) = t.kind() else { return Ok(None) };
         let TermInner::App(head, a) = outer.kind() else { return Ok(None) };
         let TermInner::Const(c) = head.kind() else { return Ok(None) };
@@ -1067,6 +1083,24 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
                 }
                 let cc = if neg { ca.checked_sub(cb).ok_or(())? } else { ca.checked_add(cb).ok_or(())? };
                 Ok(Some((ma, cc)))
+            }
+            // SMT-LIB's Euclidean `div`/`mod`, folded when BOTH operands are
+            // ground. The engine had no rule for these at all, so a goal as
+            // plain as `div(7, 2) = 3` was a dropped atom answered `sat`.
+            // Division by zero is left unspecified by SMT-LIB, so it is not
+            // folded — it falls through and the drop arms the backstop.
+            "div" | "mod" => {
+                let Some((ma, ca)) = Self::linearize_status(a)? else { return Ok(None) };
+                let Some((mb, cb)) = Self::linearize_status(b)? else { return Ok(None) };
+                if !ma.is_empty() || !mb.is_empty() || cb == 0 {
+                    return Ok(None);
+                }
+                let v = if c.name == "div" {
+                    ca.checked_div_euclid(cb).ok_or(())?
+                } else {
+                    ca.checked_rem_euclid(cb).ok_or(())?
+                };
+                Ok(Some((BTreeMap::new(), v)))
             }
             "*" => {
                 // Linear only when at least one factor is a pure constant.
@@ -1483,6 +1517,78 @@ fn atom_arith_sort(t: &Term) -> Option<&'static str> {
         Some("Int")
     } else {
         None
+    }
+}
+
+/// An arithmetic head BOTH faces emit as interpreted but no theory here
+/// implements, when applied in a way this theory could not fold.
+///
+/// The SMT-LIB face parses `abs`/`div`/`mod`/`/` (convert.rs) and the lu-kb
+/// lowering emits the same names (`Int.abs` → `abs`, `Int.div` → `div`, …), so
+/// the engine receives them looking interpreted while `LinArith` had no rule
+/// for any of them. They reached UF, which cannot evaluate arithmetic, and the
+/// combination answered a confident `sat`:
+///
+/// ```text
+/// ⊢ abs(5) = 5        sat   (z3, cvc5: unsat)
+/// ⊢ mod(7, 2) = 1     sat
+/// ⊢ div(7, 2) = 3     sat
+/// ```
+///
+/// Ground applications now FOLD (see `linearize_status`), so those three close.
+/// What remains — a symbolic argument, or `div`/`mod` by zero, which SMT-LIB
+/// leaves unspecified — is genuinely beyond this theory and must arm the
+/// backstop rather than be dropped into a confident answer.
+fn unimplemented_arith_head(t: &Term) -> Option<&'static str> {
+    fn head_name(t: &Term) -> Option<&'static str> {
+        let TermInner::Const(c) = t.kind() else { return None };
+        // Only at a FUNCTION type: a bare `Const` named `abs` at sort Int is a
+        // numeral-shaped name, not an application head.
+        if !t.type_of().is_fun() {
+            return None;
+        }
+        match c.name.as_str() {
+            "abs" => Some("abs"),
+            "div" => Some("div"),
+            "mod" => Some("mod"),
+            "/" => Some("/"),
+            _ => None,
+        }
+    }
+    match t.kind() {
+        TermInner::Const(_) => head_name(t),
+        TermInner::App(f, x) => head_name(f).or_else(|| unimplemented_arith_head(f)).or_else(|| unimplemented_arith_head(x)),
+        _ => None,
+    }
+}
+
+/// A product neither of whose factors is a constant.
+///
+/// `linearize` declines it (a linear form has no `x·y` term) and the atom was
+/// dropped with nothing armed, so the GROUND case folded while the symbolic one
+/// answered a countermodel — an asymmetry that reads as a working feature:
+///
+/// ```text
+/// ⊢ 2 * 3 = 6                 unsat  (folds)
+/// x = 2 ∧ y = 3 ⊢ x * y = 6   sat    (dropped, z3/cvc5: unsat)
+/// ```
+fn has_nonlinear_product(t: &Term) -> bool {
+    match t.kind() {
+        TermInner::App(outer, b) => {
+            if let TermInner::App(head, a) = outer.kind()
+                && let TermInner::Const(c) = head.kind()
+                && c.name == "*"
+            {
+                let ground = |x: &Term| {
+                    matches!(LinArith::linearize_status(x), Ok(Some((ref m, _))) if m.is_empty())
+                };
+                if !ground(a) && !ground(b) {
+                    return true;
+                }
+            }
+            has_nonlinear_product(outer) || has_nonlinear_product(b)
+        }
+        _ => false,
     }
 }
 
@@ -3149,6 +3255,81 @@ mod tests {
         assert!(matches!(r, AssertResult::Ignored), "{r:?}");
         assert!(t.incomplete.is_some(), "a dropped decimal disequality must arm too");
         let _ = rel;
+    }
+
+    fn iapp1(f: &str, a: Term) -> Term {
+        Term::app(Term::const_(f, Type::fun(int_ty(), int_ty()).unwrap()), a).unwrap()
+    }
+    fn iapp2(f: &str, a: Term, b: Term) -> Term {
+        let ty = Type::fun(int_ty(), Type::fun(int_ty(), int_ty()).unwrap()).unwrap();
+        Term::app(Term::app(Term::const_(f, ty), a).unwrap(), b).unwrap()
+    }
+
+    /// `abs`, `div` and `mod` reach the engine looking interpreted — both faces
+    /// emit those heads — but no theory implemented them, so `abs(5) = 5` was a
+    /// dropped atom answered `sat`. Ground applications now fold, with SMT-LIB's
+    /// EUCLIDEAN convention: `mod` is never negative.
+    #[test]
+    fn ground_abs_div_and_mod_fold() {
+        let cases: [(Term, i128); 6] = [
+            (iapp1("abs", ilit(5)), 5),
+            (iapp1("abs", ilit(-5)), 5),
+            (iapp2("div", ilit(7), ilit(2)), 3),
+            (iapp2("mod", ilit(7), ilit(2)), 1),
+            (iapp2("div", ilit(-7), ilit(2)), -4),
+            (iapp2("mod", ilit(-7), ilit(2)), 1),
+        ];
+        for (t, want) in cases {
+            let (m, k) = LinArith::linearize(&t).unwrap_or_else(|| panic!("must fold: {t}"));
+            assert!(m.is_empty(), "{t}");
+            assert_eq!(k, want, "{t}");
+        }
+    }
+
+    /// Division by zero is UNSPECIFIED in SMT-LIB, so it must not fold — and
+    /// then, being dropped, it must arm the backstop.
+    #[test]
+    fn division_by_zero_is_not_folded_and_arms() {
+        let t = iapp2("div", ilit(7), ilit(0));
+        assert!(LinArith::linearize(&t).is_none(), "must not fold");
+        let mut th = LinArith::lia();
+        let atom = Term::mk_eq(t, ilit(0)).unwrap();
+        let r = th.assert(Literal::positive(atom).unwrap());
+        assert!(matches!(r, AssertResult::Ignored), "{r:?}");
+        assert!(th.incomplete.is_some(), "a dropped `div`-by-zero must arm");
+    }
+
+    /// A SYMBOLIC application of the same heads cannot be folded, so it must
+    /// arm rather than be dropped into a confident answer.
+    ///
+    /// Stated on EQUALITIES, because those are the atoms that need this arm:
+    /// the polite combination exempts equality-shaped atoms from its own
+    /// `uninterpreted` backstop (UF is supposed to reason about them), so for
+    /// an equality this theory's arming is the only guard. A dropped
+    /// COMPARISON still arms polite's.
+    #[test]
+    fn a_symbolic_unimplemented_head_arms_the_backstop() {
+        for t in [iapp1("abs", ivar("x")), iapp2("mod", ivar("x"), ilit(2))] {
+            let mut th = LinArith::lia();
+            let atom = Term::mk_eq(t.clone(), ilit(0)).unwrap();
+            let r = th.assert(Literal::positive(atom).unwrap());
+            assert!(matches!(r, AssertResult::Ignored), "{t}: {r:?}");
+            assert!(th.incomplete.is_some(), "{t}: a symbolic interpreted head must arm");
+        }
+    }
+
+    /// The ground/symbolic asymmetry that read as a working feature: `2 * 3`
+    /// folds, but `x * y` under pinning hypotheses was dropped unarmed and the
+    /// engine answered a countermodel to `x = 2 ∧ y = 3 ⊢ x * y = 6`.
+    #[test]
+    fn a_nonlinear_product_arms_the_backstop() {
+        let mut th = LinArith::lia();
+        let prod = imul(ivar("x"), ivar("y"));
+        let r = th.assert(Literal::positive(Term::mk_eq(prod, ilit(6)).unwrap()).unwrap());
+        assert!(matches!(r, AssertResult::Ignored), "{r:?}");
+        assert!(th.incomplete.is_some(), "a nonlinear product must arm");
+        // The ground product is untouched — it never reaches the drop point.
+        assert_eq!(LinArith::linearize(&imul(ilit(2), ilit(3))).unwrap().1, 6);
     }
 
     /// A shape this does not understand must be left alone rather than
