@@ -14,6 +14,16 @@ axioms the disagreement actually needs.
   completeness targets (z3 closes what we abstain on); `z3-noverdict` rows
   are mostly the designed-non-verifying abduct family. Env: `ADSMT_CORPUS`,
   `ADSMTC`. Output: per-row TSV + a `family × (adsmtc, z3)` summary.
+- `dt_gen.py <outdir> <lo> <hi>` — random DATATYPE queries with globally
+  unique selector names. The neutral control: a verdict change here is about
+  the structural rules, not about naming.
+- `dt_collision_gen.py <outdir> <lo> <hi>` — the same, except selector names
+  deliberately REUSE constructor names of another datatype in the group.
+  SMT-LIB requires a selector name to be distinct only inside its own group,
+  so this is legal and both oracles accept it. It is the shape `dt_gen.py`
+  never produces, and three independent differentials came back clean while
+  35 false `unsat`s per 2000 queries sat in the structural rules. Score
+  NEWLY-INTRODUCED false unsats against the baseline, not the raw count.
 - `ddmin_render.py <render.smt2> <out.smt2>` — per-`(assert)` ddmin
   preserving `z3 = unsat ∧ oxiz ≠ unsat` (declarations kept verbatim).
   Env: `OXIZ` (the fork CLI, `cargo build --release -p oxiz-cli` inside

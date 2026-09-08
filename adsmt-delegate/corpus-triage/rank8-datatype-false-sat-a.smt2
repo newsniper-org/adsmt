@@ -1,0 +1,7 @@
+(set-logic ALL)
+(declare-datatypes ((Tree 0) (Forest 0))
+  (((node (kids Forest)))
+   ((nil) (cons (hd Tree) (tl Forest)))))
+(declare-const t Tree)
+(assert (= (kids t) (cons t nil)))
+(check-sat)

@@ -1,0 +1,8 @@
+(set-logic ALL)
+(declare-datatypes ((E 0) (P 0))
+  (((nilE) (consE (hdE Int) (tlE E)))
+   ((base) (mk (f P) (nilE P)))))
+(declare-const p P)
+(assert (not (= p base)))
+(assert (not (= (f p) p)))
+(check-sat)

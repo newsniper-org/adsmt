@@ -1,0 +1,8 @@
+(set-logic ALL)
+(declare-datatypes ((S 0)) (((Sc0 (f0 Int) (f1 Int)))))
+(declare-const i Int)
+(declare-const s S)
+(assert (= s (Sc0 i i)))
+(assert (= (f0 s) 2))
+(assert (= (f1 s) 1))
+(check-sat)

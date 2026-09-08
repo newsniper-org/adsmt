@@ -1,0 +1,5 @@
+(set-logic ALL)
+(declare-datatypes ((E 0) (P 0)) (((dnil) (dcons (dh Int) (dt E))) ((pc0 (dcons P)) (pbase))))
+(declare-const q P)
+(assert (= (dcons q) q))
+(check-sat)

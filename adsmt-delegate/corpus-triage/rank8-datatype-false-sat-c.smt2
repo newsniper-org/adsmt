@@ -1,0 +1,6 @@
+(set-logic ALL)
+(declare-datatypes ((P 0)) (((mk (a Int) (b Int)))))
+(declare-const p P)
+(assert (= (a p) 1))
+(assert (not (= p (mk 1 (b p)))))
+(check-sat)
