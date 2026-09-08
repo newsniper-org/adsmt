@@ -1353,15 +1353,28 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
             return None;
         };
 
+        // `q` is a power of ten from `parse_real_lit`, so it is always > 0 and
+        // `div_euclid` is the true floor.
         let floor = p.div_euclid(q);
         let is_int = (p % q) == 0;
-        let ceil = if is_int { floor } else { floor + 1 };
+        let ceil = if is_int { floor } else { floor.checked_add(1)? };
 
+        // The Galois adjoints: `ι(n) ≤ r ⇔ n ≤ ⌊r⌋` and `r ≤ ι(n) ⇔ ⌈r⌉ ≤ n`.
+        //
+        // For the STRICT relations at an integral `r` the bound tightens by one,
+        // and that ±1 is handed to `record_bound` as strictness rather than
+        // computed here: `strict_upper`/`strict_lower` already do exactly that
+        // tightening with CHECKED arithmetic, and keep the bound strict at the
+        // boundary instead of wrapping. Doing it here was the one place in the
+        // transport that still wrapped.
         let (int_op, k) = match op {
             "<=" => ("<=", floor),
+            // n < r, n integer: at integral r that is n ≤ r-1, which is what
+            // `record_bound` derives from a STRICT `<` at r under LIA. At a
+            // fractional r, `n < r ⟺ n ≤ ⌊r⌋`.
             "<" => {
                 if is_int {
-                    ("<=", floor - 1)
+                    ("<", floor)
                 } else {
                     ("<=", floor)
                 }
@@ -1369,7 +1382,7 @@ vs upper ({up}, strict={ustrict}) (no structural witness: a coefficient exceeds 
             ">=" => (">=", ceil),
             ">" => {
                 if is_int {
-                    (">=", ceil + 1)
+                    (">", ceil)
                 } else {
                     (">=", ceil)
                 }
@@ -1605,17 +1618,30 @@ fn has_nonlinear_product(t: &Term) -> bool {
 /// The test is tight because an arithmetic-sorted BARE `Const` can only be a
 /// numeral: operators are `Const`s at FUNCTION type, declared constants arrive
 /// as `Var`s, and constructors carry their datatype's sort.
+/// The integer variable under an `Int → Real` coercion.
+///
+/// The SORTS are checked, not just the head's spelling. Everything the
+/// transport then does — reading the argument as an integer and transporting a
+/// Real bound onto it by the floor/ceiling adjoints — is only valid for a
+/// genuine `Int → Real` coercion applied to an `Int`. A same-named symbol at
+/// any other type (a datatype constructor, a user function on the SMT-LIB face)
+/// would otherwise be transported as if it were one.
 fn dest_to_real(t: &Term) -> Option<String> {
-    if let TermInner::App(f, x) = t.kind() {
-        if let TermInner::Const(c) = f.kind() {
-            if c.name == "to_real" || c.name == "int2real" {
-                if let TermInner::Var(v) = x.kind() {
-                    return Some(v.name.clone());
-                }
-            }
-        }
+    let TermInner::App(f, x) = t.kind() else { return None };
+    let TermInner::Const(c) = f.kind() else { return None };
+    if c.name != "to_real" && c.name != "int2real" {
+        return None;
     }
-    None
+    // head : Int -> Real
+    let (dom, cod) = f.type_of().dest_fun()?;
+    if dom.to_string() != "Int" || cod.to_string() != "Real" {
+        return None;
+    }
+    let TermInner::Var(v) = x.kind() else { return None };
+    if v.ty.to_string() != "Int" {
+        return None;
+    }
+    Some(v.name.clone())
 }
 
 fn parse_real_lit(t: &Term) -> Option<(i128, i128)> {
@@ -3330,6 +3356,73 @@ mod tests {
         assert!(th.incomplete.is_some(), "a nonlinear product must arm");
         // The ground product is untouched — it never reaches the drop point.
         assert_eq!(LinArith::linearize(&imul(ilit(2), ilit(3))).unwrap().1, 6);
+    }
+
+    fn real_ty_() -> Type { Type::const_("Real", Kind::Type) }
+    fn to_real_of(v: &str) -> Term {
+        let f = Term::const_("to_real", Type::fun(int_ty(), real_ty_()).unwrap());
+        Term::app(f, Term::var(v, int_ty())).unwrap()
+    }
+    fn rcmp(op: &str, a: Term, b: Term) -> Term {
+        let ty = Type::fun(real_ty_(), Type::fun(real_ty_(), Type::bool_()).unwrap()).unwrap();
+        Term::app(Term::app(Term::const_(op, ty), a).unwrap(), b).unwrap()
+    }
+    fn rlit(s: &str) -> Term { Term::const_(s, real_ty_()) }
+
+    /// The Galois adjoints, all four directions: `ι(n) ≤ r ⇔ n ≤ ⌊r⌋` and
+    /// `r ≤ ι(n) ⇔ ⌈r⌉ ≤ n`, with the strict relations tightening by one at an
+    /// INTEGRAL `r` only. The ±1 is handed to `record_bound` as strictness
+    /// rather than computed in the transport, so it goes through the checked
+    /// tightening instead of wrapping at the `i128` boundary.
+    #[test]
+    fn the_to_real_transport_rounds_by_the_adjoints() {
+        // Each row: the to_real bound, then an integer bound that CONTRADICTS it.
+        let contradictions: [(&str, &str, &str, i128); 6] = [
+            ("<", "4.0", ">=", 4),
+            ("<=", "4.0", ">=", 5),
+            (">", "4.0", "<=", 4),
+            (">=", "4.0", "<=", 3),
+            ("<", "4.5", ">=", 5),
+            (">", "4.5", "<=", 4),
+        ];
+        for (rop, r, iop, k) in contradictions {
+            let mut t = LinArith::lia();
+            t.assert(Literal::positive(rcmp(rop, to_real_of("n"), rlit(r))).unwrap());
+            let second = t.assert(Literal::positive(cmp_term(iop, ivar("n"), ilit(k))).unwrap());
+            let closed = matches!(second, AssertResult::Conflict { .. })
+                || matches!(t.check(), CheckResult::Unsat { .. });
+            assert!(closed, "to_real(n) {rop} {r} with n {iop} {k} must conflict");
+        }
+        // And it must not OVER-tighten: the satisfiable neighbours stay open.
+        let consistent: [(&str, &str, &str, i128); 3] = [
+            ("<", "4.0", "<=", 3),
+            (">", "4.5", ">=", 5),
+            (">=", "4.0", ">=", 4),
+        ];
+        for (rop, r, iop, k) in consistent {
+            let mut t = LinArith::lia();
+            t.assert(Literal::positive(rcmp(rop, to_real_of("n"), rlit(r))).unwrap());
+            let second = t.assert(Literal::positive(cmp_term(iop, ivar("n"), ilit(k))).unwrap());
+            assert!(!matches!(second, AssertResult::Conflict { .. }), "{rop} {r} / {iop} {k}");
+            assert!(!matches!(t.check(), CheckResult::Unsat { .. }), "{rop} {r} / {iop} {k}");
+        }
+    }
+
+    /// The coercion is recognised by its SORTS, not by the head's spelling. A
+    /// same-named symbol at another type must not be transported as if it were
+    /// an `Int → Real` coercion.
+    #[test]
+    fn the_coercion_is_matched_by_sort_not_by_name() {
+        // `to_real : Real -> Real` applied to a Real variable is not it.
+        let f = Term::const_("to_real", Type::fun(real_ty_(), real_ty_()).unwrap());
+        let bogus = Term::app(f, Term::var("v", real_ty_())).unwrap();
+        let mut t = LinArith::lra();
+        let r = t.assert(Literal::positive(rcmp("<=", bogus, rlit("4.0"))).unwrap());
+        assert!(!matches!(r, AssertResult::Conflict { .. }));
+        // The genuine coercion still is.
+        let mut t = LinArith::lia();
+        let r = t.assert(Literal::positive(rcmp("<=", to_real_of("n"), rlit("4.0"))).unwrap());
+        assert!(matches!(r, AssertResult::Accepted), "{r:?}");
     }
 
     /// A shape this does not understand must be left alone rather than
