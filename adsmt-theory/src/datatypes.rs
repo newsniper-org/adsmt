@@ -190,6 +190,23 @@ impl Datatypes {
         self.decls.insert(decl.sort_name.clone(), decl);
     }
 
+    /// Does `t` have a subterm at a sort this theory has a declaration for?
+    ///
+    /// The gate on [`Self::observe`], so an atom with nothing datatype-shaped
+    /// in it costs a walk and nothing else.
+    fn mentions_a_datatype_subterm(&self, t: &Term) -> bool {
+        if self.decl_for_sort(&t.type_of()).is_some() {
+            return true;
+        }
+        match t.kind() {
+            TermInner::App(f, x) => {
+                self.mentions_a_datatype_subterm(f) || self.mentions_a_datatype_subterm(x)
+            }
+            TermInner::Lam(_, body) => self.mentions_a_datatype_subterm(body),
+            _ => false,
+        }
+    }
+
     /// rc.30 (Y4) — atom (Const/Var) name, if `t` is one.
     fn atom_name(t: &Term) -> Option<String> {
         match t.kind() {
@@ -1137,6 +1154,21 @@ impl Theory for Datatypes {
         }
     }
 
+    /// Mine an atom that was routed to another theory.
+    ///
+    /// A selector application at a foreign sort — `(= (f0 s) 2)`, an `Int`
+    /// equality — is routed to arithmetic and never reaches `assert` here, so
+    /// its `f0 s` was invisible to the selector reductions. Only the TERM is
+    /// recorded, never an equality: this observes, it does not assert.
+    fn observe(&mut self, lit: &Literal) {
+        if !self.decls.is_empty()
+            && self.mentions_a_datatype_subterm(&lit.term)
+            && !self.asserted_terms.contains(&lit.term)
+        {
+            self.asserted_terms.push(lit.term.clone());
+        }
+    }
+
     fn assert(&mut self, lit: Literal) -> AssertResult {
         // rc.30 — record the literal term for selector-reduction
         // subterm mining in `derive_equalities`.
@@ -1996,6 +2028,48 @@ mod tests {
         );
         // …while the plain variable still gets one.
         assert!(derived.iter().any(|(a, _)| a == &p), "{derived:?}");
+    }
+
+    /// A selector application at a FOREIGN sort reaches this theory through
+    /// `observe`, not through `assert`.
+    ///
+    /// `(= (f0 s) 2)` is an `Int` equality, so routing sends it to arithmetic
+    /// and this theory never sees it — and then `f0 s` is not in the subterm
+    /// pool the selector reductions mine. Measured: `s = Sc0(i, i) ∧ f0 s = 2 ∧
+    /// f1 s = 1` answered `sat`, where both reductions give `i` and the two
+    /// numerals contradict, and z3 and cvc5 both say `unsat`.
+    #[test]
+    fn a_foreign_sorted_selector_application_is_still_mined() {
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("S", vec!["Sc0".into()])
+                .with_selectors(vec![vec!["f0".into(), "f1".into()]])
+                .with_field_sorts(vec![vec!["Int".into(), "Int".into()]]),
+        );
+        let s_ty = Type::const_("S", Kind::Type);
+        let int = Type::const_("Int", Kind::Type);
+        let i = Term::var("i", int.clone());
+        let s = Term::var("s", s_ty.clone());
+        let ctor = Term::const_(
+            "Sc0",
+            Type::fun(int.clone(), Type::fun(int.clone(), s_ty.clone()).unwrap()).unwrap(),
+        );
+        let app = Term::app(Term::app(ctor, i.clone()).unwrap(), i.clone()).unwrap();
+        // Routed here: an S-sorted equality.
+        dt.assert(Literal::positive(Term::mk_eq(s.clone(), app).unwrap()).unwrap());
+        // Routed to ARITHMETIC: an Int-sorted equality mentioning `f0 s`.
+        let f0s = Term::app(
+            Term::var("f0", Type::fun(s_ty, int.clone()).unwrap()),
+            s.clone(),
+        )
+        .unwrap();
+        let two = Term::const_("int:2", int);
+        dt.observe(&Literal::positive(Term::mk_eq(f0s.clone(), two).unwrap()).unwrap());
+        let derived = dt.derive_equalities();
+        assert!(
+            derived.iter().any(|(a, b)| a == &f0s && b == &i),
+            "the congruent selector reduction f0 s = i must fire: {derived:?}"
+        );
     }
 
     /// A synthesised selector application must be spelled the way the

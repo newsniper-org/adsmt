@@ -101,6 +101,13 @@ impl Combination {
         let bool_sort = Type::bool_();
         let mut out = Vec::new();
         let mentions_to_real = term_mentions_to_real(&lit.term);
+        // Every theory gets to LOOK at every atom, whatever it was routed to.
+        // `observe` returns nothing, so this cannot claim an atom, cannot
+        // conflict, and cannot register as a dropped meaning — see
+        // `Theory::observe`.
+        for t in &mut self.theories {
+            t.observe(&lit);
+        }
         for t in &mut self.theories {
             let is_lia_to_real = mentions_to_real && t.name() == "LIA";
             if t.handles_sort(&routing_sort) || is_lia_to_real {

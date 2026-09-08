@@ -102,6 +102,30 @@ pub trait Theory: Send {
     /// checked since the last reset.
     fn explain(&self) -> Option<TheoryWitness>;
 
+    /// See an atom that was ROUTED ELSEWHERE.
+    ///
+    /// Routing sends an atom to the theories that own its sort, which is right
+    /// for deciding it and wrong for MINING it. A datatype-sorted term can sit
+    /// inside an atom of another sort — `(= (f0 s) 2)` is an `Int` equality
+    /// whose left operand is a selector applied to a datatype — and a theory
+    /// that never sees the atom cannot mine the subterm. Measured: `s = Sc0(i, i)
+    /// ∧ f0 s = 2 ∧ f1 s = 1` answered `sat` where z3 and cvc5 both say `unsat`,
+    /// because the selector reductions `f0 s = i` and `f1 s = i` were never
+    /// derived — the two selector applications had not reached the datatype
+    /// theory at all.
+    ///
+    /// This is deliberately NOT `assert`: there is no [`AssertResult`], so an
+    /// observing theory cannot claim the atom, cannot conflict on it, and — the
+    /// point — cannot be read as having DROPPED it, which is what routing an
+    /// atom into a theory that does not own it would otherwise mean to the
+    /// incompleteness backstop. It is a read-only widening of what a theory
+    /// gets to look at.
+    ///
+    /// Called for every theory on every assertion, including the ones the atom
+    /// was routed to (which see it twice, once here and once through `assert`);
+    /// implementations must be idempotent-safe under that. Default: ignore.
+    fn observe(&mut self, _lit: &Literal) {}
+
     /// Equalities derived from current state, to share with peer theories.
     fn derive_equalities(&self) -> Vec<(Term, Term)> { Vec::new() }
 
