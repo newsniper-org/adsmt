@@ -905,18 +905,70 @@ Not in this slice, and each is stated as a limit rather than left to be
 discovered:
 
 - **The termination-proof branch.** A guard failure says the branch is
-  unimplemented.
+  unimplemented, and so does a `decreases` clause (`3efcc89` — before that the
+  clause was validated and then the BODY was thrown away, so a goal true by the
+  definition came back a confident countermodel).
+
+  **What the kernel can already host, measured 2026-09-08**
+  (`adsmt-ir/tests/accessibility.rs`, which pins all of this):
+
+  - `Acc` declares as a genuine indexed inductive with the real introduction
+    rule `Π(x : A). (Π(y : A). R y x → Acc y) → Acc x`. Strict positivity
+    accepts it: `Acc` occurs under two function domains but only in the
+    codomain. `x` is a constructor ARGUMENT rather than an index, because a
+    constructor telescope is checked under the parameters only, so an index is
+    never in scope there.
+  - At `Prop` its recursor **cannot** eliminate into a computational sort
+    (`large elimination from Prop-inductive` — and a function justified by an
+    accessibility proof returns data). Coq admits `Acc_rect` by the singleton
+    criterion; this encoding cannot meet it, precisely because `x` is an
+    argument at `Type`.
+  - At `Type(0)` the elimination is accepted, and the minor premise the kernel
+    demands IS the well-founded recursion step, induction hypothesis guarded by
+    `R` and all. **So the recursion scheme needs no kernel change.**
+
+  What is left is obtaining the `Acc` argument, and that is a real fork:
+
+  1. **Construct** the accessibility proof (`∀n. Acc lt n` for a measure into
+    the naturals) as a term the kernel checks. Adds no trust source — the
+    §11 rule holds — and is the most work: the proof term needs `Nat`, `lt`,
+    and a double induction, in raw de Bruijn.
+  2. **Compile to structural recursion on fuel**: `Fix` over a `Nat` whose
+    initial value is the measure, with the engine discharging `m ≥ 0` and
+    `m(args') < m(args)`. No proof term, but it changes what `f` reduces to.
+  3. **Opaque `f` + its defining equation**, with the discharge certificates
+    recorded as the trust source. This is the one §11 calls out as adding a
+    non-recheckable trust source — it becomes re-checkable only if the
+    certificates are, which is exactly what `Certificate::recheck`'s
+    `TrustSource` accounting is for.
+
+  Postulating well-foundedness is NOT on the list: that is the axiomatisation
+  §11 rules out.
 - **Anonymous recursion.** The user's proposal covered anonymous functions too,
   and the kernel agrees — `Fix` has no name, self-reference is `Bound(0)`, so a
   named and an anonymous recursive function are the SAME term. But the surface
   `Term` has no lambda at all today (no `Lam` variant; a bare function symbol
   used as a value is an explicit error), so anonymous recursion waits on the
   surface gaining anonymous functions, which is its own slice.
-- **Mutual recursion.** `declare_mutual`/`MutElim` exist for *types*, but there
-  is no mutual `fix` group, and `guard.rs` explicitly rejects a `fix` recursing
-  through a mutual eliminator. Two routes: encode a mutual group as a single
-  `fix` over a sum type (no kernel change), or add a mutual fix group (guard
-  must be redefined group-wide). Undecided.
+- **Mutual recursion.** ~~Undecided.~~ **LANDED 2026-09-08** (`612cf4a`), by a
+  third route neither of the two listed: a mutual group is admitted as a set of
+  `def`s through a checked admitter, `adsmt_ir::define_mutual`, with the guard
+  redefined group-wide over `Const` heads (`guard::mutual_guard_ok`). No new
+  term former, so no sum type and no mutual `fix`. The group is journalled as
+  ONE `AdmissionStep::MutualDefine`, so a bank replay re-runs both the
+  type-check and the guard.
+
+  What it cost to find: the group had been going in through `Env::declare`, the
+  raw unchecked insertion, which skipped the journal AND every termination
+  check. `f x = g x, g x = f x` was admitted, and the kernel's head reduction
+  then had no normal form to find — it hung, and the variant with the recursive
+  call under an argument overflowed the stack. `1f600e9` made `whnf` total
+  (it refuses a δ step that returns to a term it is already reducing); this
+  stops the definition getting in.
+
+  Structural mutual recursion over an inductive passes; `ev`/`od` over `Int`
+  guarded by `if n = 0` is refused, which is the rule a single `rec fn` has
+  always followed.
 
 ### What the corpus actually needs (measured 2026-09-06)
 
