@@ -206,7 +206,7 @@ impl Datatypes {
         if let TermInner::App(f, x) = t.kind()
             && let Some(sel) = Self::atom_name(f)
             && let Some((ctor, idx)) = self.selector_map.get(&sel)
-            && let Some((cname, args)) = Self::dest_constructor_app(x)
+            && let Some((_, cname, args)) = self.dest_registered_ctor_app(x)
             && &cname == ctor
             && *idx < args.len()
         {
@@ -258,9 +258,9 @@ impl Datatypes {
         //    class is a disjointness conflict already caught in `assert`.
         let mut ctors_of: HashMap<Term, Vec<(String, Vec<Term>)>> = HashMap::new();
         for t in parent.keys() {
-            if let Some(ctor) = Self::dest_constructor_app(t) {
+            if let Some((_, cname, args)) = self.dest_registered_ctor_app(t) {
                 let r = Self::uf_find(&parent, t);
-                ctors_of.entry(r).or_default().push(ctor);
+                ctors_of.entry(r).or_default().push((cname, args));
             }
         }
         if ctors_of.is_empty() {
@@ -415,13 +415,35 @@ impl Datatypes {
     }
 
     /// Collect `(ctor_app, args)` for every *registered-constructor*
-    /// application subterm of `t` (nested args included). Selector apps
-    /// (`pred x`) are `Var`-headed → not matched; only `Const`-headed
-    /// registered constructors are.
+    /// application subterm of `t` (nested args included).
+    ///
+    /// The TERM'S OWN SORT decides whether it is one, exactly as in
+    /// [`Self::constructor_id`]. The old rule — "is this head NAME listed as a
+    /// constructor by ANY declaration" — read a SELECTOR application as a
+    /// constructor application whenever the two names collided, and SMT-LIB
+    /// lets them: a selector is only required to be distinct within its own
+    /// datatype group. The doc comment here used to claim selector apps are
+    /// `Var`-headed and so cannot match; they are `Const`-headed on the
+    /// SMT-LIB face, so nothing prevented it.
+    ///
+    /// What follows from the misreading is a false `unsat`, because this feeds
+    /// acyclicity. Measured, five lines:
+    ///
+    /// ```text
+    /// (declare-datatypes ((E 0) (P 0))
+    ///   (((dnil) (dcons (dh Int) (dt E))) ((pc0 (dcons P)) (pbase))))
+    /// (declare-const q P)
+    /// (assert (= (dcons q) q))          ← `dcons` here is P's SELECTOR
+    /// (check-sat)
+    ///     lu-smt unsat        z3 sat        cvc5 sat
+    /// ```
+    ///
+    /// `dcons q` was read as E's constructor applied to `q`, giving the
+    /// containment edge `class(dcons q) → class(q)`; with the asserted
+    /// `dcons q = q` that closes a cycle nothing entailed. Renaming the
+    /// selector — one identifier, nothing else — makes every solver say `sat`.
     fn collect_ctor_apps(&self, t: &Term, out: &mut Vec<(Term, Vec<Term>)>) {
-        if let Some((cname, args)) = Self::dest_constructor_app(t)
-            && self.is_constructor_of(&cname).is_some()
-        {
+        if let Some((_, _cname, args)) = self.dest_registered_ctor_app(t) {
             out.push((t.clone(), args.clone()));
             for arg in &args {
                 self.collect_ctor_apps(arg, out);
@@ -671,7 +693,7 @@ impl Datatypes {
 
         // (2) img(succ s) = img(s)+1 ; img(base) = 0.
         for (app, args) in &ctor_apps {
-            let Some((cname, _)) = Self::dest_constructor_app(app) else { continue };
+            let Some((_, cname, _)) = self.dest_registered_ctor_app(app) else { continue };
             let Some(p) = peano_of(&app.type_of().to_string()) else { continue };
             if cname == p.succ && args.len() == 1 {
                 if let Some(rhs) = int_bin("+", img(&args[0]), lit(1)) {
@@ -722,10 +744,9 @@ impl Datatypes {
         let (cname, args) = Self::dest_constructor_app(rhs)?;
         // Same reason as `sort_of_constructor_app`: the scrutinee's sort
         // decides which declaration's selectors this tester is about.
-        let decl = match self.decls.get(&x.type_of().to_string()) {
+        let decl = match self.decl_for_sort(&x.type_of()) {
             Some(d) if d.constructors.iter().any(|c| c == &cname) => d,
-            Some(_) => return None,
-            None => self.is_constructor_of(&cname)?,
+            _ => return None,
         };
         let ci = decl.constructors.iter().position(|c| c == &cname)?;
         let sels = decl.selectors.get(ci)?;
@@ -818,6 +839,45 @@ impl Datatypes {
         }
     }
 
+    /// Decompose `t` as a constructor application **of its own sort**.
+    ///
+    /// [`Self::dest_constructor_app`] answers a purely syntactic question — is
+    /// this a `Const`-headed spine — and every structural rule in this theory
+    /// used to take that as "is this a constructor application". It is not.
+    /// SMT-LIB requires a selector name to be distinct only inside its own
+    /// datatype group, so a selector of one sort may be spelled exactly like a
+    /// constructor of another, and then a selector application answers yes.
+    ///
+    /// What the rules do with the answer is derive equalities and containment
+    /// edges, so the misreading produces a false `unsat`. Measured, and the
+    /// minimal pair differs in one identifier:
+    ///
+    /// ```text
+    /// (declare-datatypes ((E 0) (P 0))
+    ///   (((dnil) (dcons (dh Int) (dt E)))
+    ///    ((pc0 (dcons P) (dnil P) (dcons_1 Int)) (pbase))))
+    /// (declare-const p P) (declare-const q P)
+    /// (assert (not (= q p)))
+    /// (assert (= (dcons q) (dcons p)))      ← P's SELECTOR on both sides
+    ///     lu-smt unsat        z3 sat        cvc5 sat
+    /// ```
+    ///
+    /// Injectivity read the two selector applications as `dcons` applications
+    /// and derived `q = p`, contradicting the disequality. Rename the selector
+    /// and every solver says `sat`.
+    ///
+    /// Returns `(sort, ctor, args)`. The sort comes from the TERM, via
+    /// [`Self::decl_for_sort`], so an unregistered sort — an `Int`, a function
+    /// type, an uninterpreted sort — is not a constructor application at all.
+    fn dest_registered_ctor_app(&self, t: &Term) -> Option<(String, String, Vec<Term>)> {
+        let (cname, args) = Self::dest_constructor_app(t)?;
+        let d = self.decl_for_sort(&t.type_of())?;
+        d.constructors
+            .iter()
+            .any(|c| c == &cname)
+            .then(|| (d.sort_name.clone(), cname, args))
+    }
+
     /// Recognize whether `t` is a registered constructor — either a
     /// bare nullary constant (`None`) or an application
     /// (`(Some_int_ 5)`). Returns `(sort_name, constructor_name)`.
@@ -848,14 +908,35 @@ impl Datatypes {
     /// here. `exhaustiveness_conflict` already keys off the term's sort; this
     /// was the outlier.
     fn sort_of_constructor_app(&self, t: &Term, cname: &str) -> Option<String> {
-        let sort = t.type_of().to_string();
-        if let Some(d) = self.decls.get(&sort) {
-            // The sort IS registered, so it is authoritative: either it lists
-            // this constructor or the term is not one of ITS constructors.
-            // Falling through here would re-open the mis-attribution.
-            return d.constructors.iter().any(|c| c == cname).then_some(sort);
+        let d = self.decl_for_sort(&t.type_of())?;
+        d.constructors.iter().any(|c| c == cname).then(|| d.sort_name.clone())
+    }
+
+    /// The declaration governing `ty`, if any.
+    ///
+    /// An exact key first, then the leftmost head of a type application — which
+    /// is how an applied parametric datatype (`(Seq Int)`) resolves, and is the
+    /// same walk [`Theory::handles_sort`] does. A sort that resolves to no
+    /// declaration — an `Int`, a function type, an uninterpreted sort — has no
+    /// governing datatype, and that is the answer.
+    ///
+    /// This replaced a fallback that scanned every declaration for the
+    /// CONSTRUCTOR NAME whenever the sort was not an exact key. The scan was
+    /// how a bare `Const` at a function type (`dcons : P → P`, a selector) was
+    /// still attributed to whichever datatype happened to list `dcons` — the
+    /// mis-attribution one level below the one 3390762 closed.
+    fn decl_for_sort(&self, ty: &Type) -> Option<&DatatypeDecl> {
+        if let Some(d) = self.decls.get(&ty.to_string()) {
+            return Some(d);
         }
-        self.is_constructor_of(cname).map(|d| d.sort_name.clone())
+        let mut cur = ty.clone();
+        loop {
+            match &cur {
+                Type::Const(c) => return self.decls.get(&c.name),
+                Type::App(f, _) => cur = (**f).clone(),
+                Type::Var(_) => return None,
+            }
+        }
     }
 }
 
@@ -958,10 +1039,15 @@ impl Theory for Datatypes {
         // the polite combination as new assertions.
         let mut out = Vec::new();
         for (a, b) in &self.asserted_eqs {
-            let head_a = Self::dest_constructor_app(a);
-            let head_b = Self::dest_constructor_app(b);
-            if let (Some((ca, args_a)), Some((cb, args_b))) = (head_a, head_b)
-                && ca == cb && args_a.len() == args_b.len() {
+            // Both sides must be constructor applications OF THEIR OWN SORT,
+            // and the same constructor of the same sort. Asking only whether
+            // the head spelling matches derived `q = p` from
+            // `(dcons q) = (dcons p)` where `dcons` is a SELECTOR — see
+            // `dest_registered_ctor_app`.
+            let head_a = self.dest_registered_ctor_app(a);
+            let head_b = self.dest_registered_ctor_app(b);
+            if let (Some((sa, ca, args_a)), Some((sb, cb, args_b))) = (head_a, head_b)
+                && sa == sb && ca == cb && args_a.len() == args_b.len() {
                 for (arg_a, arg_b) in args_a.into_iter().zip(args_b) {
                     out.push((arg_a, arg_b));
                 }
@@ -1066,6 +1152,147 @@ mod tests {
         // A constructor that is NOT one of the term's sort is not attributed at
         // all — falling back to the scan there would re-open the defect.
         assert_eq!(dt.constructor_id(&Term::const_("one", b)), None);
+    }
+
+    /// The same rule, one level down: `collect_ctor_apps` decides what
+    /// acyclicity gets to see, and it used to ask only whether the head NAME is
+    /// listed by ANY declaration. SMT-LIB requires a selector name to be
+    /// distinct only inside its own datatype group, so a selector of one sort
+    /// may be spelled like a constructor of another — and then a selector
+    /// application was collected as a constructor application CONTAINING its
+    /// argument. With the argument asserted equal to it, acyclicity closed a
+    /// cycle nothing entailed.
+    ///
+    /// Measured end to end before the fix (`lu-smt` `unsat`, z3 and cvc5 both
+    /// `sat`), and the minimal pair that isolates it — the same file with the
+    /// selector renamed — was `sat` everywhere.
+    #[test]
+    fn a_selector_named_like_another_sorts_constructor_is_not_a_ctor_app() {
+        let mut dt = Datatypes::new();
+        // E: `dcons` is a CONSTRUCTOR.
+        dt.declare(DatatypeDecl {
+            sort_name: "E".to_string(),
+            constructors: vec!["dnil".to_string(), "dcons".to_string()],
+            arities: vec![0, 1],
+            selectors: vec![vec![], vec!["dt".to_string()]],
+            field_sorts: vec![vec![], vec!["E".to_string()]],
+            params: Vec::new(),
+            is_finite: false,
+        });
+        // P: `dcons` is a SELECTOR, of a different sort entirely.
+        dt.declare(DatatypeDecl {
+            sort_name: "P".to_string(),
+            constructors: vec!["pc0".to_string(), "pbase".to_string()],
+            arities: vec![1, 0],
+            selectors: vec![vec!["dcons".to_string()], vec![]],
+            field_sorts: vec![vec!["P".to_string()], vec![]],
+            params: Vec::new(),
+            is_finite: false,
+        });
+        let p = Type::const_("P", Kind::Type);
+        let q = Term::const_("q", p.clone());
+        // `dcons q : P` — P's selector applied to a P.
+        let sel_app = Term::app(
+            Term::const_("dcons", Type::fun(p.clone(), p.clone()).unwrap()),
+            q.clone(),
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        dt.collect_ctor_apps(&sel_app, &mut out);
+        assert!(
+            out.is_empty(),
+            "a P-sorted selector application is not an E constructor application: {out:?}"
+        );
+
+        // The control: E's real `dcons` application IS collected.
+        let e = Type::const_("E", Kind::Type);
+        let ctor_app = Term::app(
+            Term::const_("dcons", Type::fun(e.clone(), e.clone()).unwrap()),
+            Term::const_("dnil", e),
+        )
+        .unwrap();
+        let mut out2 = Vec::new();
+        dt.collect_ctor_apps(&ctor_app, &mut out2);
+        // Both the application and its nullary-constructor argument.
+        assert!(
+            out2.iter().any(|(t, _)| t == &ctor_app),
+            "the real constructor application must still be collected: {out2:?}"
+        );
+    }
+
+    /// The same misreading reached INJECTIVITY, which is where it produced a
+    /// false `unsat` end to end: `(dcons q) = (dcons p)` with `dcons` a
+    /// SELECTOR gave `q = p`, contradicting an asserted `q ≠ p`. Injectivity
+    /// asked only `dest_constructor_app` — a purely syntactic `Const`-headed
+    /// spine — with no registration or sort check at all.
+    #[test]
+    fn injectivity_does_not_fire_on_two_selector_applications() {
+        let mut dt = Datatypes::new();
+        dt.declare(DatatypeDecl {
+            sort_name: "E".to_string(),
+            constructors: vec!["dnil".to_string(), "dcons".to_string()],
+            arities: vec![0, 1],
+            selectors: vec![vec![], vec!["dt".to_string()]],
+            field_sorts: vec![vec![], vec!["E".to_string()]],
+            params: Vec::new(),
+            is_finite: false,
+        });
+        dt.declare(DatatypeDecl {
+            sort_name: "P".to_string(),
+            constructors: vec!["pc0".to_string(), "pbase".to_string()],
+            arities: vec![1, 0],
+            selectors: vec![vec!["dcons".to_string()], vec![]],
+            field_sorts: vec![vec!["P".to_string()], vec![]],
+            params: Vec::new(),
+            is_finite: false,
+        });
+        let p = Type::const_("P", Kind::Type);
+        let sel = Term::const_("dcons", Type::fun(p.clone(), p.clone()).unwrap());
+        let app = |v: &str| {
+            Term::app(sel.clone(), Term::const_(v, p.clone())).unwrap()
+        };
+        dt.assert(Literal {
+            term: Term::mk_eq(app("q"), app("p")).unwrap(),
+            polarity: true,
+        });
+        let derived = dt.derive_equalities();
+        assert!(
+            !derived.iter().any(|(a, b)| {
+                (a == &Term::const_("q", p.clone()) && b == &Term::const_("p", p.clone()))
+                    || (a == &Term::const_("p", p.clone()) && b == &Term::const_("q", p.clone()))
+            }),
+            "two SELECTOR applications must not seed injectivity: {derived:?}"
+        );
+    }
+
+    /// The narrowness control: real constructor applications of the same
+    /// constructor still seed injectivity.
+    #[test]
+    fn injectivity_still_fires_on_real_constructor_applications() {
+        let mut dt = Datatypes::new();
+        dt.declare(DatatypeDecl {
+            sort_name: "P".to_string(),
+            constructors: vec!["pc0".to_string(), "pbase".to_string()],
+            arities: vec![1, 0],
+            selectors: vec![vec!["s0".to_string()], vec![]],
+            field_sorts: vec![vec!["P".to_string()], vec![]],
+            params: Vec::new(),
+            is_finite: false,
+        });
+        let p = Type::const_("P", Kind::Type);
+        let ctor = Term::const_("pc0", Type::fun(p.clone(), p.clone()).unwrap());
+        let app = |v: &str| Term::app(ctor.clone(), Term::const_(v, p.clone())).unwrap();
+        dt.assert(Literal {
+            term: Term::mk_eq(app("q"), app("p")).unwrap(),
+            polarity: true,
+        });
+        let derived = dt.derive_equalities();
+        assert!(
+            derived.iter().any(|(a, b)| {
+                a == &Term::const_("q", p.clone()) && b == &Term::const_("p", p.clone())
+            }),
+            "pointwise injectivity must still fire: {derived:?}"
+        );
     }
     use super::*;
     use adsmt_core::{Kind, Term, Type};
