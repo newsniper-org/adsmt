@@ -1478,9 +1478,23 @@ impl<'p> Elab<'p> {
         name: &str,
         args: &[S],
     ) -> Result<K, FaceError> {
+        // A LOCAL binding always wins over a builtin name. The builtin arms
+        // below match on the spelling alone, so a `fn` parameter, a lambda
+        // parameter or a quantifier binder named `abs`/`to_real`/`nop`/… was
+        // silently replaced by the theory constant. Measured:
+        //
+        //     fn ap(abs: Int -> Int, x: Int): Int = abs(x)
+        //     fn g(y: Int): Int = y + 1
+        //     goal: ap(g, 3) = 4                            sat
+        //
+        // with the identical program renaming the parameter to `gg` answering
+        // `unsat`. The `_` arm below already consults `ctx` — the builtin arms
+        // just ran first. (A TOP-LEVEL name cannot shadow: `check_reserved_name`
+        // refuses those at declaration. Only binders reach here.)
+        let locally_bound = ctx.iter().any(|(n, _)| n == name);
         // `nop(x)` — the trivial predicate. It is polymorphic (`Π(T).T→Prop`), so
         // infer the implicit type argument from `x`'s sort: `nop[typeof(x)](x)`.
-        if name == "nop" && args.len() == 1 {
+        if name == "nop" && args.len() == 1 && !locally_bound {
             let kx = self.elab_term(ctx, &args[0])?;
             let sort = infer(&self.env, &kernel_ctx(ctx), &kx)?;
             return Ok(K::apps(K::cnst("nop"), [sort, kx]));
@@ -1490,13 +1504,13 @@ impl<'p> Elab<'p> {
         // built-in function names map to the arithmetic prelude constants;
         // anything else must be a declared symbol.
         let head = match name {
-            "pow" => theory::POW,
-            "odd" => theory::ODD,
-            "prime" => theory::PRIME,
-            "abs" => theory::INT_ABS,
-            "div" => theory::INT_DIV,
-            "mod" => theory::INT_MOD,
-            "to_real" => theory::INT2REAL,
+            "pow" if !locally_bound => theory::POW,
+            "odd" if !locally_bound => theory::ODD,
+            "prime" if !locally_bound => theory::PRIME,
+            "abs" if !locally_bound => theory::INT_ABS,
+            "div" if !locally_bound => theory::INT_DIV,
+            "mod" if !locally_bound => theory::INT_MOD,
+            "to_real" if !locally_bound => theory::INT2REAL,
             _ => {
                 if self.env.lookup(name).is_none() && !ctx.iter().any(|(n, _)| n == name) {
                     // F3: the `is-{ctor}` recognizer (verus emits tester

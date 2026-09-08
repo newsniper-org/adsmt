@@ -1689,3 +1689,37 @@ fn a_numeral_spelled_identifier_is_refused() {
     all_props("sort S\nconst `x!`: S\nconst `r%`: S\ngoal: `x!` = `x!`\n", 0, 1);
     all_props("sort S\nconst `a-3`: S\ngoal: `a-3` = `a-3`\n", 0, 1);
 }
+
+/// A LOCAL binding wins over a builtin name. `elab_call` dispatched builtin
+/// heads on the spelling alone, before consulting the context, so a parameter
+/// named `abs`/`to_real`/`nop`/… was silently replaced by the theory constant:
+/// `fn ap(abs: Int -> Int, x: Int): Int = abs(x)` applied to a successor
+/// function answered `sat` where the identical program with the parameter
+/// renamed answered `unsat`.
+#[test]
+fn a_local_binding_shadows_a_builtin_name() {
+    const G: &str = "fn g(y: Int): Int = y + 1\n";
+    for shadow in ["abs", "div", "mod", "to_real", "pow", "odd", "prime", "nop"] {
+        let shadowed = format!(
+            "fn ap({shadow}: Int -> Int, x: Int): Int = {shadow}(x)\n{G}goal: ap(g, 3) = 4\n"
+        );
+        let control = format!(
+            "fn ap(gg: Int -> Int, x: Int): Int = gg(x)\n{G}goal: ap(g, 3) = 4\n"
+        );
+        let a = elaborate(&shadowed);
+        let b = elaborate(&control);
+        assert_eq!(
+            a.is_ok(),
+            b.is_ok(),
+            "`{shadow}` as a parameter must elaborate exactly like an ordinary name"
+        );
+    }
+}
+
+/// And the builtins keep their meaning when nothing shadows them.
+#[test]
+fn an_unshadowed_builtin_still_resolves() {
+    all_props("goal: abs(0 - 5) = 5\n", 0, 1);
+    all_props("goal: mod(7, 2) = 1\n", 0, 1);
+    all_props("const x: Int\ngoal: nop(x)\n", 0, 1);
+}
