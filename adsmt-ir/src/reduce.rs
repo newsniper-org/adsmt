@@ -121,7 +121,15 @@ fn whnf_uncached(env: &Env, t: &Term) -> Term {
                             }
                         }
                     }
-                    if name == "=" && args.len() == 3 {
+                    // `=` is POLYMORPHIC: args[0] is the type. Folding without
+                    // reading it decided equality of two opaque constants by
+                    // their spelling — `whnf((= S "1" "2"))` returned `false`
+                    // for an uninterpreted `S`. The numeral convention only
+                    // licenses the fold at an arithmetic sort.
+                    if name == "="
+                        && args.len() == 3
+                        && matches!(args[0].kind(), TermKind::Const(c) if c == theory::INT)
+                    {
                         let a = whnf(env, &args[1]);
                         let b = whnf(env, &args[2]);
                         if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {

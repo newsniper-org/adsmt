@@ -1662,3 +1662,30 @@ fn decreases_cannot_launder_a_rejected_recursion() {
     );
     assert!(elaborate(&with_clause).is_err(), "adding `decreases` must not admit it");
 }
+
+/// A backtick-quoted identifier takes any characters, so a numeral SPELLING
+/// could be declared as an ordinary constant — and the kernel's convention is
+/// that such a spelling IS that number. Measured: `const \`-3\`: S` and
+/// `const \`-4\`: S` made `not(\`-3\` = \`-4\`)` answer `unsat` (the same
+/// program with ordinary names answers `sat`), and `const \`-5\`: Int` made
+/// `\`-5\` < 100` answer `unsat` for a constant the user declared opaque.
+#[test]
+fn a_numeral_spelled_identifier_is_refused() {
+    for src in [
+        "sort S\nconst `-3`: S\ngoal: `-3` = `-3`\n",
+        "const `-5`: Int\ngoal: `-5` < 100\n",
+        "const `2.5`: Real\ngoal: `2.5` > 0.0\n",
+        "sort S\nconst `42`: S\ngoal: `42` = `42`\n",
+    ] {
+        match elaborate(src) {
+            Err(e) => assert!(
+                e.to_string().contains("numeral") || e.to_string().contains("digit"),
+                "must name the reason: {e}"
+            ),
+            Ok(_) => panic!("a numeral-spelled identifier must be refused: {src}"),
+        }
+    }
+    // Ordinary quoted identifiers — including the Verus corpus shapes — stay.
+    all_props("sort S\nconst `x!`: S\nconst `r%`: S\ngoal: `x!` = `x!`\n", 0, 1);
+    all_props("sort S\nconst `a-3`: S\ngoal: `a-3` = `a-3`\n", 0, 1);
+}

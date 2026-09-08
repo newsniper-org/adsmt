@@ -314,10 +314,61 @@ pub fn infer_univ(env: &Env, ctx: &Ctx, t: &Term) -> Result<Univ, TypeError> {
 
 /// Admit a **`def`** (closed-world definition): check the declared type is
 /// well-sorted and the body has that type, then declare it δ-unfoldable.
+/// Is `name` spelled like a numeral — the spelling `theory::literal` uses for
+/// an integer or decimal constant?
+///
+/// The kernel's convention is that such a spelling IS that number: `literal()`
+/// re-uses an already-declared constant of the same spelling rather than
+/// minting a second one, `whnf` folds arithmetic over them, and the CIC→HOL
+/// lowering reads the value straight off the name. The convention's stated
+/// justification is that "SMT-LIB simple symbols cannot begin with a digit, so
+/// an all-digit name never clashes with a user symbol" — which is true of
+/// SMT-LIB and false of any caller that can quote an identifier.
+pub fn is_numeral_spelling(name: &str) -> bool {
+    let body = name.strip_prefix('-').unwrap_or(name);
+    if body.is_empty() {
+        return false;
+    }
+    match body.split_once('.') {
+        Some((int, frac)) => {
+            !int.is_empty()
+                && !frac.is_empty()
+                && int.bytes().all(|b| b.is_ascii_digit())
+                && frac.bytes().all(|b| b.is_ascii_digit())
+        }
+        None => body.bytes().all(|b| b.is_ascii_digit()),
+    }
+}
+
+/// Guard the numeral convention at the admission boundary.
+///
+/// A numeral-spelled constant may only be declared at an ARITHMETIC sort,
+/// because everything downstream reads its value off the name. Admitting
+/// `\`-3\` : S` for an uninterpreted `S` handed `whnf` two constants it then
+/// declared unequal by spelling — `not(\`-3\` = \`-4\`)` came back `unsat`
+/// where the same program with ordinary names answers `sat`.
+fn check_numeral_sort(name: &str, ty: &Term) -> Result<(), TypeError> {
+    if !is_numeral_spelling(name) {
+        return Ok(());
+    }
+    let ok = matches!(
+        ty.kind(),
+        crate::term::TermKind::Const(c) if c == crate::theory::INT || c == crate::theory::REAL
+    );
+    if ok {
+        Ok(())
+    } else {
+        Err(TypeError::BadElim(format!(
+            "`{name}` is spelled like a numeral, so it may only be declared at              `Int` or `Real` — the kernel reads a numeral's VALUE off its name"
+        )))
+    }
+}
+
 pub fn define(env: &mut Env, name: &str, ty: Term, body: Term) -> Result<(), TypeError> {
     if env.lookup(name).is_some() {
         return Err(TypeError::DuplicateConst(name.to_string()));
     }
+    check_numeral_sort(name, &ty)?;
     let ctx = Ctx::new();
     infer_univ(env, &ctx, &ty)?;
     check(env, &ctx, &body, &ty)?;
@@ -336,6 +387,7 @@ pub fn postulate(env: &mut Env, name: &str, ty: Term) -> Result<(), TypeError> {
     if env.lookup(name).is_some() {
         return Err(TypeError::DuplicateConst(name.to_string()));
     }
+    check_numeral_sort(name, &ty)?;
     let ctx = Ctx::new();
     infer_univ(env, &ctx, &ty)?;
     env.record(crate::env::AdmissionStep::Postulate { name: name.to_string(), ty: ty.clone() });

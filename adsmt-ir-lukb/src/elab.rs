@@ -76,6 +76,18 @@ fn check_reserved_name(name: &str) -> Result<(), FaceError> {
             "constant `{name}` is a reserved builtin and cannot be declared or shadowed"
         )));
     }
+    // Not just digit-LEADING. A backtick-quoted identifier takes any characters,
+    // so `\`-3\`` and `\`2.5\`` slipped through — and the kernel's convention is
+    // that a numeral spelling IS that number, so those became literals. Measured:
+    // `const \`-3\`: S` and `const \`-4\`: S` made `not(\`-3\` = \`-4\`)` answer
+    // `unsat` (the same program with ordinary names answers `sat`), and
+    // `const \`-5\`: Int` made `\`-5\` < 100` answer `unsat` for a constant the
+    // user declared opaque.
+    if adsmt_ir::is_numeral_spelling(name) {
+        return Err(FaceError::Unsupported(format!(
+            "identifier `{name}` is spelled like a numeral, which names a literal"
+        )));
+    }
     if name.starts_with(|c: char| c.is_ascii_digit()) {
         return Err(FaceError::Unsupported(format!(
             "identifier `{name}` cannot start with a digit"

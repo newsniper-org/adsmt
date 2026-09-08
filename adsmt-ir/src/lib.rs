@@ -67,7 +67,7 @@ pub mod theory;
 pub mod triggers;
 
 pub use bank::{BankError, bank_decode, bank_encode};
-pub use check::{Ctx, check, define, infer, infer_univ, postulate, type_of};
+pub use check::{Ctx, check, define, infer, infer_univ, is_numeral_spelling, postulate, type_of};
 pub use env::{AdmissionStep, Constructor, Decl, Env, IndSpec, Inductive, Modality};
 pub use error::TypeError;
 pub use inductive::{
