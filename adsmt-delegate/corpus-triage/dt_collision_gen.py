@@ -14,8 +14,9 @@ Usage:  dt_collision_gen.py <outdir> <lo> <hi>   then run each query through
 the candidate build, z3 and cvc5, and score NEWLY-INTRODUCED false unsats
 against the baseline rather than the raw count.
 """
-# Collision-biased generator: selector names deliberately REUSE constructor names
-# of another datatype in the same group (legal SMT-LIB; z3 and cvc5 both accept).
+import random, sys, os
+
+
 def gen(seed):
     r = random.Random(seed)
     # E: a well-founded "donor" datatype whose constructor names get reused as selectors
