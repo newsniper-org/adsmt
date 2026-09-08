@@ -206,12 +206,34 @@ fn unify_arith_sorts(operands: &mut [Term]) {
         return;
     }
     for t in operands.iter_mut() {
-        if t.type_of() != real
-            && let Some(promoted) = resort_numeric_to_real(t)
-        {
+        if t.type_of() == real {
+            continue;
+        }
+        if let Some(promoted) = resort_numeric_to_real(t) {
+            // A numeral is the same number at either sort — a relabelling.
             *t = promoted;
+        } else if t.type_of() == int_ty()
+            && let Ok(coerced) = to_real_of(t.clone())
+        {
+            // Anything else needs a real coercion, and `to_real` is what
+            // SMT-LIB spells it with. Leaving the mismatch instead was a hard
+            // type error that killed the whole query — z3 and cvc5 insert the
+            // coercion, and so does this now. The arithmetic theory transports
+            // `to_real(<var>) op <literal>` exactly (the Galois adjoints) and
+            // drops anything else WITH the incompleteness backstop armed, so a
+            // shape it cannot carry abstains rather than deciding.
+            *t = coerced;
         }
     }
+}
+
+/// `(to_real x)` — SMT-LIB's `Int → Real` coercion.
+fn to_real_of(x: Term) -> Result<Term, ConvertError> {
+    let f = Term::const_(
+        "to_real",
+        Type::fun(int_ty(), real_ty()).map_err(|e| ConvertError::Malformed(format!("{e:?}")))?,
+    );
+    Term::app(f, x).map_err(|e| ConvertError::Malformed(e.to_string()))
 }
 
 fn convert_symbol(s: &str, table: &SymbolTable) -> Result<Term, ConvertError> {
@@ -307,6 +329,16 @@ fn convert_list(items: &[SExpr], table: &SymbolTable) -> Result<Term, ConvertErr
         // also flows through.
         "/" => convert_arith_binop("/", args, table),
         "abs" => convert_arith_unary("abs", args, table),
+        // SMT-LIB's Int→Real coercion. Without an arm here the whole query died
+        // with `unknown operator`, exit 11 and NO verdict line — so a file using
+        // it vanished from a ledger rather than reading as unsupported.
+        "to_real" => {
+            if args.len() != 1 {
+                return Err(ConvertError::Arity { op: "to_real".into(), expected: 1, got: args.len() });
+            }
+            let x = convert_expr(&args[0], table)?;
+            to_real_of(x)
+        }
         // SMT-LIB v2 § 3.7.1 — `(distinct e1 e2 ... en)` is
         // pairwise disequality.  Expand to `(and (not (= ei ej))
         // | i<j)` so the engine handles it through the existing
@@ -1063,13 +1095,31 @@ mod tests {
         assert!(convert_expr(&parse_sexpr("(< (- v (- -2 0)) 1.5)").unwrap(), &table).is_ok());
     }
 
-    /// But a subtree mentioning an INT VARIABLE is not: that needs a real
-    /// `to_real` coercion, and inventing one would change what the query says.
+    /// A subtree mentioning an INT VARIABLE is not a relabelling — it needs a
+    /// real coercion, and SMT-LIB spells that `to_real`. It is inserted
+    /// EXPLICITLY rather than re-sorting the term, so what the query says is
+    /// unchanged and the arithmetic theory can see the coercion for what it is.
+    /// (Leaving the mismatch instead was a hard type error that killed the whole
+    /// query — exit 11, no verdict line — where z3 and cvc5 both answer.)
     #[test]
-    fn an_int_variable_in_a_real_context_is_not_silently_coerced() {
+    fn an_int_variable_in_a_real_context_gets_an_explicit_coercion() {
         let mut table = real_table(&["v"]);
         table.declare("n", Type::const_("Int", adsmt_core::Kind::Type));
-        assert!(convert_expr(&parse_sexpr("(< v n)").unwrap(), &table).is_err());
+        let t = convert_expr(&parse_sexpr("(< v n)").unwrap(), &table).expect("converts");
+        let s = format!("{t:?}");
+        assert!(s.contains("to_real"), "the coercion must be explicit: {s}");
+        // A NUMERAL is still relabelled, not wrapped — it is the same number.
+        let t = convert_expr(&parse_sexpr("(< v 3)").unwrap(), &table).expect("converts");
+        assert!(!format!("{t:?}").contains("to_real"), "a numeral needs no coercion");
+    }
+
+    /// `to_real` is now a parsed operator in its own right.
+    #[test]
+    fn to_real_is_parsed() {
+        let mut table = SymbolTable::new();
+        table.declare("n", Type::const_("Int", adsmt_core::Kind::Type));
+        let t = convert_expr(&parse_sexpr("(to_real n)").unwrap(), &table).expect("converts");
+        assert_eq!(t.type_of(), Type::const_("Real", adsmt_core::Kind::Type));
     }
 
     #[test]

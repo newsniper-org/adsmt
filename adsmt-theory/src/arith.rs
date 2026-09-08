@@ -1565,6 +1565,10 @@ fn unimplemented_arith_head(t: &Term) -> Option<&'static str> {
             "div" => Some("div"),
             "mod" => Some("mod"),
             "/" => Some("/"),
+            // The Galois transport handles `to_real(<var>) op <literal>` and
+            // returns Accepted/Conflict there, so a `to_real` reaching the DROP
+            // path is a shape it could not carry — arm rather than decide.
+            "to_real" | "int2real" => Some("to_real"),
             _ => None,
         }
     }
