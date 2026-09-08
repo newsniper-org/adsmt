@@ -111,7 +111,16 @@ impl<'a> Parser<'a> {
                 let body = if self.eat(&Tok::Eq) { Some(self.term()?) } else { None };
                 let mut mutual = Vec::new();
                 while self.eat(&Tok::And) {
-                    self.eat(&Tok::Fn);
+                    // `and fn g(…)`, with the keyword REQUIRED. It used to be
+                    // optional, which cost more than it bought: a bodied group
+                    // written `… = body and g(…)` could not parse anyway (the
+                    // conjunction reads `g(` as an application and dies inside
+                    // the argument list), so the only shape the optional form
+                    // accepted was a bodyless declaration group — zero of which
+                    // exist in the corpus, the tests, or the printer, which has
+                    // always emitted `and fn`. Requiring it is what lets the
+                    // expression parser drop its guess entirely (see `fn and`).
+                    self.expect(&Tok::Fn)?;
                     let mname = self.ident()?;
                     self.expect(&Tok::LParen)?;
                     let mut mparams = Vec::new();
@@ -582,15 +591,32 @@ impl<'a> Parser<'a> {
         }
         Ok(lhs)
     }
+    /// Boolean conjunction.
+    ///
+    /// One lookahead, and only one: a mutual `fn` continuation (`… and fn g(…)`)
+    /// is written where a term parse is still in flight, so `and` followed by
+    /// `fn`/`rec` ends the conjunction.
+    ///
+    /// There is deliberately NO lookahead for a mutual `data` continuation. The
+    /// `and` of `data X = … and Y = …` is consumed at ITEM level, and a `data`
+    /// item never has a term parse in flight when it reaches one — constructor
+    /// lists are read by `ctor()`, and the only terms inside are refinement
+    /// predicates, which are closed by `}`. So the expression parser is never
+    /// positioned at a mutual-`data` `and` and has nothing to guess.
+    ///
+    /// Guessing anyway is what broke it: a rule that also stopped at
+    /// `and <ident> =` swallowed ordinary conjunctions. `p and q = r` parsed as
+    /// `p` and the rest was handed back to the item parser, which reported
+    /// "expected an item … found `And`" from a position nowhere near the cause.
+    /// `a = b and c = d` silently kept only its first conjunct. Measured, 56
+    /// corpus files stopped parsing — the dominant Verus shape is
+    /// `(uInv(64, `r!`) and `r!` = EucMod(…))`. `or`, `==>` and `<==>` never
+    /// grew the rule, so only `and` regressed, which made it look like a typo
+    /// rather than a grammar bug.
     fn and(&mut self) -> Result<Term, FaceError> {
         let mut lhs = self.cmp()?;
         while matches!(self.peek(), Some(Tok::And)) {
             if matches!(self.toks.get(self.pos + 1), Some((Tok::Fn | Tok::Rec, _))) {
-                break;
-            }
-            if matches!(self.toks.get(self.pos + 1), Some((Tok::Ident(_), _)))
-                && matches!(self.toks.get(self.pos + 2), Some((Tok::Eq, _)))
-            {
                 break;
             }
             self.advance();

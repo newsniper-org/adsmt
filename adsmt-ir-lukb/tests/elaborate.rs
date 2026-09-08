@@ -1529,3 +1529,70 @@ fn rec_round_trips_through_the_printer() {
     assert!(printed.contains("\nfn plain"), "plain `fn` stays plain: {printed}");
     assert_eq!(parse(&printed).expect("re-parses"), m);
 }
+
+// ── the boolean `and` must not be confused with a mutual-item `and` ──────
+//
+// Mutual declarations (`data X = … and Y = …`, `rec fn f … and fn g …`) put an
+// `and` at ITEM level. Guarding that with a lookahead in the EXPRESSION parser
+// broke ordinary conjunction: a rule that stopped at `and <ident> =` swallowed
+// `p and q = r`, and 56 corpus files stopped parsing. The item-level `and` of a
+// `data` group is consumed before any term parse is in flight, and a mutual
+// `fn` is already covered by the `fn`/`rec` lookahead, so the expression parser
+// needs no guess at all.
+
+/// `p and q = r` is `p ∧ (q = r)`. This is the shape that regressed.
+#[test]
+fn a_conjunction_whose_right_operand_is_an_equality_parses() {
+    let src = "const p: Bool\nconst q: Int\nconst r: Int\naxiom: p and q = r\ngoal: p\n";
+    let m = parse(src).expect("`p and q = r` must parse");
+    let printed = print_module(&m);
+    assert_eq!(parse(&printed).expect("re-parses"), m, "round-trip: {printed}");
+    all_props(src, 1, 1);
+}
+
+/// The same through every spelling the lexer maps onto `Tok::Eq`, and through a
+/// backtick-quoted name — the dominant shape in the Verus corpus.
+#[test]
+fn the_conjunction_fix_covers_every_equality_spelling() {
+    for src in [
+        "const p: Bool\nconst q: Int\nconst r: Int\naxiom: p and q == r\ngoal: p\n",
+        "const p: Bool\nconst `r!`: Int\nconst e: Int\naxiom: p and `r!` = e\ngoal: p\n",
+        "const p: Bool\nconst x: Int\ngoal: p and x = 5\n",
+        "const p: Bool\nconst q: Int\nconst r: Int\nconst s: Bool\ngoal: p and q = r and s\n",
+    ] {
+        let m = parse(src).unwrap_or_else(|e| panic!("must parse: {src}\n{e}"));
+        let printed = print_module(&m);
+        assert_eq!(parse(&printed).expect("re-parses"), m, "round-trip: {printed}");
+    }
+}
+
+/// A conjunction of two equalities used to parse only its FIRST conjunct and
+/// silently abandon the rest — the truncation, not an error, is what made this
+/// hard to see.
+#[test]
+fn a_conjunction_of_two_equalities_keeps_both() {
+    let src = "const a: Int\nconst b: Int\nconst c: Int\nconst d: Int\ngoal: a = b and c = d\n";
+    let m = parse(src).expect("parses");
+    let printed = print_module(&m);
+    assert!(printed.contains("and"), "both conjuncts survive: {printed}");
+    assert_eq!(parse(&printed).expect("re-parses"), m, "round-trip: {printed}");
+}
+
+/// The mutual forms still parse, print with their keyword, and round-trip —
+/// the feature the broken lookahead was meant to protect. It shipped with no
+/// test at all, which is why the suite stayed green while the corpus broke.
+#[test]
+fn mutual_groups_round_trip_through_the_printer() {
+    for src in [
+        "data Tree = node(kids: Forest) and Forest = nil | cons(hd: Tree, tl: Forest)\n\
+         goal: forall t: Tree. t = t\n",
+        "data P = z | s(k: P)\n\
+         rec fn ev(n: P): Bool = match n { z => true, s(k) => od(k) } \
+         and fn od(n: P): Bool = match n { z => false, s(k) => ev(k) }\n\
+         goal: ev(z)\n",
+    ] {
+        let m = parse(src).unwrap_or_else(|e| panic!("must parse: {src}\n{e}"));
+        let printed = print_module(&m);
+        assert_eq!(parse(&printed).expect("re-parses"), m, "round-trip: {printed}");
+    }
+}
