@@ -1000,7 +1000,11 @@ impl<'p> Elab<'p> {
             Type::Name(n) => match self.env.lookup(n) {
                 Some(d) if is_type0(&d.ty) => Ok(K::cnst(n.clone())),
                 Some(_) => Err(unsupported(format!("`{n}` is not a sort"))),
-                None => Err(unsupported(format!("unknown sort `{n}`"))),
+                None => Err(unsupported(format!(
+                    "unknown sort `{n}` — a module elaborates top to bottom, so \
+                     `{n}` must be declared ABOVE its first use (two datatypes \
+                     that reference each other need the `and` group form)"
+                ))),
             },
             // A value-parameterized ("dependent") RING sort: `GF(p)` (finite
             // field), `IntModulo(m)` (`ℤ/mℤ`), `GFPower(p, n)` (`GF(pⁿ)`). It
@@ -1530,7 +1534,17 @@ impl<'p> Elab<'p> {
                     if let Some(k) = self.elab_selector(ctx, name, &kargs)? {
                         return Ok(k);
                     }
-                    return Err(unsupported(format!("unknown function symbol `{name}`")));
+                    // Declaration order is significant here, and saying only
+                    // "unknown" hides that: a module elaborates in ONE pass, so
+                    // when an item is read the environment holds exactly the
+                    // items before it. A name that IS declared, later in the
+                    // same module, reads identically to one that is not.
+                    return Err(unsupported(format!(
+                        "unknown function symbol `{name}` — a module elaborates \
+                         top to bottom, so `{name}` must be declared ABOVE its \
+                         first use (a definition that calls itself needs `rec`; \
+                         two that call each other need the `and fn` group form)"
+                    )));
                 }
                 // a declared function / bound functional — resolve as a Var head.
                 let f = self.elab_term(ctx, &S::Var(name.to_string()))?;

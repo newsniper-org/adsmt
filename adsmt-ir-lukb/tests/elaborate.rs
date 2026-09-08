@@ -1815,3 +1815,40 @@ fn rec_on_a_later_group_member_says_where_rec_belongs() {
     };
     assert!(msg.contains("FIRST member"), "{msg}");
 }
+
+/// Declaration order is significant, and the diagnostic has to say so.
+///
+/// A module elaborates in ONE pass, so when an item is read the environment
+/// holds exactly the items above it — and a name that IS declared, later in the
+/// same module, used to read identically to one that is not declared at all.
+/// Both cycle-shaped uses have a surface now (`rec`, and the `and` group
+/// forms), so the message points at those rather than at nothing.
+#[test]
+fn a_forward_reference_says_declaration_order_is_significant() {
+    let msg = match elaborate("fn f(n: Int): Int = g(n)\nfn g(n: Int): Int\ngoal: f(0) = g(0)\n") {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a forward reference does not elaborate"),
+    };
+    assert!(msg.contains("top to bottom"), "{msg}");
+    assert!(msg.contains("`rec`"), "{msg}");
+
+    let msg = match elaborate(
+        "data Tree = node(f: Forest)\ndata Forest = nil | cons(h: Tree, t: Forest)\ngoal: true\n",
+    ) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a forward sort reference does not elaborate"),
+    };
+    assert!(msg.contains("top to bottom"), "{msg}");
+    assert!(msg.contains("group form"), "{msg}");
+}
+
+/// …and the forms it points at do work.
+#[test]
+fn the_group_forms_the_diagnostic_names_are_real() {
+    all_props(
+        "data Tree = node(f: Forest)\nand Forest = nil | cons(h: Tree, t: Forest)\n\
+         const t: Tree\ngoal: t = t\n",
+        0,
+        1,
+    );
+}

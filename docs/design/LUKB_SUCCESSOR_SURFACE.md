@@ -322,6 +322,33 @@ sequence of declarations (sorts/fns/datatypes — reuse lu-kb `data`/`enum`/`fn`
 + a bare `sort S` and `fn f(x: Int): Int` *signature* form) followed by
 `axiom`/`assume`/`goal` items.
 
+### 3c'. Declaration order is significant
+
+A module elaborates in **one pass**: when an item is read, the environment holds
+exactly the items above it. So a `fn` or a `data` must be declared before its
+first use, and a name declared LATER in the same module is, at the point of use,
+indistinguishable from one never declared. The diagnostic says this rather than
+reporting a bare "unknown symbol" (measured 2026-09-08: both the function and
+the sort message).
+
+The two shapes that genuinely need to refer forward have their own surface, and
+the message names them:
+
+- a definition that calls **itself** — `rec fn f(…) = … f(…) …`
+- definitions or datatypes that call **each other** — the `and` group forms
+  (`rec fn f(…) … and fn g(…) …`, `data A = … and B = …`)
+
+Those are not conveniences over declaration order; they are a different thing.
+A cycle cannot be admitted by reordering, because a CIC environment is a
+SEQUENTIAL admission (`Env` keeps an ordered `journal`, and the AOT bank
+serializes it). Every reference in a body must already be admitted when the
+body is, so a cycle enters only as ONE admission unit — `fix` for a
+self-reference, `declare_mutual`/`define_mutual` for a group.
+
+Declaration-order *freedom* (a two-pass elaborate that collects signatures
+first) is the separate, purely-ergonomic question, and it is NOT implemented.
+It would not open anything the group forms do not already open.
+
 ### 3d. Triggers (soundness-critical, opt-in)
 
 Because MBQI completeness/termination hinges on triggers, a quantifier may
