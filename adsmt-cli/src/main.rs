@@ -496,7 +496,13 @@ fn main() -> ExitCode {
         let output = cli.aot_output.as_deref().expect(
             "--aot-output presence was validated before dispatch",
         );
-        return match bake_to_path(&driver, &cli, output, bake_input_source.as_deref()) {
+        return match bake_to_path(
+            &driver,
+            &cli,
+            output,
+            bake_input_source.as_deref(),
+            degraded,
+        ) {
             Ok(()) => ExitCode::from(0),
             Err(code) => ExitCode::from(code),
         };
@@ -655,8 +661,49 @@ fn bake_to_path(
     cli: &Cli,
     output: &str,
     input_source: Option<&str>,
+    // #69 — was a command skipped natively while the prelude was being read?
+    degraded: bool,
 ) -> Result<(), u8> {
     use sha2::{Digest, Sha256};
+
+    // #69 — REFUSE to bake a degraded session.
+    //
+    // A skipped command means the driver's `assertions` are a SUBSET of the
+    // prelude the caller handed us, and the bank records no trace of that: the
+    // header carries the SHA-256 of the FULL prelude text, so a later
+    // `--aot-load` believes it restored the whole thing. That session is not
+    // marked `degraded` either — the flag lives in the process that baked —
+    // so its `(check-sat)` answers CONFIDENTLY over the smaller theory. Fewer
+    // constraints admit more models, so the direction that breaks is `sat`,
+    // and it breaks silently:
+    //
+    // ```text
+    // prelude: (declare-fun f (Int) Int) (declare-const s String)
+    //          (assert (and (= (f 0) 1) (= (str.len s) 3)))   ← skipped whole
+    // query:   (assert (= (f 0) 2)) (check-sat)
+    //   lu-smt --aot-load  →  sat        z3 on the concatenation  →  unsat
+    // ```
+    //
+    // This is the same argument the two `--jit-trace-emit` gates below make,
+    // for the same reason: an artefact recorded under an under-representative
+    // view of the formula gets replayed against a formula it never earned. The
+    // bake is a build step, so refusing is cheap and visible — and the real
+    // verus prelude (1505 lines) bakes with no skips at all, so nothing that
+    // works today starts failing.
+    //
+    // There is deliberately no override flag. An escape hatch here would be a
+    // trust source no later step can re-check: the loaded session cannot tell
+    // a complete bank from an incomplete one, which is precisely the defect.
+    if degraded {
+        eprintln!(
+            "lu-smt: --aot-bake: a command was skipped natively, so the bank \
+             would hold a SUBSET of the prelude while claiming the full \
+             prelude's SHA-256 — a session loading it would answer `sat` over \
+             the smaller theory. Nothing written; fix or remove the skipped \
+             command (see the diagnostics above)."
+        );
+        return Err(11);
+    }
 
     let sha: [u8; 32] = match &cli.aot_sha {
         Some(hex) => match decode_sha_hex(hex) {
