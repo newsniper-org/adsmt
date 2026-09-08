@@ -643,6 +643,12 @@ impl Datatypes {
             let fields = decl.field_sorts.get(ci).filter(|f| f.len() == sels.len());
             // Each field's selector application: reuse one the theory holds
             // (same class, same selector name), else synthesise it.
+            // How this declaration's selectors are spelled, read off the
+            // applications the theory holds (any of them; a face is uniform).
+            let head_is_const = sel_apps.iter().any(|(app, _)| {
+                let TermInner::App(f, _) = app.kind() else { return false };
+                matches!(f.kind(), TermInner::Const(c) if sels.iter().any(|s| s == &c.name))
+            });
             let mut args: Vec<Term> = Vec::with_capacity(sels.len());
             let mut arg_tys: Vec<Type> = Vec::with_capacity(sels.len());
             let mut ok = true;
@@ -672,7 +678,22 @@ impl Datatypes {
                             ok = false;
                             break;
                         };
-                        let Ok(a) = Term::app(Term::const_(sel, selty), x.clone()) else {
+                        // The head must be spelled the way the producing face
+                        // spells a selector, or the synthesised application is a
+                        // DIFFERENT hash-consed term and congruence never
+                        // relates it to the one the query mentions. The two
+                        // faces disagree: the SMT-LIB converter makes every
+                        // non-constructor identifier a `Var`, and the CIC
+                        // lowering emits selectors as `Const`. So copy the
+                        // spelling from a selector application of this same
+                        // declaration when the theory holds one, and default to
+                        // `Var` — the SMT-LIB shape — when it does not.
+                        let head = if head_is_const {
+                            Term::const_(sel, selty)
+                        } else {
+                            Term::var(sel, selty)
+                        };
+                        let Ok(a) = Term::app(head, x.clone()) else {
                             ok = false;
                             break;
                         };
@@ -1975,6 +1996,58 @@ mod tests {
         );
         // …while the plain variable still gets one.
         assert!(derived.iter().any(|(a, _)| a == &p), "{derived:?}");
+    }
+
+    /// A synthesised selector application must be spelled the way the
+    /// PRODUCING FACE spells one, or it is a different hash-consed term and
+    /// congruence never relates it to the application the query mentions.
+    ///
+    /// The two faces disagree: the SMT-LIB converter makes every
+    /// non-constructor identifier a `Var`, and the CIC lowering emits selectors
+    /// as `Const`. So the spelling is copied from an application of the same
+    /// declaration the theory already holds, defaulting to `Var`.
+    ///
+    /// This was worth a whole reproducer: with the constructor-forcing widened
+    /// and the witness built at arity 2, `p = mk(a p, b p)` was derived and the
+    /// query still answered `sat`, because its `a p` was `Var`-headed and the
+    /// synthesised one was `Const`-headed.
+    #[test]
+    fn a_synthesised_selector_copies_the_spelling_already_in_use() {
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("P", vec!["mk".into()])
+                .with_selectors(vec![vec!["a".into(), "b".into()]])
+                .with_field_sorts(vec![vec!["Int".into(), "Int".into()]]),
+        );
+        let p_ty = Type::const_("P", Kind::Type);
+        let int = Type::const_("Int", Kind::Type);
+        let p = Term::const_("p", p_ty.clone());
+        let sel_ty = Type::fun(p_ty.clone(), int.clone()).unwrap();
+        // The face spells `b` as a `Var`; `a p` is absent and gets synthesised.
+        let bp = Term::app(Term::var("b", sel_ty.clone()), p.clone()).unwrap();
+        let mk = Term::const_(
+            "mk",
+            Type::fun(int.clone(), Type::fun(int, p_ty).unwrap()).unwrap(),
+        );
+        let rhs = Term::app(
+            Term::app(mk, Term::const_("1", Type::const_("Int", Kind::Type))).unwrap(),
+            bp.clone(),
+        )
+        .unwrap();
+        dt.assert(Literal::negative(Term::mk_eq(p.clone(), rhs).unwrap()).unwrap());
+        let derived = dt.derive_equalities();
+        let (_, w) = derived
+            .iter()
+            .find(|(x, _)| x == &p)
+            .expect("the sole constructor is forced");
+        // Dig out the first argument and check its head is a `Var`, like `b`.
+        let TermInner::App(outer, _) = w.kind() else { panic!("{w}") };
+        let TermInner::App(_, first) = outer.kind() else { panic!("{w}") };
+        let TermInner::App(head, _) = first.kind() else { panic!("{first}") };
+        assert!(
+            matches!(head.kind(), TermInner::Var(v) if v.name == "a"),
+            "the synthesised `a p` must be Var-headed like the `b p` in use: {w}"
+        );
     }
 
     /// A selector spelled like a constructor OF THE SORT IT RETURNS passes both
