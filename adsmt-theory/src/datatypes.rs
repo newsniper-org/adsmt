@@ -502,54 +502,78 @@ impl Datatypes {
     }
 
     /// **Single-survivor witness materialization** (the sound case-split
-    /// completion). When a class is excluded (via exact recognizer-shaped
-    /// disequalities `x ≠ c(sel_c(x))` / `x ≠ c` — see
-    /// [`Self::recognizer_excluded_ctor`]) from EVERY constructor of its
-    /// sort BUT ONE survivor `c'`, exhaustiveness forces `x = c'(…)`:
-    /// emit the witness equality `x = c'(sel_{c'}(x))`. **Sound** — on an
-    /// exhaustive datatype a value is some constructor; all-but-one
-    /// excluded ⟹ it is the last (this is the standard datatype
-    /// case-split made *definite*, not a guess). The downstream
-    /// injectivity / selector-reduction / **acyclicity** then discharge
-    /// what the disequality alone couldn't: e.g. `b ≠ zero ∧ pred b = b`
-    /// ⟹ (survivor succ) `b = succ(pred b)`, and with `pred b = b` this
-    /// is `b = succ(b)` → acyclicity unsat. NO arithmetic, NO ℕ-bridge.
+    /// completion). When a term's constructor is FORCED, emit the witness
+    /// equality `x = c(sel_{c,0}(x), …, sel_{c,n-1}(x))` so the downstream
+    /// injectivity / selector-reduction / **acyclicity** can discharge what the
+    /// hypotheses alone cannot. Two ways a constructor is forced, both direct
+    /// consequences of exhaustiveness:
     ///
-    /// The witness term is built ONLY when an existing `sel_{c'}(t)` (for
-    /// some `t` in the class) is present, so the constructor's type is
-    /// recovered from that selector application (`field → sort`) — no
-    /// per-field sort metadata is needed. Absent the selector term the
-    /// witness is skipped (a sound completeness restriction).
+    /// * **all-but-one excluded** — the class is excluded, via exact
+    ///   recognizer-shaped disequalities `x ≠ c(sel_c(x))` / `x ≠ c` (see
+    ///   [`Self::recognizer_excluded_ctor`]), from every constructor of its
+    ///   sort but one. On an exhaustive datatype a value is some constructor,
+    ///   so all-but-one excluded means it is the last. E.g. `b ≠ zero ∧
+    ///   pred b = b` ⟹ `b = succ(pred b)` ⟹ `b = succ(b)` → acyclicity.
+    /// * **a single-constructor sort** — there is nothing to exclude it with;
+    ///   the sole constructor IS the survivor, for every term of that sort.
+    ///   E.g. `Tree = node(kids: Forest)` with `kids t = cons(t, nil)` ⟹
+    ///   `t = node(cons(t, nil))` → acyclicity.
+    ///
+    /// Both emissions are ENTAILED, never a guess, so this can only ever add
+    /// true equalities. No arithmetic, no ℕ-bridge.
+    ///
+    /// A field whose `sel_j(x)` is not already a term the theory holds is
+    /// SYNTHESISED from [`DatatypeDecl::field_sorts`]. That is what makes the
+    /// arity-`n` case work at all: a selector equality at a foreign sort
+    /// (`a p = 1` at `Int`) routes to that theory and never reaches this one,
+    /// so waiting for the term to appear here means waiting forever. Terms are
+    /// hash-consed and both faces spell a field sort the same way, so the
+    /// synthesised application IS the term the other theory holds.
+    ///
+    /// Guards, each of which makes the pass fall back rather than fail:
+    ///
+    /// * the declaration must carry a `field_sorts` row of the same length as
+    ///   the selector row, and every field sort must round-trip as a plain
+    ///   sort name (an applied parametric sort does not, and synthesising one
+    ///   would invent a type);
+    /// * the recorded arity must equal the selector count, so a declaration
+    ///   that carries real arities but empty selector NAMES cannot materialise
+    ///   a nullary `x = c` for an n-ary `c` — a witness that is not entailed;
+    /// * the class must not already contain a constructor application. Beyond
+    ///   being redundant, this is what stops a self-recursive single-
+    ///   constructor sort from re-emitting `x = mk(f x)`, `f x = mk(f (f x))`,
+    ///   … without bound as each round's synthesised term becomes the next
+    ///   round's scrutinee.
     fn single_survivor_witness(&self, out: &mut Vec<(Term, Term)>) {
-        if self.disequalities.is_empty() {
+        if self.decls.is_empty() {
             return;
         }
         let mut parent: HashMap<Term, Term> = HashMap::new();
         for (a, b) in &self.asserted_eqs {
             Self::uf_union(&mut parent, a, b);
         }
+        // Constructors excluded per class, from recognizer-shaped disequalities.
         type ExSet = std::collections::HashSet<String>;
-        let mut excluded: HashMap<Term, (String, ExSet)> = HashMap::new();
+        let mut excluded: HashMap<Term, ExSet> = HashMap::new();
         for (a, b) in &self.disequalities {
             for (x, rhs) in [(a, b), (b, a)] {
                 let Some(ctor) = self.recognizer_excluded_ctor(x, rhs) else { continue };
-                let sort = x.type_of().to_string();
-                if !self.decls.contains_key(&sort) {
+                if self.decl_for_sort(&x.type_of()).is_none() {
                     continue;
                 }
                 parent.entry(x.clone()).or_insert_with(|| x.clone());
                 let rep = Self::uf_find(&parent, x);
-                excluded
-                    .entry(rep)
-                    .or_insert_with(|| (sort.clone(), ExSet::new()))
-                    .1
-                    .insert(ctor);
+                excluded.entry(rep).or_default().insert(ctor);
             }
         }
-        if excluded.is_empty() {
-            return;
+        // Classes that already hold a constructor application need no witness.
+        let mut has_ctor: std::collections::HashSet<Term> = Default::default();
+        for t in parent.keys() {
+            if self.dest_registered_ctor_app(t).is_some() {
+                has_ctor.insert(Self::uf_find(&parent, t));
+            }
         }
-        // selector apps available to recover the survivor's witness term.
+        // Selector applications the theory already holds, for reuse.
         let mut sel_apps: Vec<(Term, Term)> = Vec::new();
         for t in &self.asserted_terms {
             self.collect_selector_apps(t, &mut sel_apps);
@@ -558,38 +582,137 @@ impl Datatypes {
             self.collect_selector_apps(a, &mut sel_apps);
             self.collect_selector_apps(b, &mut sel_apps);
         }
-        for (rep, (sort, exset)) in &excluded {
-            let Some(decl) = self.decls.get(sort) else { continue };
-            let survivors: Vec<usize> = (0..decl.constructors.len())
-                .filter(|&i| !exset.contains(&decl.constructors[i]))
-                .collect();
-            if survivors.len() != 1 {
+        // Candidate scrutinees, in first-appearance order — deterministic,
+        // unlike iterating a `HashMap`, which is the bug class this file's own
+        // `a_shared_constructor_name_is_attributed_by_the_terms_sort` covers.
+        let mut scrutinees: Vec<Term> = Vec::new();
+        let mut seen: std::collections::HashSet<Term> = Default::default();
+        let consider = |t: &Term, out: &mut Vec<Term>, seen: &mut std::collections::HashSet<Term>| {
+            if seen.insert(t.clone()) {
+                out.push(t.clone());
+            }
+        };
+        for (_, arg) in &sel_apps {
+            consider(arg, &mut scrutinees, &mut seen);
+        }
+        for (a, b) in self.disequalities.iter().chain(self.asserted_eqs.iter()) {
+            consider(a, &mut scrutinees, &mut seen);
+            consider(b, &mut scrutinees, &mut seen);
+        }
+        for x in &scrutinees {
+            let Some(decl) = self.decl_for_sort(&x.type_of()) else { continue };
+            // A term that IS a constructor application needs no witness, and
+            // neither does one whose class already holds one. The first check
+            // is not implied by the second: a constructor application that
+            // appears only in a DISEQUALITY never enters the union-find, so it
+            // is in no class at all, and it was getting the vacuous
+            // `c(e, e) = c(sel_0(c(e, e)), sel_1(c(e, e)))`.
+            if self.dest_registered_ctor_app(x).is_some() {
                 continue;
             }
-            let ci = survivors[0];
-            // unary survivor with exactly one selector.
-            if decl.selectors.get(ci).map(Vec::len) != Some(1) {
+            parent.entry(x.clone()).or_insert_with(|| x.clone());
+            let rep = Self::uf_find(&parent, x);
+            if has_ctor.contains(&rep) {
                 continue;
             }
-            let cname = decl.constructors[ci].clone();
-            let sel = &decl.selectors[ci][0];
-            for (sel_app, arg) in &sel_apps {
-                let TermInner::App(f, _) = sel_app.kind() else { continue };
-                if Self::atom_name(f).as_deref() != Some(sel.as_str()) {
+            // Which constructor is forced?
+            let ci = if decl.constructors.len() == 1 {
+                0
+            } else {
+                let Some(exset) = excluded.get(&rep) else { continue };
+                let survivors: Vec<usize> = (0..decl.constructors.len())
+                    .filter(|&i| !exset.contains(&decl.constructors[i]))
+                    .collect();
+                if survivors.len() != 1 {
                     continue;
                 }
-                parent.entry(arg.clone()).or_insert_with(|| arg.clone());
-                if &Self::uf_find(&parent, arg) != rep {
-                    continue;
-                }
-                let Ok(ctor_ty) = Type::fun(sel_app.type_of(), arg.type_of()) else { continue };
-                let Ok(witness) = Term::app(Term::const_(&cname, ctor_ty), sel_app.clone())
-                else {
-                    continue;
+                survivors[0]
+            };
+            let Some(sels) = decl.selectors.get(ci) else { continue };
+            if sels.is_empty() {
+                continue;
+            }
+            if decl.arities.get(ci).copied() != Some(sels.len() as u32) {
+                continue;
+            }
+            // Field sorts are needed only to SYNTHESISE a missing selector
+            // application. A declaration that does not carry them (the engine's
+            // own `DatatypeDecl::inductive` defaults them empty) still gets the
+            // pre-existing behaviour: reuse the applications the theory holds,
+            // and skip the scrutinee when one is missing.
+            let fields = decl.field_sorts.get(ci).filter(|f| f.len() == sels.len());
+            // Each field's selector application: reuse one the theory holds
+            // (same class, same selector name), else synthesise it.
+            let mut args: Vec<Term> = Vec::with_capacity(sels.len());
+            let mut arg_tys: Vec<Type> = Vec::with_capacity(sels.len());
+            let mut ok = true;
+            for (j, sel) in sels.iter().enumerate() {
+                let existing = sel_apps.iter().find(|(app, arg)| {
+                    let TermInner::App(f, _) = app.kind() else { return false };
+                    Self::atom_name(f).as_deref() == Some(sel.as_str())
+                        && parent.get(arg).is_some()
+                        && Self::uf_find(&parent, arg) == rep
+                });
+                let app = match existing {
+                    Some((app, _)) => app.clone(),
+                    None => {
+                        let Some(fields) = fields else {
+                            ok = false;
+                            break;
+                        };
+                        // A field sort must round-trip as a plain name; an
+                        // applied parametric sort does not, and inventing one
+                        // would build a term at a type the producer never used.
+                        let fty = Type::const_(&fields[j], adsmt_core::Kind::Type);
+                        if fty.to_string() != fields[j] {
+                            ok = false;
+                            break;
+                        }
+                        let Ok(selty) = Type::fun(x.type_of(), fty) else {
+                            ok = false;
+                            break;
+                        };
+                        let Ok(a) = Term::app(Term::const_(sel, selty), x.clone()) else {
+                            ok = false;
+                            break;
+                        };
+                        a
+                    }
                 };
-                out.push((arg.clone(), witness));
-                break;
+                arg_tys.push(app.type_of());
+                args.push(app);
             }
+            if !ok {
+                continue;
+            }
+            // `c : f_0 → … → f_{n-1} → S`
+            let mut ctor_ty = x.type_of();
+            for ty in arg_tys.iter().rev() {
+                match Type::fun(ty.clone(), ctor_ty.clone()) {
+                    Ok(t) => ctor_ty = t,
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            let mut witness = Term::const_(&decl.constructors[ci], ctor_ty);
+            for a in args {
+                match Term::app(witness.clone(), a) {
+                    Ok(w) => witness = w,
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            out.push((x.clone(), witness));
         }
     }
 
@@ -872,10 +995,42 @@ impl Datatypes {
     fn dest_registered_ctor_app(&self, t: &Term) -> Option<(String, String, Vec<Term>)> {
         let (cname, args) = Self::dest_constructor_app(t)?;
         let d = self.decl_for_sort(&t.type_of())?;
-        d.constructors
-            .iter()
-            .any(|c| c == &cname)
-            .then(|| (d.sort_name.clone(), cname, args))
+        let ci = d.constructors.iter().position(|c| c == &cname)?;
+        // The sort agrees and the name is one of its constructors — and that is
+        // still not enough. A selector may be spelled like a constructor OF THE
+        // SORT IT RETURNS, and then both checks pass:
+        //
+        //     E = dnil | dcons(dh: Int, dt: E)
+        //     P = pc0(dcons: E)          ← selector `dcons : P → E`
+        //     (dcons p)                  ← sort E, and `dcons` is an E ctor
+        //
+        // Two things separate them, and both are checked because either alone
+        // leaves a hole.
+        //
+        // ARITY. `dcons` takes two arguments as E's constructor and one as P's
+        // selector. Only a declaration that RECORDS a positive arity can speak
+        // here: a decl left at the default `0` carries no arity information (the
+        // engine's own `DatatypeDecl::inductive` does that), so it is not
+        // evidence of a mismatch and the check stays silent rather than
+        // rejecting applications it cannot judge.
+        if let Some(&ar) = d.arities.get(ci)
+            && ar > 0
+            && ar as usize != args.len()
+        {
+            return None;
+        }
+        // BEING A SELECTOR OF THE ARGUMENT'S SORT. A one-argument application
+        // whose head is a selector of the sort it is applied to IS that
+        // selector applied, whatever else the name means elsewhere. This is the
+        // case arity cannot catch — a unary constructor colliding with a unary
+        // selector agrees on arity.
+        if args.len() == 1
+            && let Some(argd) = self.decl_for_sort(&args[0].type_of())
+            && argd.selectors.iter().any(|row| row.iter().any(|s| s == &cname))
+        {
+            return None;
+        }
+        Some((d.sort_name.clone(), cname, args))
     }
 
     /// Recognize whether `t` is a registered constructor — either a
@@ -1716,6 +1871,159 @@ mod tests {
             derived.iter().any(|(a, c)| a.alpha_eq(&b) && c.alpha_eq(&witness)),
             "expected the single-survivor witness b = succ(pred b); got {derived:?}"
         );
+    }
+
+    /// A SINGLE-CONSTRUCTOR sort forces its constructor with no disequality at
+    /// all — there is nothing to exclude it with, so it is the survivor for
+    /// every term of that sort. Reproducer (a) of the datatype false-`sat`
+    /// group: `Tree = node(kids: Forest)` with `kids t = cons(t, nil)` is
+    /// `unsat` by acyclicity once `t = node(kids t)` is materialised, and was
+    /// `sat` before.
+    #[test]
+    fn a_single_constructor_sort_forces_its_constructor() {
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("Tree", vec!["node".into()])
+                .with_selectors(vec![vec!["kids".into()]])
+                .with_field_sorts(vec![vec!["Forest".into()]]),
+        );
+        let tree = Type::const_("Tree", Kind::Type);
+        let forest = Type::const_("Forest", Kind::Type);
+        let t = Term::const_("t", tree.clone());
+        let kids = Term::const_("kids", Type::fun(tree.clone(), forest).unwrap());
+        let kids_t = Term::app(kids, t.clone()).unwrap();
+        // Only mention `kids t` — no disequality anywhere.
+        dt.assert(Literal::positive(
+            Term::mk_eq(kids_t.clone(), kids_t.clone()).unwrap(),
+        ).unwrap());
+        let derived = dt.derive_equalities();
+        let node = Term::const_("node", Type::fun(kids_t.type_of(), tree).unwrap());
+        let witness = Term::app(node, kids_t).unwrap();
+        assert!(
+            derived.iter().any(|(a, c)| a == &t && c == &witness),
+            "a sole constructor is forced without any exclusion: {derived:?}"
+        );
+    }
+
+    /// The witness is built at ANY arity, synthesising the selector
+    /// applications the theory does not already hold. Reproducer (b): the
+    /// second field of `cons` never appears as a term, and waiting for it means
+    /// waiting forever — a selector equality at a foreign sort routes to that
+    /// sort's theory and never reaches this one.
+    #[test]
+    fn the_witness_is_built_at_any_arity_and_synthesises_missing_selectors() {
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("L", vec!["nil".into(), "cons".into()])
+                .with_selectors(vec![vec![], vec!["hd".into(), "tl".into()]])
+                .with_field_sorts(vec![vec![], vec!["Int".into(), "L".into()]]),
+        );
+        let l = Type::const_("L", Kind::Type);
+        let int = Type::const_("Int", Kind::Type);
+        let x = Term::const_("x", l.clone());
+        let nil = Term::const_("nil", l.clone());
+        let tl = Term::const_("tl", Type::fun(l.clone(), l.clone()).unwrap());
+        let tl_x = Term::app(tl, x.clone()).unwrap();
+        dt.assert(Literal::negative(Term::mk_eq(x.clone(), nil).unwrap()).unwrap());
+        dt.assert(Literal::positive(Term::mk_eq(tl_x.clone(), x.clone()).unwrap()).unwrap());
+        let derived = dt.derive_equalities();
+        // `hd x` is SYNTHESISED; `tl x` is the one the theory holds.
+        let hd_x = Term::app(
+            Term::const_("hd", Type::fun(l.clone(), int.clone()).unwrap()),
+            x.clone(),
+        )
+        .unwrap();
+        let cons = Term::const_(
+            "cons",
+            Type::fun(int, Type::fun(l.clone(), l).unwrap()).unwrap(),
+        );
+        let witness = Term::app(Term::app(cons, hd_x).unwrap(), tl_x).unwrap();
+        assert!(
+            derived.iter().any(|(a, c)| a == &x && c == &witness),
+            "expected x = cons(hd x, tl x): {derived:?}"
+        );
+    }
+
+    /// The forcing must not re-fire on a term that already IS a constructor
+    /// application. Such a term can appear only in a DISEQUALITY, so it never
+    /// enters the union-find and is in no class — the class-level check does
+    /// not cover it, and without the term-level one it collected the vacuous
+    /// `c(e,e) = c(sel_0(c(e,e)), sel_1(c(e,e)))`. Measured: that vacuous
+    /// witness produced a false `unsat`.
+    #[test]
+    fn a_constructor_application_gets_no_witness_of_its_own() {
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("P", vec!["pc0".into()])
+                .with_selectors(vec![vec!["f0".into(), "f1".into()]])
+                .with_field_sorts(vec![vec!["E".into(), "E".into()]]),
+        );
+        let p_ty = Type::const_("P", Kind::Type);
+        let e_ty = Type::const_("E", Kind::Type);
+        let e = Term::const_("e", e_ty.clone());
+        let pc0 = Term::const_(
+            "pc0",
+            Type::fun(e_ty.clone(), Type::fun(e_ty, p_ty.clone()).unwrap()).unwrap(),
+        );
+        let app = Term::app(Term::app(pc0, e.clone()).unwrap(), e).unwrap();
+        let p = Term::const_("p", p_ty);
+        dt.assert(Literal::negative(Term::mk_eq(p.clone(), app.clone()).unwrap()).unwrap());
+        let derived = dt.derive_equalities();
+        assert!(
+            !derived.iter().any(|(a, _)| a == &app),
+            "a constructor application needs no witness: {derived:?}"
+        );
+        // …while the plain variable still gets one.
+        assert!(derived.iter().any(|(a, _)| a == &p), "{derived:?}");
+    }
+
+    /// A selector spelled like a constructor OF THE SORT IT RETURNS passes both
+    /// the name check and the sort check. Two things still separate them, and
+    /// both are needed: the recorded ARITY, and being a selector of the
+    /// ARGUMENT's sort. Each of these was a measured false `unsat`.
+    #[test]
+    fn a_selector_returning_its_namesakes_sort_is_not_a_ctor_app() {
+        let mut dt = Datatypes::new();
+        dt.declare(
+            DatatypeDecl::inductive("E", vec!["dnil".into(), "dcons".into()])
+                .with_selectors(vec![vec![], vec!["dh".into(), "dt".into()]])
+                .with_field_sorts(vec![vec![], vec!["Int".into(), "E".into()]]),
+        );
+        dt.declare(
+            // `dcons : P → E` (arity 2 as E's ctor, 1 as P's selector) and
+            // `dnil : P → E` (arity 0 as E's ctor — arity cannot separate it).
+            DatatypeDecl::inductive("P", vec!["pc0".into()])
+                .with_selectors(vec![vec!["dcons".into(), "dnil".into()]])
+                .with_field_sorts(vec![vec!["E".into(), "E".into()]]),
+        );
+        let p_ty = Type::const_("P", Kind::Type);
+        let e_ty = Type::const_("E", Kind::Type);
+        let p = Term::const_("p", p_ty.clone());
+        for sel in ["dcons", "dnil"] {
+            let app = Term::app(
+                Term::const_(sel, Type::fun(p_ty.clone(), e_ty.clone()).unwrap()),
+                p.clone(),
+            )
+            .unwrap();
+            assert!(
+                dt.dest_registered_ctor_app(&app).is_none(),
+                "`{sel} p` is P's selector, not E's constructor"
+            );
+        }
+        // The controls: E's real constructors still destructure.
+        let dnil = Term::const_("dnil", e_ty.clone());
+        assert!(dt.dest_registered_ctor_app(&dnil).is_some(), "nullary E ctor");
+        let dcons = Term::const_(
+            "dcons",
+            Type::fun(Type::const_("Int", Kind::Type), Type::fun(e_ty.clone(), e_ty).unwrap())
+                .unwrap(),
+        );
+        let real = Term::app(
+            Term::app(dcons, Term::const_("1", Type::const_("Int", Kind::Type))).unwrap(),
+            dnil,
+        )
+        .unwrap();
+        assert!(dt.dest_registered_ctor_app(&real).is_some(), "binary E ctor");
     }
 
     #[test]
