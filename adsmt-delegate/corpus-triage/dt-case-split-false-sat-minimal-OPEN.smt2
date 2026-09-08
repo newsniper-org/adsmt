@@ -1,0 +1,8 @@
+(set-logic ALL)
+(declare-datatypes ((P 0)) (((pc0 (f0 P) (f1 P)) (pbase))))
+(declare-const p P)
+(declare-const q P)
+(assert (= q (f1 q)))
+(assert (not (= (f1 q) p)))
+(assert (= p (f1 (f0 p))))
+(check-sat)

@@ -1231,6 +1231,30 @@ impl Theory for Datatypes {
             self.conflict = Some(w.clone());
             return CheckResult::Unsat { witness: w };
         }
+        // NO CONFLICT FOUND — which is not the same as having found a model,
+        // and the gap is a measured false `sat`. None of the rules above
+        // enumerates the constructors of a term whose constructor is unknown;
+        // `single_survivor_witness` comes closest and fires only when the
+        // constructor is FORCED (all-but-one excluded, or a sole constructor).
+        // So a contradiction that needs a genuine CASE SPLIT is missed:
+        //
+        //     P = pc0(f0: P, f1: P) | pbase
+        //     (assert (= q (f1 q)))
+        //     (assert (not (= (f1 q) p)))
+        //     (assert (= p (f1 (f0 p))))
+        //         lu-smt sat        z3 unsat        cvc5 unsat
+        //
+        // (`adsmt-delegate/corpus-triage/dt-case-split-false-sat-*-OPEN.smt2`;
+        // 7 rows per 4000 randomized datatype queries, both generators.)
+        //
+        // Downgrading `Sat` here on a syntactic proxy for "a split was needed"
+        // was tried and REFUSED on measurement: the broad predicate (a selector
+        // applied to an undetermined scrutinee) cost 40% of the correct `sat`
+        // verdicts, and narrowing it to classes a disequality touches still cost
+        // 25% and still left 2 of the 7. The gap is the missing SPLIT, and only
+        // performing it — assert each constructor in turn, report `Unsat` when
+        // every branch conflicts — closes it without paying completeness. That
+        // is a decision-procedure feature, not a backstop, and it is open.
         CheckResult::Sat
     }
 

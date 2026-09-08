@@ -14,6 +14,14 @@ axioms the disagreement actually needs.
   completeness targets (z3 closes what we abstain on); `z3-noverdict` rows
   are mostly the designed-non-verifying abduct family. Env: `ADSMT_CORPUS`,
   `ADSMTC`. Output: per-row TSV + a `family × (adsmtc, z3)` summary.
+The two `dt-case-split-*-OPEN.smt2` rows are the measured residual after the
+2026-09-08 datatype slice: a contradiction that needs a genuine constructor
+CASE SPLIT, which the theory does not perform (7 rows per 4000 randomized
+queries, both generators). Downgrading `Sat` on a syntactic proxy for "a split
+was needed" was tried and refused on measurement — 40% of correct `sat`
+verdicts for the broad predicate, 25% for the narrowed one, and the narrowed one
+still missed 2 of the 7. Only performing the split closes it.
+
 - `dt_gen.py <outdir> <lo> <hi>` — random DATATYPE queries with globally
   unique selector names. The neutral control: a verdict change here is about
   the structural rules, not about naming.
