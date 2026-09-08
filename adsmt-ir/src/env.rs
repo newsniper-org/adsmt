@@ -212,6 +212,20 @@ pub enum AdmissionStep {
     Inductive(IndSpec),
     /// A [`declare_mutual`](crate::declare_mutual) call (members in order).
     Mutual(Vec<IndSpec>),
+    /// A [`define_mutual`](crate::define_mutual) call — a mutually recursive
+    /// group of DEFINITIONS, admitted together because no member type-checks
+    /// or terminates on its own. Recorded as ONE step so a replay re-runs the
+    /// group guard rather than admitting the members piecemeal (which would
+    /// re-check nothing: each body mentions the others).
+    MutualDefine(Vec<MutualDefSpec>),
+}
+
+/// One member of a [`AdmissionStep::MutualDefine`] group.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MutualDefSpec {
+    pub name: String,
+    pub ty: Term,
+    pub body: Term,
 }
 
 /// The global environment. Admission of a declaration goes through

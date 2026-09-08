@@ -96,15 +96,6 @@ fn check_reserved_name(name: &str) -> Result<(), FaceError> {
     Ok(())
 }
 
-fn type_mentions_self(ty: &Type, name: &str) -> bool {
-    match ty {
-        Type::Name(s) => s == name,
-        Type::App(s, args) => s == name || args.iter().any(|a| type_mentions_self(a, name)),
-        Type::Refine { base, .. } => type_mentions_self(base, name),
-        Type::Arrow(dom, cod) => type_mentions_self(dom, name) || type_mentions_self(cod, name),
-    }
-}
-
 struct Elab<'p> {
     env: Env,
     hyps: Vec<K>,
@@ -857,7 +848,8 @@ impl<'p> Elab<'p> {
             signatures.push((name.clone(), ty));
         }
 
-        // Pass 2: elaborate bodies
+        // Pass 2: elaborate bodies, then admit the whole group at once.
+        let mut defs: Vec<(String, K, K)> = Vec::with_capacity(group.len());
         for (name, params, ret, body, rec, dec) in group {
             let Some(b) = body else {
                 continue;
@@ -908,10 +900,28 @@ impl<'p> Elab<'p> {
                 lam = K::lam(s.clone(), lam);
             }
             let (_, ty) = signatures.iter().find(|(n, _)| n == name).unwrap();
-            self.env.declare(name.clone(), adsmt_ir::Decl {
-                ty: ty.clone(),
-                modality: adsmt_ir::Modality::Def(lam),
-            });
+            defs.push((name.clone(), ty.clone(), lam));
+        }
+        // The group goes in through the CHECKED admitter, all at once.
+        //
+        // It used to go in through `Env::declare` — the raw, unchecked
+        // insertion the kernel documents as "prefer the checked admitters" —
+        // one member at a time. That skipped two things. The admission journal,
+        // so the group could never be banked (`bank_encode`'s self-check
+        // rejects an env its journal cannot rebuild). And, far worse, every
+        // termination check: `f x = g x, g x = f x` was admitted, and the
+        // kernel's head reduction then had no normal form to find. It hung; the
+        // variant with the call under an argument overflowed the stack.
+        //
+        // `define_mutual` type-checks every body against its signature with the
+        // whole group in scope, and then requires the group to be structurally
+        // decreasing — the same rule, and the same conservatism, that a single
+        // `rec fn` already meets through the kernel's `fix` guard. A group it
+        // cannot prove decreasing is REFUSED, not postulated: postulating would
+        // throw the bodies away and turn a goal that is true by definition into
+        // a confident countermodel (the defect `decreases` had at 3efcc89).
+        if !defs.is_empty() {
+            adsmt_ir::define_mutual(&mut self.env, &defs)?;
         }
         Ok(())
     }

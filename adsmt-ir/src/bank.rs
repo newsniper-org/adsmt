@@ -65,7 +65,7 @@ const MAGIC: [u8; 8] = *b"ADIR-BNK";
 /// Wire-format version of the journal encoding. Bump on any change to the
 /// codec (a new `AdmissionStep` / `Term` variant, a field, a tag). A bank with
 /// an unknown version is rejected (⇒ fall through), never mis-decoded.
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 /// A constructor input list — `(ctor name, arg telescope, idx exprs)` per
 /// constructor — matching [`IndSpec::ctors`].
 type CtorTriples = Vec<(String, Vec<Term>, Vec<Term>)>;
@@ -301,6 +301,15 @@ impl Writer {
                     self.indspec(s);
                 }
             }
+            AdmissionStep::MutualDefine(defs) => {
+                self.u8(4);
+                self.usize(defs.len());
+                for d in defs {
+                    self.str(&d.name);
+                    self.term(&d.ty);
+                    self.term(&d.body);
+                }
+            }
         }
     }
     fn journal(&mut self, steps: &[AdmissionStep]) {
@@ -463,6 +472,18 @@ impl<'a> Reader<'a> {
                 }
                 AdmissionStep::Mutual(v)
             }
+            4 => {
+                let n = self.usize()?;
+                let mut v = Vec::with_capacity(n.min(self.remaining()));
+                for _ in 0..n {
+                    v.push(crate::env::MutualDefSpec {
+                        name: self.str()?,
+                        ty: self.term(0)?,
+                        body: self.term(0)?,
+                    });
+                }
+                AdmissionStep::MutualDefine(v)
+            }
             t => return Err(BankError::BadTag("step", t)),
         })
     }
@@ -522,6 +543,13 @@ fn replay(steps: &[AdmissionStep]) -> Result<Env, BankError> {
                     })
                     .collect();
                 crate::inductive::declare_mutual(&mut env, members)
+            }
+            AdmissionStep::MutualDefine(defs) => {
+                let group: Vec<(String, Term, Term)> = defs
+                    .iter()
+                    .map(|d| (d.name.clone(), d.ty.clone(), d.body.clone()))
+                    .collect();
+                crate::check::define_mutual(&mut env, &group)
             }
         };
         r.map_err(|e| BankError::Rejected(e.to_string()))?;

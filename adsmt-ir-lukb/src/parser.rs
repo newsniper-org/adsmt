@@ -120,6 +120,18 @@ impl<'a> Parser<'a> {
                     // exist in the corpus, the tests, or the printer, which has
                     // always emitted `and fn`. Requiring it is what lets the
                     // expression parser drop its guess entirely (see `fn and`).
+                    // `rec` marks the GROUP, on its first member — mutual
+                    // recursion is a property of the group, not of one member
+                    // (and the admitter guards all the bodies together). Say
+                    // that, rather than reporting a bare "expected `fn`".
+                    if matches!(self.peek(), Some(Tok::Rec)) {
+                        return Err(parse_err(
+                            self.at(),
+                            "`rec` belongs on the FIRST member of a mutual group and \
+                             covers all of them — write `rec fn f(…) … and fn g(…) …`"
+                                .to_string(),
+                        ));
+                    }
                     self.expect(&Tok::Fn)?;
                     let mname = self.ident()?;
                     self.expect(&Tok::LParen)?;

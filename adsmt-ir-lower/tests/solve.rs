@@ -588,13 +588,26 @@ fn a_mutual_group_on_an_opaque_argument_terminates() {
     for src in [
         format!("{MUTUAL_PEANO}const q: P\ngoal: ev(q) = ev(q)\n"),
         format!("{MUTUAL_PEANO}const q: P\ngoal: ev(q) or not ev(q)\n"),
-        format!("const k: Int\n{MUTUAL_INT}goal: ev(k) or not ev(k)\n"),
     ] {
         let e = adsmt_ir_lukb::elaborate(&src).expect("elaborates");
         // The verdict is not the point — TERMINATING is. Lowering is
         // all-or-nothing, so exceeding the budget is a sound abstain.
         let _ = adsmt_ir_lower::lower(&e.env, &e.goals);
     }
+}
+
+/// The `Int` twin no longer reaches lowering at all: `if n = 0` is not a
+/// structural measure, so `define_mutual` refuses the group. That is the
+/// earlier and better place to stop — the budget below is what caught it while
+/// the group was still being admitted through the kernel's raw `declare`.
+#[test]
+fn a_non_structural_mutual_group_is_refused_before_lowering() {
+    let src = format!("const k: Int\n{MUTUAL_INT}goal: ev(k) or not ev(k)\n");
+    let msg = match adsmt_ir_lukb::elaborate(&src) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a group with no structural measure must be refused"),
+    };
+    assert!(msg.contains("structurally decreasing"), "{msg}");
 }
 
 /// Ground arguments still reduce and still decide — the budget must not cost
@@ -604,7 +617,6 @@ fn a_mutual_group_on_ground_arguments_still_reduces() {
     for (src, want_closed) in [
         (format!("{MUTUAL_PEANO}goal: ev(z)\n"), true),
         (format!("{MUTUAL_PEANO}goal: ev(s(s(z)))\n"), true),
-        (format!("{MUTUAL_INT}goal: ev(0)\n"), true),
     ] {
         let e = adsmt_ir_lukb::elaborate(&src).expect("elaborates");
         let l = adsmt_ir_lower::lower(&e.env, &e.goals);

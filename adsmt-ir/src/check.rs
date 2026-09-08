@@ -411,3 +411,177 @@ pub fn postulate(env: &mut Env, name: &str, ty: Term) -> Result<(), TypeError> {
 pub fn type_of(env: &Env, t: &Term) -> Result<Term, TypeError> {
     infer(env, &Ctx::new(), t)
 }
+
+/// Admit a **mutually recursive group of definitions**, together.
+///
+/// No member of such a group can go through [`define`]: each body mentions the
+/// others, so none type-checks until all the signatures exist, and once they
+/// do, `define` would refuse the name as already declared. The lu-kb face
+/// worked around that by [`postulate`](crate::postulate)-ing the signatures and
+/// then overwriting them with `Env::declare`, the raw unchecked insertion —
+/// which skipped the journal (so the group could never be banked) and, far
+/// worse, skipped every termination check. `f x = g x, g x = f x` was admitted
+/// and made the kernel's `whnf` diverge; with the recursive call under an
+/// argument it overflowed the stack.
+///
+/// This is the checked way in. It accepts each member either absent, or already
+/// declared `Open` at exactly the type given — the shape a face produces when
+/// it postulates the signatures first — and it:
+///
+/// 1. type-checks every body against its signature, in the environment where
+///    every member is visible;
+/// 2. requires the group to be **structurally decreasing**
+///    ([`mutual_guard_ok`](crate::guard::mutual_guard_ok)), searching for a
+///    recursive-argument assignment that works;
+/// 3. records ONE journal step, so a bank replay re-runs both checks;
+/// 4. only then declares the members as `def`s.
+///
+/// Step 2 is what makes the resulting δ-cycle safe. A group that passes has a
+/// `Match` on the recursive argument between the entry and every recursive
+/// call, so head reduction is stuck on an open argument and strictly decreases
+/// on a constructor one — the same argument the `fix` guard makes, on the same
+/// trust level (a decision procedure, no proof term).
+pub fn define_mutual(
+    env: &mut Env,
+    group: &[(String, Term, Term)],
+) -> Result<(), TypeError> {
+    use crate::guard::{GroupMember, mutual_guard_ok};
+
+    if group.is_empty() {
+        return Ok(());
+    }
+    // Names must be distinct: two members with one name would leave the second
+    // body checked against a signature the first one owns.
+    for (i, (name, _, _)) in group.iter().enumerate() {
+        if group[..i].iter().any(|(n, _, _)| n == name) {
+            return Err(TypeError::DuplicateConst(name.clone()));
+        }
+    }
+
+    // The numeral rules, as in `define`.
+    for (name, ty, _) in group {
+        check_numeral_sort(name, ty)?;
+        if is_numeral_spelling(name) {
+            return Err(TypeError::BadElim(format!(
+                "`{name}` is spelled like a numeral, so it is a literal and cannot be \
+                 DEFINED — a numeral's value is read off its name"
+            )));
+        }
+    }
+
+    // Every member must be absent, or already `Open` at exactly this type. An
+    // existing `Def`/`Inductive`/`Constructor` is a genuine clash.
+    let ctx = Ctx::new();
+    for (name, ty, _) in group {
+        match env.lookup(name) {
+            None => {}
+            Some(Decl { ty: existing, modality: Modality::Open }) if existing == ty => {}
+            Some(_) => return Err(TypeError::DuplicateConst(name.clone())),
+        }
+    }
+    // Everything below runs on a COPY, so a refused group leaves the caller's
+    // environment exactly as it was — no half-admitted signatures. (Same shape
+    // as `declare_inductive`'s `work` env.)
+    let mut work = env.clone();
+    for (name, ty, _) in group {
+        infer_univ(&work, &ctx, ty)?;
+        if work.lookup(name).is_none() {
+            work.declare(name.clone(), Decl { ty: ty.clone(), modality: Modality::Open });
+        }
+    }
+
+    // 1. every body against its signature, with the whole group in scope.
+    for (_, ty, body) in group {
+        check(&work, &ctx, body, ty)?;
+    }
+
+    // 2. the group guard. Each member's recursive argument is unknown, so
+    //    search the assignments — arities are tiny in practice, and the
+    //    product is capped so a pathological group is refused rather than
+    //    explored.
+    let arities: Vec<usize> = group.iter().map(|(_, ty, _)| pi_arity(ty)).collect();
+    let combinations: usize = arities.iter().try_fold(1usize, |acc, &a| {
+        acc.checked_mul(a.max(1))
+    }).unwrap_or(usize::MAX);
+    if combinations > MAX_GUARD_SEARCH {
+        return Err(TypeError::BadElim(format!(
+            "mutual group `{}`: too many recursive-argument assignments to search \
+             ({combinations} > {MAX_GUARD_SEARCH})",
+            group[0].0
+        )));
+    }
+    let bodies: Vec<(String, Term)> =
+        group.iter().map(|(n, _, b)| (n.clone(), b.clone())).collect();
+    let mut chosen: Option<Vec<GroupMember>> = None;
+    let mut assignment = vec![0usize; group.len()];
+    'search: loop {
+        let members: Vec<GroupMember> = group
+            .iter()
+            .zip(&assignment)
+            .map(|((n, _, _), &r)| GroupMember { name: n.clone(), rec_arg: r })
+            .collect();
+        if mutual_guard_ok(&work, &members, &bodies) {
+            chosen = Some(members);
+            break 'search;
+        }
+        // odometer over the per-member arities
+        let mut i = 0;
+        loop {
+            if i == assignment.len() {
+                break 'search;
+            }
+            assignment[i] += 1;
+            if assignment[i] < arities[i].max(1) {
+                break;
+            }
+            assignment[i] = 0;
+            i += 1;
+        }
+    }
+    let Some(_members) = chosen else {
+        return Err(TypeError::BadElim(format!(
+            "mutual `fn` group `{}`: no argument of any member is structurally \
+             decreasing, so the group is not admitted. Mutual recursion must \
+             destructure an inductive argument with a `match`; recursion guarded \
+             by an arithmetic test (`if n = 0 …`) has no structural measure. The \
+             branch that admits those on a termination proof is not implemented \
+             yet — the same rule a single `rec fn` already follows.",
+            group[0].0
+        )));
+    };
+
+    // 3 + 4. journal the group as one step, then declare the bodies.
+    env.record(crate::env::AdmissionStep::MutualDefine(
+        group
+            .iter()
+            .map(|(name, ty, body)| crate::env::MutualDefSpec {
+                name: name.clone(),
+                ty: ty.clone(),
+                body: body.clone(),
+            })
+            .collect(),
+    ));
+    for (name, ty, body) in group {
+        env.declare(
+            name.clone(),
+            Decl { ty: ty.clone(), modality: Modality::Def(body.clone()) },
+        );
+    }
+    Ok(())
+}
+
+/// Cap on the recursive-argument assignments [`define_mutual`] will try. A
+/// group of realistic shape (a handful of members, a handful of arguments each)
+/// is far below it; anything above is refused rather than searched.
+const MAX_GUARD_SEARCH: usize = 4096;
+
+/// How many arguments a signature abstracts (its Π-telescope length).
+fn pi_arity(ty: &Term) -> usize {
+    let mut n = 0;
+    let mut cur = ty.clone();
+    while let crate::term::TermKind::Pi(_, cod) = cur.kind() {
+        n += 1;
+        cur = cod.clone();
+    }
+    n
+}

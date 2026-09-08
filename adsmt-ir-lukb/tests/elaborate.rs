@@ -1757,3 +1757,61 @@ fn applying_a_non_application_round_trips() {
         assert_eq!(parse(&printed).expect("re-parses"), m, "round-trip: {printed}");
     }
 }
+
+// ── mutual `fn` groups ──────────────────────────────────────────────────
+//
+// A group used to be admitted one member at a time through `Env::declare`, the
+// kernel's raw unchecked insertion. That skipped the admission journal (so the
+// group could never be banked) and every termination check: `f x = g x`,
+// `g x = f x` was admitted and made the kernel's head reduction diverge.
+
+const MUT_PEANO: &str = "data Peano = zero | succ(pred: Peano)\n";
+
+/// The structural group is ADMITTED — the guard is not a blanket refusal.
+#[test]
+fn a_structural_mutual_fn_group_is_admitted() {
+    let src = format!(
+        "{MUT_PEANO}rec fn evp(n: Peano): Bool = match n {{ zero => true, succ(k) => odp(k) }}\n\
+         and fn odp(n: Peano): Bool = match n {{ zero => false, succ(k) => evp(k) }}\n\
+         goal: evp(succ(succ(zero)))\n"
+    );
+    all_props(&src, 0, 1);
+}
+
+/// …and the non-structural one is REFUSED, not postulated. Postulating would
+/// throw the bodies away and turn a goal true by definition into a confident
+/// countermodel — the defect `decreases` had before 3efcc89.
+#[test]
+fn a_mutual_fn_group_with_no_structural_measure_is_refused() {
+    let src = "rec fn f(n: Int): Int = g(n)\nand fn g(n: Int): Int = f(n)\ngoal: f(0) = 0\n";
+    let msg = match elaborate(src) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a group with no structural measure must be refused"),
+    };
+    assert!(msg.contains("structurally decreasing"), "{msg}");
+}
+
+/// The same group with the recursive call under an argument — the shape that
+/// overflowed the stack rather than hanging.
+#[test]
+fn a_nested_mutual_cycle_is_refused_too() {
+    let src = "rec fn f(n: Int): Int = g(n) + 1\nand fn g(n: Int): Int = f(n) + 1\n\
+               goal: f(0) > 0\n";
+    assert!(elaborate(src).is_err(), "a nested mutual cycle must be refused");
+}
+
+/// `rec` marks the group, on its first member. Writing it again on a later
+/// member is reported as such, not as a bare "expected `fn`".
+#[test]
+fn rec_on_a_later_group_member_says_where_rec_belongs() {
+    let src = format!(
+        "{MUT_PEANO}rec fn evp(n: Peano): Bool = match n {{ zero => true, succ(k) => odp(k) }}\n\
+         and rec fn odp(n: Peano): Bool = match n {{ zero => false, succ(k) => evp(k) }}\n\
+         goal: evp(zero)\n"
+    );
+    let msg = match elaborate(&src) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("`and rec fn` is not the surface"),
+    };
+    assert!(msg.contains("FIRST member"), "{msg}");
+}

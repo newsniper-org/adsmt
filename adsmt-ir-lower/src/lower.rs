@@ -405,7 +405,9 @@ impl Lowerer<'_> {
             match step {
                 AdmissionStep::Inductive(spec) => specs.push(spec),
                 AdmissionStep::Mutual(group) => specs.extend(group.iter()),
-                AdmissionStep::Define { .. } | AdmissionStep::Postulate { .. } => {}
+                AdmissionStep::Define { .. }
+                | AdmissionStep::Postulate { .. }
+                | AdmissionStep::MutualDefine(_) => {}
             }
         }
         let empty = uninhabited_datatypes(&specs);

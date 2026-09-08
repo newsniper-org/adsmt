@@ -191,3 +191,203 @@ fn ok_minor(
     }
     ok(env, rec_arg, &cur, f, x, &sm)
 }
+
+// ── the mutual-group guard ──────────────────────────────────────────────
+
+/// A member of a mutually recursive DEFINITION group: its name, and which of
+/// its value arguments is claimed to decrease.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupMember {
+    pub name: String,
+    pub rec_arg: usize,
+}
+
+/// Whether a mutually recursive group of **definitions** is structurally
+/// decreasing.
+///
+/// [`guard_ok`] guards a single `fix`, where the recursive function is a de
+/// Bruijn variable bound by the `fix` itself. A mutual group is admitted as a
+/// set of `def`s instead — there is no term former that binds several
+/// functions at once — so its members appear in the bodies as `Const`s. That
+/// removes the `f` index bookkeeping entirely; everything else is the same
+/// argument, and the same conservatism.
+///
+/// The rule: in `f_i`'s body, every call to any group member `f_j` must pass,
+/// in position `rec_arg_j`, a variable that is a **strict structural subterm**
+/// of `f_i`'s own recursive argument — one exposed by destructuring it with
+/// `Match`/`Elim`. A group member appearing anywhere other than as the head of
+/// such a call is rejected, so the functions cannot escape into a position
+/// where the measure says nothing.
+///
+/// Soundness: identical to [`guard_ok`]'s. `smaller` only ever holds variables
+/// bound as recursive-position constructor arguments of the destructured
+/// recursive argument, so each call strictly decreases a well-founded
+/// structural measure — on the SHARED measure, since every member's recursive
+/// argument is destructured from the value the caller was given. A group that
+/// passes therefore has no infinite call chain, and δ on it terminates: a body
+/// that reaches a recursive call has passed a `Match`, which is stuck unless
+/// its target is in constructor form.
+///
+/// Conservative in the same direction: anything it cannot prove decreasing is
+/// rejected. A non-structural but terminating group (`ev`/`od` over `Int`,
+/// guarded by `n = 0` rather than by a constructor) is refused here exactly as
+/// the single-function guard refuses its counterpart.
+pub fn mutual_guard_ok(env: &Env, group: &[GroupMember], bodies: &[(String, Term)]) -> bool {
+    if group.len() != bodies.len() {
+        return false;
+    }
+    bodies.iter().all(|(name, body)| {
+        let Some(me) = group.iter().find(|m| &m.name == name) else {
+            return false;
+        };
+        body_ok(env, group, me.rec_arg, body)
+    })
+}
+
+/// One member's body: peel the `rec_arg+1` leading λs, then walk it with the
+/// decreasing variable at `Bound(0)`.
+fn body_ok(env: &Env, group: &[GroupMember], rec_arg: usize, body: &Term) -> bool {
+    let mut cur = body.clone();
+    for _ in 0..=rec_arg {
+        let next = match cur.kind() {
+            TermKind::Lam(dom, b) => {
+                if !ok_m(env, group, dom, usize::MAX, &HashSet::new()) {
+                    return false;
+                }
+                b.clone()
+            }
+            // Fewer λs than the claimed recursive argument: the function does
+            // not even abstract it.
+            _ => return false,
+        };
+        cur = next;
+    }
+    ok_m(env, group, &cur, 0, &HashSet::new())
+}
+
+fn rec_arg_of(group: &[GroupMember], name: &str) -> Option<usize> {
+    group.iter().find(|m| m.name == name).map(|m| m.rec_arg)
+}
+
+/// `x` = the decreasing variable's de Bruijn index (`usize::MAX` = out of
+/// scope, e.g. inside a binder's domain), `smaller` = variables known to be
+/// strict subterms of it.
+fn ok_m(
+    env: &Env,
+    group: &[GroupMember],
+    t: &Term,
+    x: usize,
+    smaller: &HashSet<usize>,
+) -> bool {
+    match t.kind() {
+        TermKind::Sort(_) | TermKind::Bound(_) => true,
+        // A group member NOT at the head of a guarded call — passed to a
+        // higher-order function, returned, compared. The measure says nothing
+        // about what happens to it there.
+        TermKind::Const(n) => rec_arg_of(group, n).is_none(),
+        TermKind::App(_, _) => {
+            let (head, args) = collect_spine(t);
+            if let TermKind::Const(n) = head.kind()
+                && let Some(r) = rec_arg_of(group, n)
+            {
+                if args.len() <= r {
+                    return false;
+                }
+                let decreasing =
+                    matches!(args[r].kind(), TermKind::Bound(j) if smaller.contains(j));
+                return decreasing && args.iter().all(|a| ok_m(env, group, a, x, smaller));
+            }
+            ok_m(env, group, &head, x, smaller)
+                && args.iter().all(|a| ok_m(env, group, a, x, smaller))
+        }
+        TermKind::Lam(dom, body) | TermKind::Pi(dom, body) => {
+            ok_m(env, group, dom, x, smaller)
+                && ok_m(env, group, body, x.wrapping_add(1), &shift_set(smaller))
+        }
+        TermKind::Let(ty, v, b) => {
+            if !ok_m(env, group, ty, x, smaller) || !ok_m(env, group, v, x, smaller) {
+                return false;
+            }
+            // ζ-alias, exactly as in the single-function guard: a let-bound
+            // copy of an already-smaller variable is itself smaller.
+            let mut body_smaller = shift_set(smaller);
+            if let TermKind::Bound(j) = v.kind()
+                && smaller.contains(j)
+            {
+                body_smaller.insert(0);
+            }
+            ok_m(env, group, b, x.wrapping_add(1), &body_smaller)
+        }
+        TermKind::Elim(ind, motive, minors, major) | TermKind::Match(ind, motive, minors, major) => {
+            if !ok_m(env, group, motive, x, smaller) || !ok_m(env, group, major, x, smaller) {
+                return false;
+            }
+            let destructured =
+                matches!(major.kind(), TermKind::Bound(j) if *j == x || smaller.contains(j));
+            let Some(inductive) = env.inductive(ind) else {
+                return false;
+            };
+            if minors.len() != inductive.ctors.len() {
+                return false;
+            }
+            for (ci, minor) in minors.iter().enumerate() {
+                let ctor = &inductive.ctors[ci];
+                let pass = if destructured {
+                    ok_minor_m(env, group, minor, ctor.args_count, &ctor.rec_positions, x, smaller)
+                } else {
+                    ok_m(env, group, minor, x, smaller)
+                };
+                if !pass {
+                    return false;
+                }
+            }
+            true
+        }
+        TermKind::Fix { ty, body, .. } => {
+            ok_m(env, group, ty, x, smaller)
+                && ok_m(env, group, body, x.wrapping_add(1), &shift_set(smaller))
+        }
+        // Conservative, as in `ok`: a mutual eliminator exposes no tracked
+        // subterms, so a group call under one is rejected. Its sub-terms are
+        // still guarded.
+        TermKind::MutElim(_member, motives, minors, major) => {
+            ok_m(env, group, major, x, smaller)
+                && motives.iter().all(|m| ok_m(env, group, m, x, smaller))
+                && minors.iter().all(|m| ok_m(env, group, m, x, smaller))
+        }
+    }
+}
+
+/// The mutual twin of [`ok_minor`]: peel a minor premise's constructor-argument
+/// λs and mark the recursive-position ones as strict subterms.
+fn ok_minor_m(
+    env: &Env,
+    group: &[GroupMember],
+    minor: &Term,
+    c: usize,
+    rec_positions: &[usize],
+    x: usize,
+    smaller: &HashSet<usize>,
+) -> bool {
+    let mut cur = minor.clone();
+    let mut x = x;
+    let mut sm = smaller.clone();
+    for _ in 0..c {
+        let next = match cur.kind() {
+            TermKind::Lam(dom, body) => {
+                if !ok_m(env, group, dom, x, &sm) {
+                    return false;
+                }
+                x = x.wrapping_add(1);
+                sm = shift_set(&sm);
+                body.clone()
+            }
+            _ => return ok_m(env, group, &cur, x, &sm),
+        };
+        cur = next;
+    }
+    for &r in rec_positions {
+        sm.insert(c - 1 - r);
+    }
+    ok_m(env, group, &cur, x, &sm)
+}
