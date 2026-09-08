@@ -686,7 +686,7 @@ impl Datatypes {
                 let existing = sel_apps.iter().find(|(app, arg)| {
                     let TermInner::App(f, _) = app.kind() else { return false };
                     Self::atom_name(f).as_deref() == Some(sel.as_str())
-                        && parent.get(arg).is_some()
+                        && parent.contains_key(arg)
                         && Self::uf_find(&parent, arg) == rep
                 });
                 let app = match existing {
