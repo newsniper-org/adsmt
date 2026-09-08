@@ -71,6 +71,31 @@ const CORPUS: &[(&str, &str, &str)] = &[
         "(declare-const n Int)(assert (>= n 1))\
          (assert (not (>= n 2)))(check-sat)",
     ),
+    // The `to_real` transport recognises only `to_real(<bare var>) op <literal>`.
+    // Everything else is dropped by BOTH arithmetic theories, and the polite
+    // combination used to switch its `uninterpreted` backstop off for ANY atom
+    // whose syntax mentioned `to_real` — so the drop produced a confident
+    // verdict. These rows pin the shapes it does NOT handle to a sound answer.
+    (
+        "to_real vs a Real variable: dropped, must not decide",
+        "const n: Int\nconst v: Real\ngoal g: to_real(n) < v, to_real(n) > v |- false\n",
+        "(declare-const n Int)(declare-const v Real)\
+         (assert (< (to_real n) v))(assert (> (to_real n) v))\
+         (assert (not false))(check-sat)",
+    ),
+    (
+        "to_real of a non-variable: dropped, must not decide",
+        "goal g: to_real(2) >= to_real(2)\n",
+        "(assert (not (>= (to_real 2) (to_real 2))))(check-sat)",
+    ),
+    (
+        // The shape the transport DOES handle, so the narrowing must not cost it:
+        // `to_real(n) >= 4.0` transports to `n >= 4` by the ceiling adjoint.
+        "to_real against a literal still transports",
+        "const n: Int\ngoal g: to_real(n) >= 4.0, n <= 1 |- false\n",
+        "(declare-const n Int)(assert (>= (to_real n) 4.0))(assert (<= n 1))\
+         (assert (not false))(check-sat)",
+    ),
     (
         "eq-not-entailed invalid",
         "const x: Int\nconst y: Int\ngoal g: x >= y |- x = y\n",

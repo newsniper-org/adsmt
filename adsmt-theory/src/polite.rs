@@ -109,12 +109,28 @@ impl Combination {
                 // sort-restricted theory ignoring an atom over its own
                 // sort is evidence the theory meaning was dropped.
                 let specialized = !t.handles_sort(&bool_sort);
+                // LIA is pulled in for a `to_real` atom that is NOT over its
+                // own sort. There `Ignored` is ROUTING — the sibling theory
+                // owns the atom — so it is not evidence of a dropped meaning.
+                // That exemption must be exactly this narrow. It used to also
+                // carry `&& !mentions_to_real`, which switched the backstop off
+                // for EVERY specialized theory the moment an atom's syntax
+                // mentioned `to_real`, including the theory that actually owns
+                // the sort. Since the transport only recognises
+                // `to_real(<bare var>) op <literal>`, everything else — a Real
+                // variable on the right, a compound argument, two `to_real`s —
+                // was dropped by BOTH theories with nothing armed:
+                //
+                //     to_real(n) < v  ∧  to_real(n) > v  ⊢ false     sat
+                //     ⊢ to_real(2) >= to_real(2)                     sat
+                //
+                // both confident answers resting on atoms nobody interpreted.
+                let routed_in_only = is_lia_to_real && !t.handles_sort(&routing_sort);
                 let r = t.assert(lit.clone());
                 if specialized
                     && !is_eq_shaped
                     && matches!(r, AssertResult::Ignored)
-                    && (!is_lia_to_real)
-                    && (!mentions_to_real)
+                    && !routed_in_only
                 {
                     self.uninterpreted = true;
                     if self.uninterpreted_atoms.len() < Self::UNINTERPRETED_SAMPLE_CAP {
