@@ -120,6 +120,8 @@ pub fn lower_with_triggers(
         seen_refinement_consts: RefCell::new(HashSet::new()),
         triggers,
         out_triggers: RefCell::new(HashMap::new()),
+        depth: Cell::new(0),
+        steps: Cell::new(0),
     };
     // datatype declarations first (from the admission journal) — if ANY
     // declared inductive is unlowerable (indexed/parametric/Prop-sorted/bad
@@ -182,6 +184,44 @@ fn term_mentions_const(t: &Term, name: &str) -> bool {
         _ => false,
     }
 }
+/// Visit every `Const` name occurring in `t`.
+fn walk_const_heads(t: &Term, f: &mut impl FnMut(&str)) {
+    match t.kind() {
+        TermKind::Const(c) => f(c),
+        TermKind::App(a, b) => {
+            walk_const_heads(a, f);
+            walk_const_heads(b, f);
+        }
+        TermKind::Pi(a, b) | TermKind::Lam(a, b) => {
+            walk_const_heads(a, f);
+            walk_const_heads(b, f);
+        }
+        TermKind::Let(ty, v, b) => {
+            walk_const_heads(ty, f);
+            walk_const_heads(v, f);
+            walk_const_heads(b, f);
+        }
+        TermKind::Elim(_, m, minors, major) | TermKind::Match(_, m, minors, major) => {
+            walk_const_heads(m, f);
+            for x in minors {
+                walk_const_heads(x, f);
+            }
+            walk_const_heads(major, f);
+        }
+        TermKind::Fix { ty, body, .. } => {
+            walk_const_heads(ty, f);
+            walk_const_heads(body, f);
+        }
+        TermKind::MutElim(_, motives, minors, major) => {
+            for x in motives.iter().chain(minors) {
+                walk_const_heads(x, f);
+            }
+            walk_const_heads(major, f);
+        }
+        _ => {}
+    }
+}
+
 fn term_contains_match(t: &Term) -> bool {
     match t.kind() {
         TermKind::Match(..) => true,
@@ -236,7 +276,44 @@ struct Lowerer<'e> {
     /// Lowered trigger annotations, keyed by the outermost lowered `forall`
     /// ([`Lowered::triggers`]).
     out_triggers: RefCell<HashMap<CTerm, LoweredTriggers>>,
+    /// Nesting depth of [`Lowerer::lower_term`], against a hard cap.
+    ///
+    /// Lowering `whnf`s every term, which δ-unfolds definitions. That
+    /// terminates for a single recursive `fn` — it lowers to a kernel `Fix`,
+    /// whose μ-rule refuses to unfold on a non-constructor argument — but a
+    /// MUTUALLY recursive group is a pair of plain `Def`s that reference each
+    /// other, and nothing stops them: `ev(q)` unfolds to a `match` whose minor
+    /// calls `od`, which unfolds to a `match` whose minor calls `ev`, forever,
+    /// with the term growing a selector layer each time. Measured, `ev(q) = ev(q)`
+    /// — reflexivity — never returned.
+    ///
+    /// The cap makes that a bounded abstain instead of a hang. It is generous
+    /// enough that only a genuine runaway reaches it (the ground cases finish in
+    /// a handful of levels), and lowering is all-or-nothing, so hitting it
+    /// yields `unknown` — never a verdict.
+    depth: Cell<usize>,
+    /// TOTAL [`Lowerer::lower_term`] entries for the whole query, against a
+    /// second cap.
+    ///
+    /// Depth alone is not enough. The term-`ite` lifting removes a conditional
+    /// by DUPLICATING its enclosing atom, so an unbounded unfolding through an
+    /// `if` grows the work exponentially in WIDTH while staying shallow: the
+    /// `Int` twin of the mutual group (`if n = 0 then … else od(n - 1)`) still
+    /// ran past 60 s under a depth cap alone. Counting entries bounds the work
+    /// whatever shape it takes.
+    steps: Cell<usize>,
 }
+
+/// Deepest [`Lowerer::lower_term`] nesting before the query abstains.
+///
+/// Kept small on purpose: this is a STACK guard as much as a termination one
+/// (`lower_term_inner` is a large frame, and a debug build overflowed at 2000),
+/// and real formula nesting is far shallower — the 246-file corpus does not
+/// come near it.
+const MAX_LOWER_DEPTH: usize = 256;
+
+/// Total `lower_term` entries per query before the query abstains.
+const MAX_LOWER_STEPS: usize = 300_000;
 
 impl Lowerer<'_> {
     fn fresh(&self) -> String {
@@ -344,6 +421,21 @@ impl Lowerer<'_> {
     /// Lower a kernel **term** (a `Bool` formula or a first-order element).
     /// `whnf` first (δ-unfold defs / β-redexes / ζ-lets), then match the head.
     fn lower_term(&self, term: &Term, frames: &mut Vec<Frame>) -> Result<CTerm, LowerError> {
+        let d = self.depth.get();
+        let n = self.steps.get();
+        if d >= MAX_LOWER_DEPTH || n >= MAX_LOWER_STEPS {
+            return Err(unl(
+                "lowering exceeded its budget — a definition is unfolding without                  bound (a mutually recursive `fn` group has no guard, unlike a single                  `rec fn`, which lowers to a kernel `fix`)",
+            ));
+        }
+        self.depth.set(d + 1);
+        self.steps.set(n + 1);
+        let out = self.lower_term_inner(term, frames);
+        self.depth.set(d);
+        out
+    }
+
+    fn lower_term_inner(&self, term: &Term, frames: &mut Vec<Frame>) -> Result<CTerm, LowerError> {
         let t = whnf(self.env, term);
         // Term-level `ite` lifting: `adsmt-core` has no term-level conditional, so
         // a term-`ite` `(ite A c a b)` (A a non-Bool sort) nested in an atom's
@@ -465,7 +557,7 @@ impl Lowerer<'_> {
         if let Some((name, _)) = as_const_app(t) {
             if let Some(decl) = self.env.lookup(&name) {
                 if let Modality::Def(body) = &decl.modality {
-                    if term_contains_match(body) {
+                    if term_contains_match(body) && !self.def_is_cyclic(&name) {
                         return Some(t.clone());
                     }
                 }
@@ -484,6 +576,44 @@ impl Lowerer<'_> {
             }
             _ => None,
         }
+    }
+
+    /// Does `name`'s definition reach itself through other definitions?
+    ///
+    /// Inlining is one unfolding per pass and the caller re-runs, so a cycle
+    /// never terminates: it just keeps growing the term. A mutually recursive
+    /// `fn` group is exactly that shape — each member is a `Def` whose body
+    /// mentions the other — so `ev`/`od` inlined into each other forever and a
+    /// goal as ordinary as `ev(q) = ev(q)` never returned. (A single `rec fn`
+    /// was never affected: it lowers to a kernel `Fix`, which is not a
+    /// match-bearing `Def`, and its μ-rule already refuses to unfold on a
+    /// non-constructor argument.)
+    ///
+    /// Declining to inline a cyclic definition costs only completeness: the
+    /// `match` stays where it is and the query abstains if nothing else can
+    /// interpret it.
+    fn def_is_cyclic(&self, name: &str) -> bool {
+        fn reaches(env: &Env, from: &Term, target: &str, seen: &mut HashSet<String>) -> bool {
+            let mut hit = false;
+            walk_const_heads(from, &mut |n| {
+                if hit || n == target {
+                    hit = hit || n == target;
+                    return;
+                }
+                if seen.insert(n.to_string())
+                    && let Some(d) = env.lookup(n)
+                    && let Modality::Def(b) = &d.modality
+                {
+                    hit = hit || reaches(env, b, target, seen);
+                }
+            });
+            hit
+        }
+        let Some(decl) = self.env.lookup(name) else { return false };
+        let Modality::Def(body) = &decl.modality else { return false };
+        let mut seen = HashSet::new();
+        seen.insert(name.to_string());
+        reaches(self.env, body, name, &mut seen)
     }
 
     fn inline_match_bearing_def(&self, t: &Term) -> Option<Term> {

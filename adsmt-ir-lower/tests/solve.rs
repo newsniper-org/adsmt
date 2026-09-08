@@ -563,3 +563,51 @@ fn term_ite_z3_differential() {
     assert_eq!(false_sat, 0, "term-ite lifting produced a spurious sat");
     assert!(agree > 50, "differential exercised too few decided cases: {agree}");
 }
+
+// ── lowering must terminate even when a definition unfolds without bound ──
+//
+// Lowering `whnf`s every term, which δ-unfolds definitions. A single recursive
+// `fn` is safe: it lowers to a kernel `Fix`, whose μ-rule refuses to unfold on
+// a non-constructor argument. A MUTUALLY recursive group is a pair of plain
+// `Def`s that reference each other, and nothing stopped them — `ev` unfolded to
+// a `match` whose minor called `od`, which unfolded to a `match` whose minor
+// called `ev`, forever. Measured: `ev(q) = ev(q)` — reflexivity — never
+// returned; the `Int` twin, where the term-`ite` lifting duplicates the atom
+// each round, blew up in width instead of depth and also never returned.
+
+const MUTUAL_PEANO: &str = "data P = z | s(k: P)\n\
+    rec fn ev(n: P): Bool = match n { z => true, s(k) => od(k) } \
+    and fn od(n: P): Bool = match n { z => false, s(k) => ev(k) }\n";
+
+const MUTUAL_INT: &str = "rec fn ev(n: Int): Bool = if n = 0 then true else od(n - 1) \
+    and fn od(n: Int): Bool = if n = 0 then false else ev(n - 1)\n";
+
+/// An opaque argument to a mutually recursive group must ABSTAIN, not hang.
+#[test]
+fn a_mutual_group_on_an_opaque_argument_terminates() {
+    for src in [
+        format!("{MUTUAL_PEANO}const q: P\ngoal: ev(q) = ev(q)\n"),
+        format!("{MUTUAL_PEANO}const q: P\ngoal: ev(q) or not ev(q)\n"),
+        format!("const k: Int\n{MUTUAL_INT}goal: ev(k) or not ev(k)\n"),
+    ] {
+        let e = adsmt_ir_lukb::elaborate(&src).expect("elaborates");
+        // The verdict is not the point — TERMINATING is. Lowering is
+        // all-or-nothing, so exceeding the budget is a sound abstain.
+        let _ = adsmt_ir_lower::lower(&e.env, &e.goals);
+    }
+}
+
+/// Ground arguments still reduce and still decide — the budget must not cost
+/// the cases that worked.
+#[test]
+fn a_mutual_group_on_ground_arguments_still_reduces() {
+    for (src, want_closed) in [
+        (format!("{MUTUAL_PEANO}goal: ev(z)\n"), true),
+        (format!("{MUTUAL_PEANO}goal: ev(s(s(z)))\n"), true),
+        (format!("{MUTUAL_INT}goal: ev(0)\n"), true),
+    ] {
+        let e = adsmt_ir_lukb::elaborate(&src).expect("elaborates");
+        let l = adsmt_ir_lower::lower(&e.env, &e.goals);
+        assert_eq!(l.is_ok(), want_closed, "ground mutual recursion must lower: {src}");
+    }
+}
