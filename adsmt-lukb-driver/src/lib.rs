@@ -123,6 +123,42 @@ fn solve_collecting(
         solver.declare_datatype(d.clone());
     }
 
+    // An EMPTY refinement is a compile error.
+    //
+    // `const c: {v: T | φ}` postulates `c : T` and asserts `φ[v := c]` — an
+    // assertion that `T`'s subset has an inhabitant. When it does not, the
+    // assumption set is contradictory and every goal in the module comes back
+    // `unsat`, which reads as "proved":
+    //
+    // ```text
+    // const x: {y: Int | y > 0 and y < 0}
+    // goal: x = x        ⤳  unsat        (and so would `goal: false`)
+    // ```
+    //
+    // `c` is otherwise unconstrained, so `φ[v := c]` is satisfiable exactly
+    // when `∃v. φ` is. Asking the engine for it costs one check per refined
+    // constant, and only `unsat` — emptiness PROVEN — is an error:
+    //
+    //     unsat    the subset is empty                 → error
+    //     sat      a witness exists                    → pass
+    //     unknown  the engine could not decide         → pass
+    //
+    // The `unknown` row is the deliberate gap. Refusing there would reject
+    // every refinement the solver cannot discharge, which is a completeness
+    // limit reported as a user error. Dafny fills the same row with an explicit
+    // `witness` clause; that is a surface decision, not this one.
+    if let Some(bad) = empty_refinement(&elab, &hyps, &goals) {
+        // Unconditional, unlike the lowering's abstentions: this is a defect in
+        // the PROGRAM, not a limit of the engine, and a bare `unknown` would
+        // read as "could not decide" when the answer is "this module says
+        // something false".
+        eprintln!("lu-kb: {bad}");
+        return SolveOutcome {
+            verdict: UnifiedVerdict::smt(Confidence::Unknown),
+            certificates: Vec::new(),
+        };
+    }
+
     // The module's datatype decls (deduped) — the OxiZ renderer emits them as
     // `(declare-datatypes …)`, so a datatype-bearing obligation now DELEGATES
     // (the dominant Verus fuel-unfolding obligations carry datatypes).
@@ -709,4 +745,47 @@ mod tests {
             "a partial-application trigger must not change the verdict: {with_trig:?}"
         );
     }
+}
+
+/// The first refinement-typed constant whose subset the engine PROVES empty,
+/// if any. Returns the diagnostic, not just the name.
+///
+/// Each predicate is checked on its own solver, with the module's datatype
+/// declarations but with NO other hypothesis: the question is whether `φ` alone
+/// is satisfiable, and adding the rest of the assumption set would let another
+/// contradiction masquerade as this one. Only `Unsat` — emptiness proven — is
+/// reported; `Sat` and `Unknown` both pass. See the call site.
+fn empty_refinement(
+    elab: &adsmt_ir_lukb::Elaborated,
+    hyps: &adsmt_ir_lower::Lowered,
+    goals: &adsmt_ir_lower::Lowered,
+) -> Option<String> {
+    if elab.refinement_witnesses.is_empty() {
+        return None;
+    }
+    for (name, phi) in &elab.refinement_witnesses {
+        // The predicate has to survive lowering to be asked at all; one that
+        // does not is simply not checked (the same all-or-nothing abstention
+        // the module's own lowering makes).
+        let Ok(low) = lower_with_triggers(&elab.env, std::slice::from_ref(phi), &elab.triggers)
+        else {
+            continue;
+        };
+        let mut s = Solver::new();
+        for d in hyps.datatypes.iter().chain(goals.datatypes.iter()) {
+            s.declare_datatype(d.clone());
+        }
+        for t in low.goals.iter().chain(low.extra_hyps.iter()) {
+            s.assert(t.clone());
+        }
+        if matches!(s.check_sat(), SatResult::Unsat { .. }) {
+            return Some(format!(
+                "`const {name}` is declared at a refinement whose subset is EMPTY — \
+                 the engine proved the predicate unsatisfiable. Declaring an \
+                 inhabitant of an empty type asserts something false, and every \
+                 goal in the module then follows vacuously."
+            ));
+        }
+    }
+    None
 }

@@ -36,6 +36,24 @@ pub struct Elaborated {
     /// Purely advisory: a pattern that fails to elaborate drops that
     /// quantifier's triggers (never a [`FaceError`]).
     pub triggers: TriggerMap,
+    /// One entry per refinement-typed `const`: the constant's name and the
+    /// refinement predicate instantiated at it, `φ[v := c]`.
+    ///
+    /// `const c: {v: T | φ}` postulates `c : T` and ASSERTS `φ[v := c]` — an
+    /// assertion that `T`'s subset is inhabited. When it is not, the assumption
+    /// set is contradictory and every goal in the module comes back `unsat`,
+    /// which reads as "proved" and is vacuous:
+    ///
+    /// ```text
+    /// const x: {y: Int | y > 0 and y < 0}
+    /// goal: x = x        ⤳  unsat        (and so would `goal: false`)
+    /// ```
+    ///
+    /// The elaborator cannot decide emptiness — that is `∃y. φ`, an SMT
+    /// question — so it hands each predicate to whoever has a solver. Kept
+    /// separate from [`Self::hypotheses`], where these also appear: this is a
+    /// list of things to CHECK, not a second assumption set.
+    pub refinement_witnesses: Vec<(String, K)>,
 }
 
 /// Parse + elaborate lu-kb-successor source. The pure-face entry: no law
@@ -63,7 +81,13 @@ fn elaborate_impl(src: &str, prover: Option<&dyn LawProver>) -> Result<Elaborate
     for item in &module.items {
         e.item(item)?;
     }
-    Ok(Elaborated { env: e.env, hypotheses: e.hyps, goals: e.goals, triggers: e.triggers })
+    Ok(Elaborated {
+        env: e.env,
+        hypotheses: e.hyps,
+        goals: e.goals,
+        triggers: e.triggers,
+        refinement_witnesses: e.refinement_witnesses,
+    })
 }
 
 const RESERVED_BUILTINS: &[&str] = &[
@@ -100,6 +124,8 @@ struct Elab<'p> {
     env: Env,
     hyps: Vec<K>,
     goals: Vec<K>,
+    /// See [`Elaborated::refinement_witnesses`].
+    refinement_witnesses: Vec<(String, K)>,
     /// A counter for the fresh proof tokens of `solve … by …` (`!solve.N`).
     solve_n: usize,
     /// A counter for fresh `match` field binders (`!match.N` — a `!` name can
@@ -221,6 +247,7 @@ impl<'p> Elab<'p> {
         let mut elab = Elab {
             env,
             hyps: Vec::new(),
+            refinement_witnesses: Vec::new(),
             goals: Vec::new(),
             solve_n: 0,
             fresh_n: 0,
@@ -376,6 +403,7 @@ impl<'p> Elab<'p> {
                     // a vacuous (trivially-true, e.g. `nop`) refinement adds no
                     // hypothesis — so `const c: {v:T | nop(v)}` ≡ `const c: T`.
                     if !is_def_eq(&self.env, &phi, &K::cnst("true")) {
+                        self.refinement_witnesses.push((x.clone(), phi.clone()));
                         self.hyps.push(phi);
                     }
                 } else {
