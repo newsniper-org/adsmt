@@ -1581,8 +1581,31 @@ fn dispatch_one(
             // `cli.strict_commands` — the very flag this guard requires to be
             // OFF. Dropping it changes no behaviour and stops the comment above
             // from describing a path that cannot be taken.
-            if oxiz_available() && code == 11 && !cli.strict_commands {
-                eprintln!("lu-smt: (native-skip, deferred to OxiZ) {msg}");
+            //
+            // #68 — the recovery does NOT depend on a delegate being
+            // configured. It used to: `oxiz_available()` gated the whole arm,
+            // so a build without the `oxiz` feature and without
+            // `ADSMT_OXIZ_PATH` exited on the spot and printed NO verdict line
+            // at all. That is the worst of the three outcomes. A row that
+            // produces no line is indistinguishable, to any ledger or
+            // front-end that scrapes stdout, from a row that was never run —
+            // and the session had already answered every earlier
+            // `(check-sat)`, so the consumer sees a truncated transcript
+            // rather than a failure. Skipping the command and marking the
+            // session `degraded` is sound WITHOUT a delegate too, because the
+            // `degraded` guard at the delegation site turns a missing
+            // delegation into `Unknown` rather than into the native verdict
+            // over the surviving subset. So the honest line gets printed and
+            // the stream stays alive; only `--strict-commands` still aborts.
+            if code == 11 && !cli.strict_commands {
+                if oxiz_available() {
+                    eprintln!("lu-smt: (native-skip, deferred to OxiZ) {msg}");
+                } else {
+                    eprintln!(
+                        "lu-smt: (native-skip, no delegate configured — this \
+                         session's verdicts degrade to `unknown`) {msg}"
+                    );
+                }
                 *degraded = true;
                 None
             } else {
