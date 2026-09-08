@@ -17,9 +17,22 @@
 //! **selector reduction** (literal + through congruence), **acyclicity**
 //! (occurs-check via a class-containment-graph cycle), and
 //! **exhaustiveness** (a value excluded from every constructor is unsat)
-//! — is all in place (#330/#331). A z3-differential over 7200+ random
-//! datatype queries agrees with z3 modulo a conservative ~0.1% false-sat
-//! residual (the single-survivor → acyclicity chain).
+//! — is all in place (#330/#331).
+//!
+//! Measured 2026-09-08 against z3 AND cvc5 over 4000+ randomized datatype
+//! queries, on two generators (one deliberately reusing constructor names as
+//! selector names, which is legal SMT-LIB and is the shape the neutral
+//! generator never produces): **zero false `unsat`** and zero oracle
+//! disagreements. Getting there closed 35 false `unsat`s per 2000
+//! collision-shaped queries — every structural rule had been deciding
+//! "is this a constructor application" from the head SYMBOL NAME instead of
+//! the TERM's sort — and the four false `sat`s the single-survivor rule was
+//! too narrow for.
+//!
+//! The residual is 7 rows per 4000, all one class: a contradiction that needs
+//! a genuine constructor CASE SPLIT, which this theory does not perform. See
+//! the note at `check`'s terminal `CheckResult::Sat`, and
+//! `adsmt-delegate/corpus-triage/dt-case-split-false-sat-*-OPEN.smt2`.
 
 use std::collections::HashMap;
 

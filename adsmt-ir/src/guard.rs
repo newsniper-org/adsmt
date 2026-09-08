@@ -1,5 +1,12 @@
-//! The **structural-decrease guard** for `fix` — the soundness-critical
-//! termination check. A `fix f : ty := body` decreasing on argument
+//! The **structural-decrease guards** — the soundness-critical termination
+//! checks. Two of them, the same argument in two shapes: [`guard_ok`] for a
+//! single `fix` (the recursive function is a de Bruijn variable the `fix`
+//! binds) and [`mutual_guard_ok`] for a mutually recursive group of `def`s
+//! (the members are `Const`s, so there is no index to track and the measure is
+//! shared across the group).
+//!
+//! The rest of this header describes `guard_ok`; `mutual_guard_ok` states its
+//! own rule at its definition. A `fix f : ty := body` decreasing on argument
 //! `rec_arg` is admitted only if every recursive call `f …` passes, in
 //! position `rec_arg`, a variable that is a **strict structural subterm**
 //! of the original recursive argument (one exposed by destructuring it

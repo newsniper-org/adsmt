@@ -150,7 +150,10 @@ predicate `φ` is carried verbatim as the guard `C`); the parenthesised comparis
 **Refinement types in type position + generic `'p` (LANDED).** Beyond quantifier
 binders, `{v: T | φ}` is also a first-class **type** (`Type::Refine`) usable in
 `const` / `fn`-param / `fn`-return position. A `const c: {v:T|φ}` postulates
-`c: T` plus the fact `φ[v:=c]`. A predicate `φ` may name **generic predicate
+`c: T` plus the fact `φ[v:=c]` — which the driver CHECKS: a refinement whose
+predicate the engine proves unsatisfiable is refused, since an inhabitant of an
+empty type asserts something false and every goal then follows vacuously
+(`sat`/`unknown` pass; only proven emptiness is an error). A predicate `φ` may name **generic predicate
 parameters `'p`** (a leading single quote — `is_tick_ident`; concrete `q` has no
 quote, the parse-time disambiguation). A `fn` collecting `'p`s from its
 refinements is **predicate-polymorphic**: each `'p` binds implicitly at the head
@@ -481,8 +484,11 @@ needed) and human-readable.
   surface sugar — the solver lowering synthesizes positional `{ctor}!sel{i}`);
   and `fn f(x: T): U = body` → kernel `define` (`Modality::Def`, δ-unfolded at
   lowering) vs the signature-only `postulate`. Lexer `data` kw + `|`; a
-  **recursive** `fn` body is rejected (the kernel `fix` is a later slice — the
-  self-reference is a sound "unknown symbol"). New keyword `Nat`/`Int`/… stay
+  **recursive** `fn` body was rejected in THIS slice (the kernel `fix` came
+  later — the self-reference read as a sound "unknown symbol"). Both halves are
+  retired now: `rec fn` admits a self-reference and the `and` group forms admit
+  a mutual one (§11), and the diagnostic for an unmarked one NAMES them.
+  New keyword `Nat`/`Int`/… stay
   reserved arith sorts (a datatype uses a fresh name). 6 tests; round-trips. This
   retires the verus AIR→lukb producer's `# fallback (datatypes)` once the
   producer is retargeted (Phase 2 proper).
@@ -491,8 +497,11 @@ needed) and human-readable.
   (datatype-eliminator lowering: the `Match` lowering LANDED, **and the
   #331/#334 verdict gate is CLOSED** — the engine DECIDES non-parametric/
   non-indexed Prop/Bool-valued matches via selector congruence + the bounded
-  DPLL(T) refinement loop, z3-differential-validated to a ~0.1% conservative
-  false-sat residual) + faces-in-workspace (DONE, `0f9b007`) + a full A/B
+  DPLL(T) refinement loop; the datatype theory was re-measured 2026-09-08
+  against z3 AND cvc5 over 4000+ randomized queries on two generators —
+  **zero false `unsat`**, and a residual of 7 false `sat`s per 4000, all one
+  class: a contradiction needing a genuine constructor CASE SPLIT, which the
+  theory does not perform) + faces-in-workspace (DONE, `0f9b007`) + a full A/B
   z3-differential. The lukb surface for it (`data`/`fn=body`) is slice 7 above,
   **and the surface `if`/`match` terms LANDED 2026-07-03** (the verus-fork
   proposal: `if` → the `ite` prelude → the verified term-`ite` lowering; flat

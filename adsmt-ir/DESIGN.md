@@ -102,9 +102,18 @@ u       ::= Prop | Type(n)
   binders). `subst_top(body, arg)` is the workhorse.
 - **Reduction** (`reduce.rs`): `whnf` does β (apply a λ), ζ (unfold a
   `let`), and head-δ (unfold a `def` const; never an `open` one).
-  Termination of head-δ in M1: `def` bodies are non-recursive (admission
-  checks the body *before* the constant is inserted, so it cannot mention
-  itself); recursion arrives with guarded `fix` in M2.
+  Termination of head-δ is ENFORCED, not argued. The M1 argument — `def`
+  bodies are non-recursive, since admission checks the body *before* the
+  constant is inserted — holds for every env built through the checked
+  admitters and NOT for every env: `Env::declare` is `pub` and documented as
+  unchecked, and the lu-kb face used it. `f x = g x, g x = f x` made `whnf`
+  spin forever, and with the recursive call under an argument it overflowed
+  the stack. So `whnf` refuses a δ step that returns to a term it is already
+  reducing (path membership on the hash-consed term — `f (f 1)` is not a
+  cycle, and there is no tuning constant), with a depth cap as a stack
+  backstop. A term returned STUCK is the honest answer: `f c` above has no
+  weak head normal form. Results reached under a cut are not memoized.
+  Recursion proper arrives with guarded `fix` in M2.
 - **Convertibility** (`reduce.rs`): `is_def_eq` compares WHNFs
   congruently. After WHNF a `def` const can never be at the head, so a
   surviving `Const` is `open`/unknown and compares by name — the opaque,
@@ -307,9 +316,14 @@ functorial map — below).
 - **Nested recursive containers** (`Rose : List (Tree A) → Tree A`) — need the
   container's functorial `map`/`All` (a functor registry + nested-recursion
   ι); the group member nests inside a foreign inductive's parameter.
-- **Mutual `fix`** — a block of mutually-recursive functions; the valuable
-  cross-call form needs a lexicographic / shared structural measure (a single
-  per-function measure is unsound for `f_i` calling `f_j`).
+- **Mutual `fix` (the TERM FORMER)** — the lexicographic-measure variant. The
+  block of mutually-recursive FUNCTIONS is no longer deferred: `define_mutual`
+  admits one as a set of `def`s, guarded group-wide by a SHARED structural
+  measure (`guard::mutual_guard_ok` — every call to any member passes, in that
+  member's decreasing position, a strict structural subterm of the CALLER's
+  recursive argument). That needs no new term former, and a group it cannot
+  prove decreasing is refused. What stays open is the lexicographic measure,
+  which the shared-structural rule does not cover.
 - **Heterogeneous-universe mutual elimination (relax R3)** — **cannot be made
   sound without the cumulativity / product reasoning the kernel deliberately
   omits** (the cross-member IH transport is exactly a `Sort(U_b) →
@@ -377,9 +391,14 @@ layer** (no `def`/`let`).
 image** it returns `Unlowerable`; it must **never** emit a target term whose
 denotation differs from the source's. A faithful image preserves truth-value;
 an abstention degrades to `Unknown` (sound); a *wrong* image is FALSE_SAT /
-FALSE_UNSAT. Lowering sits **downstream of the kernel's checked admitters** —
-so it may *assume* its input is well-typed and (for `Fix`) terminating; the
-후검증'd guard is exactly what licenses the recursion-axiom form below.
+FALSE_UNSAT. Lowering sits **downstream of the kernel's checked admitters**, but it does
+not get to ASSUME it: `Env::declare` is `pub` and unchecked, so an env can
+reach lowering carrying a definition no admitter approved. `adsmt-ir-lower`
+brackets its `whnf` call with `adsmt_ir::reduction_cuts()` and abstains when a
+reduction was cut short — an un-reduced term lowered as an uninterpreted symbol
+has dropped a definition's meaning, which preserves `unsat` and destroys `sat`.
+For input that DID come through the admitters, the 후검증'd guard is what
+licenses the recursion-axiom form below.
 
 **Type/term stratification.** CIC conflates types and terms (a `Pi` is both);
 adsmt-core stratifies them. Lowering classifies each kernel term by its typing
@@ -598,10 +617,13 @@ parametric / `Prop`-sorted inductives + non-first-order fields abstain;
 `is_finite` conservative = all-nullary). **`Match`/`Elim`/selectors NOT lowered**
 — the face produces none yet (M3-7b); when it does, `Match` is finite/enum-only +
 coverage disjunction, inductive-ω `Match`/recursors abstain until the engine's
-datatype theory is an initial algebra. M3-8c = defs (non-recursive `def` is
-already **δ-inlined** = sound + complete for the face's output; the
-structure-preserving `Const`+axiom form is a deferred optimization, and the
-recursion-axiom form stays deferred to the initial-algebra theory). **후검증** target = *meaning-preservation*: abstract over the
+datatype theory is an initial algebra. M3-8c = defs (a non-recursive `def` is
+**δ-inlined** = sound + complete for it; the structure-preserving `Const`+axiom
+form is a deferred optimization, and the recursion-axiom form stays deferred to
+the initial-algebra theory). The face's output is no longer only non-recursive
+defs: a mutually recursive `def` group reaches the lowering (`define_mutual`),
+and the inliner declines to unfold one (`def_is_cyclic`) — so on those the
+lowering is sound but INCOMPLETE, not complete. **후검증** target = *meaning-preservation*: abstract over the
 denotation, prove the lowered image is logically equivalent on the lowerable
 fragment and whole-query-abstain ⇒ no false verdict; plus an **end-to-end
 three-way differential** (lower a face-elaborated query, solve, cross-check the
@@ -676,12 +698,15 @@ two existing implementations in `adsmt` are the templates:
 - **AOT — an `Env` bank as an *admission journal*** ✅ (M3-1, `bank.rs`). The
   bank stores the [`Env`]'s **admission journal** — the exact ordered sequence
   of *checked-admitter inputs* (`define` / `postulate` /
-  `declare_inductive_indexed` / `declare_mutual`), the **inputs** only, never
-  the derived recursor bookkeeping (`method_template` / `rec_positions` /
+  `declare_inductive_indexed` / `declare_mutual` / `define_mutual`), the
+  **inputs** only, never the derived recursor bookkeeping (`method_template` / `rec_positions` /
   `ctor_of` …). Loading (`bank_decode`) **replays that journal through the same
   checked admitters**, so a loaded `Env` is type-checked, positivity-checked,
   and template-derived *identically* to the original — and the bank therefore
-  adds **no trust** beyond the admitters (themselves 후검증'd). This is the
+  adds **no trust** beyond the admitters (themselves 후검증'd). The wire
+  `FORMAT_VERSION` is **2** since `define_mutual`'s `MutualDefine` step; a bank
+  written at version 1 is rejected as an unknown version, never mis-decoded.
+  This is the
   strongest possible posture under the prime directive: *a loaded bank can
   never admit a declaration the running kernel would not, because the running
   kernel does admit it, on load.* A corrupt / truncated / kernel-incompatible

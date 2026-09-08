@@ -232,7 +232,8 @@ Isabelle은 Pure 위에 여러 대상 논리(HOL, ZF, FOL, CTT, HOLCF, …)가 �
 - **`DratProof::verify`(RUP 검사기)가 있었는데 아무도 부르지 않았다.** 이제
   `recheck`가 부른다.
 
-**실측**(`corpus-triage` 29 케이스 → 인증서 10개, 이론 스텝 13개):
+**실측**(당시 `corpus-triage` 29 케이스 → 인증서 10개, 이론 스텝 13개 —
+코퍼스는 그 뒤 38행으로 늘었고 이 표는 재측정하지 않았다):
 
 | | BASE | NEW |
 |---|---|---|
@@ -274,7 +275,7 @@ Isabelle은 Pure 위에 여러 대상 논리(HOL, ZF, FOL, CTT, HOLCF, …)가 �
 **lu-kb(`adsmtc`/`adsmtr`) 경로도 측정했다** — SMT-LIB 경로만 재고 끝내면
 절반만 검사한 것이다.
 
-| | lu-smt (`corpus-triage` 29건) | lu-kb (`.lukb` 80건) |
+| | lu-smt (당시 `corpus-triage` 29건; 현재 38건) | lu-kb (`.lukb` 80건) |
 |---|---|---|
 | 인증서 | 10 | 36 |
 | 선언 문맥 | — | **36/36** |

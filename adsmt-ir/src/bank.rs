@@ -6,6 +6,7 @@
 //!
 //! A bank stores the [`Env`]'s **admission journal** — the exact ordered
 //! sequence of *checked-admitter inputs* ([`define`](crate::define) /
+//! [`define_mutual`](crate::define_mutual) /
 //! [`postulate`](crate::postulate) /
 //! [`declare_inductive_indexed`](crate::declare_inductive_indexed) /
 //! [`declare_mutual`](crate::declare_mutual)). Loading **replays that journal

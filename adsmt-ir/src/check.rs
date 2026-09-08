@@ -373,8 +373,12 @@ pub fn define(env: &mut Env, name: &str, ty: Term, body: Term) -> Result<(), Typ
     // never be a definition. Defining one closes a reduction cycle with the
     // arithmetic folds in `whnf` — `define("5", Int, Int.add 2 3)` type-checks,
     // the fold rewrites `Int.add 2 3` to `Const("5")`, δ unfolds `5` back to
-    // `Int.add 2 3`, and head reduction never terminates (measured: it hangs).
-    // `theory::literal` postulates, so nothing legitimate is refused here.
+    // `Int.add 2 3`, and head reduction cycles. It used to HANG on that
+    // (measured); since `1f600e9` the term reappears on the reduction path and
+    // `whnf` returns it stuck instead — so the consequence is now an
+    // un-reducible numeral rather than a non-terminating kernel. The guard
+    // stays: a literal whose value is read off its name must not also have a
+    // body. `theory::literal` postulates, so nothing legitimate is refused.
     if is_numeral_spelling(name) {
         return Err(TypeError::BadElim(format!(
             "`{name}` is spelled like a numeral, so it is a literal and cannot be \

@@ -51,8 +51,12 @@ cargo clippy
   ι-preservation + positivity + ζ-alias + HO functorial-IH) is Verus-verified
   in [`../adsmt-ir-verification`](../adsmt-ir-verification) (38 verified). ✅
 - **M2.8+ (deferred, re-reviewed every task from M3 on):** nested recursive
-  containers, mutual `fix` (lexicographic measure), heterogeneous-universe
-  elim.
+  containers, the mutual `fix` TERM FORMER (lexicographic measure),
+  heterogeneous-universe elim. A block of mutually recursive FUNCTIONS is no
+  longer deferred — `define_mutual` admits one as a set of `def`s guarded
+  group-wide by a SHARED structural measure (`guard::mutual_guard_ok`), which
+  needs no new term former; the lexicographic-measure `fix` variant is what
+  stays open.
 - **M3-1:** the **AOT-bank** (`bank.rs`) — the checked `Env` serialized as an
   **admission journal** and reloaded by *re-admission* (`bank_encode` /
   `bank_decode`), so loading is type-checking, sound by construction; a corrupt
@@ -78,9 +82,11 @@ cargo clippy
 - **M3 (next):** surface faces (SMT-LIB-3.0, Datalog) + lowering to the solver
   (`def`→stable-model gate, `open`→theory/G-SAT gate).
 
-✅ 70 tests (12 kernel + 9 inductive + 5 indexed + 12 recursion + 8 mutual +
-3 higher-order + 4 bank + 4 memo + 9 bank-unit + 3 term-unit + 1 doctest) green,
-clippy clean.
+✅ **95 tests** green, clippy clean — the kernel/inductive/indexed/recursion/
+mutual/higher-order/bank/memo suites plus `accessibility` (what the kernel can
+host of well-founded recursion), `mutual_define` (the checked mutual-definition
+admitter), `numeral_identity`, and `whnf_totality` (head reduction terminates on
+an environment built through the raw unchecked `declare`).
 
 See [`DESIGN.md`](DESIGN.md) for the full design, the roadmap, the
 AOT/algebraic-JIT optimization plan (§8), the relationship to
@@ -93,9 +99,9 @@ AOT/algebraic-JIT optimization plan (§8), the relationship to
 | `src/term.rs` | kernel terms, universes, `shift` / `subst_top` |
 | `src/env.rs` | the global environment + the `def`/`open` `Modality` |
 | `src/reduce.rs` | `whnf` (β/ζ/δ/ι/μ) + `is_def_eq` (convertibility) |
-| `src/check.rs` | bidirectional `infer`/`check` + checked `define`/`postulate`/`fix` |
+| `src/check.rs` | bidirectional `infer`/`check` + the checked admitters `define` / `define_mutual` / `postulate` (+ `fix` typing) |
 | `src/inductive.rs` | inductive + mutual admission (positivity) + recursor/match templates |
-| `src/guard.rs` | the `fix` structural-decrease guard (soundness-critical) |
+| `src/guard.rs` | the `fix` structural-decrease guard, and its group-wide twin for a mutual `def` group (both soundness-critical) |
 | `src/error.rs` | `TypeError` (every constructor is a rejection) |
 | `src/bank.rs` | the AOT-bank: admission-journal `bank_encode`/`bank_decode` |
 | `tests/kernel.rs` | λΠ-core conformance + rejection-path tests |
@@ -105,6 +111,10 @@ AOT/algebraic-JIT optimization plan (§8), the relationship to
 | `tests/mutual.rs` | mutual induction + mutual recursors + positivity |
 | `tests/higher_order.rs` | function-typed recursive args (functorial IH + ι) |
 | `tests/bank.rs` | AOT-bank round-trip through the real producer + rejection paths |
+| `tests/whnf_totality.rs` | head reduction terminates on a cyclic `Def` built through the raw `declare` |
+| `tests/mutual_define.rs` | `define_mutual`: the guard, the type-check, the journal round-trip |
+| `tests/accessibility.rs` | what the kernel can host of well-founded recursion (`Acc`) |
+| `tests/numeral_identity.rs` | the numeral convention at the admission boundary |
 
 This is forward-looking, post-v1.0 work, kept in its own repository (like
 `oxiz-nl2`, `unified-gate-verification`) so the `adsmt` v1.0.0

@@ -17,14 +17,19 @@
 //!
 //! ## Status — Phase 1b (Tier 0 + Tier 1, non-layout)
 //!
-//! - **Items:** `sort S`, `const x: T`, `fn f(…): U [= body]`, `data`, and
+//! - **Items:** `sort S`, `const x: T`, `[rec] fn f(…): U [= body]`
+//!   (`rec` marks a recursive definition; `… and fn g(…) …` a mutually
+//!   recursive group, admitted together under a group-wide structural guard),
+//!   `data` (`… and B = …` for a mutual group), and
 //!   `axiom`/`assume`/`goal` (the name is optional); a `goal`'s body may be a
 //!   sequent `H1, …, Hk |- G` (desugared to `(H1 ∧ … ∧ Hk) ==> G`).
 //! - **Types:** named sorts, parametric `F(T, …)`, **function types** `T -> U`
 //!   (right-associative; `(A -> B) -> C` parenthesises an arrow domain), and
 //!   **refinement types `{v: T | φ}`** in type position (const / fn-param /
 //!   fn-return / arrow domain/codomain): a base sort carved by a predicate. A
-//!   `const c: {v:T|φ}` adds the trusted fact `φ[v:=c]`. A `fn` whose
+//!   `const c: {v:T|φ}` adds the fact `φ[v:=c]` — and it is CHECKED: a
+//!   refinement whose predicate the engine proves unsatisfiable is refused,
+//!   since an inhabitant of an empty type asserts something false. A `fn` whose
 //!   param/return refinements mention **generic predicate parameters `'p`** (a
 //!   leading single quote) is **predicate-polymorphic**: `'p` is bound implicitly
 //!   at the `fn` as `Π('p: T→Prop)` (the body checks ONCE with `'p` abstract),

@@ -146,9 +146,17 @@ same way a type-class method does.
      lexes back bare (no backtick).
    - **②-B refinement types in type position**: `Type::Refine { var, base, pred }`
      usable in const / fn-param / fn-return (parse/print/round-trip). The
-     refinement's *sort* is its base; a `const c: {v:T|φ}` adds the trusted fact
+     refinement's *sort* is its base; a `const c: {v:T|φ}` adds the fact
      `φ[v:=c]` as a hypothesis (β-substituted via `subst_top`; dropping it would
-     be unsound, as for Nat/WNat free-const positivity). A generic `'p` in a
+     be unsound, as for Nat/WNat free-const positivity). The fact is CHECKED,
+     not merely trusted: `c` is otherwise unconstrained, so `φ[v:=c]` is
+     satisfiable exactly when `∃v. φ` is, and the driver asks the engine once
+     per refined constant. `unsat` — the subset PROVEN empty — is refused
+     outright, because declaring an inhabitant of an empty type asserts
+     something false and every goal in the module then follows vacuously.
+     `sat` and `unknown` both pass; refusing on `unknown` would report a
+     completeness limit as a user error (Dafny fills that row with an explicit
+     `witness` clause). A generic `'p` in a
      const is rejected (no `fn` to bind it).
    - **②-C predicate-polymorphic fns** (`elab.rs::elab_fn`): collect the `'p`
      from every param/return refinement; bind them implicitly at the head as

@@ -43,9 +43,16 @@
 //! | 2    | `unknown`                    |
 //! | 3    | `abductive`                  |
 //! | 10   | parse error                  |
-//! | 11   | type / convert error         |
+//! | 11   | convert error under `--strict-commands`, or a REFUSED `--aot-bake` |
 //! | 12   | config / IO error            |
 //! | 13   | unknown command (Raw) with `--strict-commands` set |
+//!
+//! Code 11 no longer means "a command failed to convert". In the default mode
+//! such a command is skipped, the session is marked `degraded`, the verdict
+//! degrades to `unknown` and the process exits 2 — a row that emits no line is
+//! indistinguishable from one that was never run. 11 survives in two places:
+//! `--strict-commands`, which opts out of that leniency, and `--aot-bake`,
+//! which REFUSES to write a bank from a degraded session.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -195,6 +202,12 @@ struct Cli {
     /// (`set-logic`, `declare-*`, `define-*`, `push` / `pop`) are
     /// honoured for their side effects on the symbol table but
     /// produce no verdict output.
+    ///
+    /// The bake REFUSES (exit 11, nothing written) when a command was
+    /// skipped natively: the bank would then hold a SUBSET of the
+    /// prelude while carrying the full prelude's SHA-256, and a
+    /// session loading it answers `sat` over the smaller theory with
+    /// nothing marking it.
     #[arg(long)]
     aot_bake: bool,
     /// `--aot-bake` output path.  Required when `--aot-bake` is set;

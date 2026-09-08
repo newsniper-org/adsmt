@@ -15,7 +15,7 @@ metadata:
 - SMT-LIB face is confirmed FLAT-sort (installs only `install_int_real`, `adsmt-ir-smtlib/elab.rs:136`; native `convert.rs` registers all sorts uniformly) — so the type relation is UNIQUE to lukb and never on the differentialed path (this is why [[lu-vs-z3-disagreement-analysis]] found no lu-better cases).
 
 **Could it catch the residual disagreements? — IMPORTANT CORRECTION:** the two NAMED residuals are NOT type-relation problems (category error to expect it):
-- (a) datatype `b≠zero ∧ pred b=b`: the `Nat` there is a USER-DECLARED `(declare-datatype Nat …)` inductive, NOT the arithmetic `theory::NAT` sort. It's a datatype acyclicity/single-survivor gap in `adsmt-theory` (#331 residual), unrelated to positivity.
+- (a) datatype `b≠zero ∧ pred b=b`: the `Nat` there is a USER-DECLARED `(declare-datatype Nat …)` inductive, NOT the arithmetic `theory::NAT` sort. It's a datatype acyclicity/single-survivor gap in `adsmt-theory` (#331 residual), unrelated to positivity. **(CLOSED 2026-09-08, `742aa6d`/`408e950` — the witness is now built at any arity, with missing selector applications synthesised from `DatatypeDecl::field_sorts`.)**
 - (b) LIA `0<x<2 ∧ x≠1`: `x:Int`, no Nat/WNat involved — a pure LIA integer-feasibility/branching gap (#337/#289).
 - **WHERE it WOULD bite = the broad Nat/WNat-positivity class** — any goal implicitly relying on a theory-Nat being ≥1 (Fermat-style) is currently UNDECIDABLE because the Nat var is opaque EUF. Asserting `nat2int(x)≥1` / `wnat2int(x)≥0` lets LIA discharge exactly those.
 

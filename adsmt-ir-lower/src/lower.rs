@@ -343,11 +343,18 @@ struct Lowerer<'e> {
     /// Lowering `whnf`s every term, which δ-unfolds definitions. That
     /// terminates for a single recursive `fn` — it lowers to a kernel `Fix`,
     /// whose μ-rule refuses to unfold on a non-constructor argument — but a
-    /// MUTUALLY recursive group is a pair of plain `Def`s that reference each
-    /// other, and nothing stops them: `ev(q)` unfolds to a `match` whose minor
-    /// calls `od`, which unfolds to a `match` whose minor calls `ev`, forever,
-    /// with the term growing a selector layer each time. Measured, `ev(q) = ev(q)`
-    /// — reflexivity — never returned.
+    /// MUTUALLY recursive group is a set of plain `Def`s that reference each
+    /// other, and when this cap was added nothing stopped them: `ev(q)` unfolds
+    /// to a `match` whose minor calls `od`, which unfolds to a `match` whose
+    /// minor calls `ev`, forever, with the term growing a selector layer each
+    /// time. Measured then, `ev(q) = ev(q)` — reflexivity — never returned.
+    ///
+    /// Two things stop that shape now, and the cap is still load-bearing behind
+    /// both. `whnf` refuses a δ step that returns to a term it is already
+    /// reducing (`1f600e9`), and an unguarded mutual group can no longer be
+    /// admitted at all (`612cf4a`). But the INLINER below is its own loop, not
+    /// `whnf`, so a group that IS guarded — a structural Peano `ev`/`od`, still
+    /// admissible — inlines without bound here.
     ///
     /// The cap makes that a bounded abstain instead of a hang. It is generous
     /// enough that only a genuine runaway reaches it (the ground cases finish in

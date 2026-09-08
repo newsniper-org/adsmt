@@ -252,6 +252,11 @@ lu-smt --aot-bake --aot-output prelude.luart prelude.smt2
 lu-smt --aot-load prelude.luart query.smt2
 ```
 
+The bake REFUSES (exit 11, nothing written) when a command in the prelude was
+skipped natively: the bank would hold a SUBSET of the prelude while carrying
+the full prelude's SHA-256, and a session loading it answers `sat` over the
+smaller theory with nothing marking it.
+
 §3.5 JIT-on-AOT-prelude composes with §3.1.  The bake side
 opts into the v1 CDCL section (post-flatten clauses + initial
 BCP trail + two-watched index + VSIDS + phase-save) with

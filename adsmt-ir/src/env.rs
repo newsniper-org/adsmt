@@ -245,7 +245,8 @@ pub struct Env {
     group_of: HashMap<String, usize>,
     /// The **admission journal** — every checked admission, in order — the
     /// source of truth the AOT-bank serializes. Only the *checked* admitters
-    /// ([`define`](crate::define) / [`postulate`](crate::postulate) /
+    /// ([`define`](crate::define) / [`define_mutual`](crate::define_mutual) /
+    /// [`postulate`](crate::postulate) /
     /// [`declare_inductive_indexed`](crate::declare_inductive_indexed) /
     /// [`declare_mutual`](crate::declare_mutual)) append to it; the raw
     /// [`declare`](Self::declare) / [`register_inductive`](Self::register_inductive)
@@ -293,9 +294,16 @@ impl Env {
     }
 
     /// Raw, **unchecked** insertion. Prefer the checked admitters
-    /// [`define`](crate::define) / [`postulate`](crate::postulate) /
+    /// [`define`](crate::define) / [`define_mutual`](crate::define_mutual) /
+    /// [`postulate`](crate::postulate) /
     /// [`declare_inductive`](crate::declare_inductive); this is `pub` only
     /// so out-of-kernel tooling can rebuild a known-good environment.
+    ///
+    /// It is genuinely unchecked, and that has cost: the lu-kb face admitted a
+    /// mutual `fn` group through here, skipping the journal (so the group could
+    /// never be banked) and every termination check (so the kernel's own head
+    /// reduction had no normal form to find). `define_mutual` exists because of
+    /// it, and `whnf` no longer trusts how its env was built.
     pub fn declare(&mut self, name: String, decl: Decl) {
         self.memo.clear(); // a new/changed `def` can change δ/ι reduction
         self.decls.insert(name, decl);
