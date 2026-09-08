@@ -118,6 +118,7 @@ pub fn lower_with_triggers(
         counter: Cell::new(0),
         extra_hyps: RefCell::new(Vec::new()),
         seen_refinement_consts: RefCell::new(HashSet::new()),
+        seen_refinement_apps: RefCell::new(HashSet::new()),
         triggers,
         out_triggers: RefCell::new(HashMap::new()),
         depth: Cell::new(0),
@@ -328,6 +329,9 @@ struct Lowerer<'e> {
     extra_hyps: RefCell<Vec<CTerm>>,
     /// Free-constant names already given a positivity hypothesis (dedup).
     seen_refinement_consts: RefCell<HashSet<String>>,
+    /// Lowered Nat/WNat-sorted APPLICATIONS already given a positivity
+    /// hypothesis (dedup); see [`Lowerer::note_result_positivity`].
+    seen_refinement_apps: RefCell<HashSet<CTerm>>,
     /// The out-of-band kernel trigger map ([`lower_with_triggers`]); empty for
     /// plain [`lower`], in which case the takeover path never activates.
     triggers: &'e TriggerMap,
@@ -840,6 +844,10 @@ impl Lowerer<'_> {
                     cur = CTerm::app(cur, ca)
                         .map_err(|e| unl(format!("ill-typed application of `{name}`: {e}")))?;
                 }
+                // The RESULT sort may be a refinement carrier (`Nat`/`WNat`).
+                if let Some((_, cod)) = peel_pis(&decl.ty, args.len()) {
+                    self.note_result_positivity(&cod, &cur, frames);
+                }
                 Ok(cur)
             }
             Modality::Inductive => {
@@ -898,6 +906,10 @@ impl Lowerer<'_> {
         for a in args {
             cur = capp(cur, self.lower_term(a, frames)?)?;
         }
+        // A selector's RESULT may be a refinement carrier: `data P = mk(v: Nat)`
+        // gives `v(p) : Nat`, so `v(p) ≥ 1` — a constraint the collapse to `Int`
+        // otherwise forgets, and `axiom: v(p) = 0` then looked satisfiable.
+        self.note_result_positivity(fty, &cur, frames);
         Ok(Some(cur))
     }
 
@@ -1546,6 +1558,40 @@ impl Lowerer<'_> {
     /// by the lu-smt CLI's preprocessing, so it reached the bare solver as an
     /// uninterpreted atom → `Unknown`, leaving the positivity un-decided (#338).
     /// `v ≥ lo` ≡ `lo ≤ v`, so the §3c relativization polarity is unchanged.
+    /// A Nat/WNat-sorted APPLICATION also needs its positivity asserted.
+    ///
+    /// The refinement collapse lowers `Nat` to `Int` and re-asserts `≥ 1`
+    /// separately, and it did so at the two places a NAME is bound: a free
+    /// constant and a quantifier binder. But the sort is carried by TERMS, not
+    /// only by names, and a term of sort `Nat` is minted wherever such a
+    /// function or selector is applied. Those results carried no constraint at
+    /// all, so the collapse forgot them:
+    ///
+    /// ```text
+    /// data P = mk(v: Nat) / const p: P / axiom: v(p) = 0 / goal: false   sat
+    /// fn f(x: Int): Nat   / const y: Int / axiom: f(y) = 0 / goal: false  sat
+    /// ```
+    ///
+    /// Both contexts are contradictory in CIC — `v(p)` and `f(y)` are `Nat`, so
+    /// neither can be `0` — and each came back a fabricated countermodel.
+    ///
+    /// Only CLOSED results are hoisted. `extra_hyps` is asserted at top level,
+    /// so a term mentioning a binder's `Var` would be a different, implicitly
+    /// universally quantified variable there; under a binder the query keeps
+    /// its (sound) abstain instead.
+    fn note_result_positivity(&self, result_sort: &Term, lowered: &CTerm, frames: &[Frame]) {
+        if !frames.is_empty() {
+            return;
+        }
+        let Some(lo) = self.refinement_lo(result_sort) else { return };
+        if !self.seen_refinement_apps.borrow_mut().insert(lowered.clone()) {
+            return;
+        }
+        if let Ok(hyp) = self.positivity(lo, lowered.clone()) {
+            self.extra_hyps.borrow_mut().push(hyp);
+        }
+    }
+
     fn positivity(&self, lo: i128, v: CTerm) -> Result<CTerm, LowerError> {
         let int = CType::const_("Int", CKind::Type);
         let ge_ty = cfun(int.clone(), cfun(int.clone(), CType::bool_())?)?;

@@ -652,3 +652,34 @@ fn an_inhabited_declaration_set_still_lowers() {
         assert!(lowers(src), "an inhabited type must lower: {src}");
     }
 }
+
+// ── a refinement carrier is a property of TERMS, not only of names ───────
+//
+// The Nat/WNat collapse lowers the sort to `Int` and re-asserts `≥ 1`
+// separately. It did so where a NAME is bound — a free constant, a quantifier
+// binder — but a term of sort `Nat` is also MINTED wherever such a function or
+// selector is applied, and those results carried no constraint at all.
+// Measured, both contexts below are contradictory in CIC and each came back a
+// fabricated countermodel (`sat`).
+
+#[test]
+fn a_nat_sorted_application_carries_its_positivity() {
+    // The positivity is now available to the solver…
+    for src in [
+        "fn f(x: Int): Nat\nconst y: Int\ngoal: f(y) >= 1\n",
+        "data P = mk(v: Nat)\nconst p: P\ngoal: v(p) >= 1\n",
+    ] {
+        let e = adsmt_ir_lukb::elaborate(src).expect("elaborates");
+        let l = adsmt_ir_lower::lower(&e.env, &e.goals).expect("lowers");
+        assert!(!l.extra_hyps.is_empty(), "positivity must be emitted: {src}");
+    }
+    // …and an `Int` result gets none, so this is not a blanket constraint.
+    for src in [
+        "fn h(x: Int): Int\nconst y: Int\ngoal: h(y) >= 1\n",
+        "data Q = mk(w: Int)\nconst q: Q\ngoal: w(q) >= 1\n",
+    ] {
+        let e = adsmt_ir_lukb::elaborate(src).expect("elaborates");
+        let l = adsmt_ir_lower::lower(&e.env, &e.goals).expect("lowers");
+        assert!(l.extra_hyps.is_empty(), "no refinement, no hypothesis: {src}");
+    }
+}
