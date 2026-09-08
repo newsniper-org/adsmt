@@ -10,7 +10,7 @@
 //! identifier. So the convention has to be an INVARIANT the kernel enforces,
 //! not an assumption it makes about its callers.
 
-use adsmt_ir::{Env, Term, postulate, theory, whnf};
+use adsmt_ir::{Env, Term, define, postulate, theory, whnf};
 
 fn arith_env() -> Env {
     let mut env = Env::new();
@@ -58,4 +58,42 @@ fn the_equality_fold_reads_its_type_argument() {
     assert_eq!(format!("{}", whnf(&env, &at_int)), "false");
     let refl = Term::apps(Term::cnst("="), [Term::cnst(theory::INT), two.clone(), two]);
     assert_eq!(format!("{}", whnf(&env, &refl)), "true");
+}
+
+/// A numeral is a LITERAL — opaque, its value read off its name — so it must
+/// never be a definition. Defining one closes a reduction cycle with the
+/// arithmetic folds: the fold rewrites `Int.add 2 3` to `Const("5")`, δ unfolds
+/// `5` back to `Int.add 2 3`, and head reduction has neither fuel nor a visited
+/// set. Measured before this guard: `whnf` never returned.
+#[test]
+fn a_numeral_cannot_be_defined() {
+    let mut env = arith_env();
+    let two = theory::int_literal(&mut env, "2").unwrap();
+    let three = theory::int_literal(&mut env, "3").unwrap();
+    let body = Term::apps(Term::cnst(theory::INT_ADD), [two, three]);
+    let e = define(&mut env, "5", Term::cnst(theory::INT), body.clone())
+        .expect_err("a numeral must not be definable");
+    assert!(format!("{e}").contains("numeral"), "{e}");
+    // And the fold itself still works, terminating, on the same term.
+    assert_eq!(format!("{}", whnf(&env, &body)), "5");
+}
+
+/// Defence in depth: `Env::declare` is `pub` and documented as unchecked, so
+/// the fold refuses to write back a name that would δ-unfold, whatever the
+/// admitters allowed.
+#[test]
+fn the_fold_refuses_to_emit_a_name_that_would_unfold() {
+    use adsmt_ir::{Decl, Modality};
+    let mut env = arith_env();
+    let two = theory::int_literal(&mut env, "2").unwrap();
+    let three = theory::int_literal(&mut env, "3").unwrap();
+    let body = Term::apps(Term::cnst(theory::INT_ADD), [two, three]);
+    // Bypass every admitter, exactly as the doc warns tooling may.
+    env.declare(
+        "5".to_string(),
+        Decl { ty: Term::cnst(theory::INT), modality: Modality::Def(body.clone()) },
+    );
+    // Must terminate. The fold declines, so the application stays stuck.
+    let w = whnf(&env, &body);
+    assert_ne!(format!("{w}"), "5", "folding into a `Def` would restart the loop");
 }

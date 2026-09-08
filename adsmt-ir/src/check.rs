@@ -369,6 +369,18 @@ pub fn define(env: &mut Env, name: &str, ty: Term, body: Term) -> Result<(), Typ
         return Err(TypeError::DuplicateConst(name.to_string()));
     }
     check_numeral_sort(name, &ty)?;
+    // A numeral is a LITERAL: opaque, with its value read off the name. It must
+    // never be a definition. Defining one closes a reduction cycle with the
+    // arithmetic folds in `whnf` — `define("5", Int, Int.add 2 3)` type-checks,
+    // the fold rewrites `Int.add 2 3` to `Const("5")`, δ unfolds `5` back to
+    // `Int.add 2 3`, and head reduction never terminates (measured: it hangs).
+    // `theory::literal` postulates, so nothing legitimate is refused here.
+    if is_numeral_spelling(name) {
+        return Err(TypeError::BadElim(format!(
+            "`{name}` is spelled like a numeral, so it is a literal and cannot be \
+             DEFINED — a numeral's value is read off its name"
+        )));
+    }
     let ctx = Ctx::new();
     infer_univ(env, &ctx, &ty)?;
     check(env, &ctx, &body, &ty)?;

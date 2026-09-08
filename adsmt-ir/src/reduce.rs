@@ -12,6 +12,23 @@ use crate::env::{Decl, Env, Modality};
 use crate::term::{Term, TermKind, as_const_app, collect_spine, peel_all_pis, shift, subst_top};
 use crate::theory;
 
+/// The folded result, unless writing that name back into the head-reduction
+/// loop would restart it.
+///
+/// A fold emits a CONSTANT and continues; the δ arm unfolds any `Def` constant
+/// and continues. If the emitted name is a `Def`, those two form a cycle and
+/// `whnf` — which has no fuel and no visited set — never returns. `define`
+/// refuses numeral-spelled names precisely so this cannot be set up through a
+/// checked admitter, but `Env::declare` is `pub` and documented as unchecked,
+/// so the loop guards itself rather than trusting how its env was built.
+fn fold_to(env: &Env, name: impl AsRef<str>) -> Option<Term> {
+    let name = name.as_ref();
+    match env.lookup(name) {
+        Some(Decl { modality: Modality::Def(_), .. }) => None,
+        _ => Some(Term::cnst(name)),
+    }
+}
+
 fn as_int_literal(t: &Term) -> Option<i128> {
     match t.kind() {
         TermKind::Const(s) => s.parse::<i128>().ok(),
@@ -133,40 +150,50 @@ fn whnf_uncached(env: &Env, t: &Term) -> Term {
                         let a = whnf(env, &args[1]);
                         let b = whnf(env, &args[2]);
                         if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
-                            cur = Term::cnst(if x == y { "true" } else { "false" });
-                            continue;
+                            if let Some(k) = fold_to(env, if x == y { "true" } else { "false" }) {
+                                cur = k;
+                                continue;
+                            }
                         }
                     }
                     if name == theory::INT_LT && args.len() == 2 {
                         let a = whnf(env, &args[0]);
                         let b = whnf(env, &args[1]);
                         if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
-                            cur = Term::cnst(if x < y { "true" } else { "false" });
-                            continue;
+                            if let Some(k) = fold_to(env, if x < y { "true" } else { "false" }) {
+                                cur = k;
+                                continue;
+                            }
                         }
                     }
                     if name == theory::INT_LE && args.len() == 2 {
                         let a = whnf(env, &args[0]);
                         let b = whnf(env, &args[1]);
                         if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
-                            cur = Term::cnst(if x <= y { "true" } else { "false" });
-                            continue;
+                            if let Some(k) = fold_to(env, if x <= y { "true" } else { "false" }) {
+                                cur = k;
+                                continue;
+                            }
                         }
                     }
                     if name == theory::INT_GT && args.len() == 2 {
                         let a = whnf(env, &args[0]);
                         let b = whnf(env, &args[1]);
                         if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
-                            cur = Term::cnst(if x > y { "true" } else { "false" });
-                            continue;
+                            if let Some(k) = fold_to(env, if x > y { "true" } else { "false" }) {
+                                cur = k;
+                                continue;
+                            }
                         }
                     }
                     if name == theory::INT_GE && args.len() == 2 {
                         let a = whnf(env, &args[0]);
                         let b = whnf(env, &args[1]);
                         if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
-                            cur = Term::cnst(if x >= y { "true" } else { "false" });
-                            continue;
+                            if let Some(k) = fold_to(env, if x >= y { "true" } else { "false" }) {
+                                cur = k;
+                                continue;
+                            }
                         }
                     }
                     if name == theory::INT_ADD && args.len() == 2 {
@@ -174,8 +201,10 @@ fn whnf_uncached(env: &Env, t: &Term) -> Term {
                         let b = whnf(env, &args[1]);
                         if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
                             if let Some(sum) = x.checked_add(y) {
-                                cur = Term::cnst(sum.to_string());
-                                continue;
+                                if let Some(k) = fold_to(env, sum.to_string()) {
+                                    cur = k;
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -184,8 +213,10 @@ fn whnf_uncached(env: &Env, t: &Term) -> Term {
                         let b = whnf(env, &args[1]);
                         if let (Some(x), Some(y)) = (as_int_literal(&a), as_int_literal(&b)) {
                             if let Some(diff) = x.checked_sub(y) {
-                                cur = Term::cnst(diff.to_string());
-                                continue;
+                                if let Some(k) = fold_to(env, diff.to_string()) {
+                                    cur = k;
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -193,8 +224,10 @@ fn whnf_uncached(env: &Env, t: &Term) -> Term {
                         let a = whnf(env, &args[0]);
                         if let Some(x) = as_int_literal(&a) {
                             if let Some(neg) = x.checked_neg() {
-                                cur = Term::cnst(neg.to_string());
-                                continue;
+                                if let Some(k) = fold_to(env, neg.to_string()) {
+                                    cur = k;
+                                    continue;
+                                }
                             }
                         }
                     }
