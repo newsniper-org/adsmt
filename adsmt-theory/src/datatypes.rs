@@ -720,7 +720,13 @@ impl Datatypes {
     /// the same `x` (anything else is not a tester and excludes nothing).
     fn recognizer_excluded_ctor(&self, x: &Term, rhs: &Term) -> Option<String> {
         let (cname, args) = Self::dest_constructor_app(rhs)?;
-        let decl = self.is_constructor_of(&cname)?;
+        // Same reason as `sort_of_constructor_app`: the scrutinee's sort
+        // decides which declaration's selectors this tester is about.
+        let decl = match self.decls.get(&x.type_of().to_string()) {
+            Some(d) if d.constructors.iter().any(|c| c == &cname) => d,
+            Some(_) => return None,
+            None => self.is_constructor_of(&cname)?,
+        };
         let ci = decl.constructors.iter().position(|c| c == &cname)?;
         let sels = decl.selectors.get(ci)?;
         if args.len() != sels.len() {
@@ -819,8 +825,37 @@ impl Datatypes {
     /// fires for argument-bearing constructors, not only enums.
     fn constructor_id(&self, t: &Term) -> Option<(String, String)> {
         let (cname, _args) = Self::dest_constructor_app(t)?;
-        let d = self.is_constructor_of(&cname)?;
-        Some((d.sort_name.clone(), cname))
+        Some((self.sort_of_constructor_app(t, &cname)?, cname))
+    }
+
+    /// Which datatype does this constructor application belong to?
+    ///
+    /// The TERM'S OWN SORT decides. Asking `is_constructor_of` instead — a
+    /// `HashMap::values()` scan for the first decl that lists the name — makes
+    /// the answer depend on hash iteration order, which Rust reseeds per
+    /// process. Two datatypes may share a constructor name (SMT-LIB
+    /// disambiguates with `(as c S)`), and then the same input file answered
+    /// differently between runs: measured, 40 invocations of one fixed query
+    /// gave 24 `sat` and 16 `unsat`, correlating exactly with which sort the
+    /// scan happened to attribute. The `sat` half was the wrong one.
+    ///
+    /// Mis-attribution loses conflicts rather than inventing them — the callers
+    /// guard on both sides having the same sort — but a verdict that changes
+    /// between runs of the same file is not something to leave in place.
+    ///
+    /// The name scan stays as a FALLBACK for a sort that is not a registered
+    /// key, which is how an applied parametric datatype (`(Seq Int)`) reaches
+    /// here. `exhaustiveness_conflict` already keys off the term's sort; this
+    /// was the outlier.
+    fn sort_of_constructor_app(&self, t: &Term, cname: &str) -> Option<String> {
+        let sort = t.type_of().to_string();
+        if let Some(d) = self.decls.get(&sort) {
+            // The sort IS registered, so it is authoritative: either it lists
+            // this constructor or the term is not one of ITS constructors.
+            // Falling through here would re-open the mis-attribution.
+            return d.constructors.iter().any(|c| c == cname).then_some(sort);
+        }
+        self.is_constructor_of(cname).map(|d| d.sort_name.clone())
     }
 }
 
@@ -997,6 +1032,41 @@ impl Theory for Datatypes {
 
 #[cfg(test)]
 mod tests {
+
+    /// Two datatypes may share a constructor name (SMT-LIB disambiguates with
+    /// `(as c S)`). Attributing an application by scanning declarations for the
+    /// first that lists the name made the answer depend on hash iteration
+    /// order, which Rust reseeds per process — 40 runs of one fixed query gave
+    /// 24 `sat` and 16 `unsat`. The term's own sort decides.
+    #[test]
+    fn a_shared_constructor_name_is_attributed_by_the_terms_sort() {
+        let mut dt = Datatypes::new();
+        for (sort, ctors) in [("A", ["nil", "one"]), ("B", ["nil", "two"])] {
+            dt.declare(DatatypeDecl {
+                sort_name: sort.to_string(),
+                constructors: ctors.iter().map(|s| s.to_string()).collect(),
+                arities: vec![0, 1],
+                selectors: vec![vec![], vec![format!("{sort}!sel0")]],
+                field_sorts: vec![vec![], vec!["Int".to_string()]],
+                params: Vec::new(),
+                is_finite: false,
+            });
+        }
+        let b = Type::const_("B", Kind::Type);
+        let a = Type::const_("A", Kind::Type);
+        // `nil` at sort B is B's nil, whichever declaration a name scan reaches first.
+        assert_eq!(
+            dt.constructor_id(&Term::const_("nil", b.clone())),
+            Some(("B".to_string(), "nil".to_string()))
+        );
+        assert_eq!(
+            dt.constructor_id(&Term::const_("nil", a)),
+            Some(("A".to_string(), "nil".to_string()))
+        );
+        // A constructor that is NOT one of the term's sort is not attributed at
+        // all — falling back to the scan there would re-open the defect.
+        assert_eq!(dt.constructor_id(&Term::const_("one", b)), None);
+    }
     use super::*;
     use adsmt_core::{Kind, Term, Type};
 
