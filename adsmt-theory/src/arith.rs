@@ -1544,9 +1544,20 @@ fn has_unrepresentable_numeral(t: &Term) -> bool {
         TermInner::Const(c) => {
             let ty = t.type_of();
             let arith = matches!(ty.to_string().as_str(), "Int" | "Real");
+            // NOT `&& parse_real_lit(t).is_none()`. A decimal PARSES as a
+            // rational, but the bound store is `i128` — parsing it is not
+            // representing it. Excusing decimals here disarmed the backstop on
+            // exactly the atoms that need it: `(= -1 4.25)` is unsatisfiable
+            // and came back a confident `sat`, because the reduction declined
+            // the atom, nothing armed, and UF cannot see that two numerals
+            // differ. A randomized LRA differential found several per thousand.
+            //
+            // The `to_real` transport is unaffected: it consumes decimals in
+            // the shapes it recognises and returns `Accepted`/`Conflict`, so
+            // those atoms never reach this predicate — it is consulted only on
+            // the DROP path (`arm_if_dropped_arith`).
             arith
                 && c.name.strip_prefix("int:").unwrap_or(&c.name).parse::<i128>().is_err()
-                && parse_real_lit(t).is_none()
         }
         TermInner::App(f, x) => has_unrepresentable_numeral(f) || has_unrepresentable_numeral(x),
         _ => false,
@@ -3103,6 +3114,41 @@ mod tests {
         t.assert(Literal::positive(diff_le_term("z", "x", -1)).unwrap());
         // Satisfiable? x - y ≤ MAX, y - z ≤ MAX, z ≤ x - 1: take z = 0, x = 1, y = 0.
         assert!(!matches!(t.check(), CheckResult::Unsat { .. }), "satisfiable, must not refute");
+    }
+
+    /// A decimal PARSES as a rational but is not REPRESENTABLE in the `i128`
+    /// bound store. Treating "parses" as "representable" disarmed the drop
+    /// backstop, and an unsatisfiable ground atom came back a confident `Sat`.
+    #[test]
+    fn a_decimal_the_store_cannot_hold_still_arms_the_backstop() {
+        // Both operands at Real — the SMT-LIB converter unifies the sorts
+        // before the atom reaches a theory (`(= -1 4.25)` arrives with the
+        // numeral re-sorted).
+        let real = Type::const_("Real", Kind::Type);
+        let dec = Term::const_("4.25", real.clone());
+        let minus_one = Term::const_("-1", real.clone());
+        let rel = Type::fun(real.clone(), Type::fun(real.clone(), Type::bool_()).unwrap()).unwrap();
+
+        // `-1 = 4.25` is false; LinArith cannot represent it, so it must not be
+        // dropped silently.
+        let mut t = LinArith::lra();
+        let eq = Term::mk_eq(minus_one.clone(), dec.clone()).unwrap();
+        let r = t.assert(Literal::positive(eq).unwrap());
+        assert!(matches!(r, AssertResult::Ignored), "{r:?}");
+        assert!(t.incomplete.is_some(), "a dropped decimal atom must arm the backstop");
+
+        // A DISEQUALITY too — the polite combination exempts equality-shaped
+        // atoms from its own `uninterpreted` backstop (UF is supposed to reason
+        // about them), so this predicate is their ONLY guard. That exemption is
+        // why the equality above was a live false `sat` while a comparison of
+        // the same shape stayed `unknown`: a dropped comparison still arms
+        // polite's backstop, a dropped equality arms nothing.
+        let mut t = LinArith::lra();
+        let ne = Term::mk_eq(minus_one, dec).unwrap();
+        let r = t.assert(Literal::negative(ne).unwrap());
+        assert!(matches!(r, AssertResult::Ignored), "{r:?}");
+        assert!(t.incomplete.is_some(), "a dropped decimal disequality must arm too");
+        let _ = rel;
     }
 
     /// A shape this does not understand must be left alone rather than
