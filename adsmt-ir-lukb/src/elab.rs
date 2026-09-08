@@ -171,30 +171,17 @@ impl<'p> Elab<'p> {
         let nop_ty = K::pi(K::type_(0), K::arrow(K::bound(0), K::prop()));
         let nop_body = K::lam(K::type_(0), K::lam(K::bound(0), K::cnst("true")));
         define(&mut env, "nop", nop_ty, nop_body)?;
-        // Acc accessibility predicate for well-founded termination:
-        // Acc : Π(A: Type0). (A → A → Prop) → A → Type0
-        let acc_ty = K::pi(
-            K::type_(0),
-            K::pi(
-                K::arrow(K::bound(0), K::arrow(K::bound(0), K::prop())),
-                K::pi(K::bound(1), K::type_(0)),
-            ),
-        );
-        postulate(&mut env, "Acc", acc_ty)?;
-        let mk_acc_ty = K::pi(
-            K::type_(0),
-            K::pi(
-                K::arrow(K::bound(0), K::arrow(K::bound(0), K::prop())),
-                K::pi(
-                    K::bound(1),
-                    K::arrow(
-                        K::prop(),
-                        K::apps(K::cnst("Acc"), [K::bound(2), K::bound(1), K::bound(0)]),
-                    ),
-                ),
-            ),
-        );
-        postulate(&mut env, "acc", mk_acc_ty)?;
+        // NO `Acc` / `acc` prelude. The termination-proof branch is not
+        // implemented (a `decreases` clause is refused), and what was installed
+        // for it was worse than nothing: `acc : Π(A) Π(R) Π(x). Prop → Acc A R x`
+        // makes the accessibility predicate inhabited from ANY proposition —
+        // `false` included — so it carried no well-foundedness content while
+        // looking like an obligation. Every lu-kb environment got that pair.
+        //
+        // When the branch lands, `Acc` must be a real INDUCTIVE, admitted with
+        // the introduction rule `(Π y. R y x → Acc A R y) → Acc A R x`, so that
+        // inhabiting it means something. Postulating a weaker one in advance
+        // only adds a trust source. See LUKB_SUCCESSOR_SURFACE.md §11.
         // the FULL arithmetic prelude (Int/Real/Nat/WNat + ops + injections +
         // pow/odd/prime) — the lu-kb surface uses Nat/WNat/pow/… as built-ins.
         theory::install_arith(&mut env)?;
@@ -946,7 +933,6 @@ impl<'p> Elab<'p> {
     /// Must run under `&mut self` BEFORE the immutable `elab_type` looks the sort up.
     fn ensure_ring_sorts(&mut self, ty: &Type) -> Result<(), FaceError> {
         match ty {
-            Type::App(n, _) if n == "Acc" => {}
             Type::App(n, args) => match ring_sort_name(n, args)? {
                 Some(canon) => {
                     if self.env.lookup(&canon).is_none() {
@@ -987,19 +973,6 @@ impl<'p> Elab<'p> {
             // arithmetic): the four operations over such a sort are NOT integer
             // arithmetic — reasoning over them routes to the `adsmt-cas` re-check
             // core (the CAS-delegation follow-on), never an `Int` relativization.
-            Type::App(n, args) if n == "Acc" => {
-                let mut kargs = Vec::new();
-                for a in args {
-                    if let Type::Name(s) = a {
-                        if self.env.lookup(s).is_some() {
-                            kargs.push(K::cnst(s.clone()));
-                            continue;
-                        }
-                    }
-                    kargs.push(self.elab_type(a)?);
-                }
-                return Ok(K::apps(K::cnst("Acc"), kargs));
-            }
             Type::App(n, args) => match ring_sort_name(n, args)? {
                 Some(canon) => match self.env.lookup(&canon) {
                     Some(d) if is_type0(&d.ty) => Ok(K::cnst(canon)),

@@ -331,7 +331,20 @@ fn print_term(out: &mut String, t: &Term, ctx: u8) {
             o.push_str(" }");
         }),
         Term::App(f, args) => {
-            print_term(out, f, 10);
+            // The callee prints bare only when it is itself an application
+            // (`f(x)(y)`); anything else — a `fun` literal, a `let`, an
+            // operator expression — needs parentheses, because the surface has
+            // no other way back to an APPLICATION node. Without them the
+            // printer emitted text that re-parses as a different tree (or as a
+            // `Call`), so print → parse was not the identity on any term
+            // applying a non-application.
+            if matches!(**f, Term::App(..)) {
+                print_term(out, f, 10);
+            } else {
+                out.push('(');
+                print_term(out, f, 0);
+                out.push(')');
+            }
             out.push('(');
             for (i, a) in args.iter().enumerate() {
                 if i > 0 {

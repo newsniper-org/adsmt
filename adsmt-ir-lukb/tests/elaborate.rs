@@ -1723,3 +1723,37 @@ fn an_unshadowed_builtin_still_resolves() {
     all_props("goal: mod(7, 2) = 1\n", 0, 1);
     all_props("const x: Int\ngoal: nop(x)\n", 0, 1);
 }
+
+/// `Acc` / `acc` are gone from the prelude. They existed only for the
+/// termination-proof branch, which is refused, and the pair that was installed
+/// made the accessibility predicate inhabited from ANY proposition — so it
+/// carried no well-foundedness content while looking like an obligation.
+#[test]
+fn the_vacuous_accessibility_prelude_is_gone() {
+    for src in [
+        "const w: Acc(Int, lt, k)\ngoal: true\n",
+        "fn lt(a: Int, b: Int): Bool = a < b\nconst k: Int\ngoal: acc(Int, lt, k, true) = acc(Int, lt, k, true)\n",
+    ] {
+        assert!(elaborate(src).is_err(), "no `Acc`/`acc` in the prelude: {src}");
+    }
+    // A user may of course still name their own things that way.
+    all_props("sort Acc\nconst w: Acc\ngoal: w = w\n", 0, 1);
+}
+
+/// The printer must parenthesise a callee that is not itself an application —
+/// the surface has no other spelling for an APPLICATION whose head is, say, a
+/// `fun` literal, so printing it bare produced text that re-parses as a
+/// different tree.
+#[test]
+fn applying_a_non_application_round_trips() {
+    // (The surface has no curried-application spelling, so the shapes that can
+    // reach `Term::App` are a call whose callee is a bound functional.)
+    for src in [
+        "fn ap(f: Int -> Int, x: Int): Int = f(x)\nfn g(y: Int): Int = y\ngoal: ap(g, 1) = 1\n",
+        "fn ap(f: Int -> Int, x: Int): Bool = f(x) = x\ngoal: true\n",
+    ] {
+        let m = parse(src).unwrap_or_else(|e| panic!("parses: {src}\n{e}"));
+        let printed = print_module(&m);
+        assert_eq!(parse(&printed).expect("re-parses"), m, "round-trip: {printed}");
+    }
+}
