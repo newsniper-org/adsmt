@@ -1596,3 +1596,69 @@ fn mutual_groups_round_trip_through_the_printer() {
         assert_eq!(parse(&printed).expect("re-parses"), m, "round-trip: {printed}");
     }
 }
+
+// ── `decreases` must never admit a function by discarding its body ───────
+//
+// The termination-proof branch of `admit(rec f) ⟸ structural(f) ∨
+// proves_termination(f)` is NOT implemented. What shipped instead type-checked
+// the `decreases` term's sort and then `postulate`d the function, dropping the
+// body — so every goal that was true BECAUSE of the definition came back as a
+// confident countermodel. Until the real thing lands, `decreases` must refuse.
+
+const LT_DEF: &str = "fn lt(a: Int, b: Int): Bool = a < b\n";
+
+/// The reproducer: `f(0) = 0` holds by the body, and the tool claimed a
+/// definite countermodel for it.
+#[test]
+fn decreases_never_admits_a_function_by_dropping_its_body() {
+    let src = format!(
+        "{LT_DEF}rec fn f(n: Int): Int decreases [acc(Int, lt, n, true)] = \
+         if n = 0 then 0 else f(n - 1)\ngoal g: f(0) = 0\n"
+    );
+    match elaborate(&src) {
+        Err(e) => {
+            let m = e.to_string();
+            assert!(m.contains("termination"), "the error must name the branch: {m}");
+        }
+        Ok(_) => panic!("`decreases` must refuse until the termination branch exists"),
+    }
+}
+
+/// The `Acc` gate it checked was vacuous: `acc` builds an accessibility
+/// witness from ANY proposition, `false` included. Refusing the clause closes
+/// this too, but the test pins the shape so a future implementation cannot
+/// re-open it by accident.
+#[test]
+fn an_accessibility_witness_built_from_false_is_not_a_termination_proof() {
+    let src = format!(
+        "{LT_DEF}rec fn f(n: Int): Int decreases [acc(Int, lt, n, false)] = f(n - 1)\n\
+         goal g: f(0) = 0\n"
+    );
+    assert!(elaborate(&src).is_err(), "a witness derived from `false` proves nothing");
+}
+
+/// `decreases` also skipped the body's type-check, because `postulate` never
+/// sees the body at all. A body whose sort contradicts the return type was
+/// accepted.
+#[test]
+fn decreases_does_not_smuggle_an_ill_typed_body_past_the_kernel() {
+    let src = format!(
+        "{LT_DEF}rec fn f(n: Int): Int decreases [acc(Int, lt, n, true)] = \
+         if f(n) = 0 then true else false\ngoal g: f(0) = 0\n"
+    );
+    assert!(elaborate(&src).is_err(), "an ill-typed body must not be admitted");
+}
+
+/// The contract this defeated: the same program WITHOUT `decreases` is already
+/// required to be rejected (`non_structural_recursion_is_rejected_…`). Adding
+/// the clause must not turn a rejection into an admission.
+#[test]
+fn decreases_cannot_launder_a_rejected_recursion() {
+    let bare = "rec fn f(n: Int): Int = if n = 0 then 0 else f(n - 1)\ngoal: f(0) = 0\n";
+    assert!(elaborate(bare).is_err(), "the bare form is rejected (existing contract)");
+    let with_clause = format!(
+        "{LT_DEF}rec fn f(n: Int): Int decreases [acc(Int, lt, n, true)] = \
+         if n = 0 then 0 else f(n - 1)\ngoal: f(0) = 0\n"
+    );
+    assert!(elaborate(&with_clause).is_err(), "adding `decreases` must not admit it");
+}

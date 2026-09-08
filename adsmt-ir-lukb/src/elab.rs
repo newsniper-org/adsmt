@@ -717,19 +717,48 @@ impl<'p> Elab<'p> {
                     lam = K::lam(s.clone(), lam);
                 }
                 if self_ref {
-                    if let Some(dec) = decreases {
-                        let kdec = self.elab_term(&mut ctx, dec)?;
-                        let dty = infer(&self.env, &kernel_ctx(&ctx), &kdec)?;
-                        if !as_const_app(&whnf(&self.env, &dty)).is_some_and(|(h, _)| h == "Acc") {
-                            return Err(unsupported(format!(
-                                "`decreases` clause on `{name}` must have sort `Acc`, got `{dty}`"
-                            )));
-                        }
-                        postulate(&mut self.env, name, ty.clone())?;
-                    } else {
-                        let value = self.build_fix(name, &ty, lam, pred_sorts.len(), vsorts.len())?;
-                        define(&mut self.env, name, ty.clone(), value)?;
+                    if decreases.is_some() {
+                        // The rule is `admit(rec f) ⟸ structural(f) ∨
+                        // proves_termination(f)`, and the SECOND branch does not
+                        // exist yet. What used to happen here was worse than not
+                        // having it: the clause's sort was checked and then the
+                        // function was `postulate`d, so `lam` — the body the user
+                        // wrote — was computed and thrown away. `f` became an
+                        // opaque constant, and every goal that was true BECAUSE of
+                        // the definition came back a confident countermodel:
+                        //
+                        //     rec fn f(n: Int): Int decreases [<acc …>] =
+                        //         if n = 0 then 0 else f(n - 1)
+                        //     goal g: f(0) = 0        ⤳  smt definite-sat
+                        //
+                        // Two more things followed from `postulate` never seeing
+                        // the body. It skips `check`, so a body whose sort
+                        // contradicts the return type was admitted. And it turned
+                        // a REJECTION into an admission: the bare form of that
+                        // same program is required to be refused
+                        // (`non_structural_recursion_is_rejected_…`), and adding
+                        // the clause laundered it through.
+                        //
+                        // The gate it did apply was vacuous anyway — `acc` builds
+                        // an accessibility witness from ANY proposition, `false`
+                        // included, so `Acc` carried no well-foundedness content.
+                        //
+                        // Fail-first until the real branch lands: `Acc` declared
+                        // as a genuine inductive with the introduction rule
+                        // `(Π y. R y x → Acc A R y) → Acc A R x`, a
+                        // well-foundedness license for `R`, and a decrease
+                        // obligation the engine discharges — with the definition
+                        // REFUSED when it cannot. See
+                        // docs/design/LUKB_SUCCESSOR_SURFACE.md §11.
+                        return Err(unsupported(format!(
+                            "`rec fn {name}`: a `decreases` clause needs the \
+                             termination-proof branch, which is not implemented yet \
+                             (only structural recursion is admitted). Removing the \
+                             clause makes `{name}` take the structural branch."
+                        )));
                     }
+                    let value = self.build_fix(name, &ty, lam, pred_sorts.len(), vsorts.len())?;
+                    define(&mut self.env, name, ty.clone(), value)?;
                 } else {
                     define(&mut self.env, name, ty.clone(), lam)?;
                 }
@@ -865,14 +894,18 @@ impl<'p> Elab<'p> {
                     "`{name}` body has sort `{body_ty}`, expected return sort `{kret}`"
                 )));
             }
-            if let Some(d) = dec {
-                let kdec = self.elab_term(&mut ctx, d)?;
-                let dty = infer(&self.env, &kernel_ctx(&ctx), &kdec)?;
-                if !as_const_app(&whnf(&self.env, &dty)).is_some_and(|(h, _)| h == "Acc") {
-                    return Err(unsupported(format!(
-                        "`decreases` clause on `{name}` must have sort `Acc`, got `{dty}`"
-                    )));
-                }
+            if dec.is_some() {
+                // Same rule as the single-function path: the termination-proof
+                // branch does not exist, so the clause is refused rather than
+                // validated-and-ignored. Here it was strictly decorative — the
+                // sort was checked and then execution fell through, so a user
+                // writing a termination annotation got neither a proof nor a
+                // diagnostic.
+                return Err(unsupported(format!(
+                    "`rec fn {name}`: a `decreases` clause needs the \
+                     termination-proof branch, which is not implemented yet \
+                     (only structural recursion is admitted)."
+                )));
             }
             let mut vsorts = Vec::new();
             for (names, ty) in params {
