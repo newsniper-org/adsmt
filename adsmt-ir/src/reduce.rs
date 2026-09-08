@@ -29,6 +29,28 @@ fn fold_to(env: &Env, name: impl AsRef<str>) -> Option<Term> {
     }
 }
 
+/// Is `name` bound in this environment as an OPAQUE constant?
+///
+/// The folds are gated on this. `ite`, `true`, `false` and `=` are names the
+/// KERNEL never declares — a face installs them — so folding on the spelling
+/// alone gave δ-content to symbols the kernel has no claim over: a caller with
+/// its own 4-ary `ite`, or its own constant named `true`, would have had its
+/// applications rewritten. (Postulating them in the kernel prelude was tried
+/// and refused: it breaks both faces on a duplicate declaration and destroyed
+/// 112 of 246 corpus verdicts.) Requiring the name to be a declared opaque
+/// constant is the narrow version: a face that installs the prelude gets the
+/// folds, and one that does not, or that binds the name to something else,
+/// stays stuck instead.
+/// Is `t` a well-formed TYPE in the empty context? Used to check `ite`'s first
+/// argument really is the type argument the prelude's `Π(T:Type0)` promises.
+fn infer_univ_ok(env: &Env, t: &Term) -> bool {
+    crate::check::infer_univ(env, &crate::check::Ctx::new(), t).is_ok()
+}
+
+fn is_open_const(env: &Env, name: &str) -> bool {
+    matches!(env.lookup(name), Some(Decl { modality: Modality::Open, .. }))
+}
+
 fn as_int_literal(t: &Term) -> Option<i128> {
     match t.kind() {
         TermKind::Const(s) => s.parse::<i128>().ok(),
@@ -126,7 +148,15 @@ fn whnf_uncached(env: &Env, t: &Term) -> Term {
                 let (head, args) = collect_spine(&cur);
                 let whead = whnf(env, &head);
                 if let TermKind::Const(name) = whead.kind() {
-                    if name == "ite" && args.len() == 4 {
+                    // `ite T c a b` — and only when the face actually installed
+                    // `ite`/`true`/`false`, and `T` really is a type.
+                    if name == "ite"
+                        && args.len() == 4
+                        && is_open_const(env, "ite")
+                        && is_open_const(env, "true")
+                        && is_open_const(env, "false")
+                        && matches!(infer_univ_ok(env, &args[0]), true)
+                    {
                         let c = whnf(env, &args[1]);
                         if let TermKind::Const(cn) = c.kind() {
                             if cn == "true" {
@@ -145,6 +175,7 @@ fn whnf_uncached(env: &Env, t: &Term) -> Term {
                     // licenses the fold at an arithmetic sort.
                     if name == "="
                         && args.len() == 3
+                        && is_open_const(env, "=")
                         && matches!(args[0].kind(), TermKind::Const(c) if c == theory::INT)
                     {
                         let a = whnf(env, &args[1]);

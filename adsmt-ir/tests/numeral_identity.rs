@@ -18,6 +18,19 @@ fn arith_env() -> Env {
     env
 }
 
+/// The kernel does not declare `=`, `true`, `false` or `ite` — a FACE installs
+/// them, and the whnf folds are gated on that (a caller with its own `ite` must
+/// not have its applications rewritten). This is the minimum a face installs.
+fn face_env() -> Env {
+    let mut env = arith_env();
+    let t = Term::type_(0);
+    let eq_ty = Term::pi(t.clone(), Term::arrow(Term::bound(0), Term::arrow(Term::bound(0), Term::prop())));
+    postulate(&mut env, "=", eq_ty).unwrap();
+    postulate(&mut env, "true", Term::prop()).unwrap();
+    postulate(&mut env, "false", Term::prop()).unwrap();
+    env
+}
+
 /// A numeral-spelled constant may only be declared at an arithmetic sort.
 /// `\`-3\` : S` for an uninterpreted `S` used to be admitted, and then `whnf`
 /// declared `-3` and `-4` unequal by SPELLING — a proof about two constants
@@ -42,7 +55,7 @@ fn a_numeral_spelling_is_refused_at_a_non_arithmetic_sort() {
 /// argument decided equality of two opaque constants by their spelling.
 #[test]
 fn the_equality_fold_reads_its_type_argument() {
-    let mut env = arith_env();
+    let mut env = face_env();
     postulate(&mut env, "S", Term::type_(0)).unwrap();
     postulate(&mut env, "p", Term::cnst("S")).unwrap();
     postulate(&mut env, "q", Term::cnst("S")).unwrap();
@@ -96,4 +109,24 @@ fn the_fold_refuses_to_emit_a_name_that_would_unfold() {
     // Must terminate. The fold declines, so the application stays stuck.
     let w = whnf(&env, &body);
     assert_ne!(format!("{w}"), "5", "folding into a `Def` would restart the loop");
+}
+
+/// The folds are gated on the face having installed the name. A kernel env with
+/// only the arithmetic prelude does not own `=`, so nothing is folded there —
+/// and a caller that binds `=` to its own thing keeps it.
+#[test]
+fn a_fold_only_fires_for_a_name_the_environment_declares() {
+    let mut bare = arith_env();
+    let two = theory::int_literal(&mut bare, "2").unwrap();
+    let three = theory::int_literal(&mut bare, "3").unwrap();
+    let eq = Term::apps(Term::cnst("="), [Term::cnst(theory::INT), two, three]);
+    let w = whnf(&bare, &eq);
+    assert_ne!(format!("{w}"), "false", "the kernel does not own `=`");
+
+    // With the face's declarations present it folds as before.
+    let mut env = face_env();
+    let two = theory::int_literal(&mut env, "2").unwrap();
+    let three = theory::int_literal(&mut env, "3").unwrap();
+    let eq = Term::apps(Term::cnst("="), [Term::cnst(theory::INT), two, three]);
+    assert_eq!(format!("{}", whnf(&env, &eq)), "false");
 }
