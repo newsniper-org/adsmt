@@ -420,19 +420,14 @@ impl<'p> Elab<'p> {
             Item::Data { name, ctors, mutual } => {
                 if mutual.is_empty() {
                     check_reserved_name(name)?;
-                    if ctors.is_empty() {
-                        return Err(FaceError::Unsupported(format!(
-                            "datatype `{name}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)"
-                        )));
-                    }
-                    let has_base_case = ctors.iter().any(|(_, fields)| {
-                        !fields.iter().any(|(_, fty)| type_mentions_self(fty, name))
-                    });
-                    if !has_base_case {
-                        return Err(FaceError::Unsupported(format!(
-                            "datatype `{name}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)"
-                        )));
-                    }
+                    // Inhabitation is NOT checked here. It is a property of the
+                    // whole declaration set — a cycle can run through a sibling
+                    // (`data A = a(B) and B = b(A)`) — and the lowering is where
+                    // the whole set is visible and where the constraint actually
+                    // bites (an empty CIC type must not become a non-empty SMT
+                    // sort). Duplicating a per-member approximation here is what
+                    // let mutual groups through in the first place; the lowering
+                    // now owns it, once, as a least fixed point.
                     for (cname, fields) in ctors {
                         check_reserved_name(cname)?;
                         for (selname, _) in fields {
@@ -479,11 +474,6 @@ impl<'p> Elab<'p> {
                     let all_names: Vec<&str> = all_members.iter().map(|(n, _)| *n).collect();
                     for (mname, mctors) in &all_members {
                         check_reserved_name(mname)?;
-                        if mctors.is_empty() {
-                            return Err(FaceError::Unsupported(format!(
-                                "datatype `{mname}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)"
-                            )));
-                        }
                         for (cname, fields) in *mctors {
                             check_reserved_name(cname)?;
                             for (selname, _) in fields {

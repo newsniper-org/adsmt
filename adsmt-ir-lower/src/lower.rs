@@ -184,6 +184,64 @@ fn term_mentions_const(t: &Term, name: &str) -> bool {
         _ => false,
     }
 }
+/// Which of these datatypes have no values?
+///
+/// A member is INHABITED when it has a constructor all of whose field types are
+/// either outside the declaration set or already known inhabited. Iterating
+/// that to a least fixed point is the whole test; what remains is uninhabited.
+///
+/// A per-spec check cannot do this. The one that shipped asked only whether a
+/// constructor avoids the datatype's OWN name, so in
+///
+/// ```text
+/// data A = a(B) and B = b(A)
+/// ```
+///
+/// `a`'s field is `B` (not `A`) and `b`'s field is `A` (not `B`), and both
+/// members looked like they had a base case — while the group as a whole has no
+/// value at all. An empty CIC type lowered to a non-empty SMT sort, which is
+/// wrong in both directions: measured, `exists x: A. true` came back `unsat`
+/// (claimed VALID, though nothing inhabits `A`) and `forall x: A. false` came
+/// back `sat` (claimed refutable, though it holds vacuously).
+///
+/// The single-datatype case is the same fixed point with a one-member set, so
+/// `data Box = mk(next: Box)` and `data Void =` are still refused here.
+fn uninhabited_datatypes(specs: &[&IndSpec]) -> HashSet<String> {
+    let names: HashSet<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+    let mut inhabited: HashSet<String> = HashSet::new();
+    loop {
+        let mut grew = false;
+        for spec in specs {
+            if inhabited.contains(&spec.name) {
+                continue;
+            }
+            let ok = spec.ctors.iter().any(|(_, fields, _)| {
+                fields.iter().all(|f| {
+                    // A field is satisfiable if it needs nothing from this
+                    // declaration set, or only members already known inhabited.
+                    !names.iter().any(|n| term_mentions_const(f, n))
+                        || names
+                            .iter()
+                            .filter(|n| term_mentions_const(f, n))
+                            .all(|n| inhabited.contains(*n))
+                })
+            });
+            if ok {
+                inhabited.insert(spec.name.clone());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    specs
+        .iter()
+        .map(|s| s.name.clone())
+        .filter(|n| !inhabited.contains(n))
+        .collect()
+}
+
 /// Visit every `Const` name occurring in `t`.
 fn walk_const_heads(t: &Term, f: &mut impl FnMut(&str)) {
     match t.kind() {
@@ -336,17 +394,27 @@ impl Lowerer<'_> {
     /// abstain the whole query (the engine's `Datatypes` theory carries params
     /// but no indices, and an inductive-`Prop` is not an SMT datatype).
     fn lower_datatypes(&self) -> Result<Vec<DatatypeDecl>, LowerError> {
-        let mut out = Vec::new();
+        // Collect every spec FIRST: inhabitation is a property of the whole
+        // declaration set, not of one spec (see `uninhabited_datatypes`).
+        let mut specs: Vec<&IndSpec> = Vec::new();
         for step in self.env.journal() {
             match step {
-                AdmissionStep::Inductive(spec) => out.push(self.spec_to_decl(spec)?),
-                AdmissionStep::Mutual(specs) => {
-                    for spec in specs {
-                        out.push(self.spec_to_decl(spec)?);
-                    }
-                }
+                AdmissionStep::Inductive(spec) => specs.push(spec),
+                AdmissionStep::Mutual(group) => specs.extend(group.iter()),
                 AdmissionStep::Define { .. } | AdmissionStep::Postulate { .. } => {}
             }
+        }
+        let empty = uninhabited_datatypes(&specs);
+        let mut out = Vec::with_capacity(specs.len());
+        for spec in specs {
+            if empty.contains(&spec.name) {
+                return Err(unl(format!(
+                    "datatype `{}` is uninhabited (empty types cannot be represented as \
+                     non-empty SMT sorts)",
+                    spec.name
+                )));
+            }
+            out.push(self.spec_to_decl(spec)?);
         }
         Ok(out)
     }
@@ -368,21 +436,10 @@ impl Lowerer<'_> {
         if !matches!(spec.sort, Univ::Type(0)) {
             return Err(unl(format!("inductive `{}` is not `Type(0)` (not an SMT datatype)", spec.name)));
         }
-        if spec.ctors.is_empty() {
-            return Err(unl(format!(
-                "datatype `{}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)",
-                spec.name
-            )));
-        }
-        let has_base_case = spec.ctors.iter().any(|(_, fields, _)| {
-            !fields.iter().any(|f| term_mentions_const(f, &spec.name))
-        });
-        if !has_base_case {
-            return Err(unl(format!(
-                "datatype `{}` is uninhabited (empty types cannot be represented as non-empty SMT sorts)",
-                spec.name
-            )));
-        }
+        // Inhabitation is checked ONCE for the whole declaration set, in
+        // `lower_datatypes` — see `uninhabited_datatypes`. A per-spec test
+        // cannot see a cycle that runs through a sibling.
+
         let mut constructors = Vec::with_capacity(spec.ctors.len());
         let mut arities = Vec::with_capacity(spec.ctors.len());
         let mut selectors = Vec::with_capacity(spec.ctors.len());

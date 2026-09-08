@@ -611,3 +611,44 @@ fn a_mutual_group_on_ground_arguments_still_reduces() {
         assert_eq!(l.is_ok(), want_closed, "ground mutual recursion must lower: {src}");
     }
 }
+
+// ── inhabitation is a property of the whole declaration set ──────────────
+//
+// An empty CIC type must not become a non-empty SMT sort. The per-spec test
+// that shipped asked only whether a constructor avoids the datatype's OWN
+// name, so `data A = a(B) and B = b(A)` passed — `a`'s field is `B`, `b`'s is
+// `A` — while the group has no value at all. Measured, that was wrong in both
+// directions: `exists x: A. true` came back `unsat` (claimed VALID) and
+// `forall x: A. false` came back `sat` (claimed refutable).
+
+fn lowers(src: &str) -> bool {
+    let e = adsmt_ir_lukb::elaborate(src).expect("elaborates");
+    adsmt_ir_lower::lower(&e.env, &e.goals).is_ok()
+}
+
+#[test]
+fn an_uninhabited_declaration_set_is_refused() {
+    for src in [
+        "data A = a(B) and B = b(A)\ngoal: exists x: A. true\n",
+        "data A = a(B) and B = b(C) and C = c(A)\ngoal: exists x: A. true\n",
+        "data Box = mk(next: Box)\nconst b: Box\ngoal: b = b\n",
+        "data Void =\ngoal: forall x: Void. false\n",
+    ] {
+        assert!(!lowers(src), "an uninhabited type must not lower: {src}");
+    }
+}
+
+#[test]
+fn an_inhabited_declaration_set_still_lowers() {
+    for src in [
+        // The cycle is broken by a base case in ONE member — the whole group is
+        // then inhabited, which a per-member test could not see either.
+        "data A = leaf | a(B) and B = b(A)\nconst x: A\ngoal: x = x\n",
+        "data Tree = node(kids: Forest) and Forest = nil | cons(hd: Tree, tl: Forest)\n\
+         const t: Tree\ngoal: t = t\n",
+        "data P = z | s(k: P)\nconst q: P\ngoal: q = q\n",
+        "data L = nil | cons(hd: Int, tl: L)\nconst l: L\ngoal: l = l\n",
+    ] {
+        assert!(lowers(src), "an inhabited type must lower: {src}");
+    }
+}
