@@ -84,8 +84,18 @@ fn solve_collecting(
     // decidability laws per `data` declaration (EUF, milliseconds).
     let elab = match elaborate_with_prover(src, &EngineLawProver) {
         Ok(e) => e,
-        // a parse/elaborate face error ⇒ the sound `Unknown` (never a verdict)
+        // a parse/elaborate face error ⇒ the sound `Unknown` (never a verdict).
+        //
+        // Said on stderr unconditionally. It used to be behind
+        // `ADSMT_LUKB_DEBUG`, so `goal: zz > 0` (an unknown symbol) and a
+        // refused refinement binder printed a bare `unknown`, exactly like a
+        // goal the solver gave up on — the one answer a user cannot act on.
+        // The verdict line is untouched; the verus-fork corpus has no module
+        // that fails here (0 of 217), so its stderr does not change. The
+        // debug line stays, byte for byte: verus-fork's corpus manifest
+        // collects its `elaborate failed:` text as the stage-bail reason.
         Err(e) => {
+            eprintln!("lu-kb: cannot elaborate: {e}");
             if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
                 eprintln!("[lukb-dbg] elaborate failed: {e}");
             }
@@ -103,13 +113,15 @@ fn solve_collecting(
         lower_with_triggers(&elab.env, &elab.goals, &elab.triggers),
     ) {
         (Ok(h), Ok(g)) => (h, g),
+        // Unconditional for the same reason as the elaborate failure above,
+        // and the debug line kept as it was for the same reason too.
         (a, b) => {
+            let (a, b) = (a.err().map(|e| e.to_string()), b.err().map(|e| e.to_string()));
+            for e in a.iter().chain(b.iter()) {
+                eprintln!("lu-kb: cannot lower to the solver: {e}");
+            }
             if std::env::var_os("ADSMT_LUKB_DEBUG").is_some() {
-                eprintln!(
-                    "[lukb-dbg] lower failed: hyps={:?} goals={:?}",
-                    a.err().map(|e| e.to_string()),
-                    b.err().map(|e| e.to_string())
-                );
+                eprintln!("[lukb-dbg] lower failed: hyps={a:?} goals={b:?}");
             }
             return SolveOutcome {
                 verdict: UnifiedVerdict::smt(Confidence::Unknown),
