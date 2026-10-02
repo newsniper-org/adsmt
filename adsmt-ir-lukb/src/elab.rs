@@ -1025,8 +1025,12 @@ impl<'p> Elab<'p> {
             // a refinement `{v: T | φ}`'s *sort* is just its base `T` (the proof
             // of `φ` is `Prop`-irrelevant + lowering-erased). The predicate `φ`
             // becomes a separate contract obligation at the use site (const
-            // positivity hypothesis / fn pre-/post-condition), handled by the
-            // callers that own the binding name — never here.
+            // positivity hypothesis / fn pre-/post-condition / a quantifier
+            // binder's domain guard, see `membership_guard`), handled by the
+            // callers that own the binding name — never here. A caller that
+            // binds a name at a refinement type and does NOT take the
+            // predicate back has dropped a constraint; in a binder position
+            // that is unsound in both directions.
             Type::Refine { base, .. } => self.elab_type(base),
             // a function type `T -> U` → the kernel arrow. A refined arrow's
             // value sort is the plain arrow over the base sorts (the `'p`/`'q`
@@ -1060,6 +1064,62 @@ impl<'p> Elab<'p> {
             )));
         }
         Ok(phi)
+    }
+
+    /// The domain restriction a quantifier binder of type `ty` places on the
+    /// bound value `x`, as a surface guard; `None` when `ty` restricts nothing.
+    ///
+    /// * `{v: T | φ}` — `T`'s own restriction, and `let v = x in φ`. A `let`
+    ///   rather than a substitution: `φ` may bind names of its own, and a
+    ///   textual `v := x` would be captured under them.
+    /// * `A -> B` — `forall a: A. <B's restriction on x(a)>`, with `a` fresh
+    ///   and bound at `A` itself, so a refinement on the domain guards that
+    ///   inner quantifier the same way. A refined domain alone restricts
+    ///   nothing about `x`: what a function does outside it is unconstrained
+    ///   either way.
+    /// * a plain sort — `None`.
+    ///
+    /// `later` is this binder's name and every name the same quantifier binds
+    /// after it. The guard is elaborated where they are all in scope, but `φ`
+    /// was written where they were not, so a `φ` that mentions one would be
+    /// silently re-bound to the quantified variable (`forall x: {v: Int | v >
+    /// x}` would compare `x` with itself). That is refused, not guessed.
+    fn membership_guard(&mut self, x: S, ty: &Type, later: &[&str]) -> Result<Option<S>, FaceError> {
+        if let Some((var, n)) = refinement_capture(ty, later) {
+            return Err(unsupported(format!(
+                "the refinement over `{var}` mentions `{n}`, which this quantifier binds \
+                 at or after the refined binder; rename one of them"
+            )));
+        }
+        Ok(self.membership_guard_unchecked(x, ty))
+    }
+
+    fn membership_guard_unchecked(&mut self, x: S, ty: &Type) -> Option<S> {
+        match ty {
+            Type::Refine { var, base, pred } => {
+                let own = S::Let(var.clone(), Box::new(x.clone()), pred.clone());
+                Some(match self.membership_guard_unchecked(x, base) {
+                    Some(inner) => S::Bin(BinOp::And, Box::new(inner), Box::new(own)),
+                    None => own,
+                })
+            }
+            Type::Arrow(dom, cod) => {
+                let a = format!("!arg.{}", self.fresh_n);
+                self.fresh_n += 1;
+                let applied = S::App(Box::new(x), vec![S::Var(a.clone())]);
+                let g = self.membership_guard_unchecked(applied, cod)?;
+                let binder = Binder {
+                    names: vec![a],
+                    ty: (**dom).clone(),
+                    constraint: None,
+                    range: None,
+                    refinement: None,
+                    image: None,
+                };
+                Some(S::Forall(vec![binder], Box::new(g), Vec::new()))
+            }
+            Type::Name(_) | Type::App(..) => None,
+        }
     }
 
     fn elab_term(&mut self, ctx: &mut Vec<(String, K)>, t: &S) -> Result<K, FaceError> {
@@ -1297,7 +1357,7 @@ impl<'p> Elab<'p> {
         let mut guards: Vec<S> = Vec::new();
         // image binders `{y = f(x) | c}` unfold `y := f(x)` in the body.
         let mut body_substs: Vec<(String, S)> = Vec::new();
-        for b in binders {
+        for (bi, b) in binders.iter().enumerate() {
             // an **image binder** `{y = f(x) | c}` ranges over the inferred
             // PREIMAGE `x` (type = `f`'s domain), guards it by `c`, and unfolds
             // `y := f(x)` in the body (the pre-verified `image_quantifier_desugar`).
@@ -1313,6 +1373,28 @@ impl<'p> Elab<'p> {
             for name in &b.names {
                 sorts.push(ty.clone());
                 ctx.push((name.clone(), ty.clone()));
+            }
+            // a binder whose TYPE is (or ends in) a refinement — `m: {v: T | φ}`,
+            // `f: A -> {r: B | ψ}` — restricts the domain exactly as the
+            // `{m: T | φ}` binder form does. `elab_type` keeps only the base
+            // sort, so the restriction has to come back here as a guard; it
+            // used to be dropped, and the quantifier then ranged over all of
+            // `T`:
+            //
+            //   goal: forall m: {v: Int | v > 5}. m > 5      ⤳  definite-sat
+            //
+            // a confident countermodel (`m = 0`) to a valid goal. In an axiom
+            // the same drop strengthens the assumption (`forall m: {v | v > 5}.
+            // f(m) > 0` became `forall m. f(m) > 0`), which proves `f(0) > 0`.
+            for (i, name) in b.names.iter().enumerate() {
+                let later: Vec<&str> = b.names[i..]
+                    .iter()
+                    .chain(binders[bi + 1..].iter().flat_map(|l| l.names.iter()))
+                    .map(String::as_str)
+                    .collect();
+                if let Some(g) = self.membership_guard(S::Var(name.clone()), &b.ty, &later)? {
+                    guards.push(g);
+                }
             }
             if let Some((op, rhs)) = &b.constraint {
                 for name in &b.names {
@@ -2412,6 +2494,25 @@ fn arith_binop(env: &Env, op: BinOp, s: &K) -> Option<&'static str> {
 /// Used to decide whether a `fn` body is recursive. The shadowing rules mirror
 /// [`subst_surface`] exactly — the two must agree, or a body could be called
 /// recursive here and have its self-reference substituted away there.
+/// The first refinement predicate inside `ty` (at any depth: a refined base,
+/// either side of an arrow) that mentions one of `names` other than its own
+/// bound variable — as `(that variable, the name)`. See
+/// [`Elab::membership_guard`].
+fn refinement_capture(ty: &Type, names: &[&str]) -> Option<(String, String)> {
+    match ty {
+        Type::Name(_) => None,
+        Type::App(_, args) => args.iter().find_map(|a| refinement_capture(a, names)),
+        Type::Arrow(dom, cod) => {
+            refinement_capture(dom, names).or_else(|| refinement_capture(cod, names))
+        }
+        Type::Refine { var, base, pred } => names
+            .iter()
+            .find(|n| **n != var && mentions_surface(pred, n))
+            .map(|n| (var.clone(), (*n).to_string()))
+            .or_else(|| refinement_capture(base, names)),
+    }
+}
+
 fn mentions_surface(t: &S, name: &str) -> bool {
     let go = |x: &S| mentions_surface(x, name);
     match t {

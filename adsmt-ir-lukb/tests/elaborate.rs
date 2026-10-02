@@ -1852,3 +1852,83 @@ fn the_group_forms_the_diagnostic_names_are_real() {
         1,
     );
 }
+
+/// A binder whose TYPE is a refinement restricts the quantifier's domain, as
+/// the `{m: T | φ}` binder form always did. `elab_type` keeps only the base
+/// sort, and the predicate used to be dropped with it: `forall m: {v: Int |
+/// v > 5}. m > 5` ranged over every `Int` and came back definite-sat, a
+/// countermodel to a valid goal. Each pair below must elaborate to the same
+/// kernel term as the explicitly guarded spelling.
+#[test]
+fn a_refinement_typed_binder_guards_its_quantifier() {
+    let pairs = [
+        // ∀ — the guard is an antecedent.
+        (
+            "goal: forall m: {v: Int | v > 5}. m > 5",
+            "goal: forall m: Int. (let v = m in v > 5) ==> m > 5",
+        ),
+        // ∃ — the guard is a conjunct.
+        (
+            "goal: exists m: {v: Int | v > 5}. m < 3",
+            "goal: exists m: Int. (let v = m in v > 5) and m < 3",
+        ),
+        // in an axiom the drop STRENGTHENED the assumption.
+        (
+            "const f: Int -> Int\naxiom: forall m: {v: Int | v > 5}. f(m) > 0\ngoal: true",
+            "const f: Int -> Int\naxiom: forall m: Int. (let v = m in v > 5) ==> f(m) > 0\ngoal: true",
+        ),
+        // a refined base nests: both predicates guard.
+        (
+            "goal: forall m: {v: {w: Int | w > 0} | v < 10}. m < 10",
+            "goal: forall m: Int. ((let w = m in w > 0) and (let v = m in v < 10)) ==> m < 10",
+        ),
+        // an earlier binder of the same quantifier is in scope.
+        (
+            "goal: forall a: Int, m: {v: Int | v > a}. m > a",
+            "goal: forall a: Int, m: Int. (let v = m in v > a) ==> m > a",
+        ),
+    ];
+    for (refined, guarded) in pairs {
+        let a = elaborate(refined).expect("refined spelling elaborates");
+        let b = elaborate(guarded).expect("guarded spelling elaborates");
+        let (ta, tb) = if a.goals[0] == b.goals[0] && !a.hypotheses.is_empty() {
+            (&a.hypotheses[0], &b.hypotheses[0])
+        } else {
+            (&a.goals[0], &b.goals[0])
+        };
+        assert!(is_def_eq(&a.env, ta, tb), "{refined}\n  {ta}\nvs {guarded}\n  {tb}");
+    }
+}
+
+/// A refined CODOMAIN restricts which functions the binder ranges over:
+/// `forall f: Int -> {r: Int | r > 0}. φ` is about positive-valued `f` only.
+/// A refined domain alone restricts nothing (`f` outside it is arbitrary
+/// either way), so it adds no guard.
+#[test]
+fn a_refined_codomain_guards_a_function_binder() {
+    let a = elaborate("goal: forall f: Int -> {r: Int | r > 0}. f(0) > 0").expect("elaborates");
+    let b = elaborate(
+        "goal: forall f: Int -> Int. (forall x: Int. let r = f(x) in r > 0) ==> f(0) > 0",
+    )
+    .expect("elaborates");
+    assert!(is_def_eq(&a.env, &a.goals[0], &b.goals[0]), "{}\nvs {}", a.goals[0], b.goals[0]);
+
+    let c = elaborate("goal: forall f: {v: Int | v > 0} -> Int. f(1) = f(1)").expect("elaborates");
+    let d = elaborate("goal: forall f: Int -> Int. f(1) = f(1)").expect("elaborates");
+    assert!(is_def_eq(&c.env, &c.goals[0], &d.goals[0]), "{}\nvs {}", c.goals[0], d.goals[0]);
+}
+
+/// The guard is elaborated where every binder of the quantifier is in scope,
+/// but the predicate was written where they were not. A predicate that names
+/// the binder itself, or a later one, would silently be re-bound to it —
+/// `forall x: {v: Int | v > x}` comparing `x` with itself — so it is refused.
+#[test]
+fn a_refinement_that_would_capture_a_binder_is_refused() {
+    for src in [
+        "const x: Int\ngoal: forall x: {v: Int | v > x}. x > 0",
+        "goal: forall m: {v: Int | v > n}, n: Int. m > n",
+        "const n: Int\ngoal: forall f: {v: Int | v > n} -> Int, n: Int. f(1) = n",
+    ] {
+        assert!(matches!(elaborate(src), Err(FaceError::Unsupported(_))), "{src}");
+    }
+}
