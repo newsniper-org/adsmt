@@ -4,7 +4,7 @@
 //! a closed `Prop`), so a face bug can only ever yield a [`FaceError`], never a
 //! trusted ill-typed term — the same firewall as the SMT-LIB / ASP faces.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 
 use adsmt_class::resolve::{ClassGoal, ResolutionResult, Resolver};
@@ -778,13 +778,13 @@ impl<'p> Elab<'p> {
             let mut result_args: Vec<S> = pred_names.iter().map(|n| S::Var(n.clone())).collect();
             result_args.extend(vnames.iter().map(|n| S::Var(n.clone())));
             let result = S::Call(name.to_string(), result_args);
-            let post = subst_surface(rp, rv, &result);
+            let post = self.subst(rp, rv, &result);
             // precondition: the deduped conjunction of every param refinement,
             // each instantiated at its parameter name (idempotence dedup).
             let mut pre: Vec<S> = Vec::new();
             for (vn, refine) in vnames.iter().zip(&vrefine) {
                 if let Some((rvar, rpred)) = refine {
-                    pre.push(subst_surface(rpred, rvar, &S::Var(vn.clone())));
+                    pre.push(self.subst(rpred, rvar, &S::Var(vn.clone())));
                 }
             }
             let inner = match surface_conj_dedup(pre) {
@@ -1415,14 +1415,31 @@ impl<'p> Elab<'p> {
                 guards.push((**pred).clone());
             }
         }
-        // unfold image-binder definitions (`y := f(x)`) in the body.
+        // unfold image-binder definitions (`y := f(x)`) in the body, and in
+        // the guards: they are elaborated in this same window, where `y` is
+        // not in the context, so a guard naming `y` would otherwise reach
+        // whatever OUTER `y` there is.
         let body_owned;
         let body = if body_substs.is_empty() {
             body
         } else {
+            // An image variable spelled like another name this quantifier
+            // binds would make the sequential unfolding below ambiguous.
+            let bound = quant_bound(binders);
+            for (y, _) in &body_substs {
+                if bound.iter().filter(|n| **n == y).count() > 1 {
+                    ctx.truncate(depth0);
+                    return Err(unsupported(format!(
+                        "the image variable `{y}` is bound twice by one quantifier; rename one"
+                    )));
+                }
+            }
             let mut b = body.clone();
             for (y, e) in &body_substs {
-                b = subst_surface(&b, y, e);
+                b = self.subst(&b, y, e);
+                for g in &mut guards {
+                    *g = self.subst(g, y, e);
+                }
             }
             body_owned = b;
             &body_owned
@@ -1495,7 +1512,7 @@ impl<'p> Elab<'p> {
                 } else {
                     let mut p = pat.clone();
                     for (y, e) in body_substs {
-                        p = subst_surface(&p, y, e);
+                        p = self.subst(&p, y, e);
                     }
                     pat_owned = p;
                     &pat_owned
@@ -1875,6 +1892,26 @@ impl<'p> Elab<'p> {
 
     /// A fresh `match` field-binder name. `!` cannot lex as a user identifier,
     /// so a fresh name can never shadow one (the `!solve.N` convention).
+    /// A bare-name pattern that is no constructor of the scrutinee's type is
+    /// a catch-all binder — unless the name is a constructor of SOME type.
+    /// That spelling is refused: [`subst_surface`] cannot see the scrutinee's
+    /// type and reads every constructor name in pattern position as a
+    /// constructor, so admitting it would let the two disagree on what the
+    /// arm binds.
+    fn catch_all_is_no_ctor(&self, n: &str) -> Result<(), FaceError> {
+        match self.env.ctor_of(n) {
+            Some((ind, _)) => Err(unsupported(format!(
+                "the catch-all pattern `{n}` is spelled like a constructor of `{ind}`; rename the binder"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// [`subst_surface`] against this environment's constructor table.
+    fn subst(&self, t: &S, from: &str, to: &S) -> S {
+        subst_surface(t, from, to, &|n| self.env.ctor_of(n).is_some())
+    }
+
     fn fresh_name(&mut self) -> String {
         let n = self.fresh_n;
         self.fresh_n += 1;
@@ -1962,7 +1999,8 @@ impl<'p> Elab<'p> {
                         )));
                     }
                 }
-                Pattern::Bind(n) if is_ctor(n) => {
+                Pattern::Bind(n) if !is_ctor(n) => self.catch_all_is_no_ctor(n)?,
+                Pattern::Bind(n) => {
                     let (_, doms) = ctors.iter().find(|(cn, _)| cn == n).expect("is_ctor");
                     if !doms.is_empty() {
                         return Err(unsupported(format!(
@@ -1981,7 +2019,7 @@ impl<'p> Elab<'p> {
                         "numeric-literal pattern on a `{ind_name}` scrutinee"
                     )));
                 }
-                Pattern::Wild | Pattern::Bind(_) => {}
+                Pattern::Wild => {}
             }
         }
         // Bucket per constructor (declaration order; first-match in source
@@ -2030,8 +2068,8 @@ impl<'p> Elab<'p> {
                 // correctly for free.
                 let (body_s, guard_s) = match &arm.pattern {
                     Pattern::Bind(x) if !is_ctor(x) => (
-                        subst_surface(&arm.body, x, scrut),
-                        arm.guard.as_ref().map(|g| subst_surface(g, x, scrut)),
+                        self.subst(&arm.body, x, scrut),
+                        arm.guard.as_ref().map(|g| self.subst(g, x, scrut)),
                     ),
                     _ => (arm.body.clone(), arm.guard.clone()),
                 };
@@ -2128,10 +2166,13 @@ impl<'p> Elab<'p> {
             // a binder catch-all names the scrutinee (surface substitution,
             // as in the datatype/Prop cases)
             let (body_s, guard_s) = match &arm.pattern {
-                Pattern::Bind(x) => (
-                    subst_surface(&arm.body, x, scrut),
-                    arm.guard.as_ref().map(|g| subst_surface(g, x, scrut)),
-                ),
+                Pattern::Bind(x) => {
+                    self.catch_all_is_no_ctor(x)?;
+                    (
+                        self.subst(&arm.body, x, scrut),
+                        arm.guard.as_ref().map(|g| self.subst(g, x, scrut)),
+                    )
+                }
                 _ => (arm.body.clone(), arm.guard.clone()),
             };
             // the literal's equality guard `scrut = n` (numeric-lattice
@@ -2202,10 +2243,13 @@ impl<'p> Elab<'p> {
                 continue;
             }
             let (body_s, guard_s) = match &arm.pattern {
-                Pattern::Bind(x) => (
-                    subst_surface(&arm.body, x, scrut),
-                    arm.guard.as_ref().map(|g| subst_surface(g, x, scrut)),
-                ),
+                Pattern::Bind(x) => {
+                    self.catch_all_is_no_ctor(x)?;
+                    (
+                        self.subst(&arm.body, x, scrut),
+                        arm.guard.as_ref().map(|g| self.subst(g, x, scrut)),
+                    )
+                }
                 _ => (arm.body.clone(), arm.guard.clone()),
             };
             let entry = self.elab_arm_parts(ctx, &body_s, guard_s.as_ref())?;
@@ -2483,17 +2527,6 @@ fn arith_binop(env: &Env, op: BinOp, s: &K) -> Option<&'static str> {
 
 // ── refinement / generic-predicate (`'p`) helpers ───────────────────────────
 
-/// Capture-avoiding substitution of the free surface variable `from` by the
-/// term `to` (used to instantiate a refinement's bound value `v` at a concrete
-/// argument/result, and to rename `v` to a parameter name). Respects binder
-/// shadowing in `let`/quantifiers; a binder's `range`/`constraint` sub-terms are
-/// in the *enclosing* scope (substituted regardless), its `refinement` predicate
-/// and body are in the binder's scope (substituted only when not shadowed).
-/// Does `name` occur FREE in the surface term `t`?
-///
-/// Used to decide whether a `fn` body is recursive. The shadowing rules mirror
-/// [`subst_surface`] exactly — the two must agree, or a body could be called
-/// recursive here and have its self-reference substituted away there.
 /// The first refinement predicate inside `ty` (at any depth: a refined base,
 /// either side of an arrow) that mentions one of `names` other than its own
 /// bound variable — as `(that variable, the name)`. See
@@ -2513,6 +2546,32 @@ fn refinement_capture(ty: &Type, names: &[&str]) -> Option<(String, String)> {
     }
 }
 
+/// The names one quantifier binds over ALL of its parts. The elaborator puts
+/// every binder in the context before it elaborates any guard, so a range
+/// bound, a constraint's right-hand side, a refinement predicate, a refined
+/// type and the body all see every binder. An image binder `{y = f(x) | c}`
+/// binds both `y` and its preimage `x`.
+fn quant_bound(bs: &[Binder]) -> Vec<&str> {
+    let mut out = Vec::new();
+    for b in bs {
+        out.extend(b.names.iter().map(String::as_str));
+        if let Some((e, _)) = &b.image
+            && let S::Call(_, args) = &**e
+            && let [S::Var(x)] = args.as_slice()
+        {
+            out.push(x.as_str());
+        }
+    }
+    out
+}
+
+/// Does `name` occur FREE in the surface term `t`?
+///
+/// Used to decide whether a `fn` body is recursive. Its scoping is the one
+/// [`subst_surface`] uses, except that a bare-name match pattern always counts
+/// as a binder here (no constructor table is at hand). That can only hide a
+/// self-reference, and a hidden one then fails to elaborate as an unknown
+/// symbol; it never admits a wrong definition.
 fn mentions_surface(t: &S, name: &str) -> bool {
     let go = |x: &S| mentions_surface(x, name);
     match t {
@@ -2544,152 +2603,450 @@ fn mentions_surface(t: &S, name: &str) -> bool {
                 })
         }
         S::Forall(bs, body, trigs) | S::Exists(bs, body, trigs) => {
-            let shadow = bs.iter().any(|b| b.names.iter().any(|n| n == name));
-            binders_mention(bs, name, shadow)
-                || (!shadow && (go(body) || trigs.iter().flatten().any(&go)))
+            !quant_bound(bs).contains(&name)
+                && (bs.iter().any(|b| binder_mentions(b, name))
+                    || go(body)
+                    || trigs.iter().flatten().any(&go))
         }
         S::App(f, args) => go(f) || args.iter().any(&go),
-        S::Lam { name: opt_n, body, .. } => {
-            if opt_n.as_deref() == Some(name) {
-                false
-            } else {
-                go(body)
-            }
+        S::Lam { name: opt_n, params, ret, body, .. } => {
+            let bound = opt_n.as_deref() == Some(name)
+                || params.iter().any(|(ns, _)| ns.iter().any(|n| n == name));
+            !bound
+                && (go(body)
+                    || type_mentions(ret, name)
+                    || params.iter().any(|(_, ty)| type_mentions(ty, name)))
         }
     }
 }
 
-/// The sub-terms hanging off a binder group, with the same scoping
-/// [`subst_binders`] uses: range bounds and a constraint rhs are in the
-/// ENCLOSING scope, the refinement predicate is in the binder's own.
-fn binders_mention(bs: &[Binder], name: &str, shadow: bool) -> bool {
-    bs.iter().any(|b| {
-        b.range.as_ref().is_some_and(|(lo, hi)| {
-            mentions_surface(lo, name) || mentions_surface(hi, name)
-        }) || b
-            .constraint
-            .as_ref()
-            .is_some_and(|(_, rhs)| mentions_surface(rhs, name))
-            || (!shadow && b.refinement.as_ref().is_some_and(|p| mentions_surface(p, name)))
-            || b.image.as_ref().is_some_and(|(e, c)| {
-                mentions_surface(e, name) || mentions_surface(c, name)
-            })
-    })
+/// Does `name` occur free in one binder's own sub-terms (its type's
+/// refinements, range, constraint, refinement, image)? The caller has
+/// already checked that the quantifier does not bind `name`.
+fn binder_mentions(b: &Binder, name: &str) -> bool {
+    let go = |x: &S| mentions_surface(x, name);
+    type_mentions(&b.ty, name)
+        || b.range.as_ref().is_some_and(|(lo, hi)| go(lo) || go(hi))
+        || b.constraint.as_ref().is_some_and(|(_, rhs)| go(rhs))
+        || b.refinement.as_ref().is_some_and(|p| go(p))
+        || b.image.as_ref().is_some_and(|(e, c)| go(e) || go(c))
 }
 
-fn subst_surface(t: &S, from: &str, to: &S) -> S {
-    let go = |x: &S| subst_surface(x, from, to);
-    match t {
-        S::Var(n) => if n == from { to.clone() } else { t.clone() },
-        S::IntLit(_) | S::RealLit(_) | S::Bool(_) => t.clone(),
-        S::Not(a) => S::Not(Box::new(go(a))),
-        S::Neg(a) => S::Neg(Box::new(go(a))),
-        S::Bin(op, a, b) => S::Bin(*op, Box::new(go(a)), Box::new(go(b))),
-        S::Call(f, args) => S::Call(f.clone(), args.iter().map(&go).collect()),
-        // `if` binds nothing — substitute in all three parts.
-        S::If(c, a, b) => S::If(Box::new(go(c)), Box::new(go(a)), Box::new(go(b))),
-        // `match`: pattern-bound names SHADOW `from` in that arm's guard + body.
-        // A bare-name pattern MIGHT be a nullary constructor (resolved only in
-        // elab, against the env) — treating it as a binder here is the
-        // conservative choice; the pathological "constructor name collides with
-        // the substituted name" case is a known limitation, mirroring the
-        // image-binder note below.
-        S::Match(scrut, arms) => {
-            let arms2 = arms
+/// Does `name` occur free in a refinement predicate inside `ty`?
+fn type_mentions(ty: &Type, name: &str) -> bool {
+    match ty {
+        Type::Name(_) => false,
+        Type::App(_, args) => args.iter().any(|a| type_mentions(a, name)),
+        Type::Arrow(d, c) => type_mentions(d, name) || type_mentions(c, name),
+        Type::Refine { var, base, pred } => {
+            type_mentions(base, name) || (var != name && mentions_surface(pred, name))
+        }
+    }
+}
+
+/// Capture-avoiding substitution of the free surface variable `from` by the
+/// term `to`. It instantiates a refinement's bound value at an argument or a
+/// result, unfolds an image binder's `y := f(x)`, and names a match scrutinee
+/// by its catch-all binder.
+///
+/// Scoping follows the elaborator, which is what gives a name its meaning:
+/// - `let x = e in b`: `e` outside, `b` under `x`.
+/// - a quantifier: every part (range bounds, constraint right-hand sides,
+///   refinement predicates, refined types, an image binder's `e`/`c`, the body,
+///   the triggers) under all of its binders ([`quant_bound`]).
+/// - a match arm: under its pattern's binders. A bare-name pattern is a binder
+///   only when `is_ctor` says the name is no constructor; the match elaborator
+///   refuses a catch-all spelled like a constructor, so the two agree.
+/// - a lambda: its body and its own types under its name and parameters.
+/// - a refinement type `{v: T | φ}`: `φ` under `v`.
+///
+/// A binder that would capture a name `to` mentions is renamed first, to a
+/// spelling that occurs nowhere in its scope or in `to` and names no
+/// constructor. Renaming happens only when `from` occurs in that scope, so a
+/// substitution without a clash returns the same shape it always did.
+///
+/// A local function binder can be called with call syntax (`g(x)`;
+/// [`Elab::elab_call`] consults the context first), so a call HEAD spelled
+/// `from` is substituted as well: renamed when `to` is a variable, applied
+/// (`to(args)`) otherwise.
+fn subst_surface(t: &S, from: &str, to: &S, is_ctor: &dyn Fn(&str) -> bool) -> S {
+    let mut avoid = HashSet::new();
+    names_in(to, &mut avoid);
+    Subst { from, to, avoid: &avoid, is_ctor }.term(t)
+}
+
+struct Subst<'a> {
+    from: &'a str,
+    to: &'a S,
+    /// Every name `to` mentions (free or not — an over-approximation only
+    /// renames more often). A binder spelled like one of these is renamed
+    /// before `to` is put under it.
+    avoid: &'a HashSet<String>,
+    is_ctor: &'a dyn Fn(&str) -> bool,
+}
+
+impl Subst<'_> {
+    fn term(&self, t: &S) -> S {
+        let go = |x: &S| self.term(x);
+        match t {
+            S::Var(n) => {
+                if n == self.from {
+                    self.to.clone()
+                } else {
+                    t.clone()
+                }
+            }
+            S::IntLit(_) | S::RealLit(_) | S::Bool(_) => t.clone(),
+            S::Not(a) => S::Not(Box::new(go(a))),
+            S::Neg(a) => S::Neg(Box::new(go(a))),
+            S::Bin(op, a, b) => S::Bin(*op, Box::new(go(a)), Box::new(go(b))),
+            S::Call(f, args) => {
+                let args = args.iter().map(go).collect();
+                match self.to {
+                    _ if f != self.from => S::Call(f.clone(), args),
+                    S::Var(n) => S::Call(n.clone(), args),
+                    to => S::App(Box::new(to.clone()), args),
+                }
+            }
+            S::If(c, a, b) => S::If(Box::new(go(c)), Box::new(go(a)), Box::new(go(b))),
+            S::SolveBy(g, l) => S::SolveBy(Box::new(go(g)), Box::new(go(l))),
+            S::App(f, args) => S::App(Box::new(go(f)), args.iter().map(go).collect()),
+            S::Let(x, e, body) => {
+                let (x2, body2) = self.under_one(x, body);
+                S::Let(x2, Box::new(go(e)), Box::new(body2))
+            }
+            S::Match(scrut, arms) => {
+                S::Match(Box::new(go(scrut)), arms.iter().map(|a| self.arm(a)).collect())
+            }
+            S::Forall(bs, body, trigs) => {
+                let (bs, body, trigs) = self.quant(bs, body, trigs);
+                S::Forall(bs, Box::new(body), trigs)
+            }
+            S::Exists(bs, body, trigs) => {
+                let (bs, body, trigs) = self.quant(bs, body, trigs);
+                S::Exists(bs, Box::new(body), trigs)
+            }
+            S::Lam { name, params, ret, body, rec } => self.lam(name, params, ret, body, *rec),
+        }
+    }
+
+    fn ty(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Name(_) => ty.clone(),
+            Type::App(n, args) => Type::App(n.clone(), args.iter().map(|a| self.ty(a)).collect()),
+            Type::Arrow(d, c) => Type::Arrow(Box::new(self.ty(d)), Box::new(self.ty(c))),
+            Type::Refine { var, base, pred } => {
+                let (var, pred) = self.under_one(var, pred);
+                Type::Refine { var, base: Box::new(self.ty(base)), pred: Box::new(pred) }
+            }
+        }
+    }
+
+    /// The fresh names for the binders in `bound` that would capture `to`,
+    /// given every name occurring in their scope. Empty when nothing clashes
+    /// or `from` does not occur in the scope.
+    fn renames(&self, bound: &[&str], scope: HashSet<String>) -> Vec<(String, String)> {
+        if !scope.contains(self.from) {
+            return Vec::new();
+        }
+        let mut taken = scope;
+        taken.extend(self.avoid.iter().cloned());
+        taken.extend(bound.iter().map(|n| (*n).to_string()));
+        let mut out: Vec<(String, String)> = Vec::new();
+        for old in bound.iter().filter(|n| self.avoid.contains(**n)) {
+            if out.iter().any(|(o, _)| o == old) {
+                continue;
+            }
+            let fresh = (1..)
+                .map(|k| format!("{old}!{k}"))
+                .find(|c| !taken.contains(c) && !(self.is_ctor)(c))
+                .expect("an unbounded supply of spellings");
+            taken.insert(fresh.clone());
+            out.push(((*old).to_string(), fresh));
+        }
+        out
+    }
+
+    /// A substitution that renames `old` to the fresh `new`, which occurs
+    /// nowhere in the scope it is applied to (so it can never be captured).
+    fn rename<R>(&self, old: &str, new: &str, f: impl FnOnce(&Subst<'_>) -> R) -> R {
+        let to = S::Var(new.to_string());
+        let avoid = HashSet::from([new.to_string()]);
+        f(&Subst { from: old, to: &to, avoid: &avoid, is_ctor: self.is_ctor })
+    }
+
+    /// One binder `x` over `body` (a `let`, a refinement type's variable).
+    fn under_one(&self, x: &str, body: &S) -> (String, S) {
+        if x == self.from {
+            return (x.to_string(), body.clone());
+        }
+        if !self.avoid.contains(x) {
+            return (x.to_string(), self.term(body));
+        }
+        let mut scope = HashSet::new();
+        names_in(body, &mut scope);
+        match self.renames(&[x], scope).pop() {
+            Some((old, new)) => {
+                let body = self.rename(&old, &new, |r| r.term(body));
+                (new, self.term(&body))
+            }
+            None => (x.to_string(), self.term(body)),
+        }
+    }
+
+    fn quant(&self, bs: &[Binder], body: &S, trigs: &[Vec<S>]) -> (Vec<Binder>, S, Vec<Vec<S>>) {
+        let bound = quant_bound(bs);
+        if bound.contains(&self.from) {
+            return (bs.to_vec(), body.clone(), trigs.to_vec());
+        }
+        let renames = if bound.iter().any(|n| self.avoid.contains(*n)) {
+            let mut scope = HashSet::new();
+            for b in bs {
+                binder_names_in(b, &mut scope);
+            }
+            names_in(body, &mut scope);
+            for p in trigs.iter().flatten() {
+                names_in(p, &mut scope);
+            }
+            self.renames(&bound, scope)
+        } else {
+            Vec::new()
+        };
+        let (mut bs, mut body, mut trigs) = (bs.to_vec(), body.clone(), trigs.to_vec());
+        for (old, new) in &renames {
+            // the preimage of an image binder is a `Var` inside its `e`, so
+            // renaming the parts renames it too.
+            (bs, body, trigs) = self.rename(old, new, |r| r.quant_parts(&bs, &body, &trigs));
+            for n in bs.iter_mut().flat_map(|b| b.names.iter_mut()) {
+                if n == old {
+                    n.clone_from(new);
+                }
+            }
+        }
+        self.quant_parts(&bs, &body, &trigs)
+    }
+
+    /// Every part of a quantifier, with no shadowing check of its own binders
+    /// (the caller made that decision).
+    fn quant_parts(&self, bs: &[Binder], body: &S, trigs: &[Vec<S>]) -> (Vec<Binder>, S, Vec<Vec<S>>) {
+        let go = |x: &S| Box::new(self.term(x));
+        let bs = bs
+            .iter()
+            .map(|b| Binder {
+                names: b.names.clone(),
+                ty: self.ty(&b.ty),
+                constraint: b.constraint.as_ref().map(|(op, rhs)| (*op, go(rhs))),
+                range: b.range.as_ref().map(|(lo, hi)| (go(lo), go(hi))),
+                refinement: b.refinement.as_ref().map(|p| go(p)),
+                image: b.image.as_ref().map(|(e, c)| (go(e), go(c))),
+            })
+            .collect();
+        let trigs = trigs.iter().map(|g| g.iter().map(|p| self.term(p)).collect()).collect();
+        (bs, self.term(body), trigs)
+    }
+
+    fn arm(&self, arm: &Arm) -> Arm {
+        let bound: Vec<&str> = match &arm.pattern {
+            Pattern::Bind(n) if !(self.is_ctor)(n) => vec![n.as_str()],
+            Pattern::Ctor(_, pargs) => pargs
                 .iter()
-                .map(|arm| {
-                    let shadow = match &arm.pattern {
-                        Pattern::Bind(n) => n == from,
-                        Pattern::Ctor(_, pargs) => pargs
-                            .iter()
-                            .any(|p| matches!(p, PatArg::Bind(n) if n == from)),
-                        Pattern::Wild
-                        | Pattern::Bool(_)
-                        | Pattern::IntLit(_)
-                        | Pattern::RealLit(_) => false,
-                    };
-                    Arm {
-                        pattern: arm.pattern.clone(),
-                        guard: arm
-                            .guard
-                            .as_ref()
-                            .map(|g| if shadow { g.clone() } else { go(g) }),
-                        body: if shadow { arm.body.clone() } else { go(&arm.body) },
-                    }
+                .filter_map(|p| match p {
+                    PatArg::Bind(n) => Some(n.as_str()),
+                    PatArg::Wild => None,
                 })
-                .collect();
-            S::Match(Box::new(go(scrut)), arms2)
+                .collect(),
+            _ => Vec::new(),
+        };
+        if bound.contains(&self.from) {
+            return arm.clone();
+        }
+        let mut arm = arm.clone();
+        if bound.iter().any(|n| self.avoid.contains(*n)) {
+            let mut scope = HashSet::new();
+            if let Some(g) = &arm.guard {
+                names_in(g, &mut scope);
+            }
+            names_in(&arm.body, &mut scope);
+            for (old, new) in self.renames(&bound, scope) {
+                arm = self.rename(&old, &new, |r| r.arm_parts(&arm));
+                match &mut arm.pattern {
+                    Pattern::Bind(n) if *n == old => n.clone_from(&new),
+                    Pattern::Ctor(_, pargs) => {
+                        for p in pargs {
+                            if matches!(p, PatArg::Bind(n) if *n == old) {
+                                *p = PatArg::Bind(new.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.arm_parts(&arm)
+    }
+
+    fn arm_parts(&self, arm: &Arm) -> Arm {
+        Arm {
+            pattern: arm.pattern.clone(),
+            guard: arm.guard.as_ref().map(|g| self.term(g)),
+            body: self.term(&arm.body),
+        }
+    }
+
+    fn lam(
+        &self,
+        name: &Option<String>,
+        params: &[(Vec<String>, Type)],
+        ret: &Type,
+        body: &S,
+        rec: bool,
+    ) -> S {
+        let mut bound: Vec<&str> = name.iter().map(String::as_str).collect();
+        bound.extend(params.iter().flat_map(|(ns, _)| ns.iter().map(String::as_str)));
+        if bound.contains(&self.from) {
+            return S::Lam {
+                name: name.clone(),
+                params: params.to_vec(),
+                ret: ret.clone(),
+                body: Box::new(body.clone()),
+                rec,
+            };
+        }
+        let (mut name, mut params, mut ret, mut body) =
+            (name.clone(), params.to_vec(), ret.clone(), body.clone());
+        if bound.iter().any(|n| self.avoid.contains(*n)) {
+            let mut scope = HashSet::new();
+            names_in(&body, &mut scope);
+            type_names_in(&ret, &mut scope);
+            for (_, ty) in &params {
+                type_names_in(ty, &mut scope);
+            }
+            for (old, new) in self.renames(&bound, scope) {
+                (params, ret, body) = self.rename(&old, &new, |r| r.lam_parts(&params, &ret, &body));
+                for n in name.iter_mut().chain(params.iter_mut().flat_map(|(ns, _)| ns.iter_mut())) {
+                    if *n == old {
+                        n.clone_from(&new);
+                    }
+                }
+            }
+        }
+        let (params, ret, body) = self.lam_parts(&params, &ret, &body);
+        S::Lam { name, params, ret, body: Box::new(body), rec }
+    }
+
+    fn lam_parts(
+        &self,
+        params: &[(Vec<String>, Type)],
+        ret: &Type,
+        body: &S,
+    ) -> (Vec<(Vec<String>, Type)>, Type, S) {
+        let params = params.iter().map(|(ns, ty)| (ns.clone(), self.ty(ty))).collect();
+        (params, self.ty(ret), self.term(body))
+    }
+}
+
+/// Every identifier spelled anywhere in `t` — variables, call heads, binder
+/// and pattern names, refinement variables — free or bound.
+fn names_in(t: &S, acc: &mut HashSet<String>) {
+    match t {
+        S::Var(n) => {
+            acc.insert(n.clone());
+        }
+        S::IntLit(_) | S::RealLit(_) | S::Bool(_) => {}
+        S::Not(a) | S::Neg(a) => names_in(a, acc),
+        S::Bin(_, a, b) | S::SolveBy(a, b) => {
+            names_in(a, acc);
+            names_in(b, acc);
+        }
+        S::Call(f, args) => {
+            acc.insert(f.clone());
+            args.iter().for_each(|a| names_in(a, acc));
+        }
+        S::If(c, a, b) => {
+            names_in(c, acc);
+            names_in(a, acc);
+            names_in(b, acc);
         }
         S::Let(x, e, body) => {
-            let e2 = go(e);
-            let body2 = if x == from { (**body).clone() } else { go(body) };
-            S::Let(x.clone(), Box::new(e2), Box::new(body2))
+            acc.insert(x.clone());
+            names_in(e, acc);
+            names_in(body, acc);
         }
-        S::Forall(bs, body, trigs) => {
-            let (bs2, shadow) = subst_binders(bs, from, to);
-            let body2 = if shadow { (**body).clone() } else { go(body) };
-            S::Forall(bs2, Box::new(body2), subst_trigs(trigs, from, to, shadow))
-        }
-        S::Exists(bs, body, trigs) => {
-            let (bs2, shadow) = subst_binders(bs, from, to);
-            let body2 = if shadow { (**body).clone() } else { go(body) };
-            S::Exists(bs2, Box::new(body2), subst_trigs(trigs, from, to, shadow))
-        }
-        S::SolveBy(g, l) => S::SolveBy(Box::new(go(g)), Box::new(go(l))),
-        S::App(f, args) => S::App(Box::new(go(f)), args.iter().map(&go).collect()),
-        S::Lam { name, params, ret, body, rec } => {
-            let shadow = name.as_deref() == Some(from)
-                || params.iter().any(|(names, _)| names.iter().any(|n| n == from));
-            let body2 = if shadow { (**body).clone() } else { go(body) };
-            S::Lam {
-                name: name.clone(),
-                params: params.clone(),
-                ret: ret.clone(),
-                body: Box::new(body2),
-                rec: *rec,
+        S::Match(scrut, arms) => {
+            names_in(scrut, acc);
+            for arm in arms {
+                match &arm.pattern {
+                    Pattern::Bind(n) => {
+                        acc.insert(n.clone());
+                    }
+                    Pattern::Ctor(c, pargs) => {
+                        acc.insert(c.clone());
+                        for p in pargs {
+                            if let PatArg::Bind(n) = p {
+                                acc.insert(n.clone());
+                            }
+                        }
+                    }
+                    Pattern::Wild | Pattern::Bool(_) | Pattern::IntLit(_) | Pattern::RealLit(_) => {}
+                }
+                if let Some(g) = &arm.guard {
+                    names_in(g, acc);
+                }
+                names_in(&arm.body, acc);
             }
         }
+        S::Forall(bs, body, trigs) | S::Exists(bs, body, trigs) => {
+            bs.iter().for_each(|b| binder_names_in(b, acc));
+            names_in(body, acc);
+            trigs.iter().flatten().for_each(|p| names_in(p, acc));
+        }
+        S::App(f, args) => {
+            names_in(f, acc);
+            args.iter().for_each(|a| names_in(a, acc));
+        }
+        S::Lam { name, params, ret, body, .. } => {
+            acc.extend(name.iter().cloned());
+            for (ns, ty) in params {
+                acc.extend(ns.iter().cloned());
+                type_names_in(ty, acc);
+            }
+            type_names_in(ret, acc);
+            names_in(body, acc);
+        }
     }
 }
 
-/// Substitute inside a binder group's sub-terms, returning the rewritten binders
-/// and whether the group shadows `from` (so the caller leaves the body alone).
-fn subst_binders(bs: &[Binder], from: &str, to: &S) -> (Vec<Binder>, bool) {
-    let shadow = bs.iter().any(|b| b.names.iter().any(|n| n == from));
-    let bs2 = bs
-        .iter()
-        .map(|b| Binder {
-            names: b.names.clone(),
-            ty: b.ty.clone(),
-            // range bounds + constraint rhs live in the ENCLOSING scope.
-            range: b
-                .range
-                .as_ref()
-                .map(|(lo, hi)| (Box::new(subst_surface(lo, from, to)), Box::new(subst_surface(hi, from, to)))),
-            constraint: b
-                .constraint
-                .as_ref()
-                .map(|(op, rhs)| (*op, Box::new(subst_surface(rhs, from, to)))),
-            // the refinement predicate is in the binder's own scope.
-            refinement: b.refinement.as_ref().map(|p| {
-                if shadow { p.clone() } else { Box::new(subst_surface(p, from, to)) }
-            }),
-            // an image binder's `e`/`c` mention the (locally-introduced) preimage;
-            // substituting an outer var into them is sound (the common case —
-            // shadowing the preimage itself is not tracked, a known limitation).
-            image: b.image.as_ref().map(|(e, c)| {
-                (Box::new(subst_surface(e, from, to)), Box::new(subst_surface(c, from, to)))
-            }),
-        })
-        .collect();
-    (bs2, shadow)
+fn binder_names_in(b: &Binder, acc: &mut HashSet<String>) {
+    acc.extend(b.names.iter().cloned());
+    type_names_in(&b.ty, acc);
+    for t in b.range.iter().flat_map(|(lo, hi)| [lo, hi]) {
+        names_in(t, acc);
+    }
+    if let Some((_, rhs)) = &b.constraint {
+        names_in(rhs, acc);
+    }
+    if let Some(p) = &b.refinement {
+        names_in(p, acc);
+    }
+    for t in b.image.iter().flat_map(|(e, c)| [e, c]) {
+        names_in(t, acc);
+    }
 }
 
-fn subst_trigs(trigs: &[Vec<S>], from: &str, to: &S, shadow: bool) -> Vec<Vec<S>> {
-    if shadow {
-        return trigs.to_vec();
+fn type_names_in(ty: &Type, acc: &mut HashSet<String>) {
+    match ty {
+        Type::Name(_) => {}
+        Type::App(_, args) => args.iter().for_each(|a| type_names_in(a, acc)),
+        Type::Arrow(d, c) => {
+            type_names_in(d, acc);
+            type_names_in(c, acc);
+        }
+        Type::Refine { var, base, pred } => {
+            acc.insert(var.clone());
+            type_names_in(base, acc);
+            names_in(pred, acc);
+        }
     }
-    trigs.iter().map(|pats| pats.iter().map(|p| subst_surface(p, from, to)).collect()).collect()
 }
 
 /// Left-fold surface predicates with `and`, dropping structurally-identical
