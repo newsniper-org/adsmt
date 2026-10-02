@@ -980,6 +980,28 @@ discovered:
 
   Postulating well-foundedness is NOT on the list: that is the axiomatisation
   §11 rules out.
+
+  **DECIDED 2026-10-02 (user): route 1**, in two slices.
+
+  - **Slice 1 — a measure into a user-declared Peano-shaped `data`.**
+    Everything is structural, so the accessibility lemma and every decrease
+    proof are kernel terms: trust source zero, the §11 rule intact.
+  - **Slice 2 — an `Int` measure**, on top of a kernel-side Farkas certificate
+    checker, so each call site's `m(args') < m(args)` enters as a CHECKED fact
+    rather than as the engine's say-so.
+
+  A correction to the claim the decision was made on. "After the Farkas checker,
+  route 1 is trust-free for `Int` measures too" is not true. The kernel's `Int`
+  is an opaque postulated sort (`adsmt-ir/src/theory.rs`): it has no induction
+  principle, and `∀x. Acc R x` for `R y x :⟺ 0 ≤ m y < m x` IS the
+  well-foundedness of `<` on the non-negative integers — an induction, which a
+  linear-arithmetic certificate cannot supply. Slice 2 therefore needs one of:
+  (a) a single FIXED axiom of the `Int` theory, "`<` is well-founded on the
+  non-negative integers" — true in the standard model, stated once, not
+  per-definition, but a trust source of one; or (b) the kernel `Nat` turned
+  from an opaque sort into a genuine inductive with a bridge to `Int` —
+  trust-free, and large, since the `Nat`/`WNat` refinement collapse rests on
+  that sort. To be chosen before slice 2 starts; slice 1 is unaffected.
 - **Anonymous recursion.** The user's proposal covered anonymous functions too,
   and the kernel agrees — `Fix` has no name, self-reference is `Bound(0)`, so a
   named and an anonymous recursive function are the SAME term. But the surface
