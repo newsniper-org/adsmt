@@ -882,7 +882,7 @@ fn build_cdcl_section(
         .trail
         .iter()
         .map(|e| e.atom.to_string())
-        .chain(state.watches.keys().map(|(k, _)| k.to_string()))
+        .chain(state.watch_entries().into_iter().map(|(k, _, _)| k.to_string()))
         .chain(state.activity.keys().map(|k| k.to_string()))
         .chain(state.saved_phase.keys().map(|k| k.to_string()))
         .filter(|k| !atom_key_to_pool_idx.contains_key(k))
@@ -931,13 +931,13 @@ fn build_cdcl_section(
         })
         .collect();
     let watches: Vec<adsmt_aot::WatchEntry> = state
-        .watches
-        .iter()
-        .filter_map(|((atom_key, polarity), clauses)| {
+        .watch_entries()
+        .into_iter()
+        .filter_map(|(atom_key, polarity, clauses)| {
             let idx = lookup(&atom_key.to_string())?;
             Some(adsmt_aot::WatchEntry {
                 atom_pool_idx: idx,
-                polarity: *polarity,
+                polarity,
                 watching_clauses: clauses.iter().map(|&i| i as u32).collect(),
             })
         })

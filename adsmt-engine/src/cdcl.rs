@@ -395,14 +395,26 @@ pub struct CdclState {
     /// indices are 0. Length matches the propagator's view of
     /// clauses (input + learnt) at all times.
     pub clause_watches: Vec<[usize; 2]>,
-    /// v1.0.0-rc.1 RC1.2 — watcher lists keyed by `(atom_key,
-    /// polarity_when_clause_becomes_falsified_against_this_lit)`.
-    /// When the trail pushes `(atom, true)`, the false-literals
-    /// against `atom` are the ones with `polarity = false`, so
-    /// the propagator looks up `watches[(atom, true)]` (the
-    /// clauses whose watched literal `Lit{atom, false}` just
-    /// became false) and re-evaluates them.
-    pub watches: FastMap<(Term, bool), Vec<usize>>,
+    /// Dense mirror of the assignment, for the propagator's hot path.
+    /// Atoms get consecutive ids on first sight (`var_ids` /
+    /// `var_terms`); `val[id]` is 0 (unassigned), 1 (true) or 2 (false);
+    /// `trail_ids[i]` is the id of `trail[i].atom`.  [`Self::push`] and
+    /// [`Self::backtrack_to`] keep these in step with `assign` / `trail`;
+    /// code that writes those two fields directly (a restored seed, a
+    /// test) is re-synchronised by [`build_watches`].
+    pub(crate) var_ids: FastMap<Term, u32>,
+    pub(crate) var_terms: Vec<Term>,
+    pub(crate) val: Vec<u8>,
+    pub(crate) trail_ids: Vec<u32>,
+    /// Decision level of each *assigned* atom, by id (stale for unassigned ones).
+    pub(crate) lvl: Vec<u32>,
+    /// Per-clause literal codes (`2 * var_id + polarity as u32`),
+    /// parallel to the clause vector handed to [`build_watches`].
+    pub(crate) cl_lits: Vec<Vec<u32>>,
+    /// Watcher lists indexed by literal code: `dwatch[code]` holds the
+    /// clauses currently watching that literal, so the propagator
+    /// reads `dwatch[code of the literal that just became false]`.
+    pub(crate) dwatch: Vec<Vec<usize>>,
     /// v1.0.0-rc.1 RC1.2 — head pointer into `trail` marking
     /// the next entry the propagator hasn't processed yet. The
     /// two-watched-literals propagator advances this monotonically;
@@ -418,16 +430,83 @@ impl CdclState {
     /// by 1 when the reason is a fresh decision so the next
     /// propagated entries inherit the new level.
     pub fn push(&mut self, atom: Term, polarity: bool, reason: Reason) {
+        if self.trail_ids.len() != self.trail.len() { self.resync_dense(); }
+        let id = self.intern(&atom);
+        self.push_id(id, atom, polarity, reason);
+    }
+
+    /// [`Self::push`] for a caller that already knows the atom's id.
+    pub(crate) fn push_id(&mut self, id: u32, atom: Term, polarity: bool, reason: Reason) {
         if matches!(reason, Reason::Decision) {
             self.decision_level += 1;
         }
         self.assign.insert(atom.clone(), polarity);
+        self.val[id as usize] = if polarity { 1 } else { 2 };
+        self.lvl[id as usize] = self.decision_level;
+        self.trail_ids.push(id);
         self.trail.push(TrailEntry {
             atom,
             polarity,
             decision_level: self.decision_level,
             reason,
         });
+    }
+
+    /// Dense id of `atom`, allocating one (and its two watcher lists)
+    /// on first sight.
+    pub(crate) fn intern(&mut self, atom: &Term) -> u32 {
+        if let Some(&id) = self.var_ids.get(atom) { return id; }
+        let id = self.var_terms.len() as u32;
+        self.var_ids.insert(atom.clone(), id);
+        self.var_terms.push(atom.clone());
+        self.val.push(0);
+        self.lvl.push(0);
+        self.dwatch.push(Vec::new());
+        self.dwatch.push(Vec::new());
+        id
+    }
+
+    /// Rebuild `val` and `trail_ids` from `assign` and `trail`.
+    pub(crate) fn resync_dense(&mut self) {
+        for v in self.val.iter_mut() { *v = 0; }
+        let assigned: Vec<(Term, bool)> =
+            self.assign.iter().map(|(t, &p)| (t.clone(), p)).collect();
+        for (t, p) in assigned {
+            let id = self.intern(&t);
+            self.val[id as usize] = if p { 1 } else { 2 };
+        }
+        let atoms: Vec<(Term, u32)> =
+            self.trail.iter().map(|e| (e.atom.clone(), e.decision_level)).collect();
+        self.trail_ids.clear();
+        for (a, l) in atoms {
+            let id = self.intern(&a);
+            self.trail_ids.push(id);
+            self.lvl[id as usize] = l;
+        }
+    }
+
+    /// The watcher lists as `(atom, polarity of the watched literal,
+    /// clause indices)`, skipping empty lists — the shape the AOT bake
+    /// serialises.
+    pub fn watch_entries(&self) -> Vec<(Term, bool, Vec<usize>)> {
+        self.dwatch
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| !w.is_empty())
+            .map(|(code, w)| {
+                (self.var_terms[code >> 1].clone(), code & 1 == 1, w.clone())
+            })
+            .collect()
+    }
+
+    /// Is the literal `code` true / false under the dense assignment?
+    #[inline]
+    pub(crate) fn lit_true(&self, code: u32) -> bool {
+        self.val[(code >> 1) as usize] == if code & 1 == 1 { 1 } else { 2 }
+    }
+    #[inline]
+    pub(crate) fn lit_false(&self, code: u32) -> bool {
+        self.val[(code >> 1) as usize] == if code & 1 == 1 { 2 } else { 1 }
     }
 
     /// Bump every atom in `clause`'s VSIDS activity by `bump`.
@@ -464,9 +543,11 @@ impl CdclState {
     /// [`Self::saved_phase`] so a subsequent decision on the same
     /// atom can reuse it (phase-saving).
     pub fn backtrack_to(&mut self, level: u32) {
+        if self.trail_ids.len() != self.trail.len() { self.resync_dense(); }
         while let Some(last) = self.trail.last() {
             if last.decision_level <= level { break; }
             let entry = self.trail.pop().expect("checked above");
+            if let Some(id) = self.trail_ids.pop() { self.val[id as usize] = 0; }
             self.assign.remove(&entry.atom);
             if self.track_freed { self.freed.push(entry.atom.clone()); }
             self.saved_phase.insert(entry.atom, entry.polarity);
@@ -1174,7 +1255,7 @@ fn pick_vsids_atom(input_clauses: &[Clause], state: &CdclState) -> Option<Term> 
 /// the only event that can make one of those clauses open again.
 struct VsidsHeap {
     atoms: Vec<Term>,
-    index: HashMap<Term, u32>,
+    index: FastMap<Term, u32>,
     /// Input-clause indices in which each atom occurs.
     occ: Vec<Vec<u32>>,
     act: Vec<f64>,
@@ -1190,7 +1271,7 @@ const HEAP_NONE: u32 = u32::MAX;
 impl VsidsHeap {
     fn new(input_clauses: &[Clause], state: &CdclState) -> Self {
         let mut atoms: Vec<Term> = Vec::new();
-        let mut index: HashMap<Term, u32> = HashMap::new();
+        let mut index: FastMap<Term, u32> = FastMap::default();
         let mut occ: Vec<Vec<u32>> = Vec::new();
         for (ci, clause) in input_clauses.iter().enumerate() {
             for lit in clause {
@@ -1305,12 +1386,23 @@ impl VsidsHeap {
         loop {
             let id = self.pop_max()?;
             let atom = &self.atoms[id as usize];
-            if state.assign.contains_key(atom) { continue; }
+            let dense = state.cl_lits.len() >= input_clauses.len()
+                && state.trail_ids.len() == state.trail.len();
+            if dense {
+                // dense path: `build_watches` interned every input atom
+                if let Some(&vid) = state.var_ids.get(atom) {
+                    if state.val[vid as usize] != 0 { continue; }
+                } else if state.assign.contains_key(atom) { continue; }
+            } else if state.assign.contains_key(atom) { continue; }
             let open = self.occ[id as usize].iter().any(|&ci| {
-                !matches!(
-                    evaluate_clause(&input_clauses[ci as usize], &state.assign),
-                    ClauseEval::Satisfied
-                )
+                if dense {
+                    !state.cl_lits[ci as usize].iter().any(|&c| state.lit_true(c))
+                } else {
+                    !matches!(
+                        evaluate_clause(&input_clauses[ci as usize], &state.assign),
+                        ClauseEval::Satisfied
+                    )
+                }
             });
             if open { return Some(atom.clone()); }
             self.parked.push(id);
@@ -1329,8 +1421,10 @@ impl VsidsHeap {
 /// `register_clause_watches` on the new clause alone instead of
 /// rebuilding the whole table.
 pub fn build_watches(state: &mut CdclState, clauses: &[Clause]) {
+    state.resync_dense();
     state.clause_watches.clear();
-    state.watches.clear();
+    state.cl_lits.clear();
+    for w in state.dwatch.iter_mut() { w.clear(); }
     for (idx, clause) in clauses.iter().enumerate() {
         register_clause_watches(state, clause, idx);
     }
@@ -1352,38 +1446,41 @@ pub fn register_clause_watches(
     clause: &Clause,
     idx: usize,
 ) {
+    if state.trail_ids.len() != state.trail.len() { state.resync_dense(); }
     let w0 = 0usize;
     let w1 = if clause.len() >= 2 { 1usize } else { 0usize };
     if state.clause_watches.len() <= idx {
         state.clause_watches.resize(idx + 1, [0, 0]);
     }
-    state.clause_watches[idx] = [w0, w1];
-    if let Some(lit) = clause.get(w0) {
-        let key = (atom_key(lit), lit.polarity);
-        state.watches.entry(key).or_default().push(idx);
+    if state.cl_lits.len() <= idx {
+        state.cl_lits.resize(idx + 1, Vec::new());
     }
-    if w1 != w0 && let Some(lit) = clause.get(w1) {
-        let key = (atom_key(lit), lit.polarity);
-        state.watches.entry(key).or_default().push(idx);
+    state.clause_watches[idx] = [w0, w1];
+    let codes: Vec<u32> = clause
+        .iter()
+        .map(|l| (state.intern(&atom_key(l)) << 1) | l.polarity as u32)
+        .collect();
+    if let Some(&c) = codes.get(w0) {
+        state.dwatch[c as usize].push(idx);
+    }
+    if w1 != w0 && let Some(&c) = codes.get(w1) {
+        state.dwatch[c as usize].push(idx);
     }
     // Immediate unit-propagation check.
     let mut unassigned: Option<usize> = None;
     let mut count_unassigned = 0usize;
     let mut any_satisfied = false;
-    for (i, lit) in clause.iter().enumerate() {
-        let key = atom_key(lit);
-        match state.assign.get(&key) {
-            Some(&v) if v == lit.polarity => {
-                any_satisfied = true;
-                break;
-            }
-            Some(_) => {}
-            None => {
-                unassigned = Some(i);
-                count_unassigned += 1;
-            }
+    for (i, &c) in codes.iter().enumerate() {
+        if state.lit_true(c) {
+            any_satisfied = true;
+            break;
+        }
+        if !state.lit_false(c) {
+            unassigned = Some(i);
+            count_unassigned += 1;
         }
     }
+    state.cl_lits[idx] = codes;
     if !any_satisfied
         && count_unassigned == 1
         && let Some(u) = unassigned
@@ -1443,68 +1540,58 @@ fn propagate_two_watched(
     clause_bump: f64,
     deadline: Option<std::time::Instant>,
 ) -> PropagateOutcome {
+    let _ = clauses; // literals are read from the dense `cl_lits`
     // Match the outer loop's cadence (DEADLINE_CHECK_INTERVAL) so
     // the deadline is honoured uniformly regardless of whether the
     // busy work sits in the outer `loop`, the propagation queue's
-    // outer `while`, or the per-atom `for clause_idx in
-    // watched_clauses` inner loop.
+    // outer `while`, or the per-clause inner loop.
     let mut prop_steps: usize = 0;
     while state.prop_head < state.trail.len() {
-        let entry = state.trail[state.prop_head].clone();
+        let head = state.prop_head;
         state.prop_head += 1;
-        // The literal whose polarity just became false is the
-        // negation of the assigned polarity.
-        let false_polarity = !entry.polarity;
-        let key = (entry.atom.clone(), false_polarity);
+        let id = state.trail_ids[head];
+        // The literal of this atom that just became false.
+        let false_code: u32 = (id << 1) | (!state.trail[head].polarity) as u32;
         // Take the list so it can be rebuilt in place: a clause whose
-        // watcher moves off this literal is dropped from it (the old
-        // code kept such stale entries forever and skipped them on every
-        // visit), and nothing is cloned.
-        let mut watched_clauses: Vec<usize> =
-            state.watches.get_mut(&key).map(std::mem::take).unwrap_or_default();
+        // watcher moves off this literal is dropped from it, and nothing
+        // is cloned.
+        let mut watched = std::mem::take(&mut state.dwatch[false_code as usize]);
         let mut kept: usize = 0;
         let mut i_w: usize = 0;
         macro_rules! finish_list {
             () => {{
                 // keep the unvisited tail (early return on conflict/expiry)
-                while i_w < watched_clauses.len() {
-                    watched_clauses[kept] = watched_clauses[i_w];
+                while i_w < watched.len() {
+                    watched[kept] = watched[i_w];
                     kept += 1;
                     i_w += 1;
                 }
-                watched_clauses.truncate(kept);
+                watched.truncate(kept);
                 // watchers added to this very literal while we iterated
-                // (a clause moving its watch onto it) are in the map entry
-                let added = state.watches.remove(&key).unwrap_or_default();
-                watched_clauses.extend(added);
-                state.watches.insert(key.clone(), watched_clauses);
+                // (a clause moving its watch onto it) landed in the slot
+                let added = std::mem::take(&mut state.dwatch[false_code as usize]);
+                watched.extend(added);
+                state.dwatch[false_code as usize] = watched;
             }};
         }
-        while i_w < watched_clauses.len() {
-            let clause_idx = watched_clauses[i_w];
+        while i_w < watched.len() {
+            let clause_idx = watched[i_w];
             i_w += 1;
             prop_steps = prop_steps.wrapping_add(1);
             if prop_steps.is_multiple_of(DEADLINE_CHECK_INTERVAL)
                 && expired(deadline)
             {
                 // this clause is not processed: keep it
-                watched_clauses[kept] = clause_idx; kept += 1;
+                watched[kept] = clause_idx; kept += 1;
                 finish_list!();
                 return PropagateOutcome::Expired;
             }
-            let clause = &clauses[clause_idx];
             let [w0, w1] = state.clause_watches[clause_idx];
-            // Identify which slot the now-falsified literal
-            // occupies in this clause.
-            let (false_slot, other_slot) = if w0 < clause.len()
-                && atom_key(&clause[w0]) == entry.atom
-                && clause[w0].polarity == false_polarity
-            {
+            let lits = &state.cl_lits[clause_idx];
+            // Which slot holds the now-falsified literal?
+            let (false_slot, other_slot) = if w0 < lits.len() && lits[w0] == false_code {
                 (0usize, w1)
-            } else if w1 < clause.len()
-                && atom_key(&clause[w1]) == entry.atom
-                && clause[w1].polarity == false_polarity
-            {
+            } else if w1 < lits.len() && lits[w1] == false_code {
                 (1usize, w0)
             } else {
                 // Stale entry (this clause's watcher already left the
@@ -1512,70 +1599,54 @@ fn propagate_two_watched(
                 continue;
             };
             let false_pos = state.clause_watches[clause_idx][false_slot];
-            // If the other watcher is already satisfied, the
-            // clause is fine; keep watching.
-            if let Some(other_lit) = clause.get(other_slot) {
-                let other_key = atom_key(other_lit);
-                if let Some(&v) = state.assign.get(&other_key) && v == other_lit.polarity {
-                    watched_clauses[kept] = clause_idx; kept += 1;
-                    continue;
-                }
-            }
-            // Look for a new watcher among the remaining
-            // literals (anything but `false_pos` and `other_slot`).
-            let mut new_watcher: Option<usize> = None;
-            for (i, lit) in clause.iter().enumerate() {
-                if i == false_pos || i == other_slot { continue; }
-                let lit_key = atom_key(lit);
-                match state.assign.get(&lit_key) {
-                    Some(&v) if v != lit.polarity => continue,
-                    _ => { new_watcher = Some(i); break; }
-                }
-            }
-            if let Some(new_pos) = new_watcher {
-                // Swap the falsified watcher with the new one.
-                state.clause_watches[clause_idx][false_slot] = new_pos;
-                let new_lit = &clause[new_pos];
-                state
-                    .watches
-                    .entry((atom_key(new_lit), new_lit.polarity))
-                    .or_default()
-                    .push(clause_idx);
+            let other_code = lits.get(other_slot).copied();
+            // If the other watcher is already satisfied, the clause is
+            // fine; keep watching.
+            if let Some(oc) = other_code && state.lit_true(oc) {
+                watched[kept] = clause_idx; kept += 1;
                 continue;
             }
-            // No replacement — the other watcher is either
-            // unassigned (propagate) or false (conflict).
-            let Some(other_lit) = clause.get(other_slot) else {
-                watched_clauses[kept] = clause_idx; kept += 1;
+            // Look for a new watcher among the remaining literals
+            // (anything but `false_pos` and `other_slot`).
+            let mut new_watcher: Option<usize> = None;
+            for (i, &c) in lits.iter().enumerate() {
+                if i == false_pos || i == other_slot { continue; }
+                if !state.lit_false(c) { new_watcher = Some(i); break; }
+            }
+            if let Some(new_pos) = new_watcher {
+                // Swap the falsified watcher with the new one (the clause
+                // leaves this list).
+                let nc = lits[new_pos];
+                state.clause_watches[clause_idx][false_slot] = new_pos;
+                state.dwatch[nc as usize].push(clause_idx);
+                continue;
+            }
+            // No replacement — the other watcher is either unassigned
+            // (propagate) or false (conflict).
+            let Some(oc) = other_code else {
+                watched[kept] = clause_idx; kept += 1;
                 finish_list!();
                 return PropagateOutcome::Conflict(clause_idx);
             };
-            let other_key = atom_key(other_lit);
-            match state.assign.get(&other_key).copied() {
-                Some(v) if v != other_lit.polarity => {
-                    watched_clauses[kept] = clause_idx; kept += 1;
-                    finish_list!();
-                    return PropagateOutcome::Conflict(clause_idx);
-                }
-                Some(_) => {
-                    // already satisfied — should have been
-                    // caught above, but guard for safety
-                    watched_clauses[kept] = clause_idx; kept += 1;
-                    continue;
-                }
-                None => {
-                    watched_clauses[kept] = clause_idx; kept += 1;
-                    state.push(
-                        other_key.clone(),
-                        other_lit.polarity,
-                        Reason::Propagated { clause_idx },
-                    );
-                    if clause_idx >= input_len {
-                        let li = clause_idx - input_len;
-                        if let Some(act) = state.learnt_activity.get_mut(li) {
-                            *act += clause_bump;
-                        }
-                    }
+            if state.lit_false(oc) {
+                watched[kept] = clause_idx; kept += 1;
+                finish_list!();
+                return PropagateOutcome::Conflict(clause_idx);
+            }
+            // other watcher unassigned: unit — propagate it.
+            watched[kept] = clause_idx; kept += 1;
+            let oid = oc >> 1;
+            let atom = state.var_terms[oid as usize].clone();
+            state.push_id(
+                oid,
+                atom,
+                oc & 1 == 1,
+                Reason::Propagated { clause_idx },
+            );
+            if clause_idx >= input_len {
+                let li = clause_idx - input_len;
+                if let Some(act) = state.learnt_activity.get_mut(li) {
+                    *act += clause_bump;
                 }
             }
         }
@@ -1820,23 +1891,28 @@ pub fn analyze_conflict_1uip_deadline(
     deadline: Option<std::time::Instant>,
 ) -> AnalyzeOutcome {
     use std::collections::HashSet;
+    type Seen = HashSet<Term, BuildHasherDefault<FxHasher>>;
     let current_level = state.decision_level;
-    let mut seen: HashSet<Term> = HashSet::new();
+    let dense = state.trail_ids.len() == state.trail.len();
+    let level_of = |key: &Term| -> Option<u32> {
+        if dense {
+            if let Some(&id) = state.var_ids.get(key) {
+                return if state.val[id as usize] != 0 { Some(state.lvl[id as usize]) } else { None };
+            }
+        }
+        state.trail.iter().find(|e| &e.atom == key).map(|e| e.decision_level)
+    };
+    let mut seen: Seen = Seen::default();
     let mut learnt: Vec<Lit> = Vec::new();
     let mut count_current_level: usize = 0;
 
-    let process_lit = |lit: &Lit, seen: &mut HashSet<Term>,
+    let process_lit = |lit: &Lit, seen: &mut Seen,
                            learnt: &mut Vec<Lit>,
                            count_current_level: &mut usize| {
         let key = atom_key(lit);
         if seen.contains(&key) { return; }
         seen.insert(key.clone());
-        let level = state
-            .trail
-            .iter()
-            .find(|e| e.atom == key)
-            .map(|e| e.decision_level)
-            .unwrap_or(0);
+        let level = level_of(&key).unwrap_or(0);
         if level == current_level {
             *count_current_level += 1;
         } else if level > 0 {
@@ -1912,13 +1988,7 @@ pub fn analyze_conflict_1uip_deadline(
 
     let backjump_level = learnt
         .iter()
-        .filter_map(|l| {
-            state
-                .trail
-                .iter()
-                .find(|e| e.atom == atom_key(l))
-                .map(|e| e.decision_level)
-        })
+        .filter_map(|l| level_of(&atom_key(l)))
         .filter(|&lvl| lvl < current_level)
         .max()
         .unwrap_or(0);
