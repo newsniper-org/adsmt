@@ -55,6 +55,42 @@
 //! kept around for the `cdcl_smoke` bench's A/B comparison.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// Multiply-rotate hasher (the FxHash scheme) for the propagator's
+/// hot maps.  Their keys are hash-consed [`Term`]s, which hash as a
+/// pointer, so SipHash's DoS resistance buys nothing and costs ~13%
+/// of a hard solve.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+const FX_K: u64 = 0x517c_c1b7_2722_0a95;
+
+impl FxHasher {
+    #[inline]
+    fn add(&mut self, x: u64) {
+        self.0 = (self.0.rotate_left(5) ^ x).wrapping_mul(FX_K);
+    }
+}
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.add(u64::from_le_bytes(c.try_into().expect("8 bytes")));
+        }
+        for &b in chunks.remainder() { self.add(b as u64); }
+    }
+    #[inline] fn write_u8(&mut self, i: u8) { self.add(i as u64); }
+    #[inline] fn write_u32(&mut self, i: u32) { self.add(i as u64); }
+    #[inline] fn write_u64(&mut self, i: u64) { self.add(i); }
+    #[inline] fn write_usize(&mut self, i: usize) { self.add(i as u64); }
+    #[inline] fn finish(&self) -> u64 { self.0 }
+}
+
+/// `HashMap` with [`FxHasher`].
+pub type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 use adsmt_core::Term;
 
@@ -303,7 +339,7 @@ pub struct CdclState {
     /// lookup.  The boundary to `CdclOutcome::Sat`'s
     /// `HashMap<String, bool>` model surface is converted exactly
     /// once at the verdict edge.
-    pub assign: HashMap<Term, bool>,
+    pub assign: FastMap<Term, bool>,
     pub decision_level: u32,
     /// v0.21 B.1 stage 3 — clauses learnt by
     /// [`analyze_conflict_1uip`]. Stored separately from the
@@ -317,7 +353,7 @@ pub struct CdclState {
     /// learnt clause; periodic [`Self::decay_activity`] scales
     /// every score by `decay_factor` so recently-active atoms
     /// dominate the decision order. See `VsidsHeap` (internal).
-    pub activity: HashMap<Term, f64>,
+    pub activity: FastMap<Term, f64>,
     /// v0.21 B.1 follow-up — phase saving. Records the polarity
     /// each atom most recently held on the trail before being
     /// popped by a backtrack. New decisions on the same atom
@@ -325,7 +361,7 @@ pub struct CdclState {
     /// to `true`. Classical CDCL "phase saving" heuristic —
     /// keeps locality across restarts and tends to flip many
     /// Unknown verdicts to Sat on satisfiable inputs.
-    pub saved_phase: HashMap<Term, bool>,
+    pub saved_phase: FastMap<Term, bool>,
     /// When set, [`Self::backtrack_to`] appends every atom it
     /// unassigns to [`Self::freed`] so the heap-based decision
     /// picker ([`VsidsHeap`]) can re-admit them.  Off by default;
@@ -366,7 +402,7 @@ pub struct CdclState {
     /// the propagator looks up `watches[(atom, true)]` (the
     /// clauses whose watched literal `Lit{atom, false}` just
     /// became false) and re-evaluates them.
-    pub watches: HashMap<(Term, bool), Vec<usize>>,
+    pub watches: FastMap<(Term, bool), Vec<usize>>,
     /// v1.0.0-rc.1 RC1.2 — head pointer into `trail` marking
     /// the next entry the propagator hasn't processed yet. The
     /// two-watched-literals propagator advances this monotonically;
@@ -566,7 +602,7 @@ pub enum CdclOutcome {
 /// bool>`).  Called exactly once at the Sat boundary so the
 /// inner CDCL hot path never pays a `Term::to_string()`
 /// allocation per propagation step.
-fn model_from_assign(assign: HashMap<Term, bool>) -> HashMap<String, bool> {
+fn model_from_assign(assign: FastMap<Term, bool>) -> HashMap<String, bool> {
     assign.into_iter().map(|(t, b)| (t.to_string(), b)).collect()
 }
 
@@ -1420,16 +1456,40 @@ fn propagate_two_watched(
         // negation of the assigned polarity.
         let false_polarity = !entry.polarity;
         let key = (entry.atom.clone(), false_polarity);
-        let watched_clauses: Vec<usize> = state
-            .watches
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
-        for clause_idx in watched_clauses {
+        // Take the list so it can be rebuilt in place: a clause whose
+        // watcher moves off this literal is dropped from it (the old
+        // code kept such stale entries forever and skipped them on every
+        // visit), and nothing is cloned.
+        let mut watched_clauses: Vec<usize> =
+            state.watches.get_mut(&key).map(std::mem::take).unwrap_or_default();
+        let mut kept: usize = 0;
+        let mut i_w: usize = 0;
+        macro_rules! finish_list {
+            () => {{
+                // keep the unvisited tail (early return on conflict/expiry)
+                while i_w < watched_clauses.len() {
+                    watched_clauses[kept] = watched_clauses[i_w];
+                    kept += 1;
+                    i_w += 1;
+                }
+                watched_clauses.truncate(kept);
+                // watchers added to this very literal while we iterated
+                // (a clause moving its watch onto it) are in the map entry
+                let added = state.watches.remove(&key).unwrap_or_default();
+                watched_clauses.extend(added);
+                state.watches.insert(key.clone(), watched_clauses);
+            }};
+        }
+        while i_w < watched_clauses.len() {
+            let clause_idx = watched_clauses[i_w];
+            i_w += 1;
             prop_steps = prop_steps.wrapping_add(1);
             if prop_steps.is_multiple_of(DEADLINE_CHECK_INTERVAL)
                 && expired(deadline)
             {
+                // this clause is not processed: keep it
+                watched_clauses[kept] = clause_idx; kept += 1;
+                finish_list!();
                 return PropagateOutcome::Expired;
             }
             let clause = &clauses[clause_idx];
@@ -1447,8 +1507,8 @@ fn propagate_two_watched(
             {
                 (1usize, w0)
             } else {
-                // Stale watcher entry from a previous swap that
-                // wasn't pruned from the map; skip.
+                // Stale entry (this clause's watcher already left the
+                // literal): drop it from the list.
                 continue;
             };
             let false_pos = state.clause_watches[clause_idx][false_slot];
@@ -1457,6 +1517,7 @@ fn propagate_two_watched(
             if let Some(other_lit) = clause.get(other_slot) {
                 let other_key = atom_key(other_lit);
                 if let Some(&v) = state.assign.get(&other_key) && v == other_lit.polarity {
+                    watched_clauses[kept] = clause_idx; kept += 1;
                     continue;
                 }
             }
@@ -1485,19 +1546,25 @@ fn propagate_two_watched(
             // No replacement — the other watcher is either
             // unassigned (propagate) or false (conflict).
             let Some(other_lit) = clause.get(other_slot) else {
+                watched_clauses[kept] = clause_idx; kept += 1;
+                finish_list!();
                 return PropagateOutcome::Conflict(clause_idx);
             };
             let other_key = atom_key(other_lit);
             match state.assign.get(&other_key).copied() {
                 Some(v) if v != other_lit.polarity => {
+                    watched_clauses[kept] = clause_idx; kept += 1;
+                    finish_list!();
                     return PropagateOutcome::Conflict(clause_idx);
                 }
                 Some(_) => {
                     // already satisfied — should have been
                     // caught above, but guard for safety
+                    watched_clauses[kept] = clause_idx; kept += 1;
                     continue;
                 }
                 None => {
+                    watched_clauses[kept] = clause_idx; kept += 1;
                     state.push(
                         other_key.clone(),
                         other_lit.polarity,
@@ -1512,6 +1579,7 @@ fn propagate_two_watched(
                 }
             }
         }
+        finish_list!();
     }
     PropagateOutcome::Fixpoint
 }
@@ -1976,7 +2044,7 @@ enum ClauseEval {
     Open,
 }
 
-fn evaluate_clause(clause: &Clause, assign: &HashMap<Term, bool>) -> ClauseEval {
+fn evaluate_clause(clause: &Clause, assign: &FastMap<Term, bool>) -> ClauseEval {
     let mut unassigned: Vec<&Lit> = Vec::new();
     for lit in clause {
         let key = atom_key(lit);
