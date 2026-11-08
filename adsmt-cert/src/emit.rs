@@ -254,7 +254,7 @@ fn emit_witness(w: &TheoryWitness, out: &mut String) {
         TheoryWitness::Arrays(a) => emit_arrays(a, out),
         TheoryWitness::Datatypes(d) => emit_datatypes(d, out),
         TheoryWitness::Polite(p) => emit_polite(p, out),
-        TheoryWitness::Drat { clauses, proof, dimacs_bytes, alethe_bytes, lfsc_bytes, coq_bytes } => {
+        TheoryWitness::Drat { clauses, proof, dimacs_bytes, alethe_bytes, lfsc_bytes, coq_bytes, .. } => {
             emit_drat(clauses, proof, dimacs_bytes, alethe_bytes, lfsc_bytes, coq_bytes, out)
         }
         TheoryWitness::Cas { class, proof_json } => {

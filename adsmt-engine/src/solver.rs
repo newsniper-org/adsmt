@@ -2554,11 +2554,8 @@ impl Solver {
                 theory_result
             }
             BoolResult::Unsat => {
-                let (encoded, drat) = if sat_lemmas.is_empty() {
-                    crate::proof_bridge::extract_drat(&clauses)
-                } else {
-                    crate::proof_bridge::extract_drat_with_lemmas(&clauses, &sat_lemmas)
-                };
+                let (encoded, drat, drat_atoms) =
+                    crate::proof_bridge::extract_drat_bound(&clauses, &sat_lemmas);
                 // Re-emit the same SAT-level unsat verdict in four
                 // byte formats via oxiz crates (P3, v0.15):
                 //   - DIMACS DRAT through oxiz-sat (feature `oxiz`)
@@ -2578,6 +2575,15 @@ impl Solver {
                     alethe_bytes,
                     lfsc_bytes,
                     coq_bytes,
+                    // With a baked prelude the clause set holds prelude clauses
+                    // that are not among the step's premises: leave the proof
+                    // unbound (counted as faith) rather than claim a binding the
+                    // checker would refute.
+                    atoms: if self.aot_prelude_clauses.is_empty() {
+                        drat_atoms
+                    } else {
+                        Vec::new()
+                    },
                 };
                 let lits_with_locs = self.attach_locs(&lits);
                 let cert = self.build_unsat_cert_opt_with_locs(&lits_with_locs, "SAT", witness);
@@ -3768,6 +3774,7 @@ mod tests {
                                 alethe_bytes,
                                 lfsc_bytes,
                                 coq_bytes,
+                                ..
                             } => {
                                 assert!(!clauses.is_empty(), "DRAT clauses must include input");
                                 assert!(!proof.steps.is_empty(), "DRAT proof must have ≥1 step");

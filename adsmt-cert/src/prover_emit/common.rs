@@ -768,6 +768,7 @@ mod tests {
                 alethe_bytes: vec![],
                 lfsc_bytes: vec![],
                 coq_bytes: vec![],
+                atoms: vec![],
             },
             parents: vec![],
         };
@@ -819,6 +820,7 @@ mod tests {
                 alethe_bytes: vec![],
                 lfsc_bytes: vec![],
                 coq_bytes: vec![],
+                atoms: Vec::new(),
             },
             parents: vec![],
         };
@@ -858,6 +860,7 @@ mod tests {
                     alethe_bytes: vec![],
                     lfsc_bytes: vec![],
                     coq_bytes: vec![],
+                    atoms: Vec::new(),
                 },
                 parents: vec![],
             },

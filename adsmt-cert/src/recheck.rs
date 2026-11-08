@@ -166,9 +166,27 @@ impl Certificate {
                         .map(|s| &s.result.concl)
                         .chain(step.result.hyps.iter())
                         .collect();
+                    let replayed = if let crate::witness::TheoryWitness::Drat {
+                        clauses,
+                        proof,
+                        atoms,
+                        ..
+                    } = witness
+                    {
+                        // A refutation proves ITS clause set unsat; what ties
+                        // it to this step is the binding checked here.
+                        let parent_seqs: Vec<&Sequent> = parents
+                            .iter()
+                            .filter_map(|p| self.steps.get(p.0 as usize))
+                            .map(|s| &s.result)
+                            .collect();
+                        check_drat(id, clauses, proof, atoms, &step.result, &parent_seqs)?
+                    } else {
+                        check_witness(id, witness, &step.result, &premises)?
+                    };
                     trusted.push((
                         step.id,
-                        match check_witness(id, witness, &step.result, &premises)? {
+                        match replayed {
                             true => TrustSource::TheoryVerified(name.clone()),
                             false => TrustSource::Theory(name.clone()),
                         },
@@ -199,6 +217,137 @@ impl Certificate {
 }
 
 
+/// Reserved prefix of the CNF translator's auxiliary atoms.
+const TSEITIN_PREFIX: &str = "!tseitin!";
+
+/// Does `t` mention a variable in the CNF translator's reserved namespace?
+fn mentions_reserved_atom(t: &Term) -> bool {
+    let mut seen: std::collections::HashSet<Term> = std::collections::HashSet::new();
+    let mut stack = vec![t.clone()];
+    while let Some(u) = stack.pop() {
+        if !seen.insert(u.clone()) { continue; }
+        match u.kind() {
+            adsmt_core::TermInner::Var(v) => {
+                if v.name.starts_with(TSEITIN_PREFIX) { return true; }
+            }
+            adsmt_core::TermInner::Const(_) => {}
+            adsmt_core::TermInner::App(f, a) => {
+                stack.push(f.clone());
+                stack.push(a.clone());
+            }
+            adsmt_core::TermInner::Lam(v, b) => {
+                if v.name.starts_with(TSEITIN_PREFIX) { return true; }
+                stack.push(b.clone());
+            }
+        }
+    }
+    false
+}
+
+/// Replay a SAT-level DRAT refutation and bind it to the step it sits in.
+///
+/// `Ok(true)`  — the proof is RUP-valid AND bound: the step concludes
+///               `false`, its hypotheses include every parent's, and every
+///               clause of the refuted set is a clause of the CNF of the
+///               step's premises, which this checker derives itself
+///               (`crate::cnf`).  The premises then entail the clause set,
+///               so a refutation of it is a refutation of them.
+/// `Ok(false)` — the proof is valid but UNBOUND (no `atoms`: written
+///               before the map existed, or the engine declined to bind
+///               it): it proves something about numbers, not about this
+///               step, so it counts as taken on faith.
+/// `Err`       — the proof fails, or `atoms` is present and the binding
+///               does not hold.
+fn check_drat(
+    id: u32,
+    clauses: &[Vec<i32>],
+    proof: &crate::drat::DratProof,
+    atoms: &[Term],
+    result: &Sequent,
+    parents: &[&Sequent],
+) -> Result<bool, RecheckError> {
+    let reject = |why: String| RecheckError::WitnessRejected { step: id, kind: "DRAT", why };
+    if !proof.verify(clauses) {
+        return Err(reject(
+            "the proof is not RUP-derivable from its clauses, or never reaches the \
+empty clause"
+                .into(),
+        ));
+    }
+    // No atom map and a clause that mentions a variable: nothing says what
+    // the variables are. (A clause set made only of empty clauses mentions
+    // none, so it is bound by the checks below like any other.)
+    if atoms.is_empty() && clauses.iter().any(|c| !c.is_empty()) {
+        return Ok(false);
+    }
+    if !is_false(&result.concl) {
+        return Err(reject(format!(
+            "a refutation proves `false`, but the step concludes `{}`",
+            result.concl
+        )));
+    }
+    for p in parents {
+        for h in &p.hyps {
+            if !result.hyps.iter().any(|x| x == h) {
+                return Err(reject(format!(
+                    "the step does not carry hypothesis `{h}` of one of its parents, \
+so its conclusion would hold under fewer assumptions than it was derived from"
+                )));
+            }
+        }
+    }
+    // The premises the CNF is derived from: the parents' conclusions and
+    // the step's own hypotheses.
+    let mut premises: Vec<&Term> = parents.iter().map(|p| &p.concl).collect();
+    premises.extend(result.hyps.iter());
+    for p in &premises {
+        if mentions_reserved_atom(p) {
+            return Err(reject(format!(
+                "a premise mentions the translator's reserved namespace `{TSEITIN_PREFIX}…`, \
+which would let the premises capture an auxiliary definition: `{p}`"
+            )));
+        }
+    }
+    // DIMACS variable v is atoms[v - 1]; two entries naming one atom would
+    // let a proof treat one atom as two.
+    let mut var_of: std::collections::HashMap<&Term, i32> = std::collections::HashMap::new();
+    for (i, a) in atoms.iter().enumerate() {
+        if var_of.insert(a, i as i32 + 1).is_some() {
+            return Err(reject(format!("the atom map lists `{a}` twice")));
+        }
+    }
+    // Expected clauses, as sorted sets of signed variable numbers. A literal
+    // over an atom the witness does not mention can match no witness clause.
+    let mut expected: std::collections::HashSet<Vec<i32>> = std::collections::HashSet::new();
+    for p in &premises {
+        let Some(cs) = crate::cnf::flatten_to_clauses(p) else { continue };
+        'clause: for c in cs {
+            let mut key: Vec<i32> = Vec::with_capacity(c.len());
+            for l in &c {
+                let Some(&v) = var_of.get(&l.atom) else { continue 'clause };
+                key.push(if l.polarity { v } else { -v });
+            }
+            key.sort_unstable();
+            key.dedup();
+            expected.insert(key);
+        }
+    }
+    for (i, c) in clauses.iter().enumerate() {
+        let mut key: Vec<i32> = c.clone();
+        key.sort_unstable();
+        key.dedup();
+        if key.iter().any(|&l| l == 0 || (l.unsigned_abs() as usize) > atoms.len()) {
+            return Err(reject(format!("clause #{i} uses a variable outside the atom map")));
+        }
+        if !expected.contains(&key) {
+            return Err(reject(format!(
+                "clause #{i} {c:?} is not a clause of the CNF of the step's premises"
+            )));
+        }
+    }
+    Ok(true)
+}
+
 /// Replay a theory witness, if this checker knows how.
 ///
 /// Returns `Ok(true)` when the witness was replayed and held, `Ok(false)`
@@ -214,21 +363,9 @@ fn check_witness(
 ) -> Result<bool, RecheckError> {
     use crate::witness::TheoryWitness as W;
     match witness {
-        // A DRAT proof is checkable on its own terms: every added clause
-        // must be RUP-derivable and the proof must reach the empty
-        // clause. The checker already existed; nothing called it.
-        W::Drat { clauses, proof, .. } => {
-            if proof.verify(clauses) {
-                Ok(true)
-            } else {
-                Err(RecheckError::WitnessRejected {
-                    step: id,
-                    kind: "DRAT",
-                    why: "the proof is not RUP-derivable from its clauses, or never \
-reaches the empty clause".into(),
-                })
-            }
-        }
+        // A DRAT refutation is replayed (and bound to its step) by
+        // [`check_drat`]; `recheck` never routes it here.
+        W::Drat { .. } => Ok(false),
         // A congruence chain computes its own conclusion, so it can be
         // checked against what the step claims.
         //
@@ -899,6 +1036,7 @@ mod tests {
                 alethe_bytes: Vec::new(),
                 lfsc_bytes: Vec::new(),
                 coq_bytes: Vec::new(),
+                atoms: Vec::new(),
             },
             Vec::new(),
             Vec::new(),
@@ -907,15 +1045,191 @@ mod tests {
         b.snapshot(id)
     }
 
-    /// The DRAT checker existed and nothing called it. Now a certificate
-    /// carrying a real refutation is re-verified rather than believed.
+    /// A refutation over bare numbers proves nothing about the step it sits
+    /// in: it is valid as DRAT but UNBOUND, so it counts as taken on faith.
     #[test]
-    fn a_valid_drat_witness_is_replayed_and_counted_as_verified() {
+    fn an_unbound_drat_witness_is_valid_but_counted_as_faith() {
         // (p) ∧ (¬p) is refuted by deriving the empty clause.
         let cert = drat_cert(vec![vec![1], vec![-1]], vec![vec![]]);
         let rep = cert.recheck().expect("must re-check");
+        assert_eq!(rep.verified_witnesses(), 0);
+        assert_eq!(rep.unverified_witnesses(), 1);
+    }
+
+    fn bool_var(n: &str) -> Term { Term::var(n, Type::bool_()) }
+    fn fls() -> Term { Term::const_("false", Type::bool_()) }
+
+    /// A SAT-level refutation of the assumptions `phis`, bound by `atoms`.
+    /// `tweak` may edit the theory step's fields to build a forgery.
+    fn bound_drat_cert(
+        phis: &[Term],
+        atoms: Vec<Term>,
+        clauses: Vec<Vec<i32>>,
+        steps: Vec<Vec<i32>>,
+        tweak: impl FnOnce(&mut Vec<StepId>, &mut Vec<Term>, &mut Term),
+    ) -> Certificate {
+        let mut b = CertBuilder::default();
+        let mut parents: Vec<StepId> = Vec::new();
+        let mut hyps: Vec<Term> = Vec::new();
+        for phi in phis {
+            let h = r::assume(&mut b, phi.clone()).unwrap();
+            parents.push(h.step);
+            hyps.push(phi.clone());
+        }
+        let mut concl = fls();
+        tweak(&mut parents, &mut hyps, &mut concl);
+        let mut proof = adsmt_parser_lfsc_drat::drat::DratProof::new();
+        for c in steps { proof.add(c); }
+        let id = r::theory(
+            &mut b,
+            "SAT",
+            TheoryWitness::Drat {
+                clauses,
+                proof,
+                dimacs_bytes: Vec::new(),
+                alethe_bytes: Vec::new(),
+                lfsc_bytes: Vec::new(),
+                coq_bytes: Vec::new(),
+                atoms,
+            },
+            parents,
+            hyps,
+            concl,
+        );
+        b.snapshot(id)
+    }
+
+    fn p_and_not_p(tweak: impl FnOnce(&mut Vec<StepId>, &mut Vec<Term>, &mut Term)) -> Certificate {
+        let p = bool_var("p");
+        let np = Term::mk_not(p.clone()).unwrap();
+        bound_drat_cert(&[p.clone(), np], vec![p], vec![vec![1], vec![-1]], vec![vec![]], tweak)
+    }
+
+    fn rejected(c: Certificate) -> bool {
+        matches!(c.recheck(), Err(RecheckError::WitnessRejected { kind: "DRAT", .. }))
+    }
+
+    #[test]
+    fn an_asserted_false_is_bound_without_any_atoms() {
+        // (assert false): the clause set is just the empty clause.
+        let f = fls();
+        let c = bound_drat_cert(&[f], vec![], vec![vec![]], vec![vec![]], |_, _, _| {});
+        let rep = c.recheck().expect("genuine cert");
+        assert_eq!(rep.verified_witnesses(), 1);
+        // ...and the same witness without the premise is not
+        let c2 = bound_drat_cert(&[], vec![], vec![vec![]], vec![vec![]], |_, _, _| {});
+        assert!(rejected(c2));
+    }
+
+    #[test]
+    fn a_bound_drat_witness_is_verified() {
+        let rep = p_and_not_p(|_, _, _| {}).recheck().expect("genuine cert");
         assert_eq!(rep.verified_witnesses(), 1);
         assert_eq!(rep.unverified_witnesses(), 0);
+    }
+
+    /// The four forgeries from the lukb design survey: each used to pass
+    /// because only the proof was checked, never what it was a proof OF.
+    #[test]
+    fn forged_drat_steps_are_rejected() {
+        // (a) drop one hypothesis from the step's result
+        assert!(rejected(p_and_not_p(|_, hyps, _| { hyps.pop(); })));
+        // (b) conclude something other than `false`
+        assert!(rejected(p_and_not_p(|_, _, concl| { *concl = bool_var("p"); })));
+        // (c) claim `|- false` with no hypotheses at all
+        assert!(rejected(p_and_not_p(|_, hyps, _| { hyps.clear(); })));
+        // (d) additionally cut the parents
+        assert!(rejected(p_and_not_p(|parents, hyps, _| { hyps.clear(); parents.clear(); })));
+    }
+
+    #[test]
+    fn a_clause_the_premises_do_not_give_is_rejected() {
+        let p = bool_var("p");
+        let q = bool_var("q");
+        // premises: only `p`; the witness refutes {q, ¬q}, which p does not entail
+        let c = bound_drat_cert(
+            &[p.clone()],
+            vec![q.clone(), p],
+            vec![vec![1], vec![-1]],
+            vec![vec![]],
+            |_, _, _| {},
+        );
+        assert!(rejected(c));
+    }
+
+    #[test]
+    fn a_premise_in_the_translators_reserved_namespace_is_rejected() {
+        // `!tseitin!…` atoms are the CNF translator's definitions; a premise
+        // that mentions one could capture a definition it does not entail.
+        let aux = bool_var("!tseitin!(and p q)");
+        let naux = Term::mk_not(aux.clone()).unwrap();
+        let c = bound_drat_cert(
+            &[aux.clone(), naux],
+            vec![aux],
+            vec![vec![1], vec![-1]],
+            vec![vec![]],
+            |_, _, _| {},
+        );
+        assert!(rejected(c));
+    }
+
+    #[test]
+    fn a_malformed_atom_map_is_rejected() {
+        let p = bool_var("p");
+        let np = Term::mk_not(p.clone()).unwrap();
+        // the same atom listed twice
+        let dup = bound_drat_cert(
+            &[p.clone(), np.clone()],
+            vec![p.clone(), p.clone()],
+            vec![vec![1], vec![-1]],
+            vec![vec![]],
+            |_, _, _| {},
+        );
+        assert!(rejected(dup));
+        // a clause over a variable the map does not cover
+        let far = bound_drat_cert(
+            &[p.clone(), np],
+            vec![p],
+            vec![vec![1], vec![-1], vec![2, -2]],
+            vec![vec![]],
+            |_, _, _| {},
+        );
+        assert!(rejected(far));
+    }
+
+    /// Tseitin definitions are re-derived by the checker, so a refutation
+    /// that needs them stays bound.
+    #[test]
+    fn a_refutation_through_tseitin_definitions_is_bound() {
+        // (p ∨ (q ∧ r)) ∧ ¬p ∧ ¬q  is unsat; the translator introduces an
+        // auxiliary atom for (q ∧ r).
+        let (p, q, r_) = (bool_var("p"), bool_var("q"), bool_var("r"));
+        let qr = Term::mk_and(q.clone(), r_.clone()).unwrap();
+        let top = Term::mk_or(p.clone(), qr).unwrap();
+        let np = Term::mk_not(p.clone()).unwrap();
+        let nq = Term::mk_not(q.clone()).unwrap();
+        let phis = [top, np, nq];
+        let cs = phis
+            .iter()
+            .flat_map(|t| crate::cnf::flatten_to_clauses(t).unwrap())
+            .collect::<Vec<_>>();
+        let mut atoms: Vec<Term> = Vec::new();
+        let mut enc: Vec<Vec<i32>> = Vec::new();
+        for c in &cs {
+            let mut row = Vec::new();
+            for l in c {
+                let i = match atoms.iter().position(|a| a == &l.atom) {
+                    Some(i) => i,
+                    None => { atoms.push(l.atom.clone()); atoms.len() - 1 }
+                };
+                row.push(if l.polarity { i as i32 + 1 } else { -(i as i32 + 1) });
+            }
+            enc.push(row);
+        }
+        // empty-clause-only proof is RUP here: p,q forced false -> aux false -> conflict
+        let cert = bound_drat_cert(&phis, atoms, enc, vec![vec![]], |_, _, _| {});
+        let rep = cert.recheck().expect("genuine Tseitin cert");
+        assert_eq!(rep.verified_witnesses(), 1, "aux definitions must re-derive");
     }
 
     #[test]

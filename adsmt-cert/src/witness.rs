@@ -50,6 +50,15 @@ pub enum TheoryWitness {
         alethe_bytes: Vec<u8>,
         lfsc_bytes: Vec<u8>,
         coq_bytes: Vec<u8>,
+        /// The atom behind each DIMACS variable: variable `i + 1` is
+        /// `atoms[i]`.  This is what binds the refutation to the step it
+        /// sits in: the checker re-derives the CNF of the step's premises
+        /// (`crate::cnf`) and requires every clause of `clauses`, read
+        /// through this map, to be one of those clauses.  Empty means
+        /// UNBOUND — a certificate written before the map existed — and
+        /// an unbound refutation is never counted as re-verified.
+        #[serde(default)]
+        atoms: Vec<Term>,
     },
     /// **CAS delegation** — an algebraic obligation discharged by an untrusted CAS
     /// backend and re-checked by `adsmt-cas::admit`. `class` is the obligation class

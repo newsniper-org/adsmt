@@ -162,6 +162,7 @@ mod tests {
             alethe_bytes: alethe,
             lfsc_bytes: lfsc,
             coq_bytes: coq,
+            atoms: Vec::new(),
         }
     }
 

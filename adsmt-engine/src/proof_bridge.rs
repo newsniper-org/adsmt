@@ -62,6 +62,60 @@ pub fn extract_drat_with_lemmas(
     (encoded, proof)
 }
 
+/// Encode `clauses` keyed by the atom [`Term`] itself (hash-consed, so two
+/// different atoms never share a variable the way two atoms with the same
+/// printed form could).  Returns the DIMACS clauses and the atom behind
+/// each variable: variable `i + 1` is `atoms[i]`.
+pub fn encode_with_atoms(clauses: &[Clause]) -> (Vec<Vec<i32>>, Vec<adsmt_core::Term>) {
+    let mut ids: HashMap<adsmt_core::Term, i32> = HashMap::new();
+    let mut atoms: Vec<adsmt_core::Term> = Vec::new();
+    let mut out = Vec::with_capacity(clauses.len());
+    for c in clauses {
+        let mut enc = Vec::with_capacity(c.len());
+        for lit in c {
+            let id = *ids.entry(lit.atom.clone()).or_insert_with(|| {
+                atoms.push(lit.atom.clone());
+                atoms.len() as i32
+            });
+            enc.push(if lit.polarity { id } else { -id });
+        }
+        out.push(enc);
+    }
+    (out, atoms)
+}
+
+/// The refutation of `clauses` — the learnt `lemmas` (empty: unit
+/// propagation alone) followed by the empty clause — together with the
+/// atom map that lets the certificate checker bind it to the step's
+/// premises.  A lemma over an atom that is not in `clauses` cannot occur
+/// (1-UIP resolves input clauses); if it did, the lemma log is dropped and
+/// the plain empty-clause proof is returned.
+pub fn extract_drat_bound(
+    clauses: &[Clause],
+    lemmas: &[Clause],
+) -> (Vec<Vec<i32>>, DratProof, Vec<adsmt_core::Term>) {
+    let (encoded, atoms) = encode_with_atoms(clauses);
+    let ids: HashMap<&adsmt_core::Term, i32> =
+        atoms.iter().enumerate().map(|(i, a)| (a, i as i32 + 1)).collect();
+    let mut proof = DratProof::new();
+    'lemmas: {
+        let mut lines: Vec<Vec<i32>> = Vec::with_capacity(lemmas.len());
+        for lemma in lemmas {
+            let mut enc = Vec::with_capacity(lemma.len());
+            for lit in lemma {
+                match ids.get(&lit.atom) {
+                    Some(&id) => enc.push(if lit.polarity { id } else { -id }),
+                    None => break 'lemmas,
+                }
+            }
+            lines.push(enc);
+        }
+        for l in lines { proof.add(l); }
+    }
+    proof.add(Vec::new());
+    (encoded, proof, atoms)
+}
+
 /// Encode clauses as DIMACS-style `Vec<Vec<i32>>`. Returns the
 /// encoding plus the atom-name → variable-id map.
 pub fn encode_clauses(clauses: &[Clause]) -> (Vec<Vec<i32>>, HashMap<String, i32>) {

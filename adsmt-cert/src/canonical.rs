@@ -1255,6 +1255,7 @@ mod tests {
             alethe_bytes: vec![],
             lfsc_bytes: vec![],
             coq_bytes: vec![],
+            atoms: vec![],
         };
         let json = serde_json::to_string(&w).unwrap();
         let back: TheoryWitness = serde_json::from_str(&json).unwrap();

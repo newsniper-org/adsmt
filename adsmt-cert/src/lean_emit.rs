@@ -856,6 +856,7 @@ fn witness_summary(w: &TheoryWitness) -> String {
             alethe_bytes,
             lfsc_bytes,
             coq_bytes,
+            ..
         } => format!(
             "Drat (clauses={}, steps={}, dimacs={}B, alethe={}B, lfsc={}B, coq={}B)",
             clauses.len(),
