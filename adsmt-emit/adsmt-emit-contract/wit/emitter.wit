@@ -1,4 +1,4 @@
-package adsmt:emitter@0.1.0;
+package adsmt:emitter@0.2.0;
 
 /// The language-neutral contract every adsmt emitter package
 /// implements. An emitter turns an adsmt proof certificate

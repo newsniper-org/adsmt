@@ -72,7 +72,7 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8], wire: Wire) -> Result<T, WireEr
 }
 
 /// Contract semantic version, matching the `@x.y.z` in [`WIT`].
-pub const CONTRACT_VERSION: &str = "0.1.0";
+pub const CONTRACT_VERSION: &str = "0.2.0";
 
 /// Metadata describing what an emitter produces. Mirrors the WIT
 /// `emitter-info` record.
