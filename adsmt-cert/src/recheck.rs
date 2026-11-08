@@ -181,6 +181,13 @@ impl Certificate {
                             .map(|s| &s.result)
                             .collect();
                         check_drat(id, clauses, proof, atoms, &step.result, &parent_seqs)?
+                    } else if let crate::witness::TheoryWitness::LinRes(w) = witness {
+                        let parent_seqs: Vec<&Sequent> = parents
+                            .iter()
+                            .filter_map(|p| self.steps.get(p.0 as usize))
+                            .map(|s| &s.result)
+                            .collect();
+                        check_linres(id, w, &step.result, &parent_seqs)?
                     } else {
                         check_witness(id, witness, &step.result, &premises)?
                     };
@@ -244,42 +251,18 @@ fn mentions_reserved_atom(t: &Term) -> bool {
     false
 }
 
-/// Replay a SAT-level DRAT refutation and bind it to the step it sits in.
-///
-/// `Ok(true)`  — the proof is RUP-valid AND bound: the step concludes
-///               `false`, its hypotheses include every parent's, and every
-///               clause of the refuted set is a clause of the CNF of the
-///               step's premises, which this checker derives itself
-///               (`crate::cnf`).  The premises then entail the clause set,
-///               so a refutation of it is a refutation of them.
-/// `Ok(false)` — the proof is valid but UNBOUND (no `atoms`: written
-///               before the map existed, or the engine declined to bind
-///               it): it proves something about numbers, not about this
-///               step, so it counts as taken on faith.
-/// `Err`       — the proof fails, or `atoms` is present and the binding
-///               does not hold.
-fn check_drat(
+/// What ties a SAT-level refutation (DRAT or Res(⊕)) to the step it sits in.
+/// On success returns the clauses of the CNF of the step's premises, as
+/// sorted sets of signed variable numbers (variable `v` is `atoms[v - 1]`).
+/// See [`check_drat`] for the argument.
+fn bind_sat_step(
     id: u32,
-    clauses: &[Vec<i32>],
-    proof: &crate::drat::DratProof,
+    kind: &'static str,
     atoms: &[Term],
     result: &Sequent,
     parents: &[&Sequent],
-) -> Result<bool, RecheckError> {
-    let reject = |why: String| RecheckError::WitnessRejected { step: id, kind: "DRAT", why };
-    if !proof.verify(clauses) {
-        return Err(reject(
-            "the proof is not RUP-derivable from its clauses, or never reaches the \
-empty clause"
-                .into(),
-        ));
-    }
-    // No atom map and a clause that mentions a variable: nothing says what
-    // the variables are. (A clause set made only of empty clauses mentions
-    // none, so it is bound by the checks below like any other.)
-    if atoms.is_empty() && clauses.iter().any(|c| !c.is_empty()) {
-        return Ok(false);
-    }
+) -> Result<std::collections::HashSet<Vec<i32>>, RecheckError> {
+    let reject = |why: String| RecheckError::WitnessRejected { step: id, kind, why };
     if !is_false(&result.concl) {
         return Err(reject(format!(
             "a refutation proves `false`, but the step concludes `{}`",
@@ -332,6 +315,46 @@ which would let the premises capture an auxiliary definition: `{p}`"
             expected.insert(key);
         }
     }
+    Ok(expected)
+}
+
+/// Replay a SAT-level DRAT refutation and bind it to the step it sits in.
+///
+/// `Ok(true)`  — the proof is RUP-valid AND bound: the step concludes
+///               `false`, its hypotheses include every parent's, and every
+///               clause of the refuted set is a clause of the CNF of the
+///               step's premises, which this checker derives itself
+///               (`crate::cnf`).  The premises then entail the clause set,
+///               so a refutation of it is a refutation of them.
+/// `Ok(false)` — the proof is valid but UNBOUND (no `atoms`: written
+///               before the map existed, or the engine declined to bind
+///               it): it proves something about numbers, not about this
+///               step, so it counts as taken on faith.
+/// `Err`       — the proof fails, or `atoms` is present and the binding
+///               does not hold.
+fn check_drat(
+    id: u32,
+    clauses: &[Vec<i32>],
+    proof: &crate::drat::DratProof,
+    atoms: &[Term],
+    result: &Sequent,
+    parents: &[&Sequent],
+) -> Result<bool, RecheckError> {
+    let reject = |why: String| RecheckError::WitnessRejected { step: id, kind: "DRAT", why };
+    if !proof.verify(clauses) {
+        return Err(reject(
+            "the proof is not RUP-derivable from its clauses, or never reaches the \
+empty clause"
+                .into(),
+        ));
+    }
+    // No atom map and a clause that mentions a variable: nothing says what
+    // the variables are. (A clause set made only of empty clauses mentions
+    // none, so it is bound by the checks below like any other.)
+    if atoms.is_empty() && clauses.iter().any(|c| !c.is_empty()) {
+        return Ok(false);
+    }
+    let expected = bind_sat_step(id, "DRAT", atoms, result, parents)?;
     for (i, c) in clauses.iter().enumerate() {
         let mut key: Vec<i32> = c.clone();
         key.sort_unstable();
@@ -346,6 +369,142 @@ which would let the premises capture an auxiliary definition: `{p}`"
         }
     }
     Ok(true)
+}
+
+/// Replay a Res(⊕) refutation (see [`crate::witness::LinResWitness`]) and
+/// bind it to the step it sits in.  The rules are the ones proved sound in
+/// `docs/design/CDCL_XOR_LINEAR_STEP.md` (Verus, `lin_derivation.rs`): every
+/// derived clause holds under any assignment that satisfies the input
+/// clauses, so reaching the empty clause refutes them. The inputs are
+/// clauses of the CNF of the step's premises, which this checker derives
+/// itself ([`bind_sat_step`]), so the premises entail them.
+///
+/// `Ok(true)` when the last derived clause is empty; `Err` otherwise — there
+/// is no "valid but unbound" reading: an equation over atoms nobody named
+/// says nothing about the step.
+fn check_linres(
+    id: u32,
+    w: &crate::witness::LinResWitness,
+    result: &Sequent,
+    parents: &[&Sequent],
+) -> Result<bool, RecheckError> {
+    let reject = |why: String| RecheckError::WitnessRejected { step: id, kind: "LinRes", why };
+    let expected = bind_sat_step(id, "LinRes", &w.atoms, result, parents)?;
+    let derived = linres_lines(id, w, &expected)?;
+    match derived.last() {
+        Some(last) if last.is_empty() => Ok(true),
+        Some(_) => Err(reject("the last derived clause is not empty".into())),
+        None => Err(reject("the refutation has no lines".into())),
+    }
+}
+
+/// Replay the lines of a Res(⊕) refutation against the clauses of the
+/// premises' CNF (`expected`), returning the clause each line derives.
+fn linres_lines(
+    id: u32,
+    w: &crate::witness::LinResWitness,
+    expected: &std::collections::HashSet<Vec<i32>>,
+) -> Result<Vec<Vec<crate::witness::LinEq>>, RecheckError> {
+    use crate::witness::{LinEq, LinStep};
+    let reject = |why: String| RecheckError::WitnessRejected { step: id, kind: "LinRes", why };
+    let n = w.atoms.len() as u32;
+    let key_of = |lits: &[i32]| -> Vec<i32> {
+        let mut k = lits.to_vec();
+        k.sort_unstable();
+        k.dedup();
+        k
+    };
+    let mut derived: Vec<Vec<LinEq>> = Vec::with_capacity(w.steps.len());
+    for (ln, st) in w.steps.iter().enumerate() {
+        let clause: Vec<LinEq> = match st {
+            LinStep::Cnf(c) => {
+                if c.iter().any(|&l| l == 0 || l.unsigned_abs() > n) {
+                    return Err(reject(format!("line {ln}: a literal outside the atom map")));
+                }
+                if !expected.contains(&key_of(c)) {
+                    return Err(reject(format!(
+                        "line {ln}: clause {c:?} is not a clause of the CNF of the step's premises"
+                    )));
+                }
+                c.iter()
+                    .map(|&l| LinEq { vars: vec![l.unsigned_abs()], rhs: l > 0 })
+                    .collect()
+            }
+            LinStep::Xor { vars, rhs } => {
+                let k = vars.len();
+                if k == 0 || k > 12 {
+                    return Err(reject(format!("line {ln}: an xor over {k} variables is not accepted")));
+                }
+                if vars.windows(2).any(|p| p[0] >= p[1]) || vars[0] == 0 || vars[k - 1] > n {
+                    return Err(reject(format!(
+                        "line {ln}: xor variables must be strictly increasing and inside the atom map"
+                    )));
+                }
+                // every assignment of the wrong parity must be forbidden by a
+                // clause of the premises' CNF
+                for mask in 0u32..(1u32 << k) {
+                    if ((mask.count_ones() & 1) == 1) == *rhs { continue; }
+                    let forbid: Vec<i32> = (0..k)
+                        .map(|b| {
+                            let v = vars[b] as i32;
+                            if (mask >> b) & 1 == 1 { -v } else { v }
+                        })
+                        .collect();
+                    if !expected.contains(&key_of(&forbid)) {
+                        return Err(reject(format!(
+                            "line {ln}: the xor is not backed by the premises: the clause \
+{forbid:?} that rules out one wrong-parity assignment is not in their CNF"
+                        )));
+                    }
+                }
+                vec![LinEq { vars: vars.clone(), rhs: *rhs }]
+            }
+            LinStep::Res { i, pi, j, pj } => {
+                let (i, pi, j, pj) = (*i as usize, *pi as usize, *j as usize, *pj as usize);
+                if i >= ln || j >= ln {
+                    return Err(reject(format!("line {ln}: resolves on a line that is not earlier")));
+                }
+                let (ci, cj) = (&derived[i], &derived[j]);
+                if pi >= ci.len() || pj >= cj.len() {
+                    return Err(reject(format!("line {ln}: pivot equation out of range")));
+                }
+                let (ei, ej) = (&ci[pi], &cj[pj]);
+                // sum of the pivots: symmetric difference of the variable sets
+                let mut sum: Vec<u32> = Vec::with_capacity(ei.vars.len() + ej.vars.len());
+                let (mut a, mut b) = (0usize, 0usize);
+                while a < ei.vars.len() || b < ej.vars.len() {
+                    match (ei.vars.get(a), ej.vars.get(b)) {
+                        (Some(x), Some(y)) if x == y => { a += 1; b += 1; }
+                        (Some(x), Some(y)) if x < y => { sum.push(*x); a += 1; }
+                        (Some(_), Some(y)) => { sum.push(*y); b += 1; }
+                        (Some(x), None) => { sum.push(*x); a += 1; }
+                        (None, Some(y)) => { sum.push(*y); b += 1; }
+                        (None, None) => break,
+                    }
+                }
+                let mut out: Vec<LinEq> = Vec::with_capacity(ci.len() + cj.len() - 1);
+                out.extend(ci.iter().enumerate().filter(|(k, _)| *k != pi).map(|(_, e)| e.clone()));
+                out.extend(cj.iter().enumerate().filter(|(k, _)| *k != pj).map(|(_, e)| e.clone()));
+                out.push(LinEq { vars: sum, rhs: ei.rhs ^ ej.rhs });
+                out
+            }
+            LinStep::Drop { i, p } => {
+                let (i, p) = (*i as usize, *p as usize);
+                if i >= ln {
+                    return Err(reject(format!("line {ln}: drops from a line that is not earlier")));
+                }
+                let c = &derived[i];
+                if p >= c.len() || !c[p].vars.is_empty() || !c[p].rhs {
+                    return Err(reject(format!(
+                        "line {ln}: only an equation `0 = 1` can be dropped"
+                    )));
+                }
+                c.iter().enumerate().filter(|(k, _)| *k != p).map(|(_, e)| e.clone()).collect()
+            }
+        };
+        derived.push(clause);
+    }
+    Ok(derived)
 }
 
 /// Replay a theory witness, if this checker knows how.
@@ -365,7 +524,7 @@ fn check_witness(
     match witness {
         // A DRAT refutation is replayed (and bound to its step) by
         // [`check_drat`]; `recheck` never routes it here.
-        W::Drat { .. } => Ok(false),
+        W::Drat { .. } | W::LinRes(_) => Ok(false),
         // A congruence chain computes its own conclusion, so it can be
         // checked against what the step claims.
         //
@@ -1230,6 +1389,288 @@ mod tests {
         let cert = bound_drat_cert(&phis, atoms, enc, vec![vec![]], |_, _, _| {});
         let rep = cert.recheck().expect("genuine Tseitin cert");
         assert_eq!(rep.verified_witnesses(), 1, "aux definitions must re-derive");
+    }
+
+    // ---- Res(⊕) ----
+
+    use crate::witness::{LinResWitness, LinStep};
+
+    fn linres_cert(
+        phis: &[Term],
+        atoms: Vec<Term>,
+        steps: Vec<LinStep>,
+        tweak: impl FnOnce(&mut Vec<StepId>, &mut Vec<Term>, &mut Term),
+    ) -> Certificate {
+        let mut b = CertBuilder::default();
+        let mut parents: Vec<StepId> = Vec::new();
+        let mut hyps: Vec<Term> = Vec::new();
+        for phi in phis {
+            let h = r::assume(&mut b, phi.clone()).unwrap();
+            parents.push(h.step);
+            hyps.push(phi.clone());
+        }
+        let mut concl = fls();
+        tweak(&mut parents, &mut hyps, &mut concl);
+        let id = r::theory(
+            &mut b,
+            "SAT",
+            TheoryWitness::LinRes(LinResWitness { atoms, steps }),
+            parents,
+            hyps,
+            concl,
+        );
+        b.snapshot(id)
+    }
+
+    fn lin_rejected(c: Certificate) -> bool {
+        matches!(c.recheck(), Err(RecheckError::WitnessRejected { kind: "LinRes", .. }))
+    }
+
+    /// The two clauses that say `x ⊕ y = rhs`, written as `or` premises so the
+    /// gadget is literally in their CNF.
+    fn xor_premises(x: &Term, y: &Term, rhs: bool) -> Vec<Term> {
+        let nx = Term::mk_not(x.clone()).unwrap();
+        let ny = Term::mk_not(y.clone()).unwrap();
+        if rhs {
+            // x ⊕ y = 1 forbids (0,0) and (1,1)
+            vec![Term::mk_or(x.clone(), y.clone()).unwrap(), Term::mk_or(nx, ny).unwrap()]
+        } else {
+            // x ⊕ y = 0 forbids (1,0) and (0,1)
+            vec![Term::mk_or(nx, y.clone()).unwrap(), Term::mk_or(x.clone(), ny).unwrap()]
+        }
+    }
+
+    fn triangle_premises() -> (Vec<Term>, Vec<Term>) {
+        let (a, b, c) = (bool_var("a"), bool_var("b"), bool_var("c"));
+        let mut phis = xor_premises(&a, &b, false);
+        phis.extend(xor_premises(&b, &c, false));
+        phis.extend(xor_premises(&a, &c, true));
+        (phis, vec![a, b, c])
+    }
+
+    /// a = b, b = c, a != c: three parity facts that sum to 0 = 1.
+    fn xor_triangle(steps: Vec<LinStep>) -> Certificate {
+        let (phis, atoms) = triangle_premises();
+        linres_cert(&phis, atoms, steps, |_, _, _| {})
+    }
+
+    fn triangle_steps() -> Vec<LinStep> {
+        vec![
+            LinStep::Xor { vars: vec![1, 2], rhs: false },     // 0: a ⊕ b = 0
+            LinStep::Xor { vars: vec![2, 3], rhs: false },     // 1: b ⊕ c = 0
+            LinStep::Xor { vars: vec![1, 3], rhs: true },      // 2: a ⊕ c = 1
+            LinStep::Res { i: 0, pi: 0, j: 1, pj: 0 },         // 3: a ⊕ c = 0
+            LinStep::Res { i: 3, pi: 0, j: 2, pj: 0 },         // 4: 0 = 1
+            LinStep::Drop { i: 4, p: 0 },                      // 5: the empty clause
+        ]
+    }
+
+    #[test]
+    fn a_parity_refutation_bound_to_its_premises_is_verified() {
+        let rep = xor_triangle(triangle_steps()).recheck().expect("genuine Res(+) cert");
+        assert_eq!(rep.verified_witnesses(), 1);
+        assert_eq!(rep.unverified_witnesses(), 0);
+    }
+
+    #[test]
+    fn a_unit_resolution_is_the_boolean_special_case() {
+        // p and ¬p: Cnf [1] is `p = 1`, Cnf [-1] is `p = 0`; their sum is 0 = 1.
+        let p = bool_var("p");
+        let np = Term::mk_not(p.clone()).unwrap();
+        let c = linres_cert(
+            &[p.clone(), np],
+            vec![p],
+            vec![
+                LinStep::Cnf(vec![1]),
+                LinStep::Cnf(vec![-1]),
+                LinStep::Res { i: 0, pi: 0, j: 1, pj: 0 },
+                LinStep::Drop { i: 2, p: 0 },
+            ],
+            |_, _, _| {},
+        );
+        assert_eq!(c.recheck().expect("genuine").verified_witnesses(), 1);
+    }
+
+    #[test]
+    fn forged_res_xor_certificates_are_rejected() {
+        let base = triangle_steps();
+        // an xor the premises do not back: a ⊕ b = 1 (they say 0)
+        let mut s = base.clone();
+        s[0] = LinStep::Xor { vars: vec![1, 2], rhs: true };
+        assert!(lin_rejected(xor_triangle(s)));
+        // resolve with the wrong pivot index
+        let mut s = base.clone();
+        s[3] = LinStep::Res { i: 0, pi: 1, j: 1, pj: 0 };
+        assert!(lin_rejected(xor_triangle(s)));
+        // drop an equation that is not 0 = 1 (line 3 is a ⊕ c = 0)
+        let mut s = base.clone();
+        s[4] = LinStep::Drop { i: 3, p: 0 };
+        assert!(lin_rejected(xor_triangle(s)));
+        // stop before the empty clause
+        let mut s = base.clone();
+        s.pop();
+        assert!(lin_rejected(xor_triangle(s)));
+        // resolve on a line that is not earlier
+        let mut s = base.clone();
+        s[3] = LinStep::Res { i: 0, pi: 0, j: 3, pj: 0 };
+        assert!(lin_rejected(xor_triangle(s)));
+        // an unsorted / out-of-map xor
+        let mut s = base.clone();
+        s[0] = LinStep::Xor { vars: vec![2, 1], rhs: false };
+        assert!(lin_rejected(xor_triangle(s)));
+        let mut s = base.clone();
+        s[0] = LinStep::Xor { vars: vec![1, 9], rhs: false };
+        assert!(lin_rejected(xor_triangle(s)));
+        // no lines at all
+        assert!(lin_rejected(xor_triangle(vec![])));
+    }
+
+    #[test]
+    fn a_res_xor_step_is_bound_like_a_drat_step() {
+        let (phis, atoms) = triangle_premises();
+        // hypothesis dropped / none / no parents and no hyps / wrong conclusion
+        let t = |f: &dyn Fn(&mut Vec<StepId>, &mut Vec<Term>, &mut Term)| {
+            let mut parents = Vec::new();
+            let mut hyps = Vec::new();
+            let mut concl = fls();
+            // rebuild with the tweak applied in place
+            let mut b2 = CertBuilder::default();
+            for phi in &phis {
+                let h = r::assume(&mut b2, phi.clone()).unwrap();
+                parents.push(h.step);
+                hyps.push(phi.clone());
+            }
+            f(&mut parents, &mut hyps, &mut concl);
+            let id = r::theory(
+                &mut b2,
+                "SAT",
+                TheoryWitness::LinRes(LinResWitness { atoms: atoms.clone(), steps: triangle_steps() }),
+                parents,
+                hyps,
+                concl,
+            );
+            b2.snapshot(id)
+        };
+        assert!(lin_rejected(t(&|_, h, _| { h.pop(); })));
+        assert!(lin_rejected(t(&|_, h, _| { h.clear(); })));
+        assert!(lin_rejected(t(&|p, h, _| { h.clear(); p.clear(); })));
+        assert!(lin_rejected(t(&|_, _, c| { *c = bool_var("a"); })));
+        assert!(!lin_rejected(t(&|_, _, _| {})));
+    }
+
+    #[test]
+    fn serde_roundtrips_a_res_xor_witness() {
+        let w = TheoryWitness::LinRes(LinResWitness {
+            atoms: vec![bool_var("p"), bool_var("q")],
+            steps: triangle_steps(),
+        });
+        let j = serde_json::to_string(&w).unwrap();
+        let back: TheoryWitness = serde_json::from_str(&j).unwrap();
+        assert_eq!(w, back);
+    }
+
+    /// The checker's rules are the ones proved sound in Verus; this checks the
+    /// Rust against them on random inputs: every clause a random (accepted)
+    /// derivation yields holds under every assignment that satisfies the
+    /// input clauses.
+    #[test]
+    fn random_res_xor_derivations_are_semantically_sound() {
+        fn lcg(s: &mut u64) -> u64 {
+            *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *s >> 33
+        }
+        let mut seed = 2024u64;
+        let mut accepted_lines = 0usize;
+        for _ in 0..300 {
+            let n = 3 + (lcg(&mut seed) % 4) as usize; // 3..6 variables
+            let atoms: Vec<Term> = (0..n).map(|i| bool_var(&format!("v{i}"))).collect();
+            let m = 3 + (lcg(&mut seed) % 6) as usize;
+            let mut clauses: Vec<Vec<i32>> = Vec::new();
+            let mut phis: Vec<Term> = Vec::new();
+            for _ in 0..m {
+                let w = 1 + (lcg(&mut seed) % 3) as usize;
+                let mut c: Vec<i32> = Vec::new();
+                let mut t: Option<Term> = None;
+                for _ in 0..w {
+                    let v = (lcg(&mut seed) % n as u64) as usize;
+                    let pol = lcg(&mut seed) % 2 == 0;
+                    c.push(if pol { v as i32 + 1 } else { -(v as i32 + 1) });
+                    let lit = if pol { atoms[v].clone() } else { Term::mk_not(atoms[v].clone()).unwrap() };
+                    t = Some(match t { None => lit, Some(x) => Term::mk_or(x, lit).unwrap() });
+                }
+                clauses.push(c);
+                phis.push(t.unwrap());
+            }
+            // expected = CNF of the premises, in signed-variable form
+            let var_of: std::collections::HashMap<&Term, i32> =
+                atoms.iter().enumerate().map(|(i, a)| (a, i as i32 + 1)).collect();
+            let mut expected = std::collections::HashSet::new();
+            for p in &phis {
+                for cl in crate::cnf::flatten_to_clauses(p).unwrap() {
+                    let mut k: Vec<i32> = cl
+                        .iter()
+                        .map(|l| { let v = var_of[&l.atom]; if l.polarity { v } else { -v } })
+                        .collect();
+                    k.sort_unstable();
+                    k.dedup();
+                    expected.insert(k);
+                }
+            }
+            // random steps; keep those the checker accepts
+            let mut steps: Vec<LinStep> = clauses.iter().map(|c| LinStep::Cnf(c.clone())).collect();
+            let mut lens: Vec<usize> = clauses.iter().map(|c| c.len()).collect();
+            for _ in 0..25 {
+                let ln = steps.len();
+                let st = match lcg(&mut seed) % 5 {
+                    0 | 1 | 2 => {
+                        let i = (lcg(&mut seed) % ln as u64) as usize;
+                        let j = (lcg(&mut seed) % ln as u64) as usize;
+                        if lens[i] == 0 || lens[j] == 0 { continue; }
+                        LinStep::Res {
+                            i: i as u32,
+                            pi: (lcg(&mut seed) % lens[i] as u64) as u32,
+                            j: j as u32,
+                            pj: (lcg(&mut seed) % lens[j] as u64) as u32,
+                        }
+                    }
+                    3 => {
+                        let i = (lcg(&mut seed) % ln as u64) as usize;
+                        if lens[i] == 0 { continue; }
+                        LinStep::Drop { i: i as u32, p: (lcg(&mut seed) % lens[i] as u64) as u32 }
+                    }
+                    _ => {
+                        let k = 1 + (lcg(&mut seed) % 2) as usize;
+                        let mut vs: Vec<u32> = (0..k).map(|_| 1 + (lcg(&mut seed) % n as u64) as u32).collect();
+                        vs.sort_unstable();
+                        vs.dedup();
+                        LinStep::Xor { vars: vs, rhs: lcg(&mut seed) % 2 == 0 }
+                    }
+                };
+                let mut trial = steps.clone();
+                trial.push(st.clone());
+                let w = LinResWitness { atoms: atoms.clone(), steps: trial };
+                if let Ok(lines) = linres_lines(0, &w, &expected) {
+                    lens.push(lines.last().unwrap().len());
+                    steps.push(st);
+                }
+            }
+            let w = LinResWitness { atoms: atoms.clone(), steps };
+            let lines = linres_lines(0, &w, &expected).expect("accepted prefix replays");
+            accepted_lines += lines.len();
+            // semantics: every assignment satisfying the input clauses satisfies every derived clause
+            for asg in 0u32..(1u32 << n) {
+                let val = |v: u32| (asg >> (v - 1)) & 1 == 1;
+                let inputs_hold = expected.iter().all(|c| c.iter().any(|&l| val(l.unsigned_abs()) == (l > 0)));
+                if !inputs_hold { continue; }
+                for (k, cl) in lines.iter().enumerate() {
+                    let holds = cl.iter().any(|e| {
+                        e.vars.iter().fold(false, |acc, &v| acc ^ val(v)) == e.rhs
+                    });
+                    assert!(holds, "line {k} of {:?} fails under {asg:b}", w.steps);
+                }
+            }
+        }
+        assert!(accepted_lines > 2000, "the generator must exercise the rules ({accepted_lines})");
     }
 
     #[test]

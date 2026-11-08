@@ -257,6 +257,31 @@ fn emit_witness(w: &TheoryWitness, out: &mut String) {
         TheoryWitness::Drat { clauses, proof, dimacs_bytes, alethe_bytes, lfsc_bytes, coq_bytes, .. } => {
             emit_drat(clauses, proof, dimacs_bytes, alethe_bytes, lfsc_bytes, coq_bytes, out)
         }
+        TheoryWitness::LinRes(w) => {
+            // `(linres (atoms N) (steps (cnf l …) (xor rhs v …) (res i pi j pj) (drop i p) …))`
+            write!(out, "(linres (atoms {}) (steps", w.atoms.len()).unwrap();
+            for st in &w.steps {
+                match st {
+                    crate::witness::LinStep::Cnf(c) => {
+                        out.push_str(" (cnf");
+                        for l in c { write!(out, " {l}").unwrap(); }
+                        out.push(')');
+                    }
+                    crate::witness::LinStep::Xor { vars, rhs } => {
+                        write!(out, " (xor {}", u8::from(*rhs)).unwrap();
+                        for v in vars { write!(out, " {v}").unwrap(); }
+                        out.push(')');
+                    }
+                    crate::witness::LinStep::Res { i, pi, j, pj } => {
+                        write!(out, " (res {i} {pi} {j} {pj})").unwrap();
+                    }
+                    crate::witness::LinStep::Drop { i, p } => {
+                        write!(out, " (drop {i} {p})").unwrap();
+                    }
+                }
+            }
+            out.push_str("))");
+        }
         TheoryWitness::Cas { class, proof_json } => {
             // `(cas <class> <serialized CasProof>)` — the JSON payload is quoted as a
             // string so it round-trips through the S-expr text; offline re-check

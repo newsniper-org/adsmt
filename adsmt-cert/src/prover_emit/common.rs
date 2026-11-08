@@ -135,6 +135,7 @@ pub fn witness_summary(w: &TheoryWitness) -> String {
             clauses.len(),
             proof.steps.len(),
         ),
+        TheoryWitness::LinRes(w) => format!("LinRes (steps={})", w.steps.len()),
         TheoryWitness::Cas { class, .. } => format!("Cas({class})"),
         TheoryWitness::Opaque { kind, .. } => format!("Opaque({kind})"),
     }
@@ -244,7 +245,7 @@ pub fn direct_required_for_body(body: &StepBody) -> ClassicalSet {
 /// dispatch logic above.
 fn required_for_witness(witness: &TheoryWitness) -> ClassicalSet {
     match witness {
-        TheoryWitness::Drat { .. } => ClassicalSet::from_iter(
+        TheoryWitness::Drat { .. } | TheoryWitness::LinRes(_) => ClassicalSet::from_iter(
             [ClassicalModuleFamily::Propositional],
         ),
         TheoryWitness::Euf(_)

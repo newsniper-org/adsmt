@@ -60,6 +60,12 @@ pub enum TheoryWitness {
         #[serde(default)]
         atoms: Vec<Term>,
     },
+    /// A refutation in Res(⊕) — resolution over disjunctions of parity
+    /// equations (CDCL(⊕), Beame–Sun arXiv 2605.15002) — bound to the
+    /// step's premises by an atom map exactly as [`TheoryWitness::Drat`] is.
+    /// Replayed by `recheck`; the rules are the ones proved sound in
+    /// `docs/design/CDCL_XOR_LINEAR_STEP.md` (`lin_derivation.rs`, Verus).
+    LinRes(LinResWitness),
     /// **CAS delegation** — an algebraic obligation discharged by an untrusted CAS
     /// backend and re-checked by `adsmt-cas::admit`. `class` is the obligation class
     /// (`"ideal-membership"` / `"factorization"` / `"compositeness"` / `"primality"`
@@ -203,4 +209,38 @@ mod tests {
         let p = PoliteWitness { sort: "Int".into(), upper_bound: None };
         assert!(p.upper_bound.is_none());
     }
+}
+
+/// A parity equation `x_{v1} ⊕ … ⊕ x_{vk} = rhs` over DIMACS-numbered atoms.
+/// `vars` is strictly increasing (a set); a single variable with `rhs = true`
+/// is the literal `x`, with `rhs = false` the literal `¬x`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LinEq {
+    pub vars: Vec<u32>,
+    pub rhs: bool,
+}
+
+/// One line of a Res(⊕) refutation; each yields a clause (a disjunction of
+/// [`LinEq`]) appended to the derived list. `i`, `j` index earlier lines.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LinStep {
+    /// A clause of the CNF of the premises (signed DIMACS literals).
+    Cnf(Vec<i32>),
+    /// The parity constraint `⊕ vars = rhs`, justified because every one of
+    /// the `2^(k-1)` clauses that forbid the wrong-parity assignments is a
+    /// clause of the CNF of the premises (`k = vars.len()`, at most 12).
+    Xor { vars: Vec<u32>, rhs: bool },
+    /// Pivot resolution: drop equation `pi` of line `i` and `pj` of line
+    /// `j`, add their sum (symmetric difference of vars, xor of rhs).
+    Res { i: u32, pi: u32, j: u32, pj: u32 },
+    /// Drop equation `p` of line `i`, which has no variables and `rhs = true`
+    /// (`0 = 1`, false under every assignment).
+    Drop { i: u32, p: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LinResWitness {
+    /// Variable `i + 1` is `atoms[i]`.
+    pub atoms: Vec<Term>,
+    pub steps: Vec<LinStep>,
 }

@@ -866,6 +866,7 @@ fn witness_summary(w: &TheoryWitness) -> String {
             lfsc_bytes.len(),
             coq_bytes.len(),
         ),
+        TheoryWitness::LinRes(w) => format!("LinRes (steps={})", w.steps.len()),
         TheoryWitness::Cas { class, .. } => format!("Cas({class})"),
         TheoryWitness::Opaque { kind, .. } => format!("Opaque({kind})"),
     }
