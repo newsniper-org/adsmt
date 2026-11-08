@@ -124,6 +124,34 @@ mod tests {
     }
 
     #[test]
+    fn seeded_solve_lemma_proof_verifies() {
+        // The AOT seed is a level-0 unit-propagation fixpoint of the input;
+        // the learnt clauses must stay RUP against the clauses alone.
+        use crate::cdcl::{CdclState, Reason, TrailEntry};
+        let t = |n: &str| Term::var(n, adsmt_core::Type::bool_());
+        let (a, b, r, s_) = (t("sa"), t("sb"), t("sr"), t("ss"));
+        let cs = vec![
+            vec![Lit::pos(a.clone())],
+            vec![Lit::neg(b.clone())],
+            vec![Lit::pos(r.clone()), Lit::pos(s_.clone())],
+            vec![Lit::neg(r.clone()), Lit::pos(s_.clone())],
+            vec![Lit::pos(r.clone()), Lit::neg(s_.clone())],
+            vec![Lit::neg(r.clone()), Lit::neg(s_.clone())],
+        ];
+        let mut seed = CdclState::default();
+        for (atom, pol) in [(a, true), (b, false)] {
+            seed.assign.insert(atom.clone(), pol);
+            seed.trail.push(TrailEntry { atom, polarity: pol, decision_level: 0, reason: Reason::Decision });
+        }
+        let mut lemmas = Vec::new();
+        let res = crate::cdcl::cdcl_with_restarts_deadline_logged(&cs, 8, 4, None, Some(seed), &mut lemmas);
+        assert_eq!(res, crate::bool_solver::BoolResult::Unsat);
+        assert!(!lemmas.is_empty());
+        let (enc, proof) = extract_drat_with_lemmas(&cs, &lemmas);
+        assert!(proof.verify(&enc), "seeded lemma proof must verify; lemmas={lemmas:?}");
+    }
+
+    #[test]
     fn drat_rejects_satisfiable_input() {
         // Single clause `(p)` is satisfiable; emitting empty clause
         // as RUP should fail because unit prop derives `p`, not bot.

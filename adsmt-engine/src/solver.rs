@@ -2448,26 +2448,18 @@ impl Solver {
             )
         } else {
             let seed = self.prepare_cdcl_seed();
-            if seed.is_none() {
-                // No seeded trail: the learnt clauses are RUP against the
-                // input clauses alone, so log them for the DRAT witness.
-                crate::cdcl::cdcl_with_restarts_deadline_logged(
-                    &clauses,
-                    crate::cdcl::engine_base_conflicts(clauses.len()),
-                    crate::cdcl::ENGINE_RESTARTS,
-                    deadline,
-                    None,
-                    &mut sat_lemmas,
-                )
-            } else {
-                crate::cdcl::cdcl_with_restarts_deadline_with_seed(
-                    &clauses,
-                    crate::cdcl::engine_base_conflicts(clauses.len()),
-                    crate::cdcl::ENGINE_RESTARTS,
-                    deadline,
-                    seed,
-                )
-            }
+            // The seeded trail is the prelude's level-0 BCP fixpoint, so
+            // every seeded literal is unit-propagation-implied by the
+            // clauses and the learnt clauses stay RUP against the input
+            // alone: log them for the DRAT witness with or without a seed.
+            crate::cdcl::cdcl_with_restarts_deadline_logged(
+                &clauses,
+                crate::cdcl::engine_base_conflicts(clauses.len()),
+                crate::cdcl::ENGINE_RESTARTS,
+                deadline,
+                seed,
+                &mut sat_lemmas,
+            )
         };
         match sat_result {
             BoolResult::Sat => {
