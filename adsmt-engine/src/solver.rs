@@ -2438,12 +2438,20 @@ impl Solver {
                     .expect("is_some checked above"),
             };
             crate::cdcl::cdcl_with_restarts_deadline_recording(
-                &clauses, 64, 12, deadline, &mut sink,
+                &clauses,
+                crate::cdcl::engine_base_conflicts(clauses.len()),
+                crate::cdcl::ENGINE_RESTARTS,
+                deadline,
+                &mut sink,
             )
         } else {
             let seed = self.prepare_cdcl_seed();
             crate::cdcl::cdcl_with_restarts_deadline_with_seed(
-                &clauses, 64, 12, deadline, seed,
+                &clauses,
+                crate::cdcl::engine_base_conflicts(clauses.len()),
+                crate::cdcl::ENGINE_RESTARTS,
+                deadline,
+                seed,
             )
         };
         match sat_result {
@@ -2474,8 +2482,8 @@ impl Solver {
                     };
                     match crate::cdcl::cdcl_with_restarts_with_model_deadline_recording(
                         &clauses,
-                        64,
-                        12,
+                        crate::cdcl::engine_base_conflicts(clauses.len()),
+                        crate::cdcl::ENGINE_RESTARTS,
                         deadline,
                         &mut sink,
                     ) {
@@ -2486,8 +2494,8 @@ impl Solver {
                     let seed = self.prepare_cdcl_seed();
                     match crate::cdcl::cdcl_with_restarts_with_model_deadline_with_seed(
                         &clauses,
-                        64,
-                        12,
+                        crate::cdcl::engine_base_conflicts(clauses.len()),
+                        crate::cdcl::ENGINE_RESTARTS,
                         deadline,
                         seed,
                     ) {
@@ -2766,7 +2774,11 @@ impl Solver {
                     let wc = work_clauses.get_or_insert_with(|| clauses.to_vec());
                     wc.push(block);
                     match crate::cdcl::cdcl_with_restarts_with_model_deadline_with_seed(
-                        wc, 64, 12, deadline, None,
+                        wc,
+                        crate::cdcl::engine_base_conflicts(wc.len()),
+                        crate::cdcl::ENGINE_RESTARTS,
+                        deadline,
+                        None,
                     ) {
                         crate::cdcl::CdclOutcome::Sat { model: m } => model = m,
                         crate::cdcl::CdclOutcome::Unsat => {

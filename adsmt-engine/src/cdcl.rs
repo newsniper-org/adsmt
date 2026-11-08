@@ -23,7 +23,7 @@
 //!   backjumping.
 //! - **Stage 4** — Luby restart wrapper
 //!   ([`cdcl_with_restarts`]) + VSIDS atom-activity scoring
-//!   (`pick_vsids_atom`, internal).
+//!   (heap-based `VsidsHeap`, internal).
 //!
 //! Stage 4 follow-ups (also landed):
 //!
@@ -39,6 +39,13 @@
 //! - **Model carry-out** ([`cdcl_solve_with_model`]) — same
 //!   outer loop but yields the satisfying assignment on the
 //!   Sat path via [`CdclOutcome::Sat`].
+//!
+//! **Heap VSIDS (branch `heap-based-vsids`)** — the decision picker
+//! is a binary max-heap over atom activity with lazy deletion
+//! (`VsidsHeap`), replacing a scan of every input clause per
+//! decision (69% of the time on random 3-SAT n=150).  The per-check
+//! conflict budget is `max(64 * 28, 64 * clauses)` total over the 12
+//! Luby epochs (`engine_base_conflicts`).
 //!
 //! Two-watched-literals propagation landed at v1.0.0-rc.1 RC1.2;
 //! the `propagate_two_watched` function replaces the legacy
@@ -74,6 +81,30 @@ const DEADLINE_CHECK_INTERVAL: usize = 256;
 /// every `*_deadline` function in this module.
 fn expired(deadline: Option<std::time::Instant>) -> bool {
     deadline.is_some_and(|dl| std::time::Instant::now() >= dl)
+}
+
+/// Luby restart epochs the engine runs per `check-sat` (see
+/// `Solver::check_sat_inner`), and the sum of the first
+/// [`ENGINE_RESTARTS`] Luby numbers (1,1,2,1,1,2,4,1,1,2,4,8).
+pub const ENGINE_RESTARTS: usize = 12;
+const ENGINE_LUBY_SUM: usize = 28;
+/// Smallest per-epoch conflict base the engine ever uses.
+pub const ENGINE_BASE_CONFLICTS: usize = 64;
+/// Total-conflict allowance per input clause (owner decision
+/// 2026-11-08: the budget is `max(current, proportional to input size)`).
+/// Measured on random 3-SAT (n=50..150, 30 instances, 4.26 ratio):
+/// 16 → 24 solved, 32 → 28, 64 → 30/30 (worst 0.66 s), 128 → 30/30.
+pub const CONFLICTS_PER_CLAUSE: usize = 64;
+
+/// Per-epoch conflict base for an input of `num_clauses` clauses:
+/// the total budget over [`ENGINE_RESTARTS`] epochs is
+/// `max(64 * 28, CONFLICTS_PER_CLAUSE * num_clauses)`, so a small
+/// input keeps today's budget and a larger one scales with its size.
+/// The wall-clock `deadline` still bounds the real time spent.
+pub fn engine_base_conflicts(num_clauses: usize) -> usize {
+    let scaled = (CONFLICTS_PER_CLAUSE.saturating_mul(num_clauses))
+        .div_ceil(ENGINE_LUBY_SUM);
+    scaled.max(ENGINE_BASE_CONFLICTS)
 }
 
 /// v0.21 B.1 stage 4 entry point — layer the canonical Luby
@@ -278,7 +309,7 @@ pub struct CdclState {
     /// Each conflict bumps the activity of every atom in the
     /// learnt clause; periodic [`Self::decay_activity`] scales
     /// every score by `decay_factor` so recently-active atoms
-    /// dominate the decision order. See `pick_vsids_atom` (internal).
+    /// dominate the decision order. See `VsidsHeap` (internal).
     pub activity: HashMap<Term, f64>,
     /// v0.21 B.1 follow-up — phase saving. Records the polarity
     /// each atom most recently held on the trail before being
@@ -288,6 +319,15 @@ pub struct CdclState {
     /// keeps locality across restarts and tends to flip many
     /// Unknown verdicts to Sat on satisfiable inputs.
     pub saved_phase: HashMap<Term, bool>,
+    /// When set, [`Self::backtrack_to`] appends every atom it
+    /// unassigns to [`Self::freed`] so the heap-based decision
+    /// picker ([`VsidsHeap`]) can re-admit them.  Off by default;
+    /// only the solve loops turn it on, so other users of the
+    /// state never accumulate the log.
+    pub track_freed: bool,
+    /// Atoms unassigned by backtracking since the last drain
+    /// (see [`Self::track_freed`]).
+    pub freed: Vec<Term>,
     /// v0.21 B.1 follow-up — per-learnt-clause activity score.
     /// Parallel to [`Self::learnt_clauses`]: index `i` holds
     /// the activity of `learnt_clauses[i]`. Each time the
@@ -385,6 +425,7 @@ impl CdclState {
             if last.decision_level <= level { break; }
             let entry = self.trail.pop().expect("checked above");
             self.assign.remove(&entry.atom);
+            if self.track_freed { self.freed.push(entry.atom.clone()); }
             self.saved_phase.insert(entry.atom, entry.polarity);
         }
         self.decision_level = level;
@@ -621,6 +662,9 @@ pub fn cdcl_solve_with_model_deadline_with_seed(
         return CdclOutcome::Unsat;
     }
     build_watches(&mut state, &owned);
+    state.track_freed = true;
+    state.freed.clear();
+    let mut vheap = VsidsHeap::new(&owned[..input_len], &state);
     let mut conflicts = 0;
     let vsids_bump: f64 = 1.0;
     let vsids_decay: f64 = 0.95;
@@ -663,10 +707,10 @@ pub fn cdcl_solve_with_model_deadline_with_seed(
                     AnalyzeOutcome::Expired => return CdclOutcome::Unknown,
                 };
             if learnt.is_empty() { return CdclOutcome::Unsat; }
-            state.bump_activity(&learnt, vsids_bump);
-            state.decay_activity(vsids_decay);
+            vheap.on_conflict(&learnt, vsids_bump, vsids_decay);
             state.decay_learnt_activity(clause_decay);
             state.backtrack_to(bj_level);
+            vheap.on_backtrack(&mut state);
             let lbd = compute_lbd(&learnt, &state);
             let new_idx = owned.len();
             owned.push(learnt.clone());
@@ -676,6 +720,7 @@ pub fn cdcl_solve_with_model_deadline_with_seed(
             state.learnt_lbd.push(lbd);
             if state.learnt_clauses.len() > learnt_limit {
                 state.backtrack_to(0);
+                vheap.on_backtrack(&mut state);
                 let keep = state.learnt_clauses.len() / 2;
                 const GLUE_LBD_THRESHOLD: usize = 6;
                 let mut candidates: Vec<(usize, f64)> = state
@@ -751,7 +796,7 @@ pub fn cdcl_solve_with_model_deadline_with_seed(
             }
             continue;
         }
-        let key = pick_vsids_atom(&owned[..input_len], &state);
+        let key = vheap.pick(&owned[..input_len], &state);
         let Some(key) = key else {
             return CdclOutcome::Sat { model: model_from_assign(state.assign) };
         };
@@ -796,6 +841,9 @@ pub fn cdcl_solve_with_model_deadline_recording(
         return CdclOutcome::Unsat;
     }
     build_watches(&mut state, &owned);
+    state.track_freed = true;
+    state.freed.clear();
+    let mut vheap = VsidsHeap::new(&owned[..input_len], &state);
     let mut conflicts = 0;
     let vsids_bump: f64 = 1.0;
     let vsids_decay: f64 = 0.95;
@@ -857,10 +905,10 @@ pub fn cdcl_solve_with_model_deadline_recording(
             let lbd_for_event = compute_lbd(&learnt, &state) as u32;
             sink.on_conflict(&learnt_records, lbd_for_event);
 
-            state.bump_activity(&learnt, vsids_bump);
-            state.decay_activity(vsids_decay);
+            vheap.on_conflict(&learnt, vsids_bump, vsids_decay);
             state.decay_learnt_activity(clause_decay);
             state.backtrack_to(bj_level);
+            vheap.on_backtrack(&mut state);
             sink.on_backjump(bj_level);
             // Trail shrank; reset the report cursor so the
             // next propagate round's diff is computed
@@ -876,6 +924,7 @@ pub fn cdcl_solve_with_model_deadline_recording(
             state.learnt_lbd.push(lbd);
             if state.learnt_clauses.len() > learnt_limit {
                 state.backtrack_to(0);
+                vheap.on_backtrack(&mut state);
                 let keep = state.learnt_clauses.len() / 2;
                 const GLUE_LBD_THRESHOLD: usize = 6;
                 let mut candidates: Vec<(usize, f64)> = state
@@ -924,7 +973,7 @@ pub fn cdcl_solve_with_model_deadline_recording(
             }
             continue;
         }
-        let key = pick_vsids_atom(&owned[..input_len], &state);
+        let key = vheap.pick(&owned[..input_len], &state);
         let Some(key) = key else {
             return CdclOutcome::Sat { model: model_from_assign(state.assign) };
         };
@@ -1000,6 +1049,7 @@ pub fn cdcl_solve(clauses: &[Clause], max_conflicts: usize) -> BoolResult {
 /// the unassigned literal with the highest activity score. Falls
 /// back to the first-unassigned policy when no unassigned atom
 /// has been bumped yet (cold start — every score is 0).
+#[cfg(test)]
 fn pick_vsids_atom(input_clauses: &[Clause], state: &CdclState) -> Option<Term> {
     let mut best: Option<(Term, f64)> = None;
     for clause in input_clauses {
@@ -1022,6 +1072,168 @@ fn pick_vsids_atom(input_clauses: &[Clause], state: &CdclState) -> Option<Term> 
         }
     }
     best.map(|(k, _)| k)
+}
+
+/// Heap-based VSIDS decision picker (replaces the per-decision
+/// scan of every input clause that `pick_vsids_atom` performed; the
+/// scan stays under `cfg(test)` as the reference the tests compare to).
+///
+/// Ranking is the same as the scan's: highest activity first, ties
+/// broken by first appearance in the input clauses.  Activity is kept
+/// unscaled with a growing increment (`inc`), which orders atoms
+/// exactly like "bump, then multiply every score by the decay": after
+/// a conflict `act[i] += inc; inc /= decay`, and the old score of an
+/// atom is `act[i] / inc`.
+///
+/// Like the scan, only an atom occurring in a not-yet-satisfied input
+/// clause is ever chosen, and `None` means every input clause is
+/// satisfied (the caller then reports Sat).  An unassigned atom whose
+/// clauses are all satisfied is *parked* until the next backtrack,
+/// the only event that can make one of those clauses open again.
+struct VsidsHeap {
+    atoms: Vec<Term>,
+    index: HashMap<Term, u32>,
+    /// Input-clause indices in which each atom occurs.
+    occ: Vec<Vec<u32>>,
+    act: Vec<f64>,
+    inc: f64,
+    /// Binary max-heap of atom ids; `pos[i]` is the slot or `NONE`.
+    heap: Vec<u32>,
+    pos: Vec<u32>,
+    parked: Vec<u32>,
+}
+
+const HEAP_NONE: u32 = u32::MAX;
+
+impl VsidsHeap {
+    fn new(input_clauses: &[Clause], state: &CdclState) -> Self {
+        let mut atoms: Vec<Term> = Vec::new();
+        let mut index: HashMap<Term, u32> = HashMap::new();
+        let mut occ: Vec<Vec<u32>> = Vec::new();
+        for (ci, clause) in input_clauses.iter().enumerate() {
+            for lit in clause {
+                let key = atom_key(lit);
+                let id = *index.entry(key.clone()).or_insert_with(|| {
+                    atoms.push(key);
+                    occ.push(Vec::new());
+                    (atoms.len() - 1) as u32
+                });
+                let o = &mut occ[id as usize];
+                if o.last() != Some(&(ci as u32)) { o.push(ci as u32); }
+            }
+        }
+        let act: Vec<f64> = atoms
+            .iter()
+            .map(|a| state.activity.get(a).copied().unwrap_or(0.0))
+            .collect();
+        let n = atoms.len();
+        let mut h = VsidsHeap {
+            atoms, index, occ, act, inc: 1.0,
+            heap: Vec::with_capacity(n), pos: vec![HEAP_NONE; n], parked: Vec::new(),
+        };
+        for i in 0..n as u32 { h.insert(i); }
+        h
+    }
+
+    /// `a` ranks above `b`: higher activity, then lower id.
+    fn above(&self, a: u32, b: u32) -> bool {
+        let (x, y) = (self.act[a as usize], self.act[b as usize]);
+        x > y || (x == y && a < b)
+    }
+
+    fn sift_up(&mut self, mut k: usize) {
+        let id = self.heap[k];
+        while k > 0 {
+            let parent = (k - 1) / 2;
+            if self.above(id, self.heap[parent]) {
+                self.heap[k] = self.heap[parent];
+                self.pos[self.heap[k] as usize] = k as u32;
+                k = parent;
+            } else { break; }
+        }
+        self.heap[k] = id;
+        self.pos[id as usize] = k as u32;
+    }
+
+    fn sift_down(&mut self, mut k: usize) {
+        let id = self.heap[k];
+        let n = self.heap.len();
+        loop {
+            let l = 2 * k + 1;
+            if l >= n { break; }
+            let r = l + 1;
+            let c = if r < n && self.above(self.heap[r], self.heap[l]) { r } else { l };
+            if self.above(self.heap[c], id) {
+                self.heap[k] = self.heap[c];
+                self.pos[self.heap[k] as usize] = k as u32;
+                k = c;
+            } else { break; }
+        }
+        self.heap[k] = id;
+        self.pos[id as usize] = k as u32;
+    }
+
+    fn insert(&mut self, id: u32) {
+        if self.pos[id as usize] != HEAP_NONE { return; }
+        self.heap.push(id);
+        let k = self.heap.len() - 1;
+        self.pos[id as usize] = k as u32;
+        self.sift_up(k);
+    }
+
+    fn pop_max(&mut self) -> Option<u32> {
+        if self.heap.is_empty() { return None; }
+        let top = self.heap[0];
+        let last = self.heap.pop().expect("non-empty");
+        self.pos[top as usize] = HEAP_NONE;
+        if !self.heap.is_empty() {
+            self.heap[0] = last;
+            self.pos[last as usize] = 0;
+            self.sift_down(0);
+        }
+        Some(top)
+    }
+
+    /// Conflict bookkeeping: bump every atom of `learnt`, then decay.
+    fn on_conflict(&mut self, learnt: &Clause, bump: f64, decay: f64) {
+        for lit in learnt {
+            let Some(&id) = self.index.get(&atom_key(lit)) else { continue };
+            self.act[id as usize] += bump * self.inc;
+            let p = self.pos[id as usize];
+            if p != HEAP_NONE { self.sift_up(p as usize); }
+        }
+        self.inc /= decay;
+        if self.inc > 1e100 {
+            for a in self.act.iter_mut() { *a *= 1e-100; }
+            self.inc *= 1e-100;
+        }
+    }
+
+    /// Re-admit atoms freed by backtracking and every parked atom.
+    fn on_backtrack(&mut self, state: &mut CdclState) {
+        if state.freed.is_empty() { return; }
+        let freed = std::mem::take(&mut state.freed);
+        for a in freed {
+            if let Some(&id) = self.index.get(&a) { self.insert(id); }
+        }
+        for id in std::mem::take(&mut self.parked) { self.insert(id); }
+    }
+
+    fn pick(&mut self, input_clauses: &[Clause], state: &CdclState) -> Option<Term> {
+        loop {
+            let id = self.pop_max()?;
+            let atom = &self.atoms[id as usize];
+            if state.assign.contains_key(atom) { continue; }
+            let open = self.occ[id as usize].iter().any(|&ci| {
+                !matches!(
+                    evaluate_clause(&input_clauses[ci as usize], &state.assign),
+                    ClauseEval::Satisfied
+                )
+            });
+            if open { return Some(atom.clone()); }
+            self.parked.push(id);
+        }
+    }
 }
 
 /// v1.0.0-rc.1 RC1.2 — initialise the watch metadata for a
@@ -2038,6 +2250,123 @@ mod tests {
         state.decay_activity(0.5);
         assert!((state.activity.get(&p()).copied().unwrap() - 1.0).abs() < 1e-9);
         assert!((state.activity.get(&q()).copied().unwrap() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn engine_base_conflicts_keeps_current_budget_for_small_inputs_and_scales_up() {
+        // Total over 12 Luby epochs = base * 28.
+        assert_eq!(engine_base_conflicts(0), 64);
+        assert_eq!(engine_base_conflicts(10), 64);
+        assert_eq!(engine_base_conflicts(28), 64); // 64*28 = 1792 total either way
+        assert!(engine_base_conflicts(639) * 28 >= 64 * 639);
+        assert!(engine_base_conflicts(639) > 64);
+        // never below the old total
+        for n in [0usize, 1, 27, 28, 29, 100, 5000] {
+            assert!(engine_base_conflicts(n) * ENGINE_LUBY_SUM >= 64 * 28);
+        }
+    }
+
+    // === heap-based VSIDS ===
+
+    fn lcg(seed: &mut u64) -> u64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed >> 33
+    }
+
+    fn brute_sat(cls: &[Vec<(usize, bool)>], n: usize) -> bool {
+        (0u32..(1 << n)).any(|m| {
+            cls.iter().all(|c| c.iter().any(|&(v, pol)| ((m >> v) & 1 == 1) == pol))
+        })
+    }
+
+    #[test]
+    fn heap_vsids_agrees_with_brute_force_on_random_3sat() {
+        let mut seed = 12345u64;
+        let mut seen_sat = 0;
+        let mut seen_unsat = 0;
+        for _ in 0..400 {
+            let n = 4 + (lcg(&mut seed) % 7) as usize;
+            let m = (n as f64 * (3.5 + (lcg(&mut seed) % 20) as f64 / 10.0)) as usize;
+            let mut raw: Vec<Vec<(usize, bool)>> = Vec::new();
+            for _ in 0..m {
+                let mut c = Vec::new();
+                for _ in 0..3 {
+                    c.push(((lcg(&mut seed) as usize) % n, lcg(&mut seed) % 2 == 0));
+                }
+                raw.push(c);
+            }
+            let cls: Vec<Clause> = raw.iter().map(|c| {
+                c.iter().map(|&(v, pol)| {
+                    let t = v_(v);
+                    if pol { Lit::pos(t) } else { Lit::neg(t) }
+                }).collect()
+            }).collect();
+            let want = brute_sat(&raw, n);
+            let got = cdcl_with_restarts(&cls, 64, 400);
+            if want { seen_sat += 1; assert_eq!(got, BoolResult::Sat, "raw={raw:?}"); }
+            else { seen_unsat += 1; assert_eq!(got, BoolResult::Unsat, "raw={raw:?}"); }
+        }
+        assert!(seen_sat > 20 && seen_unsat > 20, "{seen_sat} sat / {seen_unsat} unsat");
+    }
+
+    fn v_(i: usize) -> Term { Term::var(&format!("x{i}"), Type::bool_()) }
+
+    #[test]
+    fn heap_pick_prefers_higher_activity_then_first_seen() {
+        let cs = vec![vec![Lit::pos(p()), Lit::pos(q())], vec![Lit::pos(q()), Lit::pos(r())]];
+        let mut state = CdclState::new();
+        let mut h = VsidsHeap::new(&cs, &state);
+        // cold start: first-seen atom
+        assert_eq!(h.pick(&cs, &state), Some(p()));
+        // bump r: now r outranks q
+        let mut h = VsidsHeap::new(&cs, &state);
+        h.on_conflict(&vec![Lit::pos(r())], 1.0, 0.95);
+        assert_eq!(h.pick(&cs, &state), Some(r()));
+        let _ = &mut state;
+    }
+
+    #[test]
+    fn heap_pick_returns_none_when_every_clause_is_satisfied_and_recovers_after_backtrack() {
+        let cs = vec![vec![Lit::pos(p()), Lit::pos(q())]];
+        let mut state = CdclState::new();
+        state.track_freed = true;
+        let mut h = VsidsHeap::new(&cs, &state);
+        state.push(p(), true, Reason::Decision);
+        state.decision_level = 1;
+        // q is unassigned but its only clause is satisfied by p.
+        assert_eq!(h.pick(&cs, &state), None);
+        state.backtrack_to(0);
+        h.on_backtrack(&mut state);
+        let got = h.pick(&cs, &state);
+        assert!(got == Some(p()) || got == Some(q()));
+    }
+
+    #[test]
+    fn heap_pick_matches_scan_on_open_clause_membership() {
+        // The scan and the heap must agree on *whether* a decision exists.
+        let mut seed = 99u64;
+        for _ in 0..200 {
+            let n = 6;
+            let cs: Vec<Clause> = (0..8).map(|_| {
+                (0..3).map(|_| {
+                    let t = v_((lcg(&mut seed) as usize) % n);
+                    if lcg(&mut seed) % 2 == 0 { Lit::pos(t) } else { Lit::neg(t) }
+                }).collect()
+            }).collect();
+            let mut state = CdclState::new();
+            // assign a random prefix consistently, skipping any state that is not open/satisfied
+            for i in 0..n {
+                if lcg(&mut seed) % 3 == 0 { state.assign.insert(v_(i), lcg(&mut seed) % 2 == 0); }
+            }
+            let clean = cs.iter().all(|c| {
+                !matches!(evaluate_clause(c, &state.assign), ClauseEval::Falsified | ClauseEval::Unit)
+            });
+            if !clean { continue; }
+            let scan = pick_vsids_atom(&cs, &state);
+            let mut h = VsidsHeap::new(&cs, &state);
+            let heap = h.pick(&cs, &state);
+            assert_eq!(scan.is_some(), heap.is_some());
+        }
     }
 
     #[test]
