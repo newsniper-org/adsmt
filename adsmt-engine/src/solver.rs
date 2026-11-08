@@ -2429,6 +2429,8 @@ impl Solver {
         // ~5.3 s shortcut to log per-event Propagate stream
         // is acceptable for a one-shot diagnostic run, while
         // losing the per-query shortcut is a recurring cost.
+        #[allow(unused_mut)]
+        let mut sat_lemmas: Vec<crate::cnf::Clause> = Vec::new();
         #[cfg(not(any(feature = "oxiz", feature = "cadical")))]
         let sat_result = if self.jit_tracer.is_some() {
             let mut sink = CdclTracerSink {
@@ -2446,13 +2448,26 @@ impl Solver {
             )
         } else {
             let seed = self.prepare_cdcl_seed();
-            crate::cdcl::cdcl_with_restarts_deadline_with_seed(
-                &clauses,
-                crate::cdcl::engine_base_conflicts(clauses.len()),
-                crate::cdcl::ENGINE_RESTARTS,
-                deadline,
-                seed,
-            )
+            if seed.is_none() {
+                // No seeded trail: the learnt clauses are RUP against the
+                // input clauses alone, so log them for the DRAT witness.
+                crate::cdcl::cdcl_with_restarts_deadline_logged(
+                    &clauses,
+                    crate::cdcl::engine_base_conflicts(clauses.len()),
+                    crate::cdcl::ENGINE_RESTARTS,
+                    deadline,
+                    None,
+                    &mut sat_lemmas,
+                )
+            } else {
+                crate::cdcl::cdcl_with_restarts_deadline_with_seed(
+                    &clauses,
+                    crate::cdcl::engine_base_conflicts(clauses.len()),
+                    crate::cdcl::ENGINE_RESTARTS,
+                    deadline,
+                    seed,
+                )
+            }
         };
         match sat_result {
             BoolResult::Sat => {
@@ -2547,7 +2562,11 @@ impl Solver {
                 theory_result
             }
             BoolResult::Unsat => {
-                let (encoded, drat) = crate::proof_bridge::extract_drat(&clauses);
+                let (encoded, drat) = if sat_lemmas.is_empty() {
+                    crate::proof_bridge::extract_drat(&clauses)
+                } else {
+                    crate::proof_bridge::extract_drat_with_lemmas(&clauses, &sat_lemmas)
+                };
                 // Re-emit the same SAT-level unsat verdict in four
                 // byte formats via oxiz crates (P3, v0.15):
                 //   - DIMACS DRAT through oxiz-sat (feature `oxiz`)

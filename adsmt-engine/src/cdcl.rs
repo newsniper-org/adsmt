@@ -237,22 +237,29 @@ pub fn cdcl_with_restarts_with_model_deadline_with_seed(
     deadline: Option<std::time::Instant>,
     mut seed: Option<CdclState>,
 ) -> CdclOutcome {
-    let luby = luby_sequence(restarts);
-    for &mult in &luby {
-        if expired(deadline) {
-            return CdclOutcome::Unknown;
-        }
-        let budget = base_conflicts.saturating_mul(mult);
-        let epoch_seed = seed.take();
-        match cdcl_solve_with_model_deadline_with_seed(
-            clauses, budget, deadline, epoch_seed,
-        ) {
-            CdclOutcome::Sat { model } => return CdclOutcome::Sat { model },
-            CdclOutcome::Unsat => return CdclOutcome::Unsat,
-            CdclOutcome::Unknown => continue,
-        }
-    }
-    CdclOutcome::Unknown
+    let budgets: Vec<usize> = luby_sequence(restarts)
+        .into_iter()
+        .map(|m| base_conflicts.saturating_mul(m))
+        .collect();
+    cdcl_core(clauses, &budgets, deadline, seed.take(), None)
+}
+
+/// Like [`cdcl_with_restarts_deadline_with_seed`] but also returns
+/// every clause learnt on the way, in order (see [`cdcl_core`]), so
+/// the caller can emit a DRAT refutation for an `Unsat` verdict.
+pub fn cdcl_with_restarts_deadline_logged(
+    clauses: &[Clause],
+    base_conflicts: usize,
+    restarts: usize,
+    deadline: Option<std::time::Instant>,
+    seed: Option<CdclState>,
+    lemmas: &mut Vec<Clause>,
+) -> BoolResult {
+    let budgets: Vec<usize> = luby_sequence(restarts)
+        .into_iter()
+        .map(|m| base_conflicts.saturating_mul(m))
+        .collect();
+    cdcl_core(clauses, &budgets, deadline, seed, Some(lemmas)).into()
 }
 
 /// Why a literal sits on the trail.
@@ -635,7 +642,36 @@ pub fn cdcl_solve_with_model_deadline_with_seed(
     deadline: Option<std::time::Instant>,
     seed: Option<CdclState>,
 ) -> CdclOutcome {
+    cdcl_core(clauses, &[max_conflicts], deadline, seed, None)
+}
+
+/// Single CDCL search with in-place restarts.
+///
+/// `budgets` is the per-epoch conflict allowance (for the engine, the
+/// Luby sequence times a base).  When an epoch's budget is spent the
+/// search **restarts in place**: it backtracks to level 0 and starts
+/// the next epoch with the learnt clauses, VSIDS activity and saved
+/// phases it has accumulated (the earlier shape started every epoch
+/// from an empty state, discarding all of that).  Running out of
+/// epochs returns `Unknown`, so the total allowance is the sum of the
+/// budgets, as before.
+///
+/// `lemmas`, when given, receives every learnt clause in order.  Each
+/// is RUP-derivable from the input clauses and the lemmas before it
+/// (1-UIP learning), so together with the empty clause they form a
+/// DRAT refutation when the verdict is `Unsat`.  Restarts delete
+/// nothing from the log.
+pub fn cdcl_core(
+    clauses: &[Clause],
+    budgets: &[usize],
+    deadline: Option<std::time::Instant>,
+    seed: Option<CdclState>,
+    mut lemmas: Option<&mut Vec<Clause>>,
+) -> CdclOutcome {
     let mut deadline_tick: usize = 0;
+    let mut epoch: usize = 0;
+    let mut epoch_conflicts: usize = 0;
+    if budgets.is_empty() { return CdclOutcome::Unknown; }
 
     let mut state = seed.unwrap_or_default();
     // rc.21 seed sanity: the v1.1 CDCL section's stale
@@ -665,7 +701,6 @@ pub fn cdcl_solve_with_model_deadline_with_seed(
     state.track_freed = true;
     state.freed.clear();
     let mut vheap = VsidsHeap::new(&owned[..input_len], &state);
-    let mut conflicts = 0;
     let vsids_bump: f64 = 1.0;
     let vsids_decay: f64 = 0.95;
     let mut learnt_limit: usize = (input_len / 3).max(32);
@@ -690,10 +725,20 @@ pub fn cdcl_solve_with_model_deadline_with_seed(
             PropagateOutcome::Fixpoint => None,
         };
         if let Some(idx) = conflict_idx {
-            conflicts += 1;
-            if conflicts > max_conflicts { return CdclOutcome::Unknown; }
             if expired(deadline) { return CdclOutcome::Unknown; }
+            // A conflict at level 0 refutes the input whatever is left
+            // of the budget.
             if state.decision_level == 0 { return CdclOutcome::Unsat; }
+            epoch_conflicts += 1;
+            if epoch_conflicts > budgets[epoch] {
+                epoch += 1;
+                if epoch >= budgets.len() { return CdclOutcome::Unknown; }
+                // In-place restart: keep learnt clauses / activity / phases.
+                epoch_conflicts = 0;
+                state.backtrack_to(0);
+                vheap.on_backtrack(&mut state);
+                continue;
+            }
             // T0′.1 — deadline check inside conflict-analysis
             // resolution loop (verus-fork §3.5 counter-ack,
             // 2026-06-05).  The pre-T0′ analyzer ran unmodulated
@@ -707,6 +752,7 @@ pub fn cdcl_solve_with_model_deadline_with_seed(
                     AnalyzeOutcome::Expired => return CdclOutcome::Unknown,
                 };
             if learnt.is_empty() { return CdclOutcome::Unsat; }
+            if let Some(log) = lemmas.as_deref_mut() { log.push(learnt.clone()); }
             vheap.on_conflict(&learnt, vsids_bump, vsids_decay);
             state.decay_learnt_activity(clause_decay);
             state.backtrack_to(bj_level);
